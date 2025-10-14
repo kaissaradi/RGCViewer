@@ -6,6 +6,8 @@ from qtpy.QtGui import QStandardItem
 import analysis_core
 import vision_integration
 from gui.panels.waveforms_panel import REFRACTORY_PERIOD_MS
+import os
+import pickle
 
 def ei_corr(ref_ei_dict, test_ei_dict, 
             method: str = 'full', n_removed_channels: int = 1) -> np.ndarray:
@@ -222,16 +224,28 @@ class DataManager(QObject):
                 self.vision_sta_height = 100
             
             # Compute correlation matrices for EIs
-            print(f'[DEBUG] Computing EI correlations')
-            full_corr = ei_corr(self.vision_eis, self.vision_eis, method='full', n_removed_channels=1)
-            space_corr = ei_corr(self.vision_eis, self.vision_eis, method='space', n_removed_channels=1)
-            power_corr = ei_corr(self.vision_eis, self.vision_eis, method='power', n_removed_channels=1)
-            self.ei_corr_dict = {
-                'full': full_corr,
-                'space': space_corr,
-                'power': power_corr
-            }
-            print(f"[DEBUG] EI correlations computed successfully")
+            str_corr_pkl = os.path.join(self.kilosort_dir, 'ei_corr_dict.pkl')
+            if os.path.exists(str_corr_pkl):
+                print(f"[DEBUG] Loading precomputed EI correlations from {str_corr_pkl}")
+                with open(str_corr_pkl, 'rb') as f:
+                    self.ei_corr_dict = pickle.load(f)
+                print(f"[DEBUG] Loaded EI correlations successfully")
+
+            else:
+                print(f'[DEBUG] Computing EI correlations')
+                full_corr = ei_corr(self.vision_eis, self.vision_eis, method='full', n_removed_channels=1)
+                space_corr = ei_corr(self.vision_eis, self.vision_eis, method='space', n_removed_channels=1)
+                power_corr = ei_corr(self.vision_eis, self.vision_eis, method='power', n_removed_channels=1)
+                self.ei_corr_dict = {
+                    'full': full_corr,
+                    'space': space_corr,
+                    'power': power_corr
+                }
+                print(f"[DEBUG] EI correlations computed successfully")
+                # Save to pickle for future use
+                with open(str_corr_pkl, 'wb') as f:
+                    pickle.dump(self.ei_corr_dict, f)
+                print(f"[DEBUG] EI correlations saved to {str_corr_pkl}")
 
             print(f"Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
             return True, f"Successfully loaded Vision data for {dataset_name}."
