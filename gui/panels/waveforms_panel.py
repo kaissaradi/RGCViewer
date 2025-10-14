@@ -60,10 +60,10 @@ class WaveformPanel(QWidget):
         self.wf_norm = False
 
         # For key toggles 
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.waveform_grid_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.waveform_grid_widget.setFocusPolicy(Qt.NoFocus)
         self.waveform_grid_widget.installEventFilter(self)
-        self.waveform_grid_plot.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.waveform_grid_plot.setFocusPolicy(Qt.NoFocus)
 
         # Mouse/keyboard interaction
         self.waveform_grid_widget.scene().sigMouseClicked.connect(self._focus_waveform_plot)

@@ -3,7 +3,10 @@ import random
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
-    QHeaderView, QMessageBox, QTabWidget, QTableView, QTreeView, QAbstractItemView, QSlider, QLabel, QMenu, QInputDialog, QStackedWidget, QLineEdit
+    QHeaderView, QMessageBox, QTabWidget, QTableView, 
+    QTreeView, QAbstractItemView, QSlider, QLabel, 
+    QMenu, QInputDialog, QStackedWidget, QLineEdit,
+    QApplication
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel, QStandardItem
@@ -18,10 +21,25 @@ from gui.panels.similarity_panel import SimilarityPanel
 from gui.panels.waveforms_panel import WaveformPanel
 from gui.panels.ei_panel import EIPanel
 from gui.workers import FeatureWorker
+from qtpy.QtCore import QEvent, QObject
+
+
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
 pg.setConfigOption('foreground', 'd')
+
+
+class KeyForwarder(QObject):
+    def __init__(self, ei_panel):
+        super().__init__()
+        self.ei_panel = ei_panel
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Left, Qt.Key_Right):
+            self.ei_panel.keyPressEvent(event)
+            return True
+        return False
 
 class MainWindow(QMainWindow):
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
@@ -82,7 +100,19 @@ class MainWindow(QMainWindow):
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
             self.load_directory(default_kilosort_dir, default_dat_file)
 
+        # key forwarder
+        self.key_forwarder = KeyForwarder(self.ei_panel)
+        QApplication.instance().installEventFilter(self.key_forwarder)
 
+
+    def keyPressEvent(self, event):
+        # Forward left/right keys to EIPanel
+            # Forward left/right keys to EIPanel
+        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            self.ei_panel.keyPressEvent(event)
+        else:
+            super().keyPressEvent(event)
+    
     def _setup_style(self):
         """Sets the application's stylesheet."""
         self.setFont(QFont("Segoe UI", 9))
