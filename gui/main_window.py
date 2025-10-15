@@ -116,26 +116,53 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self.key_forwarder)
     
     def _move_selection_in_view(self, view, key):
-        """Move selection up/down in the given view."""
         sel_model = view.selectionModel()
         model = view.model()
         if not sel_model or not model:
             return
-        selected = sel_model.selectedRows()
-        if not selected:
-            # Select first row if nothing is selected
-            index = model.index(0, 0)
-            sel_model.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-            view.scrollTo(index)
-            return
-        current_row = selected[0].row()
-        if key == Qt.Key_Up:
-            new_row = max(0, current_row - 1)
+
+        if view is self.tree_view:
+            # Build a flat list of all leaf indices (clusters)
+            leaf_indices = []
+            for group_row in range(model.rowCount()):
+                group_item = model.item(group_row)
+                for child_row in range(group_item.rowCount()):
+                    child_item = group_item.child(child_row)
+                    index = model.indexFromItem(child_item)
+                    leaf_indices.append(index)
+            if not leaf_indices:
+                return
+            # Find the currently selected leaf
+            selected = sel_model.selectedIndexes()
+            if not selected or selected[0] not in leaf_indices:
+                # Select first leaf if nothing is selected or selection is not a leaf
+                sel_model.select(leaf_indices[0], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                view.scrollTo(leaf_indices[0])
+                return
+            current_idx = leaf_indices.index(selected[0])
+            if key == Qt.Key_Up:
+                new_idx = max(0, current_idx - 1)
+            else:
+                new_idx = min(len(leaf_indices) - 1, current_idx + 1)
+            sel_model.select(leaf_indices[new_idx], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            view.scrollTo(leaf_indices[new_idx])
         else:
-            new_row = min(model.rowCount() - 1, current_row + 1)
-        index = model.index(new_row, 0)
-        sel_model.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-        view.scrollTo(index)
+            # Table view logic
+            current = view.currentIndex()
+            if not current.isValid():
+                # Select first row if nothing is selected
+                index = model.index(0, 0)
+                sel_model.setCurrentIndex(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                view.scrollTo(index)
+                return
+            current_row = current.row()
+            if key == Qt.Key_Up:
+                new_row = max(0, current_row - 1)
+            else:
+                new_row = min(model.rowCount() - 1, current_row + 1)
+            index = model.index(new_row, 0)
+            sel_model.setCurrentIndex(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            view.scrollTo(index)
     
     def _setup_style(self):
         """Sets the application's stylesheet."""
