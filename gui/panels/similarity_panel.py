@@ -1,8 +1,9 @@
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
-from qtpy.QtCore import Signal, Qt, QItemSelectionModel
+from qtpy.QtCore import Signal, QItemSelectionModel
 from gui.widgets import PandasModel
 import numpy as np
 import pandas as pd
+from constants import EI_CORR_THRESHOLD
 
 class SimilarityPanel(QWidget):
     # Signal emitted when the selection changes; sends list of selected cluster IDs
@@ -112,8 +113,24 @@ class SimilarityPanel(QWidget):
             'full_ei_corr': ei_corr_dict['full'][main_idx, other_idx],
             'space_ei_corr': ei_corr_dict['space'][main_idx, other_idx],
             'power_ei_corr': ei_corr_dict['power'][main_idx, other_idx]
-
         }
         df = pd.DataFrame(d_df)
+        # Add n_spikes column from data_manager.cluster_df
+        cluster_df = self.main_window.data_manager.cluster_df
+        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
+        df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
         df = df.sort_values(by='full_ei_corr', ascending=False).reset_index(drop=True)
+
+        df['potential_dups'] = (
+            (df['full_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
+            (df['space_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
+            (df['power_ei_corr'].astype(float) > EI_CORR_THRESHOLD)
+        )
+
+        # Format correlation columns to 2 decimal places
+        for col in ['full_ei_corr', 'space_ei_corr', 'power_ei_corr']:
+            df[col] = df[col].map(lambda x: f"{x:.2f}")
+
+        df['potential_dups'] = df['potential_dups'].map(lambda x: 'Yes' if x else '')
+        
         self.set_data(df)

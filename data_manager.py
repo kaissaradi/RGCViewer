@@ -5,7 +5,7 @@ from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QStandardItem
 import analysis_core
 import vision_integration
-from gui.panels.waveforms_panel import REFRACTORY_PERIOD_MS
+from constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD
 import os
 import pickle
 
@@ -230,6 +230,9 @@ class DataManager(QObject):
                 with open(str_corr_pkl, 'rb') as f:
                     self.ei_corr_dict = pickle.load(f)
                 print(f"[DEBUG] Loaded EI correlations successfully")
+                full_corr = self.ei_corr_dict.get('full')
+                space_corr = self.ei_corr_dict.get('space')
+                power_corr = self.ei_corr_dict.get('power')
 
             else:
                 print(f'[DEBUG] Computing EI correlations')
@@ -246,6 +249,28 @@ class DataManager(QObject):
                 with open(str_corr_pkl, 'wb') as f:
                     pickle.dump(self.ei_corr_dict, f)
                 print(f"[DEBUG] EI correlations saved to {str_corr_pkl}")
+
+            # Update cluster_df to mark potential duplicates based on any EI correlation > threshold
+            if not self.cluster_df.empty:
+            # For each cluster, check if any other cluster has a correlation > threshold
+                cluster_ids = list(self.vision_eis.keys())
+                cluster_ids = np.array(cluster_ids) - 1 # Vision to ks IDs
+                potential_dups_map = {}
+                for i, cid in enumerate(cluster_ids):
+                    # Exclude self-comparison by masking the diagonal
+                    full_mask = np.delete(full_corr[i, :], i)
+                    space_mask = np.delete(space_corr[i, :], i)
+                    power_mask = np.delete(power_corr[i, :], i)
+                    if (
+                        np.any(full_mask > EI_CORR_THRESHOLD) or
+                        np.any(space_mask > EI_CORR_THRESHOLD) or
+                        np.any(power_mask > EI_CORR_THRESHOLD)
+                    ):
+                        potential_dups_map[cid] = True
+
+                self.cluster_df['potential_dups'] = self.cluster_df['cluster_id'].map(potential_dups_map).fillna(False)
+
+                print(f"[DEBUG] Updated cluster_df with potential duplicates based on EI correlations")
 
             print(f"Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
             return True, f"Successfully loaded Vision data for {dataset_name}."
@@ -347,6 +372,9 @@ class DataManager(QObject):
         
         # Create initial dataframe without ISI violations for faster loading
         df = pd.DataFrame({'cluster_id': cluster_ids, 'n_spikes': n_spikes})
+
+        # Initialize potential_dups with False
+        df['potential_dups'] = False
         
         # Initialize ISI violations column with zeros for now
         df['isi_violations_pct'] = 0.0
@@ -356,7 +384,7 @@ class DataManager(QObject):
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
         df['status'] = 'Original'
-        self.cluster_df = df[['cluster_id', 'KSLabel', 'n_spikes', 'isi_violations_pct', 'status']]
+        self.cluster_df = df[['cluster_id', 'n_spikes', 'isi_violations_pct', 'potential_dups', 'status', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
@@ -498,7 +526,7 @@ class DataManager(QObject):
             new_rows.append(new_row)
         self.cluster_df = pd.concat([self.cluster_df, pd.DataFrame(new_rows)], ignore_index=True)
 
-    def _calculate_isi_violations(self, cluster_id, refractory_period_ms=REFRACTORY_PERIOD_MS):
+    def _calculate_isi_violations(self, cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS):
         # Check if we already have the ISI calculation for this cluster in cache
         cache_key = (cluster_id, refractory_period_ms)
         if cache_key in self.isi_cache:

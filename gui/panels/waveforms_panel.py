@@ -3,9 +3,7 @@ import pyqtgraph as pg
 import numpy as np
 from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
-from qtpy.QtCore import QEvent
-
-REFRACTORY_PERIOD_MS = 1.5
+from constants import ISI_REFRACTORY_PERIOD_MS
 
 class InteractivePlotItem(pg.PlotItem):
     def __init__(self, parent_panel, *args, **kwargs):
@@ -263,7 +261,7 @@ class WaveformPanel(QWidget):
             # self.isi_plot.plot(x, y, stepMode="center", fillLevel=0, brush=(0, 163, 224, 150))
             self.isi_plot.plot(x, y, stepMode="center", pen=pen)
         
-        self.isi_plot.addLine(x=REFRACTORY_PERIOD_MS, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine, width=2))
+        self.isi_plot.addLine(x=ISI_REFRACTORY_PERIOD_MS, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine, width=2))
         self.isi_plot.setTitle(f"ISI Histogram (Cluster {cluster_ids})")
         self.isi_plot.setLabel('bottom', 'ISI (ms)')
         self.isi_plot.setLabel('left', 'Count')

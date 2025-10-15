@@ -193,7 +193,7 @@ class EIPanel(QWidget):
                 extent = (xrange[0], xrange[1], yrange[0], yrange[1])
             )
             # cbar
-            self.spatial_canvas.fig.colorbar(im, ax=ax, label='log10(abs(EI amplitude))')
+            # self.spatial_canvas.fig.colorbar(im, ax=ax, label='log10(abs(EI amplitude))')
             ax.axis('off')
 
             if channels is not None:
