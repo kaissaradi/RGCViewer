@@ -1,5 +1,5 @@
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
-from qtpy.QtCore import Signal, Qt
+from qtpy.QtCore import Signal, Qt, QItemSelectionModel
 from gui.widgets import PandasModel
 import numpy as np
 import pandas as pd
@@ -13,6 +13,7 @@ class SimilarityPanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
+        self._spacebar_select_count = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -55,6 +56,33 @@ class SimilarityPanel(QWidget):
             selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
             self.selection_changed.emit(selected_ids)
 
+    def select_top_n_rows(self, n):
+        """Select the top n rows in the table."""
+        model = self.table.model()
+        if model is None or model.rowCount() == 0:
+            return
+        selection_model = self.table.selectionModel()
+        selection_model.clearSelection()
+        for row in range(min(n, model.rowCount())):
+            index = model.index(row, 0)
+            selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        # Optionally scroll to the last selected row
+        if n > 0:
+            self.table.scrollTo(model.index(n-1, 0))
+
+    def handle_spacebar(self):
+        """Call this on each spacebar press."""
+        model = self.table.model()
+        if model is None or model.rowCount() == 0:
+            return
+        self._spacebar_select_count += 1
+        if self._spacebar_select_count > model.rowCount():
+            self._spacebar_select_count = 1  # wrap around
+        self.select_top_n_rows(self._spacebar_select_count)
+
+    def reset_spacebar_counter(self):
+        self._spacebar_select_count = 0
+    
     def _on_mark_duplicates(self):
         """Emit the selected clusters as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()

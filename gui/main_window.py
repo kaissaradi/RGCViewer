@@ -31,14 +31,25 @@ pg.setConfigOption('foreground', 'd')
 
 
 class KeyForwarder(QObject):
-    def __init__(self, ei_panel):
+    def __init__(self, main_window):
         super().__init__()
-        self.ei_panel = ei_panel
+        self.main_window = main_window
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Left, Qt.Key_Right):
-            self.ei_panel.keyPressEvent(event)
-            return True
+        if event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space:
+                self.main_window.similarity_panel.handle_spacebar()
+                return True
+            elif event.key() in (Qt.Key_Left, Qt.Key_Right):
+                self.main_window.ei_panel.keyPressEvent(event)
+                return True
+            elif event.key() in (Qt.Key_Up, Qt.Key_Down):
+                current_view = self.main_window.view_stack.currentWidget()
+                if current_view is self.main_window.tree_view:
+                    self.main_window._move_selection_in_view(self.main_window.tree_view, event.key())
+                elif current_view is self.main_window.table_view:
+                    self.main_window._move_selection_in_view(self.main_window.table_view, event.key())
+                return True
         return False
 
 class MainWindow(QMainWindow):
@@ -101,17 +112,30 @@ class MainWindow(QMainWindow):
             self.load_directory(default_kilosort_dir, default_dat_file)
 
         # key forwarder
-        self.key_forwarder = KeyForwarder(self.ei_panel)
+        self.key_forwarder = KeyForwarder(self)
         QApplication.instance().installEventFilter(self.key_forwarder)
-
-
-    def keyPressEvent(self, event):
-        # Forward left/right keys to EIPanel
-            # Forward left/right keys to EIPanel
-        if event.key() in (Qt.Key_Left, Qt.Key_Right):
-            self.ei_panel.keyPressEvent(event)
+    
+    def _move_selection_in_view(self, view, key):
+        """Move selection up/down in the given view."""
+        sel_model = view.selectionModel()
+        model = view.model()
+        if not sel_model or not model:
+            return
+        selected = sel_model.selectedRows()
+        if not selected:
+            # Select first row if nothing is selected
+            index = model.index(0, 0)
+            sel_model.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            view.scrollTo(index)
+            return
+        current_row = selected[0].row()
+        if key == Qt.Key_Up:
+            new_row = max(0, current_row - 1)
         else:
-            super().keyPressEvent(event)
+            new_row = min(model.rowCount() - 1, current_row + 1)
+        index = model.index(new_row, 0)
+        sel_model.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        view.scrollTo(index)
     
     def _setup_style(self):
         """Sets the application's stylesheet."""
@@ -579,6 +603,8 @@ class MainWindow(QMainWindow):
         # Now that views are synced, trigger the update callbacks
         callbacks.on_cluster_selection_changed(self)
         self._is_syncing = False
+
+        self.similarity_panel.reset_spacebar_counter()
 
     def on_similarity_selection_changed(self, selected_cluster_ids):
         # Always include the main selected cluster
