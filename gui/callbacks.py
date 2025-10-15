@@ -53,14 +53,7 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     QApplication.processEvents()
     
     main_window.data_manager.build_cluster_dataframe()
-    
-    # Check if a tree structure file exists and load it, otherwise populate with default structure
-    tree_file_path = os.path.join(ks_dir_name, 'cluster_group_refined_tree.json')
-    if os.path.exists(tree_file_path):
-        main_window.data_manager.load_tree_structure(tree_file_path)
-    else:
-        populate_tree_view(main_window)  # Use the new tree view instead of table view
-    
+
     # Automatically check for and load vision files in the same directory.
     # We will search for any set of matching files (.ei, .sta, .params).
     vision_dir = Path(ks_dir_name)
@@ -94,7 +87,21 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     else:
         print(f"[DEBUG] No complete set of .ei, .sta, and .params files found. Skipping automatic loading.")
     
-    
+    # Load cell type file
+    ls_txt = list(vision_dir.glob('*.txt'))
+    if len(ls_txt) > 0:
+        txt_file = ls_txt[0]
+    else:
+        txt_file = None
+    main_window.data_manager.load_cell_type_file(txt_file)
+
+    # Check if a tree structure file exists and load it, otherwise populate with default structure
+    tree_file_path = os.path.join(ks_dir_name, 'cluster_group_refined_tree.json')
+    if os.path.exists(tree_file_path):
+        main_window.data_manager.load_tree_structure(tree_file_path)
+    else:
+        populate_tree_view(main_window)  # Use the new tree view instead of table view
+
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
@@ -395,9 +402,9 @@ def populate_tree_view(main_window):
     
     df = main_window.data_manager.cluster_df
     
-    # Create top-level nodes for each unique KSLabel
+    # Create top-level nodes for each unique cell type
     groups = {}
-    for label in df['KSLabel'].unique():
+    for label in df['cell_type'].unique():
         group_item = QStandardItem(label)
         group_item.setEditable(False)
         group_item.setDropEnabled(True)  # Can drop cells into it
@@ -419,7 +426,7 @@ def populate_tree_view(main_window):
     # Add each cluster as a child item to its group
     for _, row in df.iterrows():
         cluster_id = row['cluster_id']
-        label = row['KSLabel']
+        label = row['cell_type']
         
         # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
         item_text = f"Cluster {cluster_id} (n={row['n_spikes']})"

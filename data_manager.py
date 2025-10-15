@@ -5,7 +5,7 @@ from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QStandardItem
 import analysis_core
 import vision_integration
-from constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD
+from constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
 import os
 import pickle
 
@@ -333,6 +333,36 @@ class DataManager(QObject):
                 return False, "No Vision data files found in the directory."
     # --- End New Method ---
 
+    def load_cell_type_file(self, txt_file: str=None):
+        if txt_file is None:
+            print(f'[DEBUG] No cell type file provided, Unknown for all IDs.')
+            return
+        
+        try:
+            d_result = {}
+            with open(txt_file, 'r') as file:
+                for line in file:
+                    # Split each line into key and value using the specified delimiter
+                    key, value = map(str.strip, line.split(' ', 1))
+                    sub_values = value.split('/')
+                    
+                    # -1 for vision to KS IDs.
+                    ks_id = int(key) - 1
+
+                    for str_label in LS_CELL_TYPE_LABELS:
+                        if str_label in sub_values:
+                            d_result[ks_id] = str_label
+                            break
+                    
+            
+            # Add to cluster_df
+            self.cluster_df['cell_type'] = self.cluster_df['cluster_id'].map(d_result).fillna('Unknown')
+            print(f'[DEBUG] Loaded cell type file {txt_file}.')
+        except Exception as e:
+            print(f"Error loading cell type file: {e}")
+
+
+    
     def _load_kilosort_params(self):
         params_path = self.kilosort_dir / 'params.py'
         if not params_path.exists(): raise FileNotFoundError("params.py not found.")
@@ -375,6 +405,9 @@ class DataManager(QObject):
 
         # Initialize potential_dups with False
         df['potential_dups'] = False
+
+        # Initialize cell types with 'Unknown'
+        df['cell_type'] = 'Unknown'
         
         # Initialize ISI violations column with zeros for now
         df['isi_violations_pct'] = 0.0
@@ -384,7 +417,7 @@ class DataManager(QObject):
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
         df['status'] = 'Original'
-        self.cluster_df = df[['cluster_id', 'n_spikes', 'isi_violations_pct', 'potential_dups', 'status', 'KSLabel']]
+        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'potential_dups', 'status', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
