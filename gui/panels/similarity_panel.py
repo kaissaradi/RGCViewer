@@ -117,8 +117,8 @@ class SimilarityPanel(QWidget):
         other_ids = cluster_ids[other_idx]
         d_df = {
             'cluster_id': other_ids,
-            'full_ei_corr': ei_corr_dict['full'][main_idx, other_idx],
             'space_ei_corr': ei_corr_dict['space'][main_idx, other_idx],
+            'full_ei_corr': ei_corr_dict['full'][main_idx, other_idx],
             'power_ei_corr': ei_corr_dict['power'][main_idx, other_idx]
         }
         df = pd.DataFrame(d_df)
@@ -126,7 +126,9 @@ class SimilarityPanel(QWidget):
         cluster_df = self.main_window.data_manager.cluster_df
         n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
         df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
-        df = df.sort_values(by='full_ei_corr', ascending=False).reset_index(drop=True)
+        
+        # Sort by space_ei_corr descending
+        df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
 
         df['potential_dups'] = (
             (df['full_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |

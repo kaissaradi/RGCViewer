@@ -218,10 +218,6 @@ class MainWindow(QMainWindow):
             self._draw_plots(cluster_id, cached_features)
             return
 
-        # self.waveform_plot.clear()
-        # self.isi_plot.clear()
-        # self.fr_plot.clear()
-
         # Only run FeatureWorker if dat_path is available
         if self.data_manager.dat_path is not None:
             # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
@@ -263,8 +259,15 @@ class MainWindow(QMainWindow):
             # self.waveforms_panel.clear()
             # self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
         
-        self.waveforms_panel.update_all(cluster_id)
-        self.ei_panel.update_ei(cluster_id)
+        self.similarity_panel.update_main_cluster_id(cluster_id)
+        # Select the top row in similarity panel by default
+        self.similarity_panel.select_top_n_rows(1)
+        # similarity_ids = self.similarity_panel._on_selection_changed()
+        # self.on_similarity_selection_changed(similarity_ids)
+        
+        # self.waveforms_panel.update_all(cluster_id)
+        # self.ei_panel.update_ei(cluster_id)
+
 
         # Update the tab-specific plot (Raw Trace).
         if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
@@ -272,7 +275,7 @@ class MainWindow(QMainWindow):
         else:
             self.select_sta_view(self.current_sta_view)
             
-        self.similarity_panel.update_main_cluster_id(cluster_id)
+        
         
         self.status_bar.showMessage("Ready.", 2000)
 

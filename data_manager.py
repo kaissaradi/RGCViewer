@@ -327,6 +327,7 @@ class DataManager(QObject):
                 cluster_ids = list(self.vision_eis.keys())
                 cluster_ids = np.array(cluster_ids) - 1 # Vision to ks IDs
                 potential_dups_map = {}
+                max_dup_r_map = {}
                 for i, cid in enumerate(cluster_ids):
                     # Exclude self-comparison by masking the diagonal
                     full_mask = np.delete(full_corr[i, :], i)
@@ -338,8 +339,17 @@ class DataManager(QObject):
                         np.any(power_mask > EI_CORR_THRESHOLD)
                     ):
                         potential_dups_map[cid] = True
+                    max_r = max(
+                        np.max(full_mask),
+                        np.max(space_mask),
+                        # np.max(power_mask)
+                    )
+                    max_dup_r_map[cid] = max_r
 
                 self.cluster_df['potential_dups'] = self.cluster_df['cluster_id'].map(potential_dups_map).fillna(False)
+                self.cluster_df['max_dup_r'] = self.cluster_df['cluster_id'].map(max_dup_r_map).fillna(0.0)
+                # Format to 2 decimal places
+                self.cluster_df['max_dup_r'] = self.cluster_df['max_dup_r'].map(lambda x: f"{x:.2f}")
 
                 print(f"[DEBUG] Updated cluster_df with potential duplicates based on EI correlations")
 
@@ -477,6 +487,9 @@ class DataManager(QObject):
         # Initialize potential_dups with False
         df['potential_dups'] = False
 
+        # Initialize max_dup_r to 0
+        df['max_dup_r'] = 0.0
+
         # Initialize cell types with 'Unknown'
         df['cell_type'] = 'Unknown'
         
@@ -488,7 +501,7 @@ class DataManager(QObject):
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
         df['status'] = 'Original'
-        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'potential_dups', 'status', 'KSLabel']]
+        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
