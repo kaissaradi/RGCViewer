@@ -3,7 +3,8 @@ from qtpy.QtCore import Qt, QTimer
 import numpy as np
 from gui.widgets import MplCanvas
 import matplotlib.pyplot as plt
-from qtpy.QtWidgets import QSizePolicy, QComboBox
+from qtpy.QtWidgets import QSizePolicy, QComboBox, QScrollArea
+import pyqtgraph as pg
 from scipy.interpolate import griddata
 
 
@@ -51,15 +52,17 @@ class EIPanel(QWidget):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
-        self.temporal_canvas = MplCanvas(self, width=7, height=6, dpi=120)
-        right_layout.addWidget(self.temporal_canvas)
+        # self.temporal_canvas = MplCanvas(self, width=7, height=6, dpi=120)
+        self.temporal_widget = pg.GraphicsLayoutWidget()
+        self.temporal_plot = self.temporal_widget.addPlot()
+        right_layout.addWidget(self.temporal_widget)
         splitter.addWidget(right_widget)
         splitter.setSizes([400, 400])
         self.spatial_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.temporal_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # In your update_ei or after adding the panel to the layout:
+        self.temporal_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+ 
         QTimer.singleShot(0, self.spatial_canvas.draw)
-        QTimer.singleShot(0, self.temporal_canvas.draw)
+        # QTimer.singleShot(0, self.temporal_plot.draw)
 
         # --- Main Layout ---
         main_layout = QVBoxLayout(self)
@@ -69,9 +72,6 @@ class EIPanel(QWidget):
         self.current_ei_data = None
         self.current_cluster_ids = None
         self.n_frames = 0
-        self.n_max_cols = 3
-
-    # --- Public API ---
 
     def on_canvas_hover(self, event):
         # Handles hover events on the summary plot for tooltips.
@@ -109,8 +109,6 @@ class EIPanel(QWidget):
     def clear(self):
         self.spatial_canvas.fig.clear()
         self.spatial_canvas.draw()
-        self.temporal_canvas.fig.clear()
-        self.temporal_canvas.draw()
 
     # --- Internal: Vision EI ---
 
@@ -213,42 +211,66 @@ class EIPanel(QWidget):
                 self.overlay_dropdown.addItem(str(cid))
             self.overlay_dropdown.setCurrentIndex(overlay_idx)
             self.overlay_dropdown.blockSignals(False)
-
+    
     def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
         """
-        Example: Plot temporal EI traces for the given clusters.
+        Plot temporal EI traces for the given clusters using pyqtgraph.
         """
-        self.temporal_canvas.fig.clear()
-        n_channels = len(channels)
-        n_cols = min(n_channels, self.n_max_cols)
-        n_rows = (n_channels + n_cols - 1) // n_cols
-        axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols, sharex=True, sharey=True)
-        axes = axes.flatten() if n_channels > 1 else [axes]
+        self.temporal_widget.clear()  # Clear previous plots
 
         for i, ch in enumerate(channels):
-            ax = axes[i]
+            plot_item = pg.PlotItem()
+            self.temporal_widget.addItem(plot_item, i, 0)  # Add to grid layout
+
             for j, ei_data in enumerate(ei_data_list):
                 time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
-                ax.plot(time, ei_data[ch, :], alpha=0.7, label=f'Cluster {cluster_ids[j]}')
-            ax.set_title(f"{i} Chan {ch}")
-            ax.set_xlabel("Time (ms)")
-            # ax.set_ylabel("Amplitude (µV)")
-            # ax.legend()
-            ax.grid(True)
-            ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-        
-        # Turn off any unused axes
-        for k in range(i+1, len(axes)):
-            axes[k].axis('off')
+                plot_item.plot(time, ei_data[ch, :], pen=pg.mkPen(color=pg.intColor(j, hues=len(cluster_ids)), width=2), name=f'Cluster {cluster_ids[j]}')
 
-        # Legend over top of all subplots shared across top row
-        handles, labels = axes[0].get_legend_handles_labels()
-        if handles:
-            self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
+            plot_item.setLabel('left', f'{i}: {ch}')
+            plot_item.setLabel('bottom', 'Time (ms)')
+            plot_item.addLegend()
+
+        self.temporal_plot.setTitle("Temporal EI")
+        self.temporal_plot.setLabel('left', 'Amplitude (µV)')
+        self.temporal_plot.setLabel('bottom', 'Time (ms)')
+        # self.temporal_plot.setAspectLocked(True)
+        # self.temporal_plot.showGrid(x=True, y=True)
+    
+    # def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
+    #     """
+    #     Example: Plot temporal EI traces for the given clusters.
+    #     """
+    #     self.temporal_canvas.fig.clear()
+    #     n_channels = len(channels)
+    #     n_rows = n_channels
+    #     n_cols = 1
+    #     axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols, sharex=True, sharey=True)
+    #     axes = axes.flatten() if n_channels > 1 else [axes]
+
+    #     for i, ch in enumerate(channels):
+    #         ax = axes[i]
+    #         for j, ei_data in enumerate(ei_data_list):
+    #             time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
+    #             ax.plot(time, ei_data[ch, :], alpha=0.7, label=f'Cluster {cluster_ids[j]}')
+    #         ax.set_title(f"{i} Chan {ch}")
+    #         ax.set_xlabel("Time (ms)")
+    #         # ax.set_ylabel("Amplitude (µV)")
+    #         # ax.legend()
+    #         ax.grid(True)
+    #         ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
         
-        self.temporal_canvas.fig.suptitle("Temporal EI", color='white', fontsize=16)
-        self.temporal_canvas.fig.tight_layout()
-        self.temporal_canvas.draw()
+    #     # Turn off any unused axes
+    #     for k in range(i+1, len(axes)):
+    #         axes[k].axis('off')
+
+    #     # Legend over top of all subplots shared across top row
+    #     handles, labels = axes[0].get_legend_handles_labels()
+    #     if handles:
+    #         self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
+        
+    #     self.temporal_canvas.fig.suptitle("Temporal EI", color='white', fontsize=16)
+    #     self.temporal_canvas.fig.tight_layout()
+    #     self.temporal_canvas.draw()
     
     # def _draw_vision_ei_spatial(self, ei_map_list, cluster_ids, channels=None):
     #     n_clusters = len(ei_map_list)

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import json
 from pathlib import Path
 from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QStandardItem
@@ -128,17 +129,64 @@ class DataManager(QObject):
         self.uV_per_bit = 0.195
         self.main_window = main_window  # Reference to main window for tree operations
         
-        # --- New Attributes for Vision Data ---
+        # List of duplicate sets
+        self.duplicate_sets = []
+        self.dup_json = self.kilosort_dir / 'duplicate_sets.json'
+        
+        # --- Vision Data ---
         self.vision_eis = None
         self.vision_stas = None
         self.vision_params = None
         self.vision_sta_width = None  # Store stimulus width for coordinate alignment
         self.vision_sta_height = None  # Store stimulus height for coordinate alignment
-        # --- End New Attributes ---
         
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
+    def export_duplicate_sets(self):
+        """
+        Export duplicate_sets to a JSON file in the Kilosort directory.
+        """
+        
+        if not self.duplicate_sets:
+            # Nothing to save
+            return
+        
+        # Convert sets to lists for JSON serialization
+        duplicate_sets_as_lists = [
+            [int(cluster_id) for cluster_id in s] 
+            for s in self.duplicate_sets
+        ]
+        
+        try:
+            with open(self.dup_json, 'w') as f:
+                json.dump(duplicate_sets_as_lists, f, indent=2)
+            print(f"[DEBUG] Exported {len(duplicate_sets_as_lists)} duplicate set(s) to {self.dup_json}")
+        except Exception as e:
+            print(f"[ERROR] Failed to export duplicate sets: {e}")
+    
+    def load_duplicate_sets(self):
+        """
+        Load duplicate_sets from a JSON file in the Kilosort directory.
+        Returns True if file was found and loaded, False otherwise.
+        """
+
+        if not self.dup_json.exists():
+            return False
+        
+        try:
+            with open(self.dup_json, 'r') as f:
+                duplicate_sets_as_lists = json.load(f)
+            
+            # Convert lists back to sets
+            self.duplicate_sets = [set(s) for s in duplicate_sets_as_lists]
+
+            print(f"[DEBUG] Loaded {len(self.duplicate_sets)} duplicate set(s) from {self.dup_json}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to load duplicate sets: {e}")
+            return False
+    
     def load_kilosort_data(self):
         try:
             self.spike_times = np.load(self.kilosort_dir / 'spike_times.npy').flatten()
@@ -666,31 +714,31 @@ class DataManager(QObject):
         self.main_window.tree_view.expandAll()
 
     def get_first_spike_time(self, cluster_id):
-            """
-            Efficiently finds the time of the very first spike for a given cluster.
-            
-            Uses numpy.argmax for a highly optimized search, which is orders of
-            magnitude faster than iterating or filtering the entire spike array.
+        """
+        Efficiently finds the time of the very first spike for a given cluster.
+        
+        Uses numpy.argmax for a highly optimized search, which is orders of
+        magnitude faster than iterating or filtering the entire spike array.
 
-            Returns:
-                float: The time of the first spike in seconds, or None if the cluster has no spikes.
-            """
-            try:
-                # Create a boolean mask for the selected cluster.
-                cluster_mask = (self.spike_clusters == cluster_id)
-                
-                # Check if the cluster has any spikes at all.
-                if not np.any(cluster_mask):
-                    return None
-                
-                # np.argmax returns the index of the *first* True value. This is extremely fast.
-                first_spike_index = np.argmax(cluster_mask)
-                
-                # Use that index to get the spike time (in samples) from the sorted times array.
-                first_spike_sample = self.spike_times[first_spike_index]
-                
-                # Convert to seconds and return.
-                return first_spike_sample / self.sampling_rate
-            except (IndexError, TypeError):
-                # Return None if any error occurs (e.g., empty arrays).
+        Returns:
+            float: The time of the first spike in seconds, or None if the cluster has no spikes.
+        """
+        try:
+            # Create a boolean mask for the selected cluster.
+            cluster_mask = (self.spike_clusters == cluster_id)
+            
+            # Check if the cluster has any spikes at all.
+            if not np.any(cluster_mask):
                 return None
+            
+            # np.argmax returns the index of the *first* True value. This is extremely fast.
+            first_spike_index = np.argmax(cluster_mask)
+            
+            # Use that index to get the spike time (in samples) from the sorted times array.
+            first_spike_sample = self.spike_times[first_spike_index]
+            
+            # Convert to seconds and return.
+            return first_spike_sample / self.sampling_rate
+        except (IndexError, TypeError):
+            # Return None if any error occurs (e.g., empty arrays).
+            return None

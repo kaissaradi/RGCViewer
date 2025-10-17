@@ -95,6 +95,9 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
         txt_file = None
     main_window.data_manager.load_cell_type_file(txt_file)
 
+    # Load duplicate sets file
+    main_window.data_manager.load_duplicate_sets()
+
     # Check if a tree structure file exists and load it, otherwise populate with default structure
     tree_file_path = os.path.join(ks_dir_name, 'cluster_group_refined_tree.json')
     if os.path.exists(tree_file_path):

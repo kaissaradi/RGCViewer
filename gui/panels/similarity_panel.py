@@ -14,6 +14,7 @@ class SimilarityPanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
+        self.main_cluster_id = None
         self._spacebar_select_count = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -31,6 +32,7 @@ class SimilarityPanel(QWidget):
         # Button row
         button_layout = QHBoxLayout()
         self.duplicate_button = QPushButton("Mark as Duplicates")
+        self.duplicate_button.setToolTip("Mark selected clusters as duplicates (Cmd+D / Ctrl+D)")
         button_layout.addWidget(self.duplicate_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
@@ -85,10 +87,13 @@ class SimilarityPanel(QWidget):
         self._spacebar_select_count = 0
     
     def _on_mark_duplicates(self):
-        """Emit the selected clusters as a duplicate group."""
+        """Emit the selected clusters along with main cluster ID as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()
         if self.similarity_model is not None:
             selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+            selected_ids.append(self.main_cluster_id)
+            # Ensure uniqueness
+            selected_ids = list(set(selected_ids))  
             self.mark_duplicates.emit(selected_ids)
 
     def clear(self):
@@ -103,6 +108,8 @@ class SimilarityPanel(QWidget):
             self.clear()
             return
 
+        self.main_cluster_id = cluster_id
+        
         ei_corr_dict = self.main_window.data_manager.ei_corr_dict
         cluster_ids = np.array(list(self.main_window.data_manager.vision_eis.keys())) - 1
         main_idx = np.where(cluster_ids == cluster_id)[0][0]

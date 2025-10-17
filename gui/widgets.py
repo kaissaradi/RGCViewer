@@ -1,6 +1,7 @@
 
 import pandas as pd
 from qtpy.QtWidgets import QTableView
+from PyQt5.QtGui import QColor
 from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -54,3 +55,32 @@ class MplCanvas(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#1f1f1f')
         super().__init__(self.fig)
+
+class HighlightDuplicatesPandasModel(PandasModel):
+    def data(self, index, role=Qt.DisplayRole):
+        value = super().data(index, role)
+        if not index.isValid():
+            return value
+            
+        try:
+            # Use lowercase 'status' to match your cluster_df column name
+            if 'status' not in self._dataframe.columns:
+                return value
+                
+            status_col_idx = self._dataframe.columns.get_loc('status')
+            status_value = self._dataframe.iloc[index.row(), status_col_idx]
+            
+            if role == Qt.BackgroundRole:
+                if status_value == 'Duplicate':
+                    return QColor('#FFDDDD')  # Light red background
+                    
+            if role == Qt.ForegroundRole:
+                cluster_id_col_idx = self._dataframe.columns.get_loc('cluster_id')
+                if index.column() == cluster_id_col_idx and status_value == 'Duplicate':
+                    return QColor('#FF2222')  # Red text for cluster_id
+        except Exception as e:
+            # If any error occurs, just return the default value
+            print(f"[ERROR] HighlightDuplicatesPandasModel.data error: {e}")
+            pass
+            
+        return value

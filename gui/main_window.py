@@ -14,7 +14,7 @@ import pyqtgraph as pg
 import numpy as np
 import analysis_core
 # Custom GUI Modules
-from gui.widgets import MplCanvas, PandasModel
+from gui.widgets import MplCanvas, PandasModel, HighlightDuplicatesPandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
@@ -22,6 +22,7 @@ from gui.panels.waveforms_panel import WaveformPanel
 from gui.panels.ei_panel import EIPanel
 from gui.workers import FeatureWorker
 from qtpy.QtCore import QEvent, QObject
+from PyQt5.QtGui import QColor
 
 
 
@@ -49,6 +50,10 @@ class KeyForwarder(QObject):
                     self.main_window._move_selection_in_view(self.main_window.tree_view, event.key())
                 elif current_view is self.main_window.table_view:
                     self.main_window._move_selection_in_view(self.main_window.table_view, event.key())
+                return True
+            # Add Cmd+D / Ctrl+D shortcut for marking duplicates
+            elif event.key() == Qt.Key_D and (event.modifiers() & Qt.ControlModifier):
+                self.main_window.similarity_panel._on_mark_duplicates()
                 return True
         return False
 
@@ -644,9 +649,43 @@ class MainWindow(QMainWindow):
         self.waveforms_panel.update_all(clusters_to_plot)
 
     def on_mark_duplicates(self, duplicate_ids):
-        # Store or export the duplicate IDs as needed
-        pass
+        # Store duplicates in data_manager.duplicate_sets
 
+        dups = set(duplicate_ids)
+        # Check if already added
+        for existing_set in self.data_manager.duplicate_sets:
+            if dups == existing_set:
+                return  # Already recorded
+        
+        print(f'[DEBUG] Marking duplicates: {dups}')
+        self.data_manager.duplicate_sets.append(dups)
+
+        # Update cluster_df status
+        df = self.data_manager.cluster_df
+        df.loc[df['cluster_id'].isin(dups), 'status'] = 'Duplicate'
+
+        # Refresh table view
+        self.pandas_model = HighlightDuplicatesPandasModel(df)
+        self.setup_table_model(self.pandas_model)
+
+        # Update tree view appearance
+        self._update_tree_view_duplicate_highlight(duplicate_ids)
+
+        # Export to JSON
+        self.data_manager.export_duplicate_sets()
+        
+        self.status_bar.showMessage(f"Marked {len(duplicate_ids)} clusters as duplicates and saved to file.", 3000)
+
+    def _update_tree_view_duplicate_highlight(self, duplicate_ids):
+        for row in range(self.tree_model.rowCount()):
+            group_item = self.tree_model.item(row)
+            for child_row in range(group_item.rowCount()):
+                child_item = group_item.child(child_row)
+                if child_item.data(Qt.ItemDataRole.UserRole) in duplicate_ids:
+                    child_item.setForeground(QColor('#FF2222'))  # Red text
+                else:
+                    child_item.setForeground(QColor('white'))
+    
     def on_cluster_selection_changed(self, *args):
         callbacks.on_cluster_selection_changed(self)
         
