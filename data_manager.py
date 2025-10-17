@@ -143,6 +143,28 @@ class DataManager(QObject):
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
+    def update_status_for_duplicates(self):
+        """
+        Update the cluster_df 'status' column based on current duplicate_sets.
+        """
+        if self.cluster_df.empty:
+            return
+
+        # Reset all statuses to 'Original'
+        self.cluster_df['status'] = 'Original'
+        
+        # Update status for clusters in duplicate sets
+        for dup_set in self.duplicate_sets:
+            self.cluster_df.loc[self.cluster_df['cluster_id'].isin(dup_set), 'status'] = 'Duplicate'
+        
+        # all_dup_ids = set()
+        # for dup_set in self.duplicate_sets:
+        #     all_dup_ids.update(dup_set)
+        
+        # Mark clusters that are not in any duplicate set but were previously marked as 'Duplicate' back to 'Original'
+        # self.cluster_df.loc[~self.cluster_df['cluster_id'].isin(all_dup_ids) & (self.cluster_df['status'] == 'Duplicate'), 'status'] = 'Original'
+        
+    
     def export_duplicate_sets(self):
         """
         Export duplicate_sets to a JSON file in the Kilosort directory.
@@ -182,6 +204,7 @@ class DataManager(QObject):
             self.duplicate_sets = [set(s) for s in duplicate_sets_as_lists]
 
             print(f"[DEBUG] Loaded {len(self.duplicate_sets)} duplicate set(s) from {self.dup_json}")
+            self.update_status_for_duplicates()
             return True
         except Exception as e:
             print(f"[ERROR] Failed to load duplicate sets: {e}")

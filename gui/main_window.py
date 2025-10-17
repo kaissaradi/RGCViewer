@@ -661,22 +661,20 @@ class MainWindow(QMainWindow):
         self.data_manager.duplicate_sets.append(dups)
 
         # Update cluster_df status
-        df = self.data_manager.cluster_df
-        df.loc[df['cluster_id'].isin(dups), 'status'] = 'Duplicate'
+        self.data_manager.update_status_for_duplicates()
+        self.data_manager.export_duplicate_sets()
+        self.status_bar.showMessage(f"Marked {len(duplicate_ids)} clusters as duplicates and saved to file.", 3000)
 
-        # Refresh table view
+    def _update_table_view_duplicate_highlight(self):
+        df = self.data_manager.cluster_df
         self.pandas_model = HighlightDuplicatesPandasModel(df)
         self.setup_table_model(self.pandas_model)
 
-        # Update tree view appearance
-        self._update_tree_view_duplicate_highlight(duplicate_ids)
-
-        # Export to JSON
-        self.data_manager.export_duplicate_sets()
-        
-        self.status_bar.showMessage(f"Marked {len(duplicate_ids)} clusters as duplicates and saved to file.", 3000)
-
-    def _update_tree_view_duplicate_highlight(self, duplicate_ids):
+    def _update_tree_view_duplicate_highlight(self):
+        # Collect all duplicate IDs
+        duplicate_ids = set()
+        for dup_set in self.data_manager.duplicate_sets:
+            duplicate_ids.update(dup_set)
         for row in range(self.tree_model.rowCount()):
             group_item = self.tree_model.item(row)
             for child_row in range(group_item.rowCount()):

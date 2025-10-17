@@ -105,6 +105,10 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     else:
         populate_tree_view(main_window)  # Use the new tree view instead of table view
 
+    # Update with highlights. Need to improve and merge with above.
+    main_window._update_table_view_duplicate_highlight()
+    main_window._update_tree_view_duplicate_highlight()
+    
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
