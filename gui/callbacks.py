@@ -43,12 +43,12 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
                                               "Binary Files (*.dat *.bin)")
     if not dat_file:
         main_window.status_bar.showMessage("Data loading cancelled by user.", 5000)
-        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_trace_tab), False)
+        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_panel), False)
     else:
         # Use the DataManager's set_dat_path method to create the memory map
         main_window.data_manager.set_dat_path(Path(dat_file))
-        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_trace_tab), True)
-    
+        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_panel), True)
+
     main_window.status_bar.showMessage("Building cluster dataframe...")
     QApplication.processEvents()
     
