@@ -143,6 +143,21 @@ class DataManager(QObject):
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
+    def mark_duplicates(self, duplicate_ids):
+        dups = set(duplicate_ids)
+        # Check if already added
+        for existing_set in self.duplicate_sets:
+            if dups == existing_set:
+                return  # Already recorded
+        
+        print(f'[DEBUG] Marking duplicates: {dups}')
+        self.duplicate_sets.append(dups)
+
+        # Update cluster_df status
+        self.update_status_for_duplicates()
+        self.export_duplicate_sets()
+
+    
     def update_status_for_duplicates(self):
         """
         Update the cluster_df 'status' column based on current duplicate_sets.

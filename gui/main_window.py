@@ -14,7 +14,7 @@ import pyqtgraph as pg
 import numpy as np
 import analysis_core
 # Custom GUI Modules
-from gui.widgets import MplCanvas, PandasModel, HighlightDuplicatesPandasModel
+from gui.widgets import MplCanvas, HighlightDuplicatesPandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
@@ -350,7 +350,6 @@ class MainWindow(QMainWindow):
         self.similarity_panel = SimilarityPanel(self)
         left_content_layout.addWidget(self.similarity_panel)
         self.similarity_panel.selection_changed.connect(self.on_similarity_selection_changed)
-        self.similarity_panel.mark_duplicates.connect(self.on_mark_duplicates)
 
         # Add the toggle button and content to the left pane
         left_layout.addWidget(self.sidebar_toggle_button)
@@ -650,23 +649,6 @@ class MainWindow(QMainWindow):
 
         self.ei_panel.update_ei(clusters_to_plot)
         self.waveforms_panel.update_all(clusters_to_plot)
-
-    def on_mark_duplicates(self, duplicate_ids):
-        # Store duplicates in data_manager.duplicate_sets
-
-        dups = set(duplicate_ids)
-        # Check if already added
-        for existing_set in self.data_manager.duplicate_sets:
-            if dups == existing_set:
-                return  # Already recorded
-        
-        print(f'[DEBUG] Marking duplicates: {dups}')
-        self.data_manager.duplicate_sets.append(dups)
-
-        # Update cluster_df status
-        self.data_manager.update_status_for_duplicates()
-        self.data_manager.export_duplicate_sets()
-        self.status_bar.showMessage(f"Marked {len(duplicate_ids)} clusters as duplicates and saved to file.", 3000)
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df

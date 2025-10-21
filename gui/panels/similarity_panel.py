@@ -8,8 +8,6 @@ from constants import EI_CORR_THRESHOLD
 class SimilarityPanel(QWidget):
     # Signal emitted when the selection changes; sends list of selected cluster IDs
     selection_changed = Signal(list)
-    # Signal emitted when the "Mark as Duplicates" button is pressed
-    mark_duplicates = Signal(list)
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -89,12 +87,24 @@ class SimilarityPanel(QWidget):
     def _on_mark_duplicates(self):
         """Emit the selected clusters along with main cluster ID as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()
-        if self.similarity_model is not None:
-            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
-            selected_ids.append(self.main_cluster_id)
-            # Ensure uniqueness
-            selected_ids = list(set(selected_ids))  
-            self.mark_duplicates.emit(selected_ids)
+        if self.similarity_model is None:
+            print("[ERROR] Similarity model is not set.")
+            return
+        
+        dup_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+        dup_ids.append(self.main_cluster_id)
+        # Ensure uniqueness
+        dup_ids = set(dup_ids)
+
+        # Add to data_manager
+        dm = self.main_window.data_manager
+        dm.mark_duplicates(dup_ids)
+
+        self.main_window.status_bar.showMessage(f"Marked {len(dup_ids)} clusters as duplicates and saved to file.", 3000)
+
+        
+
+
 
     def clear(self):
         """Clear the table."""
