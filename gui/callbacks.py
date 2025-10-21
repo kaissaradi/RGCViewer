@@ -5,7 +5,7 @@ from qtpy.QtCore import QThread
 from qtpy.QtGui import QStandardItem, QStandardItemModel, QColor, QIcon
 from qtpy.QtCore import Qt
 
-from data_manager import DataManager
+from analysis.data_manager import DataManager
 from gui.workers import RefinementWorker, SpatialWorker
 from gui.widgets import PandasModel
 import gui.plotting as plotting

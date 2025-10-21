@@ -3,7 +3,7 @@ import pyqtgraph as pg
 from qtpy.QtCore import Qt, QTimer
 from scipy.spatial.distance import cdist
 from scipy.ndimage import gaussian_filter1d
-import analysis_core
+from analysis import analysis_core
 import matplotlib.pyplot as plt
 
 def draw_summary_EI_plot(main_window, cluster_ids: list):

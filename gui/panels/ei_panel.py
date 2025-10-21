@@ -2,17 +2,19 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlid
 from qtpy.QtCore import Qt, QTimer
 import numpy as np
 from gui.widgets import MplCanvas
-import matplotlib.pyplot as plt
 from qtpy.QtWidgets import QSizePolicy, QComboBox, QScrollArea
 import pyqtgraph as pg
 from scipy.interpolate import griddata
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from gui.main_window import MainWindow
 
 
 class EIPanel(QWidget):
     """
     Panel for spatial/EI analysis, including controls and matplotlib canvas.
     """
-    def __init__(self, main_window, parent=None):
+    def __init__(self, main_window: 'MainWindow', parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
 
@@ -385,7 +387,7 @@ class EIPanel(QWidget):
             return
 
         self.spatial_canvas.fig.clear()
-        import analysis_core
+        from analysis import analysis_core
         analysis_core.plot_rich_ei(
             self.spatial_canvas.fig, lightweight_features['median_ei'],
             self.main_window.data_manager.channel_positions,

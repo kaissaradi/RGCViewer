@@ -1,6 +1,6 @@
 from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
-import analysis_core
+from analysis import analysis_core
 import numpy as np
 
 class SpatialWorker(QObject):

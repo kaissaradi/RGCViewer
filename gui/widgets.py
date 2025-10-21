@@ -1,4 +1,3 @@
-
 import pandas as pd
 from qtpy.QtWidgets import QTableView
 from PyQt5.QtGui import QColor

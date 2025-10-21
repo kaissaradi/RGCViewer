@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QStandardItem
-import analysis_core
-import vision_integration
-from constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
+from analysis import analysis_core
+from analysis import vision_integration
+from analysis.constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
 import os
 import pickle
 

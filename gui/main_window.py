@@ -1,5 +1,4 @@
 import os
-import random
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
@@ -9,10 +8,12 @@ from qtpy.QtWidgets import (
     QApplication
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
-from qtpy.QtGui import QFont, QStandardItemModel, QStandardItem
+from qtpy.QtGui import QFont, QStandardItemModel
 import pyqtgraph as pg
 import numpy as np
-import analysis_core
+from analysis import analysis_core
+from analysis.data_manager import DataManager
+from typing import Optional
 # Custom GUI Modules
 from gui.widgets import MplCanvas, HighlightDuplicatesPandasModel
 import gui.callbacks as callbacks
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(50, 50, 1800, 1000)
 
         # --- Application State ---
-        self.data_manager = None
+        self.data_manager: Optional[DataManager] = None
         self.pandas_model = None
         self.tree_model = QStandardItemModel()
         self.refine_thread = None

@@ -3,21 +3,16 @@ import pyqtgraph as pg
 import numpy as np
 from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
-from constants import ISI_REFRACTORY_PERIOD_MS
-
-class InteractivePlotItem(pg.PlotItem):
-    def __init__(self, parent_panel, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.parent_panel = parent_panel
-
-    def wheelEvent(self, ev):
-        self.parent_panel._on_mouse_wheel(ev)
+from analysis.constants import ISI_REFRACTORY_PERIOD_MS
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from gui.main_window import MainWindow
 
 class WaveformPanel(QWidget):
     """
     Panel for displaying cluster waveforms, ISI histogram, and firing rate.
     """
-    def __init__(self, main_window, parent=None):
+    def __init__(self, main_window: 'MainWindow', parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
         layout = QVBoxLayout(self)
