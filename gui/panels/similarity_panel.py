@@ -1,3 +1,4 @@
+from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
 from qtpy.QtCore import Signal, QItemSelectionModel
 from gui.widgets import PandasModel
@@ -12,7 +13,7 @@ class SimilarityPanel(QWidget):
     # Signal emitted when the selection changes; sends list of selected cluster IDs
     selection_changed = Signal(list)
 
-    def __init__(self, main_window: 'MainWindow', parent=None):
+    def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window
         self.main_cluster_id = None

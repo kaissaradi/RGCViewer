@@ -1,3 +1,4 @@
+from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QSplitter
 from qtpy.QtCore import Qt, QTimer
 import numpy as np
@@ -14,7 +15,7 @@ class EIPanel(QWidget):
     """
     Panel for spatial/EI analysis, including controls and matplotlib canvas.
     """
-    def __init__(self, main_window: 'MainWindow', parent=None):
+    def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
 

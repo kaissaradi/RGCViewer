@@ -1,3 +1,4 @@
+from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter
 import pyqtgraph as pg
 import numpy as np
@@ -12,7 +13,7 @@ class WaveformPanel(QWidget):
     """
     Panel for displaying cluster waveforms, ISI histogram, and firing rate.
     """
-    def __init__(self, main_window: 'MainWindow', parent=None):
+    def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
         layout = QVBoxLayout(self)
