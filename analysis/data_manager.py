@@ -119,6 +119,11 @@ class DataManager(QObject):
     def __init__(self, kilosort_dir, main_window=None):
         super().__init__()
         self.kilosort_dir = Path(kilosort_dir)
+        self.exp_name = self.kilosort_dir.parent.parent.name
+        self.datafile_name = self.kilosort_dir.parent.name
+        self.d_timing = {}
+        print(f"[DEBUG] Initializing DataManager for experiment: {self.exp_name}, datafile: {self.datafile_name}")
+        self.load_stim_timing()
         self.ei_cache = {}
         self.heavyweight_cache = {}
         self.isi_cache = {}  # Cache for ISI violation calculations
@@ -143,6 +148,16 @@ class DataManager(QObject):
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
+    def load_stim_timing(self):
+        try:
+            import retinanalysis.utils.datajoint_utils as dju
+            self.block_id = dju.get_block_id_from_datafile(self.exp_name, self.datafile_name)
+            self.d_timing = dju.get_epochblock_timing(self.exp_name, self.block_id)
+            print("[DEBUG] Loaded stimulus timing data successfully.")
+        except Exception as e:
+            print(f"[ERROR] Failed to load stimulus timing data: {e}")
+            return
+    
     def mark_duplicates(self, duplicate_ids):
         dups = set(duplicate_ids)
         # Check if already added
@@ -519,10 +534,16 @@ class DataManager(QObject):
         self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
-        print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
+        print(f"[DEBUG] build_cluster_dataframe complete")
         
-        # Initialize an empty cache for ISI violations that will be populated as clusters are selected
+        # Initialize an empty cache for ISI violations
         self.isi_cache = {}
+        # Calculate ISI violations for all clusters and update the dataframe
+        for cluster_id in self.cluster_df['cluster_id']:
+            isi_value = self._calculate_isi_violations(cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS)
+            idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
+            self.cluster_df.at[idx, 'isi_violations_pct'] = isi_value
+        print(f"[DEBUG] ISI violations calculated and updated in cluster_df") 
 
     
 
