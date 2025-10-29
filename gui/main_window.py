@@ -10,12 +10,11 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
 import pyqtgraph as pg
-import numpy as np
 from analysis import analysis_core
 from analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
-from gui.widgets import MplCanvas, HighlightDuplicatesPandasModel
+from gui.widgets import MplCanvas, HighlightStatusPandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
@@ -23,41 +22,13 @@ from gui.panels.waveforms_panel import WaveformPanel
 from gui.panels.ei_panel import EIPanel
 from gui.panels.raw_panel import RawPanel
 from gui.workers import FeatureWorker
-from qtpy.QtCore import QEvent, QObject
+from gui.shortcuts import KeyForwarder
 from PyQt5.QtGui import QColor
-
-
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
 pg.setConfigOption('foreground', 'd')
 
-
-class KeyForwarder(QObject):
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.KeyPress:
-            if event.key() == Qt.Key_Space:
-                self.main_window.similarity_panel.handle_spacebar()
-                return True
-            elif event.key() in (Qt.Key_Left, Qt.Key_Right):
-                self.main_window.ei_panel.keyPressEvent(event)
-                return True
-            elif event.key() in (Qt.Key_Up, Qt.Key_Down):
-                current_view = self.main_window.view_stack.currentWidget()
-                if current_view is self.main_window.tree_view:
-                    self.main_window._move_selection_in_view(self.main_window.tree_view, event.key())
-                elif current_view is self.main_window.table_view:
-                    self.main_window._move_selection_in_view(self.main_window.table_view, event.key())
-                return True
-            # Add Cmd+D / Ctrl+D shortcut for marking duplicates
-            elif event.key() == Qt.Key_D and (event.modifiers() & Qt.ControlModifier):
-                self.main_window.similarity_panel._on_mark_duplicates()
-                return True
-        return False
 
 class MainWindow(QMainWindow):
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
@@ -592,14 +563,14 @@ class MainWindow(QMainWindow):
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df
-        self.pandas_model = HighlightDuplicatesPandasModel(df)
+        self.pandas_model = HighlightStatusPandasModel(df)
         self.setup_table_model(self.pandas_model)
 
     def _update_tree_view_duplicate_highlight(self):
         # Collect all duplicate IDs
-        duplicate_ids = set()
-        for dup_set in self.data_manager.duplicate_sets:
-            duplicate_ids.update(dup_set)
+        sdf = self.data_manager.status_df
+        duplicate_ids = sdf[sdf['status'] == 'Duplicate']['cluster_id'].tolist()
+        duplicate_ids = set(duplicate_ids)
         for row in range(self.tree_model.rowCount()):
             group_item = self.tree_model.item(row)
             for child_row in range(group_item.rowCount()):

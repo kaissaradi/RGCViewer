@@ -55,7 +55,7 @@ class MplCanvas(FigureCanvas):
         self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#1f1f1f')
         super().__init__(self.fig)
 
-class HighlightDuplicatesPandasModel(PandasModel):
+class HighlightStatusPandasModel(PandasModel):
     def data(self, index, role=Qt.DisplayRole):
         value = super().data(index, role)
         if not index.isValid():
@@ -72,11 +72,23 @@ class HighlightDuplicatesPandasModel(PandasModel):
             if role == Qt.BackgroundRole:
                 if status_value == 'Duplicate':
                     return QColor('#FFDDDD')  # Light red background
+                elif status_value == 'Clean':
+                    return QColor('#DDFFDD')  # Light green background
+                elif status_value == 'Edge':
+                    return QColor('#FFFFDD')  # Light yellow background
+                elif status_value == 'Unsure':
+                    return QColor('#DDDDFF')  # Light blue background
                     
             if role == Qt.ForegroundRole:
                 cluster_id_col_idx = self._dataframe.columns.get_loc('cluster_id')
-                if index.column() == cluster_id_col_idx and status_value == 'Duplicate':
-                    return QColor('#FF2222')  # Red text for cluster_id
+                
+                # Set text color for highlighted statuses
+                if status_value in ['Clean', 'Edge', 'Unsure', 'Duplicate']:
+                    if index.column() == cluster_id_col_idx:
+                        return QColor('#FF2222')  # Red text for cluster_id
+                    else:
+                        return QColor('#000000')  # Black text
+
         except Exception as e:
             # If any error occurs, just return the default value
             print(f"[ERROR] HighlightDuplicatesPandasModel.data error: {e}")

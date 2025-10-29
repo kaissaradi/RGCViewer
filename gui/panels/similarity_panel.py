@@ -1,7 +1,7 @@
 from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
 from qtpy.QtCore import Signal, QItemSelectionModel
-from gui.widgets import PandasModel
+from gui.widgets import HighlightStatusPandasModel
 import numpy as np
 import pandas as pd
 from analysis.constants import EI_CORR_THRESHOLD
@@ -17,7 +17,7 @@ class SimilarityPanel(QWidget):
         super().__init__(parent)
         self.main_window = main_window
         self.main_cluster_id = None
-        self._spacebar_select_count = 0
+        self._spacebar_select_count = 1
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -33,13 +33,25 @@ class SimilarityPanel(QWidget):
 
         # Button row
         button_layout = QHBoxLayout()
+        self.clean_button = QPushButton("Mark Clean")
+        self.edge_button = QPushButton("Mark Edge")
         self.duplicate_button = QPushButton("Mark as Duplicates")
+        self.unsure_button = QPushButton("Mark Unsure")
         self.duplicate_button.setToolTip("Mark selected clusters as duplicates (Cmd+D / Ctrl+D)")
+        self.clean_button.setToolTip("Mark selected clusters as clean (Cmd+C / Ctrl+C)")
+        self.edge_button.setToolTip("Mark selected clusters as edge (Cmd+E / Ctrl+E)")
+        self.unsure_button.setToolTip("Mark selected clusters as unsure like What? (Cmd+W / Ctrl+W)")
         button_layout.addWidget(self.duplicate_button)
+        button_layout.addWidget(self.clean_button)
+        button_layout.addWidget(self.edge_button)
+        button_layout.addWidget(self.unsure_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
 
-        self.duplicate_button.clicked.connect(self._on_mark_duplicates)
+        self.duplicate_button.clicked.connect(lambda: self._mark_status('Duplicate'))
+        self.clean_button.clicked.connect(lambda: self._mark_status('Clean'))
+        self.edge_button.clicked.connect(lambda: self._mark_status('Edge'))
+        self.unsure_button.clicked.connect(lambda: self._mark_status('Unsure'))
 
         self.similarity_model = None
 
@@ -48,7 +60,7 @@ class SimilarityPanel(QWidget):
     
     def set_data(self, similarity_df):
         """Set the DataFrame for the similarity table."""
-        self.similarity_model = PandasModel(similarity_df)
+        self.similarity_model = HighlightStatusPandasModel(similarity_df)
         self.table.setModel(self.similarity_model)
         self.table.resizeColumnsToContents()
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
@@ -86,27 +98,30 @@ class SimilarityPanel(QWidget):
         self.select_top_n_rows(self._spacebar_select_count)
 
     def reset_spacebar_counter(self):
-        self._spacebar_select_count = 0
+        self._spacebar_select_count = 1
     
-    def _on_mark_duplicates(self):
+    def _mark_status(self, status):
         """Emit the selected clusters along with main cluster ID as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()
         if self.similarity_model is None:
             print("[ERROR] Similarity model is not set.")
             return
         
-        dup_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
-        dup_ids.append(self.main_cluster_id)
+        # If status is Duplicate, then status applies to all selected + main cluster
+        if status == 'Duplicate':
+            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+            selected_ids.append(self.main_cluster_id)
+        # Otherwise just main cluster
+        else:
+            selected_ids = [self.main_cluster_id]
         # Ensure uniqueness
-        dup_ids = set(dup_ids)
+        selected_ids = set(selected_ids)
 
-        # Add to data_manager
+        # Update data manager and export
         dm = self.main_window.data_manager
-        dm.mark_duplicates(dup_ids)
+        dm.update_and_export_status(selected_ids, status=status)
 
-        self.main_window.status_bar.showMessage(f"Marked {len(dup_ids)} clusters as duplicates and saved to file.", 3000)
-
-        
+        self.main_window.status_bar.showMessage(f"Marked {len(selected_ids)} clusters as {status} and saved to file.", 3000)
 
 
 
@@ -136,10 +151,14 @@ class SimilarityPanel(QWidget):
             'power_ei_corr': ei_corr_dict['power'][main_idx, other_idx]
         }
         df = pd.DataFrame(d_df)
-        # Add n_spikes column from data_manager.cluster_df
+        
+        # Add n_spikes and status column
         cluster_df = self.main_window.data_manager.cluster_df
         n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
         df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
+
+        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
+        df['status'] = df['cluster_id'].map(status_map)
         
         # Sort by space_ei_corr descending
         df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)

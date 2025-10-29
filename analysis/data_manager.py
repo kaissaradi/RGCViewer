@@ -134,9 +134,10 @@ class DataManager(QObject):
         self.uV_per_bit = 0.195
         self.main_window = main_window  # Reference to main window for tree operations
         
-        # List of duplicate sets
-        self.duplicate_sets = []
-        self.dup_json = self.kilosort_dir / 'duplicate_sets.json'
+        # status df
+        self.status_df = pd.DataFrame(columns=['cluster_id', 'status', 'set'])
+        self.status_df['set'] = self.status_df['set'].astype(object)
+        self.status_csv = self.kilosort_dir / 'status.csv'
         
         # --- Vision Data ---
         self.vision_eis = None
@@ -158,22 +159,37 @@ class DataManager(QObject):
             print(f"[ERROR] Failed to load stimulus timing data: {e}")
             return
     
-    def mark_duplicates(self, duplicate_ids):
-        dups = set(duplicate_ids)
-        # Check if already added
-        for existing_set in self.duplicate_sets:
-            if dups == existing_set:
-                return  # Already recorded
-        
-        print(f'[DEBUG] Marking duplicates: {dups}')
-        self.duplicate_sets.append(dups)
+    def update_and_export_status(self, selected_ids, status):
+        selected_ids = set(selected_ids)
+        print(f'[DEBUG] Marking {status}: {selected_ids}')
+        # Update status_df
+        for cid in selected_ids:
+            if cid in self.status_df['cluster_id'].values:
+                idx = self.status_df[self.status_df['cluster_id'] == cid].index[0]
+                
+                # Update existing entry
+                self.status_df.at[idx, 'status'] = status
 
-        # Update cluster_df status
-        self.update_status_for_duplicates()
-        self.export_duplicate_sets()
+                # If Duplicate, all selected ids are a 'set', else only self
+                if status == 'Duplicate':
+                    self.status_df.at[idx, 'set'] = selected_ids
+                else:
+                    self.status_df.at[idx, 'set'] = set([cid])
+            else:
+                # Create new entry
+                self.status_df = pd.concat([self.status_df, pd.DataFrame({
+                    'cluster_id': [cid],
+                    'status': [status],
+                    'set': [selected_ids]
+                })], ignore_index=True)
+
+        
+        # Update cluster_df status and export status csv
+        self.update_status()
+        self.export_status()
 
     
-    def update_status_for_duplicates(self):
+    def update_status(self):
         """
         Update the cluster_df 'status' column based on current duplicate_sets.
         """
@@ -183,58 +199,47 @@ class DataManager(QObject):
         # Reset all statuses to 'Original'
         self.cluster_df['status'] = 'Original'
         
-        # Update status for clusters in duplicate sets
-        for dup_set in self.duplicate_sets:
-            self.cluster_df.loc[self.cluster_df['cluster_id'].isin(dup_set), 'status'] = 'Duplicate'
-        
-        # all_dup_ids = set()
-        # for dup_set in self.duplicate_sets:
-        #     all_dup_ids.update(dup_set)
-        
-        # Mark clusters that are not in any duplicate set but were previously marked as 'Duplicate' back to 'Original'
-        # self.cluster_df.loc[~self.cluster_df['cluster_id'].isin(all_dup_ids) & (self.cluster_df['status'] == 'Duplicate'), 'status'] = 'Original'
-        
-    
-    def export_duplicate_sets(self):
+        for _, row in self.status_df.iterrows():
+            cluster_id = row['cluster_id']
+            status = row['status']
+            idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
+            self.cluster_df.at[idx, 'status'] = status
+
+    def export_status(self):
         """
         Export duplicate_sets to a JSON file in the Kilosort directory.
         """
-        
-        if not self.duplicate_sets:
+
+        if self.status_df.empty:
             # Nothing to save
             return
         
-        # Convert sets to lists for JSON serialization
-        duplicate_sets_as_lists = [
-            [int(cluster_id) for cluster_id in s] 
-            for s in self.duplicate_sets
-        ]
-        
         try:
-            with open(self.dup_json, 'w') as f:
-                json.dump(duplicate_sets_as_lists, f, indent=2)
-            print(f"[DEBUG] Exported {len(duplicate_sets_as_lists)} duplicate set(s) to {self.dup_json}")
+            self.status_df.to_csv(self.status_csv, index=False)
+            print(f"[DEBUG] Exported {len(self.status_df)} status entries to {self.status_csv}")
         except Exception as e:
-            print(f"[ERROR] Failed to export duplicate sets: {e}")
-    
-    def load_duplicate_sets(self):
+            print(f"[ERROR] Failed to export status entries: {e}")
+
+    def load_status(self):
         """
-        Load duplicate_sets from a JSON file in the Kilosort directory.
+        Load status df from a csv file in the Kilosort directory.
         Returns True if file was found and loaded, False otherwise.
         """
 
-        if not self.dup_json.exists():
+        if not self.status_csv.exists():
             return False
         
         try:
-            with open(self.dup_json, 'r') as f:
-                duplicate_sets_as_lists = json.load(f)
+            status_df = pd.read_csv(self.status_csv)
+            # Convert string representation of sets back to actual sets
+            status_df['set'] = status_df['set'].apply(lambda x: set(map(int, x.strip("{}").split(","))))
+            self.status_df = status_df
             
-            # Convert lists back to sets
-            self.duplicate_sets = [set(s) for s in duplicate_sets_as_lists]
+            print(f"[DEBUG] Loaded {self.status_csv}")
+            print(f"[DEBUG] {self.status_df['status'].value_counts().to_dict()}")
+            
+            self.update_status()
 
-            print(f"[DEBUG] Loaded {len(self.duplicate_sets)} duplicate set(s) from {self.dup_json}")
-            self.update_status_for_duplicates()
             return True
         except Exception as e:
             print(f"[ERROR] Failed to load duplicate sets: {e}")
@@ -378,8 +383,13 @@ class DataManager(QObject):
 
                 self.cluster_df['potential_dups'] = self.cluster_df['cluster_id'].map(potential_dups_map).fillna(False)
                 self.cluster_df['max_dup_r'] = self.cluster_df['cluster_id'].map(max_dup_r_map).fillna(0.0)
+                # Sort cluster_df by max_dup_r descending
+                self.cluster_df = self.cluster_df.sort_values(by='max_dup_r', ascending=False).reset_index(drop=True)
+                
                 # Format to 2 decimal places
                 self.cluster_df['max_dup_r'] = self.cluster_df['max_dup_r'].map(lambda x: f"{x:.2f}")
+
+                
 
                 print(f"[DEBUG] Updated cluster_df with potential duplicates based on EI correlations")
 
@@ -544,6 +554,9 @@ class DataManager(QObject):
             idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
             self.cluster_df.at[idx, 'isi_violations_pct'] = isi_value
         print(f"[DEBUG] ISI violations calculated and updated in cluster_df") 
+
+        # Load status
+        self.load_status()
 
     
 
