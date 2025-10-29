@@ -38,7 +38,7 @@ class MainWindow(QMainWindow):
 
         # --- Application State ---
         self.data_manager: Optional[DataManager] = None
-        self.pandas_model = None
+        self.main_cluster_model = None
         self.tree_model = QStandardItemModel()
         self.refine_thread = None
         self.refinement_worker = None
@@ -456,7 +456,7 @@ class MainWindow(QMainWindow):
 
         # Case 2: Table View is active
         elif current_view_index == 1:
-            if not self.table_view.selectionModel().hasSelection() or self.pandas_model is None:
+            if not self.table_view.selectionModel().hasSelection() or self.main_cluster_model is None:
                 return None
             
             selected_row = self.table_view.selectionModel().selectedIndexes()[0].row()
@@ -563,8 +563,8 @@ class MainWindow(QMainWindow):
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df
-        self.pandas_model = HighlightStatusPandasModel(df)
-        self.setup_table_model(self.pandas_model)
+        self.main_cluster_model = HighlightStatusPandasModel(df)
+        self.setup_table_model(self.main_cluster_model)
 
     def _update_tree_view_duplicate_highlight(self):
         # Collect all duplicate IDs

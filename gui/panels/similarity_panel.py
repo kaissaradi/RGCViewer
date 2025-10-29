@@ -121,6 +121,10 @@ class SimilarityPanel(QWidget):
         dm = self.main_window.data_manager
         dm.update_and_export_status(selected_ids, status=status)
 
+        # Refresh both similarity and main views
+        self.main_window.main_cluster_model.refresh_view()
+        self.similarity_model.refresh_view()
+
         self.main_window.status_bar.showMessage(f"Marked {len(selected_ids)} clusters as {status} and saved to file.", 3000)
 
 

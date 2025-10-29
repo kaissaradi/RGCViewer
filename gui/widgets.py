@@ -56,6 +56,16 @@ class MplCanvas(FigureCanvas):
         super().__init__(self.fig)
 
 class HighlightStatusPandasModel(PandasModel):
+    def refresh_view(self, row_indices=None):
+        # for row in row_indices:
+        #     self._dataframe.at[row, 'status'] = status
+        # Notify the view that the data has changed for these rows
+        if row_indices is None:
+            row_indices = range(len(self._dataframe))
+        top_left = self.index(min(row_indices), 0)
+        bottom_right = self.index(max(row_indices), self.columnCount()-1)
+        self.dataChanged.emit(top_left, bottom_right, [Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole])
+    
     def data(self, index, role=Qt.DisplayRole):
         value = super().data(index, role)
         if not index.isValid():
