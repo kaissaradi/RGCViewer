@@ -164,34 +164,35 @@ class DataManager(QObject):
         print(f'[DEBUG] Marking {status}: {selected_ids}')
         # Update status_df
         for cid in selected_ids:
+            # If Duplicate, all selected ids are a 'set', else only self
+            if status == 'Duplicate':
+                set_ids = selected_ids
+            else:
+                set_ids = set([cid])
+
             if cid in self.status_df['cluster_id'].values:
                 idx = self.status_df[self.status_df['cluster_id'] == cid].index[0]
                 
                 # Update existing entry
                 self.status_df.at[idx, 'status'] = status
-
-                # If Duplicate, all selected ids are a 'set', else only self
-                if status == 'Duplicate':
-                    self.status_df.at[idx, 'set'] = selected_ids
-                else:
-                    self.status_df.at[idx, 'set'] = set([cid])
+                self.status_df.at[idx, 'set'] = set_ids
             else:
                 # Create new entry
                 self.status_df = pd.concat([self.status_df, pd.DataFrame({
                     'cluster_id': [cid],
                     'status': [status],
-                    'set': [selected_ids]
+                    'set': [set_ids]
                 })], ignore_index=True)
 
         
         # Update cluster_df status and export status csv
-        self.update_status()
+        self.update_cluster_df_with_status()
         self.export_status()
 
     
-    def update_status(self):
+    def update_cluster_df_with_status(self):
         """
-        Update the cluster_df 'status' column based on current duplicate_sets.
+        Update the cluster_df 'status' column based on current status_df.
         """
         if self.cluster_df.empty:
             return
@@ -204,6 +205,7 @@ class DataManager(QObject):
             status = row['status']
             idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
             self.cluster_df.at[idx, 'status'] = status
+            self.cluster_df.at[idx, 'set'] = row['set']
 
     def export_status(self):
         """
@@ -238,7 +240,7 @@ class DataManager(QObject):
             print(f"[DEBUG] Loaded {self.status_csv}")
             print(f"[DEBUG] {self.status_df['status'].value_counts().to_dict()}")
             
-            self.update_status()
+            self.update_cluster_df_with_status()
 
             return True
         except Exception as e:
@@ -540,8 +542,13 @@ class DataManager(QObject):
         if col not in self.cluster_info.columns: self.cluster_info[col] = 'unsorted'
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
+        
+        # Status and set columns
         df['status'] = 'Original'
-        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'KSLabel']]
+        df['set'] = [set([cid]) for cid in df['cluster_id']]
+        df['set'] = df['set'].astype(object)
+
+        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'set', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         print(f"[DEBUG] build_cluster_dataframe complete")

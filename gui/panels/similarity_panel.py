@@ -108,12 +108,12 @@ class SimilarityPanel(QWidget):
             return
         
         # If status is Duplicate, then status applies to all selected + main cluster
-        if status == 'Duplicate':
-            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
-            selected_ids.append(self.main_cluster_id)
-        # Otherwise just main cluster
-        else:
-            selected_ids = [self.main_cluster_id]
+        # if status == 'Duplicate':
+        selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+        selected_ids.append(self.main_cluster_id)
+        # # Otherwise just main cluster
+        # else:
+        #     selected_ids = [self.main_cluster_id]
         # Ensure uniqueness
         selected_ids = set(selected_ids)
 
@@ -159,6 +159,9 @@ class SimilarityPanel(QWidget):
 
         status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
         df['status'] = df['cluster_id'].map(status_map)
+
+        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
+        df['set'] = df['cluster_id'].map(set_map)
         
         # Sort by space_ei_corr descending
         df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
