@@ -280,7 +280,6 @@ class DataManager(QObject):
         except Exception as e:
             return False, f"Error during Kilosort data loading: {e}"
 
-    # --- New Method for Vision Data ---
     def load_vision_data(self, vision_dir, dataset_name):
         """
         Loads EI, STA, and params data from a specified Vision directory.

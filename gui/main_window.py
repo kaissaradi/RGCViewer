@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
         print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
 
         self.ei_panel.update_ei(clusters_to_plot)
-        # self.waveforms_panel.update_all(clusters_to_plot)
+        self.waveforms_panel.update_all(clusters_to_plot)
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df

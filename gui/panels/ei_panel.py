@@ -10,6 +10,35 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
+def compute_ei_map(
+    ei: np.ndarray,
+    channel_positions: np.ndarray) -> np.ndarray:
+
+    if ei.shape[0] != 512:
+        print(f'Warning: Expected EI shape (512, n_timepoints), got {ei.shape}')
+
+    xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
+    yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
+
+    y_dim = 30 # Fixed y dimension for scaling
+    x_dim = int((xrange[1] - xrange[0])/(yrange[1] - yrange[0]) * y_dim) # x dim is proportional to y dim
+
+    x_e = np.linspace(xrange[0], xrange[1], x_dim)
+    y_e = np.linspace(yrange[0], yrange[1], y_dim)
+
+    grid_x, grid_y = np.meshgrid(x_e, y_e)
+    grid_x = grid_x.T
+    grid_y = grid_y.T
+
+    # ei_energy = np.log10(np.mean(np.power(ei, 2), axis=1) + .000000001)
+    ei_energy = np.log10(np.max(np.abs(ei), axis=1) + 1e-9)
+    ei_energy_grid = griddata(
+        channel_positions, ei_energy, 
+        (grid_x, grid_y), method='linear', 
+        fill_value=np.median(ei_energy))
+
+    return ei_energy_grid.T
+
 
 class EIPanel(QWidget):
     """
@@ -132,7 +161,7 @@ class EIPanel(QWidget):
         # Make EI maps
         ei_map_list = []
         for ei_data in ei_data_list:
-            ei_map = self._compute_ei_map(
+            ei_map = compute_ei_map(
                 ei_data,
                 self.main_window.data_manager.channel_positions
             )
@@ -412,31 +441,3 @@ class EIPanel(QWidget):
         reshaped_ei = sorted_ei.reshape(n_rows, n_cols, n_frames)
         return reshaped_ei
     
-    def _compute_ei_map(
-        self, ei: np.ndarray,
-        channel_positions: np.ndarray) -> np.ndarray:
-
-        if ei.shape[0] != 512:
-            print(f'Warning: Expected EI shape (512, n_timepoints), got {ei.shape}')
-
-        xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
-        yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
-
-        y_dim = 30 # Fixed y dimension for scaling
-        x_dim = int((xrange[1] - xrange[0])/(yrange[1] - yrange[0]) * y_dim) # x dim is proportional to y dim
-
-        x_e = np.linspace(xrange[0], xrange[1], x_dim)
-        y_e = np.linspace(yrange[0], yrange[1], y_dim)
-
-        grid_x, grid_y = np.meshgrid(x_e, y_e)
-        grid_x = grid_x.T
-        grid_y = grid_y.T
-
-        # ei_energy = np.log10(np.mean(np.power(ei, 2), axis=1) + .000000001)
-        ei_energy = np.log10(np.max(np.abs(ei), axis=1) + 1e-9)
-        ei_energy_grid = griddata(
-            channel_positions, ei_energy, 
-            (grid_x, grid_y), method='linear', 
-            fill_value=np.median(ei_energy))
-
-        return ei_energy_grid.T
