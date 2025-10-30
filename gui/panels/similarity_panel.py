@@ -105,10 +105,25 @@ class SimilarityPanel(QWidget):
         model = self.table.model()
         if model is None or model.rowCount() == 0:
             return
-        self._spacebar_select_count += 1
-        if self._spacebar_select_count > model.rowCount():
-            self._spacebar_select_count = 1  # wrap around
-        self.select_top_n_rows(self._spacebar_select_count)
+        # self._spacebar_select_count += 1
+        # if self._spacebar_select_count > model.rowCount():
+        #     self._spacebar_select_count = 1  # wrap around
+        # self.select_top_n_rows(self._spacebar_select_count)
+
+        # Find the currently selected row
+        selection_model = self.table.selectionModel()
+        row_count = model.rowCount()
+        selected_rows = selection_model.selectedRows()
+        if selected_rows:
+            current_row = selected_rows[0].row()
+            next_row = (current_row + 1) % row_count
+        else:
+            next_row = 0  # Start from the top if nothing is selected
+
+        selection_model.clearSelection()
+        index = model.index(next_row, 0)
+        selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        self.table.scrollTo(index)
 
     def reset_spacebar_counter(self):
         self._spacebar_select_count = 1
