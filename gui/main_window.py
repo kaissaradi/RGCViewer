@@ -2,7 +2,7 @@ import os
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
-    QHeaderView, QMessageBox, QTabWidget, QTableView, 
+    QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel, 
     QMenu, QInputDialog, QStackedWidget, QLineEdit,
     QApplication
@@ -14,7 +14,7 @@ from analysis import analysis_core
 from analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
-from gui.widgets import MplCanvas, HighlightStatusPandasModel
+from gui.widgets import MplCanvas, HighlightStatusPandasModel, CustomTableView
 import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
@@ -287,13 +287,15 @@ class MainWindow(QMainWindow):
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
         
         # Table View
-        self.table_view = QTableView()
+        self.table_view = CustomTableView()
         self.table_view.setSortingEnabled(True)
         self.table_view.setAlternatingRowColors(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
+        # Default to table view
+        self.view_stack.setCurrentIndex(1)
 
         self.refine_button = QPushButton("Refine Selected Cluster")
         self.refine_button.setFixedHeight(40)
@@ -402,7 +404,7 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([450, 1350])
+        self.main_splitter.setSizes([800, 600])
         main_layout.addWidget(self.main_splitter)
         
         self.status_bar = QStatusBar()
@@ -559,7 +561,7 @@ class MainWindow(QMainWindow):
         print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
 
         self.ei_panel.update_ei(clusters_to_plot)
-        self.waveforms_panel.update_all(clusters_to_plot)
+        # self.waveforms_panel.update_all(clusters_to_plot)
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df

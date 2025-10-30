@@ -1,9 +1,29 @@
 import pandas as pd
-from qtpy.QtWidgets import QTableView
+from qtpy.QtGui import QPainter
 from PyQt5.QtGui import QColor
 from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from qtpy.QtWidgets import QTableView
+from qtpy.QtGui import QPainter
+
+class CustomTableView(QTableView):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    # def paintEvent(self, event):
+    #     painter = QPainter(self.viewport())
+    #     for row in range(self.model().rowCount()):
+    #         for column in range(self.model().columnCount()):
+    #             index = self.model().index(row, column)
+    #             if index.isValid():
+    #                 # Draw the background color
+    #                 background_color = self.model().data(index, Qt.BackgroundRole)
+    #                 if background_color:
+    #                     painter.fillRect(self.visualRect(index), background_color)
+
+    #     # Call the base class implementation to handle the default painting
+    #     super().paintEvent(event)
 
 class PandasModel(QAbstractTableModel):
     """A model to interface a pandas DataFrame with a QTableView."""

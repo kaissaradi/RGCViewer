@@ -459,6 +459,9 @@ class DataManager(QObject):
     def load_cell_type_file(self, txt_file: str=None):
         if txt_file is None:
             print(f'[DEBUG] No cell type file provided, Unknown for all IDs.')
+            # Drop existing cell_type column if exists
+            if 'cell_type' in self.cluster_df.columns:
+                self.cluster_df.drop(columns=['cell_type'], inplace=True)
             return
         
         try:
@@ -481,6 +484,11 @@ class DataManager(QObject):
             # Add to cluster_df
             self.cluster_df['cell_type'] = self.cluster_df['cluster_id'].map(d_result).fillna('Unknown')
             print(f'[DEBUG] Loaded cell type file {txt_file}.')
+            
+            # If all are unknown, delete column and print
+            if all(ct == 'Unknown' for ct in self.cluster_df['cell_type']):
+                self.cluster_df.drop(columns=['cell_type'], inplace=True)
+                print(f'[DEBUG] All cell type entries are Unknown, dropping cell_type column.')
         except Exception as e:
             print(f"Error loading cell type file: {e}")
 

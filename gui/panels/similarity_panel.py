@@ -1,7 +1,7 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView
 from qtpy.QtCore import Signal, QItemSelectionModel
-from gui.widgets import HighlightStatusPandasModel
+from gui.widgets import HighlightStatusPandasModel, CustomTableView
 import numpy as np
 import pandas as pd
 from analysis.constants import EI_CORR_THRESHOLD
@@ -24,7 +24,7 @@ class SimilarityPanel(QWidget):
         self.label = QLabel("Similar Clusters")
         layout.addWidget(self.label)
 
-        self.table = QTableView()
+        self.table = CustomTableView()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -107,15 +107,12 @@ class SimilarityPanel(QWidget):
             print("[ERROR] Similarity model is not set.")
             return
         
-        # If status is Duplicate, then status applies to all selected + main cluster
-        # if status == 'Duplicate':
-        selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
-        selected_ids.append(self.main_cluster_id)
-        # # Otherwise just main cluster
-        # else:
-        #     selected_ids = [self.main_cluster_id]
-        # Ensure uniqueness
-        selected_ids = set(selected_ids)
+        # If status is Clean, only apply to main cluster.
+        if status == 'Clean':
+            selected_ids = [self.main_cluster_id]
+        else:
+            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+            selected_ids.append(self.main_cluster_id)
 
         # Update data manager and export
         dm = self.main_window.data_manager

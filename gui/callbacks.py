@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
@@ -7,10 +8,14 @@ from qtpy.QtCore import Qt
 
 from analysis.data_manager import DataManager
 from gui.workers import RefinementWorker, SpatialWorker
-from gui.widgets import PandasModel
+from gui.widgets import HighlightStatusPandasModel
 import gui.plotting as plotting
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from gui.main_window import MainWindow
 
-def load_directory(main_window, kilosort_dir=None, dat_file=None):
+
+def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     """Handles the logic for loading a Kilosort directory."""
     # Set default directory: use /home/localadmin/Documents/Development/data/sorted if it exists, otherwise home
     default_dir = Path("/home/localadmin/Documents/Development/data/sorted")
@@ -116,7 +121,7 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     if not main_window.data_manager.vision_stas:
         main_window.sta_panel.hide()
 
-def load_vision_directory(main_window):
+def load_vision_directory(main_window: MainWindow):
     """Handles the logic for loading a Vision analysis directory."""
     if not main_window.data_manager:
         QMessageBox.warning(main_window, "No Kilosort Data", "Please load a Kilosort directory first.")
@@ -161,7 +166,7 @@ def load_vision_directory(main_window):
             QMessageBox.critical(main_window, "Vision Loading Error", message)
             main_window.status_bar.showMessage("Vision loading failed.", 5000)
 
-def on_cluster_selection_changed(main_window):
+def on_cluster_selection_changed(main_window: MainWindow):
     """
     Handles a cluster selection by triggering the main window's selection timer.
     """
@@ -174,7 +179,7 @@ def on_cluster_selection_changed(main_window):
 
 # In gui/callbacks.py
 
-def on_tab_changed(main_window, index):
+def on_tab_changed(main_window: MainWindow, index: int):
     """Handles logic when the user switches between analysis tabs."""
 
     # --- FIX: Aggressively disconnect the zoom signal to prevent it from firing on hide/resize.
@@ -224,7 +229,7 @@ def on_tab_changed(main_window, index):
             plotting.draw_sta_animation_plot(main_window, cluster_id)
 
 
-def on_spatial_data_ready(main_window, cluster_id, features):
+def on_spatial_data_ready(main_window: MainWindow, cluster_id: int, features: dict):
     """Callback for when heavyweight spatial features are ready from the worker."""
     current_id = main_window._get_selected_cluster_id()
     current_tab_widget = main_window.analysis_tabs.currentWidget()
@@ -232,7 +237,7 @@ def on_spatial_data_ready(main_window, cluster_id, features):
         plotting.draw_summary_EI_plot(main_window, cluster_id)
         main_window.status_bar.showMessage("Spatial analysis complete.", 2000)
 
-def on_refine_cluster(main_window):
+def on_refine_cluster(main_window: MainWindow):
     """Starts the cluster refinement process in a background thread."""
     cluster_id = main_window._get_selected_cluster_id()
     if cluster_id is None:
@@ -251,7 +256,7 @@ def on_refine_cluster(main_window):
     main_window.refine_thread.started.connect(main_window.refinement_worker.run)
     main_window.refine_thread.start()
 
-def handle_refinement_results(main_window, parent_id, new_clusters):
+def handle_refinement_results(main_window: MainWindow, parent_id: int, new_clusters: list[int]):
     """Handles the results from a successful refinement operation."""
     main_window.status_bar.showMessage(f"Refinement of C{parent_id} complete. Found {len(new_clusters)} sub-clusters.", 5000)
     main_window.data_manager.update_after_refinement(parent_id, new_clusters)
@@ -263,7 +268,7 @@ def handle_refinement_results(main_window, parent_id, new_clusters):
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
 
-def handle_refinement_error(main_window, error_message):
+def handle_refinement_error(main_window: MainWindow, error_message: str):
     """Handles an error from the refinement worker."""
     QMessageBox.critical(main_window, "Refinement Error", error_message)
     main_window.status_bar.showMessage("Refinement failed.", 5000)
@@ -271,7 +276,7 @@ def handle_refinement_error(main_window, error_message):
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
 
-def on_save_action(main_window):
+def on_save_action(main_window: MainWindow):
     """Handles the save action from the menu."""
     if main_window.data_manager:
         if main_window.data_manager.info_path:
@@ -286,7 +291,7 @@ def on_save_action(main_window):
         if save_path:
             save_results(main_window, save_path)
 
-def save_results(main_window, output_path):
+def save_results(main_window: MainWindow, output_path: str):
     """Saves the refined cluster data to a TSV file."""
     try:
         col = 'KSLabel' if 'KSLabel' in main_window.data_manager.cluster_info.columns else 'group'
@@ -306,7 +311,7 @@ def save_results(main_window, output_path):
         QMessageBox.critical(main_window, "Save Error", f"Could not save the file: {e}")
         main_window.status_bar.showMessage("Save failed.", 5000)
 
-def apply_good_filter(main_window):
+def apply_good_filter(main_window: MainWindow):
     """Filters the tree view to show only 'good' clusters."""
     if main_window.data_manager is None:
         return
@@ -315,14 +320,18 @@ def apply_good_filter(main_window):
     model = main_window.tree_model
     model.clear()  # Clear any previous data
     
-    df = main_window.data_manager.original_cluster_df[
-        main_window.data_manager.original_cluster_df['KSLabel'] == 'good'
+    # df = main_window.data_manager.original_cluster_df[
+    #     main_window.data_manager.original_cluster_df['KSLabel'] == 'good'
+    # ].copy()
+
+    df = main_window.data_manager.cluster_df[
+        main_window.data_manager.cluster_df['KSLabel'] == 'good'
     ].copy()
 
     # Update table view with filtered data
-    main_window.pandas_model = PandasModel(df)
-    main_window.setup_table_model(main_window.pandas_model)
-    
+    main_window.main_cluster_model = HighlightStatusPandasModel(df)
+    main_window.setup_table_model(main_window.main_cluster_model)
+
     # Create top-level nodes for each unique KSLabel
     groups = {}
     for label in df['KSLabel'].unique():
@@ -374,14 +383,14 @@ def apply_good_filter(main_window):
     main_window.setup_tree_model(model)
     main_window.tree_view.expandAll()
 
-def reset_views(main_window):
+def reset_views(main_window: MainWindow):
     """Resets the views to their original, unfiltered state."""
     if main_window.data_manager is None:
         return
     # Repopulate the tree with original data
     populate_tree_view(main_window)
 
-def start_worker(main_window):
+def start_worker(main_window: MainWindow):
     """Starts the background spatial worker thread."""
     if main_window.worker_thread is not None:
         stop_worker(main_window)
@@ -392,20 +401,23 @@ def start_worker(main_window):
     main_window.spatial_worker.result_ready.connect(main_window.on_spatial_data_ready)
     main_window.worker_thread.start()
 
-def populate_tree_view(main_window):
+def populate_tree_view(main_window: MainWindow):
     """Builds the initial tree and table from the loaded Kilosort data."""
     df = main_window.data_manager.cluster_df
 
     # --- Populate Table View ---
-    main_window.pandas_model = PandasModel(df)
-    main_window.setup_table_model(main_window.pandas_model)
+    main_window.main_cluster_model = HighlightStatusPandasModel(df)
+    main_window.setup_table_model(main_window.main_cluster_model)
 
     # --- Populate Tree View ---
     model = main_window.tree_model
     model.clear()  # Clear any previous data
     
-    df = main_window.data_manager.cluster_df
-    
+    df = main_window.data_manager.cluster_df.copy()
+    # If cell_type column doesn't exist, create it with 'Unknown'
+    if 'cell_type' not in df.columns:
+        df['cell_type'] = 'Unknown'
+
     # Create top-level nodes for each unique cell type
     groups = {}
     for label in df['cell_type'].unique():
@@ -458,7 +470,7 @@ def populate_tree_view(main_window):
     main_window.tree_view.expandAll()
 
 
-def add_new_group(main_window, name):
+def add_new_group(main_window: MainWindow, name: str):
     """Adds a new top-level group to the tree view."""
     item = QStandardItem(name)
     item.setEditable(False)
@@ -478,7 +490,7 @@ def add_new_group(main_window, name):
     main_window.tree_model.appendRow(item)
 
 
-def stop_worker(main_window):
+def stop_worker(main_window: MainWindow):
     """Stops the background spatial worker thread."""
     if main_window.worker_thread and main_window.worker_thread.isRunning():
         main_window.spatial_worker.stop()
@@ -486,7 +498,7 @@ def stop_worker(main_window):
         main_window.worker_thread.wait()
 
 
-def load_classification_file(main_window):
+def load_classification_file(main_window: MainWindow):
     """Load a Vision classification file and populate the tree structure based on it."""
     if not main_window.data_manager:
         QMessageBox.warning(main_window, "No Data Loaded", "Please load a Kilosort directory first.")
@@ -658,7 +670,7 @@ def load_classification_file(main_window):
         main_window.status_bar.showMessage("Classification file loading failed.", 5000)
 
 
-def on_go_to_time(main_window):
+def on_go_to_time(main_window: MainWindow):
     """
     Handle the 'Go' button click to navigate to a specific time in the raw trace view.
     """
