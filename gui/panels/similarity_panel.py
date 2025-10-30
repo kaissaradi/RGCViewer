@@ -1,5 +1,5 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox
 from qtpy.QtCore import Signal, QItemSelectionModel
 from gui.widgets import HighlightStatusPandasModel, CustomTableView
 import numpy as np
@@ -32,26 +32,39 @@ class SimilarityPanel(QWidget):
         layout.addWidget(self.table)
 
         # Button row
-        button_layout = QHBoxLayout()
-        self.clean_button = QPushButton("Mark Clean")
-        self.edge_button = QPushButton("Mark Edge")
-        self.duplicate_button = QPushButton("Mark as Duplicates")
-        self.unsure_button = QPushButton("Mark Unsure")
-        self.duplicate_button.setToolTip("Mark selected clusters as duplicates (Cmd+D / Ctrl+D)")
-        self.clean_button.setToolTip("Mark selected clusters as clean (Cmd+C / Ctrl+C)")
-        self.edge_button.setToolTip("Mark selected clusters as edge (Cmd+E / Ctrl+E)")
-        self.unsure_button.setToolTip("Mark selected clusters as unsure like What? (Cmd+W / Ctrl+W)")
-        button_layout.addWidget(self.duplicate_button)
-        button_layout.addWidget(self.clean_button)
-        button_layout.addWidget(self.edge_button)
-        button_layout.addWidget(self.unsure_button)
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
+        # button_layout = QHBoxLayout()
+        # self.clean_button = QPushButton("Mark Clean")
+        # self.edge_button = QPushButton("Mark Edge")
+        # self.duplicate_button = QPushButton("Mark as Duplicates")
+        # self.unsure_button = QPushButton("Mark Unsure")
+        # self.duplicate_button.setToolTip("Mark selected clusters as duplicates (Cmd+D / Ctrl+D)")
+        # self.clean_button.setToolTip("Mark selected clusters as clean (Cmd+C / Ctrl+C)")
+        # self.edge_button.setToolTip("Mark selected clusters as edge (Cmd+E / Ctrl+E)")
+        # self.unsure_button.setToolTip("Mark selected clusters as unsure like What? (Cmd+W / Ctrl+W)")
+        # button_layout.addWidget(self.duplicate_button)
+        # button_layout.addWidget(self.clean_button)
+        # button_layout.addWidget(self.edge_button)
+        # button_layout.addWidget(self.unsure_button)
+        # button_layout.addStretch()
+        # layout.addLayout(button_layout)
 
-        self.duplicate_button.clicked.connect(lambda: self._mark_status('Duplicate'))
-        self.clean_button.clicked.connect(lambda: self._mark_status('Clean'))
-        self.edge_button.clicked.connect(lambda: self._mark_status('Edge'))
-        self.unsure_button.clicked.connect(lambda: self._mark_status('Unsure'))
+        status_layout = QHBoxLayout()
+        self.status_combo = QComboBox()
+        self.status_combo.addItems([
+            "Clean", "Edge", "Duplicate", "Unsure", "Noisy", "Contaminated", "Off Array"
+        ])
+        self.mark_button = QPushButton("Mark Status")
+        status_layout.addWidget(self.status_combo)
+        status_layout.addWidget(self.mark_button)
+        status_layout.addStretch()
+        layout.addLayout(status_layout)
+
+        # self.duplicate_button.clicked.connect(lambda: self._mark_status('Duplicate'))
+        # self.clean_button.clicked.connect(lambda: self._mark_status('Clean'))
+        # self.edge_button.clicked.connect(lambda: self._mark_status('Edge'))
+        # self.unsure_button.clicked.connect(lambda: self._mark_status('Unsure'))
+        self.mark_button.clicked.connect(self._mark_selected_status)
+
 
         self.similarity_model = None
 
@@ -124,7 +137,9 @@ class SimilarityPanel(QWidget):
 
         self.main_window.status_bar.showMessage(f"Marked {len(selected_ids)} clusters as {status} and saved to file.", 3000)
 
-
+    def _mark_selected_status(self):
+        status = self.status_combo.currentText()
+        self._mark_status(status)
 
     def clear(self):
         """Clear the table."""

@@ -76,6 +76,15 @@ class MplCanvas(FigureCanvas):
         super().__init__(self.fig)
 
 class HighlightStatusPandasModel(PandasModel):
+    STATUS_COLORS = {
+        'Duplicate': QColor('#FFDDDD'),      # Light red
+        'Clean': QColor('#DDFFDD'),          # Light green
+        'Edge': QColor('#FFFFDD'),           # Light yellow
+        'Unsure': QColor('#DDDDFF'),         # Light blue
+        'Noisy': QColor('#FFDDEE'),          # Pink
+        'Contaminated': QColor('#FFCCFF'),   # Purple
+        'Off Array': QColor('#CCCCCC'),      # Gray
+    }
     def refresh_view(self, row_indices=None):
         # for row in row_indices:
         #     self._dataframe.at[row, 'status'] = status
@@ -100,14 +109,9 @@ class HighlightStatusPandasModel(PandasModel):
             status_value = self._dataframe.iloc[index.row(), status_col_idx]
             
             if role == Qt.BackgroundRole:
-                if status_value == 'Duplicate':
-                    return QColor('#FFDDDD')  # Light red background
-                elif status_value == 'Clean':
-                    return QColor('#DDFFDD')  # Light green background
-                elif status_value == 'Edge':
-                    return QColor('#FFFFDD')  # Light yellow background
-                elif status_value == 'Unsure':
-                    return QColor('#DDDDFF')  # Light blue background
+                color = self.STATUS_COLORS.get(status_value)
+                if color:
+                    return color
                     
             if role == Qt.ForegroundRole:
                 cluster_id_col_idx = self._dataframe.columns.get_loc('cluster_id')

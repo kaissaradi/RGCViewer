@@ -35,6 +35,12 @@ class KeyForwarder(QObject):
                     status = 'Edge'
                 elif event.key() == Qt.Key_W:
                     status = 'Unsure'
+                elif event.key() == Qt.Key_S:
+                    status = 'Noisy'
+                elif event.key() == Qt.Key_X:
+                    status = 'Contaminated'
+                elif event.key() == Qt.Key_A:
+                    status = 'Off Array'
                 else:
                     return False
                 self.main_window.similarity_panel._mark_status(status)

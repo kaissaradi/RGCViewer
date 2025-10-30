@@ -456,6 +456,7 @@ class DataManager(QObject):
     # --- End New Method ---
 
     def load_cell_type_file(self, txt_file: str=None):
+        print(f'[DEBUG] Loading cell type file: {txt_file}')
         if txt_file is None:
             print(f'[DEBUG] No cell type file provided, Unknown for all IDs.')
             # Drop existing cell_type column if exists
