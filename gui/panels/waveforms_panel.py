@@ -104,7 +104,6 @@ class WaveformPanel(QWidget):
             self._plot_waveforms_on_grid(
                 self._last_templates,
                 self._last_channel_positions,
-                cluster_ids=self._last_cluster_ids,
                 colors=self._last_colors
             )
 
@@ -117,10 +116,11 @@ class WaveformPanel(QWidget):
         self._last_cluster_ids = cluster_ids
 
         if colors is None:
+            colors = {}
             if color_map and cluster_ids:
-                colors = [color_map.get(cid, (200, 200, 255)) for cid in cluster_ids]
+                colors = {cid: color_map.get(cid, (200, 200, 255)) for cid in cluster_ids}
             else:
-                colors = [pg.intColor(i, hues=n_clusters) for i in range(n_clusters)]
+                colors = {cid: pg.intColor(i, hues=n_clusters) for i, cid in enumerate(cluster_ids)}
         self.update_waveforms(cluster_ids, colors)
         self.update_isi(cluster_ids, colors)
         self.update_fr(cluster_ids, colors)
@@ -139,33 +139,43 @@ class WaveformPanel(QWidget):
             self.waveform_grid_plot.setTitle("Waveforms (No data)")
             return
 
-        templates = []
-       
+        selected_templates = {}
         for cid in cluster_ids:
             # Use the template for this cluster
             if hasattr(data_manager, 'templates'):
                 # templates shape: (n_clusters, n_timepoints, n_channels)
-                if cid < data_manager.templates.shape[0]:
-                    templates.append(data_manager.templates[cid])
-        if not templates:
+                all_ids = data_manager.all_cluster_ids
+                cidx = np.where(all_ids == cid)[0]
+                if len(cidx) != 1:
+                    print(f'[DEBUG] Cluster ID {cid} finding went wrong, found: {cidx}.')
+                    continue
+                cidx = cidx[0]
+                if cidx < data_manager.templates.shape[0]:
+                    # selected_templates.append(data_manager.templates[cidx])
+                    selected_templates[cid] = data_manager.templates[cidx]
+        
+        if not selected_templates:
             self.waveform_grid_plot.clear()
             self.waveform_grid_plot.setTitle("Waveforms (No data)")
             return
 
-        templates = np.stack(templates, axis=0)
+        self.n_timepoints = data_manager.templates.shape[1]
+        self.n_channels = data_manager.templates.shape[2]
+
         channel_positions = data_manager.channel_positions
 
-        self._last_templates = templates
+        self._last_templates = selected_templates
         self._last_channel_positions = channel_positions
         self._last_cluster_ids = cluster_ids
         self._last_colors = colors
 
-        self._plot_waveforms_on_grid(templates, channel_positions, cluster_ids=cluster_ids, colors=colors)
+        self._plot_waveforms_on_grid(selected_templates, channel_positions,  colors=colors)
 
     def _plot_waveforms_on_grid(
-        self, templates, channel_positions, colors, wf_scale=None, t_scale=None, amplitude_threshold=0.00,
-        overlap=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None, cluster_ids=None
+        self, selected_templates: dict, channel_positions, colors, wf_scale=None, t_scale=None, #amplitude_threshold=0.00,
+        overlap=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None
     ):
+        cluster_ids = list(selected_templates.keys())
         # Use current settings if not provided
         wf_scale = wf_scale if wf_scale is not None else self.wf_scale
         t_scale = t_scale if t_scale is not None else self.t_scale
@@ -174,44 +184,60 @@ class WaveformPanel(QWidget):
         overlap = overlap if overlap is not None else self.overlap
         wf_norm = wf_norm if wf_norm is not None else self.wf_norm
 
-        n_templates, n_timepoints, n_channels = templates.shape
-
         # Scale channel positions
         ch_pos = channel_positions.copy()
         ch_pos[:, 0] = ch_pos[:, 0] * x_ch_sep
         ch_pos[:, 1] = ch_pos[:, 1] * y_ch_sep
 
-        t = np.arange(n_timepoints)
+        t = np.arange(self.n_timepoints)
         t = t - t.mean()
         t = t / t.max()
         t = t * t_scale
 
         # For each channel, find which templates have significant amplitude
-        channel_to_templates = {}
-        for ch in range(n_channels):
-            channel_to_templates[ch] = []
-            for i in range(n_templates):
-                template = templates[i]
-                amplitudes = template.max(axis=0) - template.min(axis=0)
-                best_channel = np.argmax(amplitudes)
-                max_amp = amplitudes[best_channel]
-                if amplitudes[ch] > amplitude_threshold * max_amp:
-                    channel_to_templates[ch].append(i)
+        # channel_to_templates = {}
+        # for ch in range(n_channels):
+        #     channel_to_templates[ch] = []
+        #     for i in range(n_templates):
+        #         template = templates[i]
+        #         amplitudes = template.max(axis=0) - template.min(axis=0)
+        #         best_channel = np.argmax(amplitudes)
+        #         max_amp = amplitudes[best_channel]
+        #         if amplitudes[ch] > amplitude_threshold * max_amp:
+        #             channel_to_templates[ch].append(i)
 
         self.waveform_grid_plot.clear()
-        for ch in range(n_channels):
-            templates_here = channel_to_templates[ch]
-            n_here = len(templates_here)
+        all_ids = self.main_window.data_manager.all_cluster_ids
+        cluster_idxs = []
+        for cid in cluster_ids:
+            cidx = np.where(all_ids == cid)[0]
+            if len(cidx) != 1:
+                print(f'[DEBUG] Cluster ID {cid} finding went wrong, found: {cidx}.')
+                continue
+            cidx = cidx[0]
+            cluster_idxs.append(cidx)
+        
+        for ch in range(self.n_channels):
+            cidxs_here = self.main_window.data_manager.channel_to_templates[ch]
+            cidxs_here = [i for i in cidxs_here if i in cluster_idxs]
+            
+            n_here = len(cidxs_here)
             if n_here == 0:
                 continue
+            # print(f'[DEBUG] Channel {ch} has {n_here} templates to plot.')
+            # print(f'[DEBUG] Templates here: {templates_here}')
+            # print(f'[DEBUG] Cluster IDs: {cluster_ids}')
+            # print(f'[DEBUG] Cluster IDs: {all_ids[templates_here]}')
             x, y = ch_pos[ch]
             # Draw zero line and label only once per channel
             self.waveform_grid_plot.plot([x - t_scale, x + t_scale], [y, y], pen=pg.mkPen('k', width=1))
             text_item = pg.TextItem(text=str(ch), color='k', anchor=(1, 1))
             text_item.setPos(x - t_scale, y)
             self.waveform_grid_plot.addItem(text_item)
-            for idx, i in enumerate(templates_here):
-                template = templates[i]
+            
+            for idx, i in enumerate(cidxs_here):
+                cid = all_ids[i]
+                template = selected_templates[cid]
                 wf = template[:, ch]
                 if wf_norm:
                     wf = wf / np.max(np.abs(wf)) if np.max(np.abs(wf)) > 0 else wf
@@ -226,7 +252,7 @@ class WaveformPanel(QWidget):
                 amplitudes = template.max(axis=0) - template.min(axis=0)
                 best_channel = np.argmax(amplitudes)
                 lw = 2 if ch == best_channel else 1
-                color = colors[i] if isinstance(colors[i], (tuple, list)) else pg.mkColor(colors[i])
+                color = colors[cid] if isinstance(colors[cid], (tuple, list)) else pg.mkColor(colors[cid])
                 pen = pg.mkPen(color=color, width=lw)
                 self.waveform_grid_plot.plot(x + t + x_offset, y + wf, pen=pen)
 
@@ -252,7 +278,7 @@ class WaveformPanel(QWidget):
             bins = np.linspace(0, 50, 101)
             y, x = np.histogram(isi_ms, bins=bins)
 
-            color = colors[idx] if isinstance(colors[idx], (tuple, list)) else pg.mkColor(colors[idx])
+            color = colors[cid] if isinstance(colors[cid], (tuple, list)) else pg.mkColor(colors[cid])
             pen = pg.mkPen(color=color, width=2)
             # self.isi_plot.plot(x, y, stepMode="center", fillLevel=0, brush=(0, 163, 224, 150))
             self.isi_plot.plot(x, y, stepMode="center", pen=pen)
@@ -266,23 +292,23 @@ class WaveformPanel(QWidget):
         self.fr_plot.clear()
         data_manager = self.main_window.data_manager
 
-        for idx, cluster_id in enumerate(cluster_ids):
-            sts = data_manager.get_cluster_spikes(cluster_id)
+        for idx, cid in enumerate(cluster_ids):
+            sts = data_manager.get_cluster_spikes(cid)
 
             if sts is None or len(sts) < 2:
-                print(f'[DEBUG] No spike times for cluster {cluster_id}')
+                print(f'[DEBUG] No spike times for cluster {cid}')
                 continue
 
             spike_times_sec = sts / self.sampling_rate
             duration = spike_times_sec[-1] - spike_times_sec[0]
             if duration <= 0:
-                print(f'[DEBUG] No valid duration for cluster {cluster_id}')
+                print(f'[DEBUG] No valid duration for cluster {cid}')
                 continue
 
             bins = np.arange(0, duration+1, 1)
             counts, _ = np.histogram(spike_times_sec, bins=bins)
             rate = gaussian_filter1d(counts.astype(float), sigma=5)
-            color = colors[idx] if isinstance(colors[idx], (tuple, list)) else pg.mkColor(colors[idx])
+            color = colors[cid] if isinstance(colors[cid], (tuple, list)) else pg.mkColor(colors[cid])
             pen = pg.mkPen(color=color, width=2)
             self.fr_plot.plot(bins[:-1], rate, pen=pen)
 
