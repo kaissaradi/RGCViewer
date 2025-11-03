@@ -163,8 +163,8 @@ class WaveformPanel(QWidget):
         self._plot_waveforms_on_grid(templates, channel_positions, cluster_ids=cluster_ids, colors=colors)
 
     def _plot_waveforms_on_grid(
-        self, templates, channel_positions, colors, wf_scale=None, t_scale=None, amplitude_threshold=0.00,
-        overlap=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None, cluster_ids=None
+        self, templates, channel_positions, colors, cluster_ids, wf_scale=None, t_scale=None, amplitude_threshold=0.00,
+        overlap=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None,
     ):
         # Use current settings if not provided
         wf_scale = wf_scale if wf_scale is not None else self.wf_scale
@@ -187,20 +187,21 @@ class WaveformPanel(QWidget):
         t = t * t_scale
 
         # For each channel, find which templates have significant amplitude
-        channel_to_templates = {}
-        for ch in range(n_channels):
-            channel_to_templates[ch] = []
-            for i in range(n_templates):
-                template = templates[i]
-                amplitudes = template.max(axis=0) - template.min(axis=0)
-                best_channel = np.argmax(amplitudes)
-                max_amp = amplitudes[best_channel]
-                if amplitudes[ch] > amplitude_threshold * max_amp:
-                    channel_to_templates[ch].append(i)
+        # channel_to_templates = {}
+        # for ch in range(n_channels):
+        #     channel_to_templates[ch] = []
+        #     for i in range(n_templates):
+        #         template = templates[i]
+        #         amplitudes = template.max(axis=0) - template.min(axis=0)
+        #         best_channel = np.argmax(amplitudes)
+        #         max_amp = amplitudes[best_channel]
+        #         if amplitudes[ch] > amplitude_threshold * max_amp:
+        #             channel_to_templates[ch].append(i)
 
         self.waveform_grid_plot.clear()
         for ch in range(n_channels):
-            templates_here = channel_to_templates[ch]
+            templates_here = self.main_window.data_manager.channel_to_templates[ch]
+            templates_here = [i for i in templates_here if i in cluster_ids]
             n_here = len(templates_here)
             if n_here == 0:
                 continue
@@ -211,7 +212,9 @@ class WaveformPanel(QWidget):
             text_item.setPos(x - t_scale, y)
             self.waveform_grid_plot.addItem(text_item)
             for idx, i in enumerate(templates_here):
-                template = templates[i]
+                # Get index into input templates, which is index into cluster_ids
+                t_idx = np.where(cluster_ids == i)[0][0]
+                template = templates[t_idx]
                 wf = template[:, ch]
                 if wf_norm:
                     wf = wf / np.max(np.abs(wf)) if np.max(np.abs(wf)) > 0 else wf
@@ -226,7 +229,7 @@ class WaveformPanel(QWidget):
                 amplitudes = template.max(axis=0) - template.min(axis=0)
                 best_channel = np.argmax(amplitudes)
                 lw = 2 if ch == best_channel else 1
-                color = colors[i] if isinstance(colors[i], (tuple, list)) else pg.mkColor(colors[i])
+                color = colors[t_idx] if isinstance(colors[t_idx], (tuple, list)) else pg.mkColor(colors[t_idx])
                 pen = pg.mkPen(color=color, width=lw)
                 self.waveform_grid_plot.plot(x + t + x_offset, y + wf, pen=pen)
 
