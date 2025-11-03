@@ -10,19 +10,6 @@ from analysis.constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_C
 import os
 import pickle
 
-def get_channel_to_templates(templates: np.ndarray) -> dict:
-    channel_to_templates = {}
-    # n_templates = dm.templates.shape[0]
-    n_channels = templates.shape[2]
-
-    # Amplitude of [clusters, channels]
-    amplitudes = templates.max(axis=1) - templates.min(axis=1)
-    # Non-zero amplitudes
-    cls, chs = np.where(amplitudes > 0)
-    for ch in range(n_channels):
-        channel_to_templates[ch] = cls[chs==ch]
-    return channel_to_templates
-
 def ei_corr(ref_ei_dict, test_ei_dict, 
             method: str = 'full', n_removed_channels: int = 1) -> np.ndarray:
     # Courtesy of @DRezeanu
@@ -264,16 +251,11 @@ class DataManager(QObject):
         try:
             self.spike_times = np.load(self.kilosort_dir / 'spike_times.npy').flatten()
             self.spike_clusters = np.load(self.kilosort_dir / 'spike_clusters.npy').flatten()
-            all_cluster_ids = np.unique(self.spike_clusters)
-            self.all_cluster_ids = all_cluster_ids
             self.channel_positions = np.load(self.kilosort_dir / 'channel_positions.npy')
             self.sorted_channels = sort_electrode_map(self.channel_positions)
             
             # templates is (n_clusters, n_timepoints, n_channels)
             self.templates = np.load(self.kilosort_dir / 'templates.npy')
-
-            # Get channel to templates mapping
-            self.channel_to_templates = get_channel_to_templates(self.templates)
             
             info_path = self.kilosort_dir / 'cluster_info.tsv'
             group_path = self.kilosort_dir / 'cluster_group.tsv'
@@ -287,6 +269,7 @@ class DataManager(QObject):
             else:
                 print("Info: 'cluster_info.tsv' or 'cluster_group.tsv' not found. Labeling all clusters as 'unsorted'.")
                 self.info_path = None
+                all_cluster_ids = np.unique(self.spike_clusters)
                 self.cluster_info = pd.DataFrame({
                     'cluster_id': all_cluster_ids,
                     'group': ['unsorted'] * len(all_cluster_ids)
