@@ -10,9 +10,11 @@ from analysis.constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_C
 import os
 import pickle
 
-def get_channel_to_templates(templates: np.ndarray) -> dict:
+def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
-    # n_templates = dm.templates.shape[0]
+    template_to_channels = {}
+    
+    n_templates = templates.shape[0]
     n_channels = templates.shape[2]
 
     # Amplitude of [clusters, channels]
@@ -21,7 +23,14 @@ def get_channel_to_templates(templates: np.ndarray) -> dict:
     cls, chs = np.where(amplitudes > 0)
     for ch in range(n_channels):
         channel_to_templates[ch] = cls[chs==ch]
-    return channel_to_templates
+    for cid in range(n_templates):
+        template_to_channels[cid] = chs[cls==cid]
+    
+    d_out = {
+        'channel_to_templates': channel_to_templates,
+        'template_to_channels': template_to_channels
+    }
+    return d_out
 
 def ei_corr(ref_ei_dict, test_ei_dict, 
             method: str = 'full', n_removed_channels: int = 1) -> np.ndarray:
@@ -269,7 +278,11 @@ class DataManager(QObject):
             
             # templates is (n_clusters, n_timepoints, n_channels)
             self.templates = np.load(self.kilosort_dir / 'templates.npy')
-            self.channel_to_templates = get_channel_to_templates(self.templates)
+            d_mappings = get_channel_template_mappings(self.templates)
+            self.channel_to_templates = d_mappings['channel_to_templates']
+            self.template_to_channels = d_mappings['template_to_channels']
+
+            self.spike_amplitudes = np.load(self.kilosort_dir / 'amplitudes.npy').flatten()
             
             info_path = self.kilosort_dir / 'cluster_info.tsv'
             group_path = self.kilosort_dir / 'cluster_group.tsv'
