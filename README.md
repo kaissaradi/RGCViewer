@@ -12,8 +12,8 @@ A high-performance GUI for refining and analyzing neural spike sorting clusters 
 
 2.  **Set up a virtual environment (recommended):**
     ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+    conda create --name rcg-viewer python=3.9
+    conda activate rcg-viewer
     ```
 
 3.  **Install dependencies:**
