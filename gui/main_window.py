@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
         
         # Connect Signals to Callback Functions ---
-        load_ks_action.triggered.connect(self.load_directory)
+        load_ks_action.triggered.connect(lambda: self.load_directory()) # triggered(bool checked = false)
         self.load_vision_action.triggered.connect(self.load_vision_directory)
         self.load_classification_action.triggered.connect(self.load_classification_file)
         self.save_action.triggered.connect(self.on_save_action)
@@ -635,7 +635,6 @@ class MainWindow(QMainWindow):
             
             # Update the label
             self.sta_frame_label.setText(f"Frame: {frame_index+1}/{self.total_sta_frames}")
-            
             # Update the STA canvas with the new frame
             self.sta_canvas.fig.clear()
             analysis_core.animate_sta_movie(
@@ -646,7 +645,7 @@ class MainWindow(QMainWindow):
                 sta_height=self.data_manager.vision_sta_height
             )
             cluster_id = self.current_sta_cluster_id - 1  # Convert back to 0-indexed
-            self.sta_canvas.fig.suptitle(f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}", color='white', fontsize=16)
+            self.sta_canvas.fig.suptitle(f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}", color='white', fontsize=16) # this overlaps with self.sta_frame_label
             self.sta_canvas.draw()
 
     def prev_sta_frame(self):

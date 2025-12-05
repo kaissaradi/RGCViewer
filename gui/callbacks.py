@@ -21,7 +21,7 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     default_dir = Path("/home/localadmin/Documents/Development/data/sorted")
     if not default_dir.exists():
         default_dir = Path.home()
-    if kilosort_dir is None or isinstance(kilosort_dir, bool):
+    if kilosort_dir is None:
         ks_dir_name = QFileDialog.getExistingDirectory(main_window, "Select Kilosort Output Directory", str(default_dir))
     else:
         ks_dir_name = kilosort_dir
