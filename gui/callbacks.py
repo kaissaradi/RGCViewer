@@ -10,6 +10,7 @@ from analysis.data_manager import DataManager
 from gui.workers import RefinementWorker, SpatialWorker
 from gui.widgets import HighlightStatusPandasModel
 import gui.plotting as plotting
+from gui.panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
@@ -489,6 +490,12 @@ def add_new_group(main_window: MainWindow, name: str):
     
     main_window.tree_model.appendRow(item)
 
+def feature_extraction(main_window: MainWindow, cluster_ids):
+    """Feature extraction for selected clusters."""
+    print(f"feature extraction")
+    dlg = FeatureExtractionWindow(main_window, cluster_ids)
+    dlg.exec_()
+    pass
 
 def stop_worker(main_window: MainWindow):
     """Stops the background spatial worker thread."""

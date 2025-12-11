@@ -451,7 +451,7 @@ class MainWindow(QMainWindow):
             
             index = self.tree_view.selectionModel().selectedIndexes()[0]
             item = self.tree_model.itemFromIndex(index)
-            
+
             # Only leaf nodes (cells) have a cluster ID stored. Groups will return None.
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
             return cluster_id
@@ -475,6 +475,16 @@ class MainWindow(QMainWindow):
             return cluster_id
         
         return None
+    
+    def _get_group_cluster_ids(self, item):
+        cluster_ids = []
+        for i in range(item.rowCount()):
+            child = item.child(i)
+            cid = child.data(Qt.ItemDataRole.UserRole)
+            if cid is not None:
+                cluster_ids.append(cid)
+
+        return cluster_ids
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
@@ -689,14 +699,22 @@ class MainWindow(QMainWindow):
         
     def open_tree_context_menu(self, position):
         menu = QMenu()
+        index = self.tree_view.indexAt(position)
+        item = self.tree_model.itemFromIndex(index)
         add_group_action = menu.addAction("Add New Group")
-        
+
+        if item.hasChildren(): # when clicking the group item
+            feature_extraction_action = menu.addAction("Feature Extraction")
+
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
         
         if action == add_group_action:
             text, ok = QInputDialog.getText(self, 'New Group', 'Enter group name:')
             if ok and text:
                 callbacks.add_new_group(self, text)
+        elif action == feature_extraction_action:
+            cluster_ids = self._get_group_cluster_ids(item)
+            callbacks.feature_extraction(self, cluster_ids)
     
     def toggle_sidebar(self):
         """Collapses or expands the left sidebar by manipulating the main splitter."""
