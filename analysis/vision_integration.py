@@ -1,6 +1,14 @@
 import os
 from pathlib import Path
-import visionloader as vl
+
+# Guard import of visionloader so the app can run without it installed
+try:
+    import visionloader as vl
+    VISION_LOADER_AVAILABLE = True
+except Exception:
+    vl = None
+    VISION_LOADER_AVAILABLE = False
+    print("[INFO] 'visionloader' not available. Vision integration features will be disabled.")
 
 def load_vision_data(vision_dir: Path, dataset_name: str):
     """
@@ -15,7 +23,12 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
               Returns None for a data type if it fails to load.
     """
     print(f"Loading Vision files from: {vision_dir}")
-    
+
+    # If visionloader isn't available, return safe empty values so callers can continue
+    if not VISION_LOADER_AVAILABLE:
+        print(f"[WARN] visionloader is not available; skipping vision load for {vision_dir}")
+        return {'ei': None, 'sta': None, 'params': None}
+
     ei_data = None
     sta_data = None
     params_data = None
@@ -52,6 +65,9 @@ def load_ei_data(vision_dir: Path, dataset_name: str):
     Returns:
         dict: A dictionary of EI data keyed by cluster_id.
     """
+    if not VISION_LOADER_AVAILABLE:
+        return None
+
     try:
         with vl.EIReader(str(vision_dir), dataset_name) as eir:
             eis_by_cell_id = eir.get_all_eis_by_cell_id()
@@ -76,6 +92,9 @@ def load_sta_data(vision_dir: Path, dataset_name: str):
     Returns:
         dict: A dictionary of STA data keyed by cluster_id.
     """
+    if not VISION_LOADER_AVAILABLE:
+        return None
+
     try:
         with vl.STAReader(str(vision_dir), dataset_name) as star:
             stas_by_cell_id = star.chunked_load_all_stas()
@@ -99,6 +118,9 @@ def load_params_data(vision_dir: Path, dataset_name: str):
     Returns:
         VisionCellDataTable: An object containing all the parameter data.
     """
+    if not VISION_LOADER_AVAILABLE:
+        return None
+
     try:
         vcd = vl.VisionCellDataTable()
         with vl.ParametersFileReader(str(vision_dir), dataset_name) as pfr:
