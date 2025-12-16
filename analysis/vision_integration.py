@@ -28,7 +28,7 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
 
     # If visionloader isn't available, return safe empty values so callers can continue
     if not VISION_LOADER_AVAILABLE:
-        print(f"[WARN] visionloader is not available; skipping vision load for {vision_dir}")
+        logger.warning(f"visionloader is not available; skipping vision load for {vision_dir}")
         return {'ei': None, 'sta': None, 'params': None}
 
     ei_data = None

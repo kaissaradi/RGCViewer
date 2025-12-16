@@ -1,0 +1,1 @@
+Implemented new `WaveformPanel` and `StandardPlotsPanel` designs. Resolved an integration bug in `main_window.py` and a plotting error in `standard_plots_panel.py` related to `pyqtgraph`'s `stepMode`. Application is now functionally updated as requested.

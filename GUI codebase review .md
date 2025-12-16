@@ -124,16 +124,26 @@ for i, cluster\_id in enumerate(cluster\_ids):
 - `analysis/data_manager.py`: added thread-safe `clear_caches()` and a `threading.Lock` protecting `heavyweight_cache`; `get_heavyweight_features` now uses the lock for safe concurrent access.
 - `gui/workers.py`: `FeatureWorker` and `RefinementWorker` now prefer `DataManager.raw_data_memmap` (when available) and fall back to the dat file path, avoiding reopening the file on every worker run.
 - `gui/main_window.py`: feature-worker stop logic updated to call `.wait()` after `.quit()` to avoid overlapping threads during rapid selection.
+- `gui/panels/raw_panel.py`: Implemented reuse of `PlotDataItem` objects to avoid repeated creation/destruction on redraws.
 
-These changes address the highest-impact issues from the review (#1 and #2): they consolidate data access patterns and remove the repeated memmap reopen overhead.
+**Panel and UI Refactoring:**
+- **Created `gui/panels/standard_plots_panel.py` and `gui/panels/waveforms_panel.py`** as per the development plan.
+- **Refactored `gui/main_window.py` UI** to use a `QTabWidget` for analysis panels, with the order: "Standard Plots", "EI Analysis", "STA Analysis", "Raw Waveforms", "Raw Trace".
+- **Optimized UI updates**: Implemented `on_tab_changed` logic in `main_window.py` to ensure only the visible panel is updated with new data upon selection, improving responsiveness.
+- **Fixed `AttributeError` in `StandardPlotsPanel`**: Corrected `QSplitter` initialization to use `qtpy.QtCore.Qt.Vertical/Horizontal` instead of `pyqtgraph.Qt.Orientation.Vertical/Horizontal`.
+
+**Phase 3: Backend & Data Verification**
+- **Verified `analysis/data_manager.py`**: Confirmed `load_kilosort_data` correctly loads `templates.npy` into `self.templates` and `sampling_rate` is available from `_load_kilosort_params`.
+- **Verified `gui/workers.py`**: Confirmed `FeatureWorker.run` extracts `raw_snippets` and includes them in the results dictionary emitted to `main_window` for caching.
+
+
+These changes address the highest-impact issues from the review (#1 and #2): they consolidate data access patterns and remove the repeated memmap reopen overhead. They also implement the new panel-based UI design.
 
 ## **Next recommended low-risk steps**
 
-1. Implement reusing `PlotDataItem` objects in `gui/panels/raw_panel.py` to avoid repeated creation/destruction on redraws (immediate responsiveness win).
-2. Replace verbose `print()` debug lines with `logging` calls and trim noisy debug output.
-3. Refactor `refine_cluster_v2` signature or add a small adapter in `DataManager` so it can supply pre-extracted snippets (longer-term but reduces confusion).
-
-If you'd like, I can implement step 1 next (persistent `PlotDataItem` reuse) and run a quick smoke test; tell me to proceed and I'll patch the file(s) and run syntax checks.
+1.  **[In Progress]** Replace verbose `print()` debug lines with `logging` calls and trim noisy debug output.
+2.  Refactor `refine_cluster_v2` signature or add a small adapter in `DataManager` so it can supply pre-extracted snippets (longer-term but reduces confusion).
+3.  **Refine `WaveformPanel.update_all`**: Currently `update_all` in `WaveformPanel` expects a single `cluster_id`. However, `MainWindow.on_similarity_selection_changed` passes a list of cluster IDs to `self.waveforms_panel.update_all(clusters_to_plot)`. Update `WaveformPanel.update_all` to handle a list of cluster IDs or ensure only a single cluster ID is passed.
 
 ---
 
@@ -144,66 +154,66 @@ If you'd like, I can implement step 1 next (persistent `PlotDataItem` reuse) and
 #### **1. Create `gui/panels/standard_plots_panel.py**`
 This is the new "Home" tab containing the quick diagnostic plots.
 
-* **Class:** `StandardPlotsPanel(QWidget)`
-* **Layout:** Vertical Splitter containing two Horizontal Splitters (2x2 grid).
-* **Plots:**
-  1. **Template (Top Left):** Plots the Kilosort template (`data_manager.templates`) for the cluster's dominant channel.
-  2. **Autocorrelation (Top Right):** New histogram-based ACG plot.
-  3. **ISI Distribution (Bottom Left):**
-     * **Logic:** Replicate `plotting-old.py`. Use `np.histogram` on ISI differences.
-     * **Aesthetic (The "Old" Look):**
-       * Use `pyqtgraph.plot()` with `stepMode="center"` (or `True`).
-       * Set `fillLevel=0` to fill from the line to the bottom.
-       * Set `brush=(0, 163, 224, 150)` (The semi-transparent blue from your old code).
-       * Add the vertical dashed red line at 2.0ms (or 1.5ms).
-  4. **Firing Rate (Bottom Right):**
-     * **Logic:** Replicate `plotting-old.py`. Bin spikes into 1s bins.
-     * **Aesthetic:**
-       * Apply `scipy.ndimage.gaussian_filter1d` with `sigma=5` (smoothness from old code).
-       * Use `pen='y'` (Yellow) or `#ffeb3b` for high contrast on dark background.
+*   **Class:** `StandardPlotsPanel(QWidget)`
+*   **Layout:** Vertical Splitter containing two Horizontal Splitters (2x2 grid).
+*   **Plots:**
+    1.  **Template (Top Left):** Plots the Kilosort template (`data_manager.templates`) for the cluster's dominant channel.
+    2.  **Autocorrelation (Top Right):** New histogram-based ACG plot.
+    3.  **ISI Distribution (Bottom Left):**
+        *   **Logic:** Replicate `plotting-old.py`. Use `np.histogram` on ISI differences.
+        *   **Aesthetic (The "Old" Look):**
+            *   Use `pyqtgraph.plot()` with `stepMode="center"` (or `True`).
+            *   Set `fillLevel=0` to fill from the line to the bottom.
+            *   Set `brush=(0, 163, 224, 150)` (The semi-transparent blue from your old code).
+            *   Add the vertical dashed red line at 2.0ms (or 1.5ms).
+    4.  **Firing Rate (Bottom Right):**
+        *   **Logic:** Replicate `plotting-old.py`. Bin spikes into 1s bins.
+        *   **Aesthetic:**
+            *   Apply `scipy.ndimage.gaussian_filter1d` with `sigma=5` (smoothness from old code).
+            *   Use `pen='y'` (Yellow) or `#ffeb3b` for high contrast on dark background.
 
 #### **2. Create `gui/panels/waveforms_panel.py**`
 This panel is now dedicated purely to the raw snippet visualization (the "cloud").
 
-* **Class:** `WaveformPanel(QWidget)`
-* **Layout:** Single `pg.PlotWidget`.
-* **Logic (`update_all`):**
-  * Retrieve `raw_snippets` from `data_manager.ei_cache` (computed by `FeatureWorker`).
-  * **Optimization:** Use the `np.nan` connection trick to plot all snippets as a single line item for performance.
-  * **Aesthetic:**
-    * Snippets: White with very low alpha (e.g., `(255, 255, 255, 15)`).
-    * Mean: Thick Teal/Cyan line on top (`width=3`).
+*   **Class:** `WaveformPanel(QWidget)`
+*   **Layout:** Single `pg.PlotWidget`.
+*   **Logic (`update_all`):**
+    *   Retrieve `raw_snippets` from `data_manager.ei_cache` (computed by `FeatureWorker`).
+    *   **Optimization:** Use the `np.nan` connection trick to plot all snippets as a single line item for performance.
+    *   **Aesthetic:**
+        *   Snippets: White with very low alpha (e.g., `(255, 255, 255, 15)`).
+        *   Mean: Thick Teal/Cyan line on top (`width=3`).
 
 ---
 
 ### **Phase 2: Main Window Integration**
 
 #### **3. Modify `gui/main_window.py**`
-* **Imports:** Import the two new panel classes.
-* **`_setup_ui` Method:**
-  * Remove the old splitter layout in the right pane.
-  * Initialize a `QTabWidget` for the right pane.
-* **Tab Order:**
-  1. "Standard Plots" (`StandardPlotsPanel`)
-  2. "EI Analysis" (`EIPanel` - existing)
-  3. "STA Analysis" (Existing STA logic wrapped in a widget)
-  4. "Raw Waveforms" (`WaveformPanel`)
-  5. "Raw Trace" (`RawPanel` - existing)
-* **`_draw_plots` Method:**
-  * Call `self.standard_panel.update_all(cluster_id)`.
-  * Call `self.waveforms_panel.update_all(cluster_id)`.
-  * Ensure other panels (`ei_panel`, `raw_panel`) update only if their tab is active (optimization).
+*   **Imports:** Import the two new panel classes.
+*   **`_setup_ui` Method:**
+    *   Remove the old splitter layout in the right pane.
+    *   Initialize a `QTabWidget` for the right pane.
+*   **Tab Order:**
+    1.  "Standard Plots" (`StandardPlotsPanel`)
+    2.  "EI Analysis" (`EIPanel` - existing)
+    3.  "STA Analysis" (Existing STA logic wrapped in a widget)
+    4.  "Raw Waveforms" (`WaveformPanel`)
+    5.  "Raw Trace" (`RawPanel` - existing)
+*   **`_draw_plots` Method:**
+    *   Call `self.standard_panel.update_all(cluster_id)`.
+    *   Call `self.waveforms_panel.update_all(cluster_id)`.
+    *   Ensure other panels (`ei_panel`, `raw_panel`) update only if their tab is active (optimization).
 
 ---
 
 ### **Phase 3: Backend & Data**
 
 #### **4. Verify `analysis/data_manager.py**`
-* Ensure `load_kilosort_data` correctly loads `templates.npy` into `self.templates`.
-* Ensure `sampling_rate` is available (needed for ms/Hz conversion).
+*   Ensure `load_kilosort_data` correctly loads `templates.npy` into `self.templates`.
+*   Ensure `sampling_rate` is available (needed for ms/Hz conversion).
 
 #### **5. Verify `gui/workers.py**`
-* Ensure `FeatureWorker.run` extracts `raw_snippets` and includes them in the results dictionary emitted to `main_window`.
+*   Ensure `FeatureWorker.run` extracts `raw_snippets` and includes them in the results dictionary emitted to `main_window`.
 
 ---
 

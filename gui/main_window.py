@@ -1,4 +1,5 @@
 import os
+import logging
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
@@ -19,6 +20,7 @@ import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
 from gui.panels.waveforms_panel import WaveformPanel
+from gui.panels.standard_plots_panel import StandardPlotsPanel
 from gui.panels.ei_panel import EIPanel
 from gui.panels.raw_panel import RawPanel
 from gui.workers import FeatureWorker
@@ -28,6 +30,8 @@ from PyQt5.QtGui import QColor
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
 pg.setConfigOption('foreground', 'd')
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +59,7 @@ class MainWindow(QMainWindow):
         self.current_sta_cluster_id = None
         self.current_frame_index = 0
         self.total_sta_frames = 0
+        self.current_stafit = None  # Added to store STAFit data
         self.sta_animation_timer = None
         self._is_syncing = False
         self.last_left_width = 450
@@ -217,36 +222,38 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _draw_plots(self, cluster_id, features):
-        """A single, centralized function to update all plots."""
-        # Update the waveforms panel first - this should work even without features
-        self.waveforms_panel.update_all(cluster_id)
+    def on_tab_changed(self, index):
+        """Handles updates when the user switches tabs."""
+        cluster_id = self._get_selected_cluster_id()
+        if cluster_id is None:
+            return
 
-        self.similarity_panel.update_main_cluster_id(cluster_id)
-        # Select the top row in similarity panel by default. This updates waveforms and EI panel.
-    
+        current_panel = self.analysis_tabs.widget(index)
 
-        # Update EI panel - only if vision data exists, otherwise skip gracefully
-        if self.data_manager and hasattr(self.data_manager, 'vision_eis'):
+        if current_panel == self.ei_panel:
             self.ei_panel.update_ei([cluster_id])
-        else:
-            # Load EI from kilosort data if no vision data is available
-            self.ei_panel.update_ei([cluster_id])
-
-        # Update the tab-specific plot (Raw Trace).
-        if self.analysis_tabs.currentWidget() == self.raw_panel:
+        elif current_panel == self.waveforms_panel:
+            self.waveforms_panel.update_all(cluster_id)
+        elif current_panel == self.raw_panel:
             self.raw_panel.load_data(cluster_id)
-        else:
-            # Only update STA view if vision data is available
+        elif current_panel == self.sta_panel:
             if self.data_manager and self.data_manager.vision_stas:
                 self.select_sta_view(self.current_sta_view)
             else:
-                # Clear the STA canvas if no data is available
                 self.sta_canvas.fig.clear()
                 self.sta_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
                 self.sta_canvas.draw()
 
+    def _draw_plots(self, cluster_id, features):
+        """
+        A centralized function to update plots. Updates the main panels
+        and then calls on_tab_changed to handle the visible tab.
+        """
+        self.standard_plots_panel.update_all(cluster_id)
+        self.similarity_panel.update_main_cluster_id(cluster_id)
 
+        # Trigger an update for the currently visible tab
+        self.on_tab_changed(self.analysis_tabs.currentIndex())
 
         self.status_bar.showMessage("Ready.", 2000)
 
@@ -330,94 +337,74 @@ class MainWindow(QMainWindow):
         # Store reference to content widget for collapsing/expanding
         self.left_content = left_content
 
-        # --- Right Pane ---
+        # --- Right Pane (Tabbed Interface) ---
         right_pane = QWidget()
         right_layout = QVBoxLayout(right_pane)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
+        self.analysis_tabs = QTabWidget()
+        right_layout.addWidget(self.analysis_tabs)
+
         # --- Panels ---
-        self.waveforms_panel = WaveformPanel(self)
+        self.standard_plots_panel = StandardPlotsPanel(self)
         self.ei_panel = EIPanel(self)
+        self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
 
-        # --- STA Analysis Panel ---
+        # --- STA Analysis Panel (Re-parented) ---
         self.sta_panel = QWidget()
         sta_layout = QVBoxLayout(self.sta_panel)
-
-        # Add buttons to select different STA views
         sta_control_layout = QHBoxLayout()
         self.sta_rf_button = QPushButton("RF Plot")
         self.sta_population_rfs_button = QPushButton("Population RFs")
         self.sta_timecourse_button = QPushButton("Timecourse")
         self.sta_animation_button = QPushButton("Animate STA")
         self.sta_animation_stop_button = QPushButton("Stop Animation")
-
-        # Set up button functionality
         self.sta_rf_button.clicked.connect(lambda: self.select_sta_view("rf"))
         self.sta_population_rfs_button.clicked.connect(lambda: self.select_sta_view("population_rfs"))
         self.sta_timecourse_button.clicked.connect(lambda: self.select_sta_view("timecourse"))
         self.sta_animation_button.clicked.connect(lambda: self.select_sta_view("animation"))
         self.sta_animation_stop_button.clicked.connect(lambda: plotting.stop_sta_animation(self))
-
-        # Add buttons to layout
         sta_control_layout.addWidget(self.sta_rf_button)
         sta_control_layout.addWidget(self.sta_population_rfs_button)
         sta_control_layout.addWidget(self.sta_timecourse_button)
         sta_control_layout.addWidget(self.sta_animation_button)
         sta_control_layout.addWidget(self.sta_animation_stop_button)
 
-        # Add frame control elements
-        sta_frame_layout = QHBoxLayout()
-        self.sta_frame_slider = QSlider(Qt.Orientation.Horizontal)
-        self.sta_frame_slider.setMinimum(0)
-        self.sta_frame_slider.setMaximum(29)  # Default to 30 frames
-        self.sta_frame_slider.setValue(0)
-        self.sta_frame_slider.setEnabled(False)  # Only enabled during manual animation
-        self.sta_frame_label = QLabel("Frame: 0/30")
-        self.sta_frame_prev_button = QPushButton("<< Prev")
-        self.sta_frame_next_button = QPushButton("Next >>")
+        # --- Add Frame Slider and Label for STA Animation ---
+        self.sta_frame_controls_layout = QHBoxLayout()
+        self.sta_frame_prev_button = QPushButton("Previous Frame")
+        self.sta_frame_slider = QSlider(Qt.Horizontal)
+        self.sta_frame_next_button = QPushButton("Next Frame")
+        self.sta_frame_label = QLabel("Frame: 0/0")
 
-        # Connect slider and buttons
-        self.sta_frame_slider.valueChanged.connect(self.update_sta_frame_manual)
         self.sta_frame_prev_button.clicked.connect(self.prev_sta_frame)
         self.sta_frame_next_button.clicked.connect(self.next_sta_frame)
+        self.sta_frame_slider.valueChanged.connect(self.update_sta_frame_manual)
 
-        # Add frame controls to layout
-        sta_frame_layout.addWidget(self.sta_frame_prev_button)
-        sta_frame_layout.addWidget(self.sta_frame_slider)
-        sta_frame_layout.addWidget(self.sta_frame_next_button)
-        sta_frame_layout.addWidget(self.sta_frame_label)
-        sta_control_layout.addLayout(sta_frame_layout)
+        self.sta_frame_controls_layout.addWidget(self.sta_frame_prev_button)
+        self.sta_frame_controls_layout.addWidget(self.sta_frame_slider)
+        self.sta_frame_controls_layout.addWidget(self.sta_frame_next_button)
+        self.sta_frame_controls_layout.addWidget(self.sta_frame_label)
 
-        # Add controls and canvas to layout
-        sta_layout.addLayout(sta_control_layout)
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
+        sta_layout.addLayout(sta_control_layout)
+        sta_layout.addLayout(self.sta_frame_controls_layout)  # Add frame controls layout
         sta_layout.addWidget(self.sta_canvas)
 
-        # --- Top Splitter: Waveforms and STA side by side ---
-        top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        top_splitter.addWidget(self.waveforms_panel)
-        top_splitter.addWidget(self.sta_panel)
-        top_splitter.setSizes([800, 200])
-
-        # --- Main Right Splitter: Top (waveforms+STA), Bottom (EI spatial and temporal) ---
-        main_right_splitter = QSplitter(Qt.Orientation.Vertical)
-        main_right_splitter.addWidget(top_splitter)
-        main_right_splitter.addWidget(self.ei_panel)
-        main_right_splitter.setSizes([600, 400])
-
-        # --- Tab Widget for Raw Trace ---
-        self.analysis_tabs = QTabWidget()
-        self.analysis_tabs.addTab(main_right_splitter, "Main Analysis")
+        # --- Tab Order ---
+        self.analysis_tabs.addTab(self.standard_plots_panel, "Standard Plots")
+        self.analysis_tabs.addTab(self.ei_panel, "EI Analysis")
+        self.analysis_tabs.addTab(self.sta_panel, "STA Analysis")
+        self.analysis_tabs.addTab(self.waveforms_panel, "Raw Waveforms")
         self.analysis_tabs.addTab(self.raw_panel, "Raw Trace")
-        right_layout.addWidget(self.analysis_tabs)
 
         # --- Main Splitter and Layout ---
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([800, 600])
+        self.main_splitter.setSizes([450, 1350]) # Adjusted initial size
         main_layout.addWidget(self.main_splitter)
 
         self.status_bar = QStatusBar()
@@ -435,13 +422,14 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
 
         # Connect Signals to Callback Functions ---
-        load_ks_action.triggered.connect(lambda: self.load_directory()) # triggered(bool checked = false)
+        load_ks_action.triggered.connect(lambda: self.load_directory())
         self.load_vision_action.triggered.connect(self.load_vision_directory)
         self.load_classification_action.triggered.connect(self.load_classification_file)
         self.save_action.triggered.connect(self.on_save_action)
         self.filter_button.clicked.connect(self.apply_good_filter)
         self.reset_button.clicked.connect(self.reset_views)
         self.refine_button.clicked.connect(self.on_refine_cluster)
+        self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
         # Connect the raw panel's status and error messages to the status bar
         self.raw_panel.status_message.connect(lambda msg: self.status_bar.showMessage(msg, 3000))
@@ -587,11 +575,11 @@ class MainWindow(QMainWindow):
         else:
             # If no main cluster is selected, just plot the selected similar clusters
             clusters_to_plot = selected_cluster_ids
-        print(f'[DEBUG] on_similarity_selection_changed: main_cluster = {main_cluster}')
-        print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
+        logger.debug(f'on_similarity_selection_changed: main_cluster = {main_cluster}')
+        logger.debug(f'on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
 
         self.ei_panel.update_ei(clusters_to_plot)
-        self.waveforms_panel.update_all(clusters_to_plot)
+        self.waveforms_panel.update_all(main_cluster)
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df
@@ -655,7 +643,7 @@ class MainWindow(QMainWindow):
         if view_type == "rf":
             plotting.draw_sta_plot(self, cluster_id)
         elif view_type == "population_rfs":
-            print(f"--- 1. DEBUG (MainWindow): Got selected_cell_id = {cluster_id}. Passing to plotting function. ---")
+            logger.debug(f"--- 1. DEBUG (MainWindow): Got selected_cell_id = {cluster_id}. Passing to plotting function. ---")
             plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id)
         elif view_type == "timecourse":
             plotting.draw_sta_timecourse_plot(self, cluster_id)

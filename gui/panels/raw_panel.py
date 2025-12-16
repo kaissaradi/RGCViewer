@@ -57,6 +57,13 @@ class RawPanel(QWidget):
         self.plot.plotItem.getViewBox().setMouseEnabled(y=False)
         layout.addWidget(self.plot)
 
+        # --- Persistent Plot Items ---
+        self.trace_plots = [self.plot.plot(pen=pg.mkPen(color=(150, 150, 150, 150), width=1)) for _ in range(3)]
+        self.template_plot = self.plot.plot(pen=pg.mkPen('#FFA500', width=2))
+        self.spike_marker_plot = self.plot.plot(pen=pg.mkPen('#FFFF00', width=1))
+        self.template_plot.hide()
+        self.spike_marker_plot.hide()
+
         # --- Connections ---
         self.go_button.clicked.connect(self._on_go_to_time)
         self.load_next_10s_button.clicked.connect(self.load_next_10s_data)
@@ -182,69 +189,105 @@ class RawPanel(QWidget):
         self.status_message.emit(f"Loading raw trace for cluster {cluster_id}...")
 
     def _on_data_loaded(self, cluster_id, raw_trace_data, start_time, end_time):
-        """Plot loaded data."""
+        """Plot loaded data using persistent PlotDataItems."""
         try:
             dm = self.main_window.data_manager
             features = dm.get_lightweight_features(cluster_id)
             if not features:
                 self.status_message.emit(f"Could not retrieve features for cluster {cluster_id}")
                 return
+
             median_ei = features['median_ei']
             if median_ei.size == 0 or len(median_ei.shape) < 2:
                 self.status_message.emit(f"Invalid data for cluster {cluster_id}")
                 return
+
             p2p = median_ei.max(axis=1) - median_ei.min(axis=1)
             dom_chan = np.argmax(p2p)
             nearest_channels = dm.get_nearest_channels(dom_chan, n_channels=3)
+
             time_axis = np.linspace(start_time, end_time, raw_trace_data.shape[1]) if raw_trace_data.shape[1] > 0 else np.array([])
             vertical_offset = max(np.max(np.abs(raw_trace_data)), 1) * 2.0 if raw_trace_data.size > 0 else 100
-            self.plot.clear()
+
             self.plot.setTitle(f"Raw Traces for Cluster {cluster_id} - Dominant: {dom_chan}")
             self.plot.setLabel('bottom', 'Time (s)')
             self.plot.setLabel('left', 'Amplitude (µV)')
-            for i, (chan_idx, trace) in enumerate(zip(nearest_channels, raw_trace_data)):
-                offset_trace = trace + i * vertical_offset
-                pen_color = (150, 150, 150, 150) if chan_idx == dom_chan else (120, 120, 150, 100)
-                self.plot.plot(time_axis, offset_trace, pen=pg.mkPen(color=pen_color, width=1))
+
+            # Update trace plots
+            num_traces = len(raw_trace_data)
+            for i in range(len(self.trace_plots)):
+                if i < num_traces:
+                    chan_idx, trace = nearest_channels[i], raw_trace_data[i]
+                    offset_trace = trace + i * vertical_offset
+                    pen_color = (150, 150, 150, 150) if chan_idx == dom_chan else (120, 120, 150, 100)
+                    self.trace_plots[i].setData(time_axis, offset_trace)
+                    self.trace_plots[i].setPen(pg.mkPen(color=pen_color, width=1))
+                    self.trace_plots[i].show()
+                else:
+                    self.trace_plots[i].hide()
+
             # Plot spikes/templates
             all_spikes = dm.get_cluster_spikes_in_window(cluster_id, start_time, end_time)
             if len(all_spikes) > 0:
                 window_spikes_sec = all_spikes / dm.sampling_rate
                 visible_range = self.plot.viewRange()[0]
                 visible_duration = visible_range[1] - visible_range[0]
-                try:
-                    dom_idx_in_list = nearest_channels.index(dom_chan)
-                except ValueError:
-                    dom_idx_in_list = 0
-                if visible_duration < 0.1:
+
+                if visible_duration < 0.1:  # Zoomed in: show templates
+                    self.spike_marker_plot.hide()
+                    try:
+                        dom_idx_in_list = nearest_channels.index(dom_chan)
+                    except ValueError:
+                        dom_idx_in_list = 0
+                    
                     template_waveform = median_ei[dom_chan]
                     template_len = len(template_waveform)
                     trough_idx = np.argmin(template_waveform)
                     time_to_trough = trough_idx / dm.sampling_rate
-                    dominant_trace = raw_trace_data[dom_idx_in_list]
+                    
+                    dominant_trace = raw_trace_data[dom_idx_in_list] if dom_idx_in_list < len(raw_trace_data) else np.array([0])
                     baseline_offset = np.median(dominant_trace)
+                    
                     all_template_points = np.empty((len(window_spikes_sec) * (template_len + 1), 2))
+                    all_template_points.fill(np.nan)
+
                     for i, spike_time in enumerate(window_spikes_sec):
                         start_idx = i * (template_len + 1)
                         end_idx = start_idx + template_len
                         start_time_template = spike_time - time_to_trough
                         end_time_template = start_time_template + (template_len - 1) / dm.sampling_rate
+                        
                         all_template_points[start_idx:end_idx, 0] = np.linspace(start_time_template, end_time_template, template_len)
                         all_template_points[start_idx:end_idx, 1] = template_waveform + baseline_offset + (dom_idx_in_list * vertical_offset)
-                        all_template_points[end_idx] = (np.nan, np.nan)
-                    self.plot.plot(all_template_points[:, 0], all_template_points[:, 1], pen=pg.mkPen('#FFA500', width=2))
-                else:
+                    
+                    self.template_plot.setData(all_template_points[:, 0], all_template_points[:, 1])
+                    self.template_plot.show()
+                else:  # Zoomed out: show vertical lines
+                    self.template_plot.hide()
                     view_box = self.plot.getViewBox()
                     y_range = view_box.viewRange()[1]
                     y_min, y_max = y_range[0], y_range[1]
+                    
                     line_points = np.empty((len(window_spikes_sec) * 3, 2))
+                    line_points.fill(np.nan)
+
                     for i, spike_time in enumerate(window_spikes_sec):
                         idx = i * 3
                         line_points[idx] = (spike_time, y_min)
                         line_points[idx + 1] = (spike_time, y_max)
-                        line_points[idx + 2] = (np.nan, np.nan)
-                    self.plot.plot(line_points[:, 0], line_points[:, 1], pen=pg.mkPen('#FFFF00', width=1))
+                    
+                    self.spike_marker_plot.setData(line_points[:, 0], line_points[:, 1])
+                    self.spike_marker_plot.show()
+            else:
+                self.template_plot.hide()
+                self.spike_marker_plot.hide()
+
         except Exception as e:
+            # In case of error, ensure plots are cleared to avoid showing stale data
+            for plot_item in self.trace_plots:
+                plot_item.clear()
+            self.template_plot.clear()
+            self.spike_marker_plot.clear()
             self.status_message.emit(f"Error plotting raw trace: {str(e)}")
         finally:
             self.status_message.emit(f"Raw trace loaded for cluster {cluster_id}")

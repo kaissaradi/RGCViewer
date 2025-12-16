@@ -1,0 +1,1 @@
+The application follows a Model-View-Controller-like pattern. Data is managed by `DataManager`. The UI is in `gui/` with `MainWindow` as the main entry point. Panels are modular widgets. Background tasks are handled by `Workers`.

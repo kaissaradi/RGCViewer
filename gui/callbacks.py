@@ -496,7 +496,7 @@ def add_new_group(main_window: MainWindow, name: str):
 
 def feature_extraction(main_window: MainWindow, cluster_ids):
     """Feature extraction for selected clusters."""
-    print(f"feature extraction")
+    logger.info(f"feature extraction for clusters: {cluster_ids}")
     dlg = FeatureExtractionWindow(main_window, cluster_ids)
     dlg.exec_()
     pass

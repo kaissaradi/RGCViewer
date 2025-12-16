@@ -1,212 +1,130 @@
-from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter
-import pyqtgraph as pg
 import numpy as np
+import pyqtgraph as pg
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import correlate
 from analysis.constants import ISI_REFRACTORY_PERIOD_MS
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from gui.main_window import MainWindow
-import logging
-logger = logging.getLogger(__name__)
 
 class StandardPlotsPanel(QWidget):
     """
-    New "Home" tab containing quick diagnostic plots in a 2x2 grid:
-    - Template (Top Left): Kilosort template for cluster's dominant channel
-    - Autocorrelation (Top Right): New histogram-based ACG plot
-    - ISI Distribution (Bottom Left): Replicates old plotting aesthetics
-    - Firing Rate (Bottom Right): Replicates old plotting aesthetics
+    Standard Dashboard:
+    [ Template Grid ] [ Autocorrelation ]
+    [ ISI Hist      ] [ Firing Rate     ]
     """
-    def __init__(self, main_window: MainWindow, parent=None):
-        super().__init__(parent)
+    def __init__(self, main_window):
+        super().__init__()
         self.main_window = main_window
-        self.sampling_rate = self.main_window.data_manager.sampling_rate if self.main_window.data_manager else 20000.0
-        
-        # Create main layout
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
         
-        # Create main splitter (vertical) to contain two horizontal splitters
-        main_splitter = QSplitter(Qt.Orientation.Vertical)
+        # 2x2 Layout using Splitters
+        self.vert_splitter = QSplitter(Qt.Vertical)
+        layout.addWidget(self.vert_splitter)
         
-        # Top horizontal splitter for Template and Autocorrelation
-        top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Template plot (Top Left)
-        self.template_plot = pg.PlotWidget(title="Template (Dominant Channel)")
-        top_splitter.addWidget(self.template_plot)
-        
-        # Autocorrelation plot (Top Right) 
+        self.top_splitter = QSplitter(Qt.Horizontal)
+        self.bottom_splitter = QSplitter(Qt.Horizontal)
+        self.vert_splitter.addWidget(self.top_splitter)
+        self.vert_splitter.addWidget(self.bottom_splitter)
+
+        # 1. Template Grid (Top Left)
+        self.grid_widget = pg.GraphicsLayoutWidget()
+        self.grid_plot = self.grid_widget.addPlot(title="Spatial Template")
+        self.grid_plot.setAspectLocked(True)
+        self.grid_plot.hideAxis('bottom')
+        self.grid_plot.hideAxis('left')
+        self.top_splitter.addWidget(self.grid_widget)
+
+        # 2. Autocorrelation (Top Right)
         self.acg_plot = pg.PlotWidget(title="Autocorrelation")
-        top_splitter.addWidget(self.acg_plot)
-        
-        # Add top splitter to main splitter
-        main_splitter.addWidget(top_splitter)
-        
-        # Bottom horizontal splitter for ISI and Firing Rate
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # ISI Distribution plot (Bottom Left)
-        self.isi_plot = pg.PlotWidget(title="Inter-Spike Interval (ISI) Histogram")
-        bottom_splitter.addWidget(self.isi_plot)
-        
-        # Firing Rate plot (Bottom Right)
+        self.acg_plot.setLabel('bottom', "Lag (ms)")
+        self.top_splitter.addWidget(self.acg_plot)
+
+        # 3. ISI (Bottom Left)
+        self.isi_plot = pg.PlotWidget(title="ISI Distribution")
+        self.isi_plot.setLabel('bottom', "ISI (ms)")
+        self.bottom_splitter.addWidget(self.isi_plot)
+
+        # 4. Firing Rate (Bottom Right)
         self.fr_plot = pg.PlotWidget(title="Firing Rate")
-        bottom_splitter.addWidget(self.fr_plot)
+        self.fr_plot.setLabel('bottom', "Time (s)")
+        self.fr_plot.setLabel('left', "Hz")
+        self.bottom_splitter.addWidget(self.fr_plot)
         
-        # Add bottom splitter to main splitter
-        main_splitter.addWidget(bottom_splitter)
-        
-        # Set sizes to make the layout approximately even
-        top_splitter.setSizes([400, 400])
-        bottom_splitter.setSizes([400, 400])
-        main_splitter.setSizes([400, 400])
-        
-        # Add main splitter to the layout
-        layout.addWidget(main_splitter)
+        self.vert_splitter.setSizes([500, 300])
 
     def update_all(self, cluster_id):
-        """
-        Update all plots for the given cluster ID
-        """
-        if self.main_window.data_manager is None:
-            logger.warning("No data manager available for StandardPlotsPanel")
-            return
-            
-        data_manager = self.main_window.data_manager
+        if cluster_id is None: return
+        dm = self.main_window.data_manager
         
-        # Update each plot
-        self._update_template_plot(cluster_id, data_manager)
-        self._update_acg_plot(cluster_id, data_manager)
-        self._update_isi_plot(cluster_id, data_manager)
-        self._update_firing_rate_plot(cluster_id, data_manager)
-
-    def _update_template_plot(self, cluster_id, data_manager):
-        """Update the template plot for the dominant channel."""
-        self.template_plot.clear()
-        
-        if hasattr(data_manager, 'templates') and cluster_id < data_manager.templates.shape[0]:
-            # Get the template for this cluster: shape is (n_clusters, n_timepoints, n_channels)
-            template = data_manager.templates[cluster_id]
+        # --- 1. Template Grid (Spatial) ---
+        self.grid_plot.clear()
+        if hasattr(dm, 'templates') and cluster_id < dm.templates.shape[0]:
+            template = dm.templates[cluster_id] # (n_time, n_chan)
+            # Use channel positions to plot geometric layout
+            # (Simplified logic: Loop channels, offset by position, plot line)
+            pos = dm.channel_positions
+            # Scale factors for visualization
+            x_scale, y_scale = 1.5, 1.0 
             
-            # Find the dominant channel (largest amplitude across time)
-            ptp_amplitudes = template.max(axis=0) - template.min(axis=0)  # amplitude per channel
-            dominant_channel = np.argmax(ptp_amplitudes)
+            # Find relevant channels (thresholding)
+            ptp = template.max(axis=0) - template.min(axis=0)
+            max_ptp = ptp.max()
+            relevant_chans = np.where(ptp > 0.1 * max_ptp)[0]
             
-            # Plot the template for the dominant channel
-            dominant_template = template[:, dominant_channel]
-            
-            # Create time axis in ms
-            time_axis = np.arange(len(dominant_template))
-            time_axis = (time_axis - len(time_axis)//2) / self.sampling_rate * 1000  # Convert to ms
-            
-            self.template_plot.plot(time_axis, dominant_template, pen=pg.mkPen('w', width=2))
-            self.template_plot.setTitle(f"Template (Cluster {cluster_id}, Ch {dominant_channel})")
-        else:
-            self.template_plot.setTitle(f"Template (Cluster {cluster_id} - No data)")
-
-    def _update_acg_plot(self, cluster_id, data_manager):
-        """Update the autocorrelation plot."""
-        self.acg_plot.clear()
-        
-        spike_times = data_manager.get_cluster_spikes(cluster_id)
-        if spike_times is None or len(spike_times) < 2:
-            self.acg_plot.setTitle(f"Autocorrelation (Cluster {cluster_id} - No data)")
-            return
-            
-        # Calculate all pairwise differences for spikes within a reasonable window
-        max_lag = int(0.1 * self.sampling_rate)  # 100ms window
-        spike_times = np.sort(spike_times)
-        
-        # Calculate differences efficiently
-        diffs = []
-        for i, st in enumerate(spike_times):
-            # Look at following spikes within the lag window
-            future_spikes = spike_times[i+1:]
-            lag_diffs = future_spikes - st
-            lag_diffs = lag_diffs[lag_diffs <= max_lag]
-            diffs.extend(lag_diffs)
-            # Stop if we're getting too far
-            if len(lag_diffs) == 0:
-                continue
+            for ch in relevant_chans:
+                x, y = pos[ch]
+                trace = template[:, ch]
+                # Normalize and scale trace to fit grid
+                trace_scaled = (trace / max_ptp) * 20 
+                t_offset = np.linspace(-10, 10, len(trace))
                 
-        if len(diffs) > 0:
-            diffs = np.concatenate([np.array(diffs), -np.array(diffs)])  # Include negative lags
-            bins = np.linspace(-max_lag, max_lag, 101)
-            counts, bin_edges = np.histogram(diffs, bins=bins)
-            
-            # Convert bins to ms
-            bins_ms = bin_edges / self.sampling_rate * 1000
-            
-            # Plot as step histogram
-            self.acg_plot.plot(bins_ms, counts, stepMode=True, fillLevel=0, 
-                              brush=(100, 100, 200, 100), pen=pg.mkPen('b', width=1))
-            self.acg_plot.setTitle(f"Autocorrelation (Cluster {cluster_id})")
-        else:
-            self.acg_plot.setTitle(f"Autocorrelation (Cluster {cluster_id})")
+                # Plot
+                self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, 
+                                    pen=pg.mkPen('#00e6a0', width=1))
 
-    def _update_isi_plot(self, cluster_id, data_manager):
-        """Update the ISI plot with the old aesthetic."""
+        # --- Data Prep for Metrics ---
+        spikes = dm.get_cluster_spikes(cluster_id)
+        if len(spikes) < 2: return
+        sr = dm.sampling_rate
+
+        # --- 2. Autocorrelation (Purple) ---
+        self.acg_plot.clear()
+        # Bin spikes at 1ms
+        spikes_ms = (spikes / sr * 1000).astype(int)
+        if len(spikes_ms) > 0:
+            duration = spikes_ms[-1]
+            bins = np.arange(0, duration + 1, 1)
+            binned, _ = np.histogram(spikes_ms, bins=bins)
+            
+            # Compute ACG via FFT (Fast)
+            # Pad to power of 2 for speed
+            n = 1 << (len(binned) * 2 - 1).bit_length()
+            ft = np.fft.rfft(binned, n)
+            acg = np.fft.irfft(ft * np.conj(ft))
+            # Keep center 100ms
+            acg = acg[:100] 
+            acg[0] = 0 # Remove zero-lag peak
+            
+            self.acg_plot.plot(np.arange(101), acg, fillLevel=0, stepMode=True,
+                               brush=(170, 0, 255, 100), pen='#aa00ff')
+
+        # --- 3. ISI (Blue Step + Filled) ---
         self.isi_plot.clear()
+        isi_ms = np.diff(np.sort(spikes)) / sr * 1000
+        y, x = np.histogram(isi_ms, bins=np.linspace(0, 50, 101))
         
-        spike_times = data_manager.get_cluster_spikes(cluster_id)
-        if spike_times is None or len(spike_times) < 2:
-            self.isi_plot.setTitle(f"ISI Histogram (Cluster {cluster_id} - No data)")
-            return
-            
-        # Calculate ISIs in ms
-        isis_ms = np.diff(np.sort(spike_times)) / self.sampling_rate * 1000
-        
-        # Create histogram
-        bins = np.linspace(0, 50, 101)  # 0 to 50 ms in 100 bins
-        y, x = np.histogram(isis_ms, bins=bins)
-        
-        # Plot with old aesthetic: step mode, filled, specific blue color
         self.isi_plot.plot(x, y, stepMode="center", fillLevel=0,
-                          brush=(0, 163, 224, 150),  # The specific "Old" Blue
-                          pen=pg.mkPen(color='#33b5e5', width=2))
-        
-        # Add vertical dashed red line at refractory period (1.5 or 2.0 ms)
-        self.isi_plot.addLine(x=ISI_REFRACTORY_PERIOD_MS, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine, width=2))
-        
-        self.isi_plot.setTitle(f"ISI Histogram (Cluster {cluster_id})")
-        self.isi_plot.setLabel('bottom', 'ISI (ms)')
-        self.isi_plot.setLabel('left', 'Count')
+                           brush=(0, 163, 224, 150), 
+                           pen=pg.mkPen('#33b5e5', width=2))
+        self.isi_plot.addItem(pg.InfiniteLine(ISI_REFRACTORY_PERIOD_MS, angle=90, 
+                                              pen=pg.mkPen('r', style=Qt.DashLine)))
 
-    def _update_firing_rate_plot(self, cluster_id, data_manager):
-        """Update the firing rate plot with the old aesthetic."""
+        # --- 4. Firing Rate (Yellow Smooth) ---
         self.fr_plot.clear()
+        spikes_sec = spikes / sr
+        bins = np.arange(0, spikes_sec.max() + 1, 1)
+        counts, _ = np.histogram(spikes_sec, bins=bins)
+        rate = gaussian_filter1d(counts.astype(float), sigma=5) # Smooth
         
-        spike_times = data_manager.get_cluster_spikes(cluster_id)
-        if spike_times is None or len(spike_times) < 2:
-            self.fr_plot.setTitle(f"Firing Rate (Cluster {cluster_id} - No data)")
-            return
-            
-        # Convert spike times to seconds
-        spike_times_sec = spike_times / self.sampling_rate
-        
-        # Calculate total duration and create 1-second bins
-        duration = spike_times_sec.max() - spike_times_sec.min()
-        if duration <= 1:  # If less than 1 second, use total duration as bin
-            bins = np.array([spike_times_sec.min(), spike_times_sec.max()])
-        else:
-            bins = np.arange(spike_times_sec.min(), spike_times_sec.max() + 1, 1)
-            
-        # Calculate counts per bin
-        counts, _ = np.histogram(spike_times_sec, bins=bins)
-        
-        # Apply Gaussian smoothing with sigma=5 as in the old code
-        if len(counts) > 1:
-            rate = gaussian_filter1d(counts.astype(float), sigma=5)
-            
-            # Convert bin edges to bin centers for plotting
-            bin_centers = (bins[:-1] + bins[1:]) / 2
-            
-            # Plot with yellow line as in old aesthetic
-            self.fr_plot.plot(bin_centers, rate, pen=pg.mkPen('y', width=2))  # 'y' = Yellow
-            self.fr_plot.setTitle(f"Firing Rate (Cluster {cluster_id})")
-            self.fr_plot.setLabel('bottom', 'Time (s)')
-            self.fr_plot.setLabel('left', 'Rate (Hz)')
-        else:
-            self.fr_plot.setTitle(f"Firing Rate (Cluster {cluster_id})")
+        self.fr_plot.plot(bins[:-1], rate, pen=pg.mkPen('#ffeb3b', width=2))

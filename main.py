@@ -1,6 +1,15 @@
 import sys
 from qtpy.QtWidgets import QApplication
 from gui.main_window import MainWindow
+import logging
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout  # Log to standard output
+)
+# ---
 
 if __name__ == "__main__":
     # Set your default paths here for testing

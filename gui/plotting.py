@@ -4,9 +4,14 @@ from qtpy.QtCore import Qt, QTimer
 from scipy.spatial.distance import cdist
 from scipy.ndimage import gaussian_filter1d
 from analysis import analysis_core
-import matplotlib.pyplot as plt
+import matplotlib
 import logging
+# Set matplotlib logging level to WARNING to suppress font debug messages
+matplotlib_logger = logging.getLogger('matplotlib.font_manager')
+matplotlib_logger.setLevel(logging.WARNING)
+import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
+
 
 # Note: The update_raw_trace_plot function has been replaced by background loading
 # The functionality is now handled by MainWindow.load_raw_trace_data and related worker
@@ -28,7 +33,7 @@ def draw_sta_plot(main_window, cluster_id):
     """
     vision_cluster_id = cluster_id + 1
     has_vision_sta = main_window.data_manager.vision_stas and vision_cluster_id in main_window.data_manager.vision_stas
-    
+
     if has_vision_sta:
         stop_sta_animation(main_window)
 
@@ -38,11 +43,11 @@ def draw_sta_plot(main_window, cluster_id):
         main_window.current_sta_data = sta_data
         main_window.current_stafit = stafit # <-- Store the fit
         main_window.current_sta_cluster_id = vision_cluster_id
-        
+
         n_frames = sta_data.red.shape[2]
         main_window.total_sta_frames = n_frames
         main_window.sta_frame_slider.setMaximum(n_frames - 1)
-        
+
         all_channels = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=0)
         frame_energies = np.max(np.abs(all_channels), axis=(0, 1, 2))
         peak_frame_index = np.argmax(frame_energies)
@@ -76,10 +81,10 @@ def draw_population_rfs_plot(main_window, selected_cell_id=None):
     logger.debug("Received selected_cell_id=%s for population RF plot", selected_cell_id)
     # MODIFIED: This function now accepts 'selected_cell_id'
     has_vision_params = main_window.data_manager.vision_params
-    
+
     if has_vision_params:
         main_window.sta_canvas.fig.clear()
-        
+
         analysis_core.plot_population_rfs(
             main_window.sta_canvas.fig,
             main_window.data_manager.vision_params,
@@ -90,7 +95,7 @@ def draw_population_rfs_plot(main_window, selected_cell_id=None):
         main_window.sta_canvas.draw()
     else:
         main_window.sta_canvas.fig.clear()
-        main_window.sta_canvas.fig.text(0.5, 0.5, "No Vision parameters available", 
+        main_window.sta_canvas.fig.text(0.5, 0.5, "No Vision parameters available",
                                        ha='center', va='center', color='gray')
         main_window.sta_canvas.draw()
 
@@ -125,17 +130,17 @@ def draw_sta_animation_plot(main_window, cluster_id):
         main_window.current_frame_index = 0
         n_frames = main_window.current_sta_data.red.shape[2]
         main_window.total_sta_frames = n_frames
-        
+
         main_window.sta_frame_slider.setMinimum(0)
         main_window.sta_frame_slider.setMaximum(n_frames - 1)
         main_window.sta_frame_slider.setValue(0)
         main_window.sta_frame_label.setText(f"Frame: 1/{n_frames}")
         main_window.sta_frame_slider.setEnabled(True)
-        
+
         if main_window.sta_animation_timer is None:
             main_window.sta_animation_timer = QTimer()
             main_window.sta_animation_timer.timeout.connect(lambda: update_sta_frame(main_window))
-        
+
         if not main_window.sta_animation_timer.isActive():
             main_window.sta_animation_timer.start(100)
     else:
@@ -148,7 +153,7 @@ def update_sta_frame(main_window):
     # Updates the STA visualization to the next frame in the animation.
     if not hasattr(main_window, 'current_sta_data') or main_window.current_sta_data is None:
         return
-    
+
     main_window.current_frame_index = (main_window.current_frame_index + 1) % main_window.total_sta_frames
     main_window.sta_frame_slider.setValue(main_window.current_frame_index)
     main_window.sta_frame_label.setText(f"Frame: {main_window.current_frame_index + 1}/{main_window.total_sta_frames}")
