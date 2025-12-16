@@ -28,21 +28,21 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
         ks_dir_name = kilosort_dir
     if not ks_dir_name:
         return
-        
+
     main_window.status_bar.showMessage("Loading Kilosort files...")
     QApplication.processEvents()
-    
+
     main_window.data_manager = DataManager(ks_dir_name, main_window)
     success, message = main_window.data_manager.load_kilosort_data()
-    
+
     if not success:
         QMessageBox.critical(main_window, "Loading Error", message)
         main_window.status_bar.showMessage("Loading failed.", 5000)
         return
-        
+
     main_window.status_bar.showMessage("Kilosort files loaded. Please select the raw data file.")
     QApplication.processEvents()
-    
+
     if dat_file is None:
         dat_file, _ = QFileDialog.getOpenFileName(main_window, "Select Raw Data File (.dat or .bin)",
                                               str(main_window.data_manager.dat_path_suggestion.parent),
@@ -57,14 +57,14 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
 
     main_window.status_bar.showMessage("Building cluster dataframe...")
     QApplication.processEvents()
-    
+
     main_window.data_manager.build_cluster_dataframe()
 
     # Automatically check for and load vision files in the same directory.
     # We will search for any set of matching files (.ei, .sta, .params).
     vision_dir = Path(ks_dir_name)
     dataset_name = None
-    
+
     print(f"[DEBUG] Scanning for Vision files in {vision_dir}...")
 
     # Find any .ei file and check if its siblings (.sta, .params) exist.
@@ -73,11 +73,11 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
         dataset_name = base_name
         print(f"[DEBUG] Found EI file with base name: '{dataset_name}'")
         break  # Use the first EI file found
-        
+
         # Check if the corresponding .sta and .params files exist
         # if (vision_dir / f'{base_name}.sta').exists() and \
         #    (vision_dir / f'{base_name}.params').exists():
-            
+
         #     dataset_name = base_name
         #     print(f"[DEBUG] Found complete Vision file set with base name: '{dataset_name}'")
         #     break  # Found a set, no need to check further
@@ -85,14 +85,14 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     if dataset_name:
         main_window.status_bar.showMessage(f"Found Vision EI file ('{dataset_name}') in directory - loading automatically...")
         QApplication.processEvents()
-        
+
         # Call the updated method with the discovered dataset name
         success, message = main_window.data_manager.load_vision_data(vision_dir, dataset_name)
-        
+
         print(f"[DEBUG] Vision data load completed. Success: {success}, Message: {message}")
     else:
         print(f"[DEBUG] No complete set of .ei, .sta, and .params files found. Skipping automatic loading.")
-    
+
     # Load cell type file
     ls_txt = list(vision_dir.glob('*.txt'))
     if len(ls_txt) > 0:
@@ -111,15 +111,17 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     # Update with highlights. Need to improve and merge with above.
     main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
-    
+
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
     main_window.load_classification_action.setEnabled(True)
     main_window.status_bar.showMessage(f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.", 5000)
 
-    # Hide sta_panel if no vision STAs are loaded
-    if not main_window.data_manager.vision_stas:
+    # Show or hide sta_panel based on whether vision STAs are loaded
+    if main_window.data_manager.vision_stas:
+        main_window.sta_panel.show()
+    else:
         main_window.sta_panel.hide()
 
 def load_vision_directory(main_window: MainWindow):
@@ -145,11 +147,11 @@ def load_vision_directory(main_window: MainWindow):
     else:
         # If Vision loading fails but params/sta exist, we can still proceed with available data
         vision_path = Path(vision_dir_name)
-        
+
         # Check if params or sta files exist - if so, we can still display them without EI
         params_path = vision_path / 'sta_params.params'
         sta_path = vision_path / 'sta_container.sta'
-        
+
         if params_path.exists() or sta_path.exists():
             # Still try to load what we can
             success_partial, message_partial = main_window.data_manager.load_vision_data(vision_dir_name)
@@ -157,7 +159,7 @@ def load_vision_directory(main_window: MainWindow):
                 main_window.status_bar.showMessage(f"Loaded partial Vision data: {message_partial}", 5000)
             else:
                 # Show a warning instead of a critical error, since partial data can still be useful
-                QMessageBox.warning(main_window, "Vision Loading Warning", 
+                QMessageBox.warning(main_window, "Vision Loading Warning",
                     f"Could not load all Vision data, but some files were found. {message}")
             # Still trigger refresh so that any available data is shown
             if main_window._get_selected_cluster_id() is not None:
@@ -174,7 +176,7 @@ def on_cluster_selection_changed(main_window: MainWindow):
     cluster_id = main_window._get_selected_cluster_id()
     if cluster_id is None:
         return
-    
+
     # This single call now handles the debouncing logic.
     main_window.update_cluster_views(cluster_id)
 
@@ -244,10 +246,10 @@ def on_refine_cluster(main_window: MainWindow):
     if cluster_id is None:
         QMessageBox.warning(main_window, "No Cluster Selected", "Please select a cluster from the table to refine.")
         return
-        
+
     main_window.refine_button.setEnabled(False)
     main_window.status_bar.showMessage(f"Starting refinement for Cluster {cluster_id}...")
-    
+
     main_window.refine_thread = QThread()
     main_window.refinement_worker = RefinementWorker(main_window.data_manager, cluster_id)
     main_window.refinement_worker.moveToThread(main_window.refine_thread)
@@ -288,7 +290,7 @@ def on_save_action(main_window: MainWindow):
 
         save_path, _ = QFileDialog.getSaveFileName(main_window, "Save Refined Cluster Info",
             suggested_path, "TSV Files (*.tsv)")
-        
+
         if save_path:
             save_results(main_window, save_path)
 
@@ -299,11 +301,11 @@ def save_results(main_window: MainWindow, output_path: str):
         final_df = main_window.data_manager.cluster_df[['cluster_id', 'KSLabel']].copy()
         final_df.rename(columns={'KSLabel': col}, inplace=True)
         final_df.to_csv(output_path, sep='\t', index=False)
-        
+
         # Also save the tree structure to a separate JSON file
         tree_save_path = output_path.replace('.tsv', '_tree.json')
         main_window.data_manager.save_tree_structure(tree_save_path)
-        
+
         main_window.data_manager.is_dirty = False
         main_window.setWindowTitle("axolotl")
         main_window.save_action.setEnabled(False)
@@ -316,11 +318,11 @@ def apply_good_filter(main_window: MainWindow):
     """Filters the tree view to show only 'good' clusters."""
     if main_window.data_manager is None:
         return
-    
+
     # Create a filtered tree with only 'good' clusters
     model = main_window.tree_model
     model.clear()  # Clear any previous data
-    
+
     # df = main_window.data_manager.original_cluster_df[
     #     main_window.data_manager.original_cluster_df['KSLabel'] == 'good'
     # ].copy()
@@ -339,48 +341,48 @@ def apply_good_filter(main_window: MainWindow):
         group_item = QStandardItem(label)
         group_item.setEditable(False)
         group_item.setDropEnabled(True)  # Can drop cells into it
-        
+
         # Style group items differently from cells
         font = group_item.font()
         font.setBold(True)
         group_item.setFont(font)
-        
+
         # Set different background color for groups
         group_item.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
-        
+
         # Add folder icon for groups
         group_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
-        
+
         groups[label] = group_item
         model.appendRow(group_item)
-        
+
     # Add each cluster as a child item to its group
     for _, row in df.iterrows():
         cluster_id = row['cluster_id']
         label = row['KSLabel']
-        
+
         # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
         item_text = f"Cluster {cluster_id} (n={row['n_spikes']})"
         cell_item = QStandardItem(item_text)
         cell_item.setEditable(False)
-        
+
         # Add a special icon or style for cells to distinguish them
         font = cell_item.font()
         font.setItalic(False)
         cell_item.setFont(font)
-        
+
         # Add file icon for cells
         cell_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
-        
+
         # IMPORTANT: Store the actual cluster ID in the item's data role.
         # This is how we'll retrieve it when the item is clicked.
         cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-        
+
         # Prevent dropping items onto cells
-        cell_item.setDropEnabled(False) 
-        
+        cell_item.setDropEnabled(False)
+
         groups[label].appendRow(cell_item)
-        
+
     main_window.setup_tree_model(model)
     main_window.tree_view.expandAll()
 
@@ -413,60 +415,60 @@ def populate_tree_view(main_window: MainWindow):
     # --- Populate Tree View ---
     model = main_window.tree_model
     model.clear()  # Clear any previous data
-    
+
     df = main_window.data_manager.cluster_df.copy()
-    # If cell_type column doesn't exist, create it with 'Unknown'
-    if 'cell_type' not in df.columns:
-        df['cell_type'] = 'Unknown'
+    # If KSLabel column doesn't exist, create it with 'Unknown'
+    if 'KSLabel' not in df.columns:
+        df['KSLabel'] = 'Unknown'
 
     # Create top-level nodes for each unique cell type
     groups = {}
-    for label in df['cell_type'].unique():
+    for label in df['KSLabel'].unique():
         group_item = QStandardItem(label)
         group_item.setEditable(False)
         group_item.setDropEnabled(True)  # Can drop cells into it
-        
+
         # Style group items differently from cells
         font = group_item.font()
         font.setBold(True)
         group_item.setFont(font)
-        
+
         # Set different background color for groups
         group_item.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
-        
+
         # Add folder icon for groups
         group_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
-        
+
         groups[label] = group_item
         model.appendRow(group_item)
-        
+
     # Add each cluster as a child item to its group
     for _, row in df.iterrows():
         cluster_id = row['cluster_id']
-        label = row['cell_type']
-        
+        label = row['KSLabel']
+
         # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
         item_text = f"Cluster {cluster_id} (n={row['n_spikes']})"
         cell_item = QStandardItem(item_text)
         cell_item.setEditable(False)
-        
+
         # Add a special icon or style for cells to distinguish them
         font = cell_item.font()
         font.setItalic(False)
         cell_item.setFont(font)
-        
+
         # Add file icon for cells
         cell_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
-        
+
         # IMPORTANT: Store the actual cluster ID in the item's data role.
         # This is how we'll retrieve it when the item is clicked.
         cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-        
+
         # Prevent dropping items onto cells
-        cell_item.setDropEnabled(False) 
-        
+        cell_item.setDropEnabled(False)
+
         groups[label].appendRow(cell_item)
-        
+
     main_window.setup_tree_model(model)
     main_window.tree_view.expandAll()
 
@@ -476,18 +478,18 @@ def add_new_group(main_window: MainWindow, name: str):
     item = QStandardItem(name)
     item.setEditable(False)
     item.setDropEnabled(True)
-    
+
     # Apply the same styling as other groups
     font = item.font()
     font.setBold(True)
     item.setFont(font)
-    
+
     # Set different background color for groups
     item.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
-    
+
     # Add folder icon for groups
     item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
-    
+
     main_window.tree_model.appendRow(item)
 
 def feature_extraction(main_window: MainWindow, cluster_ids):
@@ -512,23 +514,23 @@ def load_classification_file(main_window: MainWindow):
         return
 
     file_path, _ = QFileDialog.getOpenFileName(
-        main_window, 
-        "Select Classification File", 
+        main_window,
+        "Select Classification File",
         str(Path.home()),
         "Text Files (*.txt);;All Files (*)"
     )
-    
+
     if not file_path:
         return
-    
+
     try:
         main_window.status_bar.showMessage("Loading classification file...")
         QApplication.processEvents()
-        
+
         # Parse the classification file
         with open(file_path, 'r') as f:
             lines = f.readlines()
-        
+
         # Dictionary to store cluster_id -> classification path
         classifications = {}
         for line in lines:
@@ -539,31 +541,31 @@ def load_classification_file(main_window: MainWindow):
             if len(parts) >= 2:
                 vision_id = int(parts[0])
                 classification_path = parts[1]
-                
+
                 # Convert vision_id (1-indexed) to cluster_id (0-indexed)
                 cluster_id = vision_id - 1
                 classifications[cluster_id] = classification_path
-        
+
         # Update the tree view based on classifications
         main_window.tree_model.clear()
-        
+
         # Group clusters by their classifications
         classification_groups = {}
         for cluster_id, path in classifications.items():
             if path not in classification_groups:
                 classification_groups[path] = []
             classification_groups[path].append(cluster_id)
-        
+
         # Also need to maintain clusters that weren't in the classification file
         all_cluster_ids = set(main_window.data_manager.cluster_df['cluster_id'])
         classified_cluster_ids = set(classifications.keys())
         unclassified_cluster_ids = all_cluster_ids - classified_cluster_ids
-        
+
         # Add clusters that were in the classification file
         for path, cluster_ids in classification_groups.items():
             # Create hierarchical structure from path (e.g., "All/OFF/brisk sustained/" -> nested groups)
             path_parts = [part for part in path.split('/') if part]  # Remove empty parts
-            
+
             # Navigate/create the hierarchical structure
             current_parent = main_window.tree_model
             for i, part in enumerate(path_parts):
@@ -579,99 +581,99 @@ def load_classification_file(main_window: MainWindow):
                     if item and item.text() == part:
                         found_item = item
                         break
-                
+
                 if found_item is None:
                     # Create new group item
                     group_item = QStandardItem(part)
                     group_item.setEditable(False)
                     group_item.setDropEnabled(True)
-                    
+
                     # Style group items differently from cells
                     font = group_item.font()
                     font.setBold(True)
                     group_item.setFont(font)
-                    
+
                     # Set different background color for groups
                     group_item.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
-                    
+
                     # Add folder icon for groups
                     group_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
-                    
+
                     current_parent.appendRow(group_item)
                     current_parent = group_item
                 else:
                     current_parent = found_item
-            
+
             # Add cluster items to the final group
             for cluster_id in cluster_ids:
                 if cluster_id in all_cluster_ids:
                     cluster_info = main_window.data_manager.cluster_df[
                         main_window.data_manager.cluster_df['cluster_id'] == cluster_id
                     ].iloc[0]
-                    
+
                     # Create cluster item with n_spikes and ISI info
                     item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
                     cell_item = QStandardItem(item_text)
                     cell_item.setEditable(False)
-                    
+
                     # Add file icon for cells
                     cell_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
-                    
+
                     # Store the cluster ID in the item's data role
                     cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-                    
+
                     # Prevent dropping items onto cells
                     cell_item.setDropEnabled(False)
-                    
+
                     current_parent.appendRow(cell_item)
-        
+
         # Add unclassified clusters under an 'Unclassified' group
         if unclassified_cluster_ids:
             unclassified_group = QStandardItem("Unclassified")
             unclassified_group.setEditable(False)
             unclassified_group.setDropEnabled(True)
-            
+
             # Style group items differently from cells
             font = unclassified_group.font()
             font.setBold(True)
             unclassified_group.setFont(font)
-            
+
             # Set different background color for groups
             unclassified_group.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
-            
+
             # Add folder icon for groups
             unclassified_group.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
-            
+
             main_window.tree_model.appendRow(unclassified_group)
-            
+
             for cluster_id in unclassified_cluster_ids:
                 cluster_info = main_window.data_manager.cluster_df[
                     main_window.data_manager.cluster_df['cluster_id'] == cluster_id
                 ].iloc[0]
-                
+
                 # Create cluster item with n_spikes and ISI info
                 item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
                 cell_item = QStandardItem(item_text)
                 cell_item.setEditable(False)
-                
+
                 # Add file icon for cells
                 cell_item.setIcon(main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
-                
+
                 # Store the cluster ID in the item's data role
                 cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-                
+
                 # Prevent dropping items onto cells
                 cell_item.setDropEnabled(False)
-                
+
                 unclassified_group.appendRow(cell_item)
-        
+
         # Set up the tree model and expand all
         main_window.setup_tree_model(main_window.tree_model)
         main_window.tree_view.expandAll()
-        
+
         main_window.status_bar.showMessage(f"Loaded classification file with {len(classifications)} classified clusters.", 5000)
         main_window.load_classification_action.setEnabled(True)
-        
+
     except Exception as e:
         QMessageBox.critical(main_window, "Loading Error", f"Error loading classification file: {e}")
         main_window.status_bar.showMessage("Classification file loading failed.", 5000)
@@ -689,7 +691,7 @@ def on_go_to_time(main_window: MainWindow):
     hours_text = main_window.time_input_hours.text().strip()
     minutes_text = main_window.time_input_minutes.text().strip()
     seconds_text = main_window.time_input_seconds.text().strip()
-    
+
     if not hours_text or not minutes_text or not seconds_text:
         main_window.status_bar.showMessage("Please enter values for hours, minutes, and seconds.", 5000)
         return
@@ -699,7 +701,7 @@ def on_go_to_time(main_window: MainWindow):
         hours = int(hours_text)
         minutes = int(minutes_text)
         seconds = int(seconds_text)
-        
+
         # Validate ranges
         if hours < 0 or hours > 23:
             raise ValueError("Hours must be between 0 and 23")
@@ -707,35 +709,35 @@ def on_go_to_time(main_window: MainWindow):
             raise ValueError("Minutes must be between 0 and 59")
         if seconds < 0 or seconds > 59:
             raise ValueError("Seconds must be between 0 and 59")
-        
+
         total_seconds = hours * 3600 + minutes * 60 + seconds
-        
+
         # Calculate the sample corresponding to the requested time
         target_sample = int(total_seconds * main_window.data_manager.sampling_rate)
-        
+
         if target_sample >= main_window.data_manager.n_samples:
             main_window.status_bar.showMessage(f"Time {hours:02d}:{minutes:02d}:{seconds:02d} exceeds recording duration.", 5000)
             return
-        
+
         # Show a fixed window starting from the target time (e.g., 5 seconds from target)
         duration_to_show = 5.0  # seconds
-        
+
         start_sample = target_sample
         end_sample = min(main_window.data_manager.n_samples, target_sample + int(duration_to_show * main_window.data_manager.sampling_rate))
-        
+
         # Convert samples back to seconds for the plot
         start_time = start_sample / main_window.data_manager.sampling_rate
         end_time = end_sample / main_window.data_manager.sampling_rate
-        
+
         # Set the X-axis range of the raw trace plot
         main_window.raw_trace_plot.setXRange(start_time, end_time, padding=0)
-        
+
         # Update the plot for the currently selected cluster
         cluster_id = main_window._get_selected_cluster_id()
         if cluster_id is not None:
             main_window.load_raw_trace_data(cluster_id)
-        
+
         main_window.status_bar.showMessage(f"Jumped to time {hours:02d}:{minutes:02d}:{seconds:02d}", 2000)
-        
+
     except ValueError:
         main_window.status_bar.showMessage("Invalid time values. Use valid numbers (HH:MM:SS, e.g., 00:05:30).", 5000)

@@ -286,6 +286,13 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     fig.clear()
     peak_negative_smooth = spatial_features['peak_negative_smooth']
     ptp_amps = spatial_features['ptp_amps']
+
+    # --- DIAGNOSTIC PRINT ---
+    print("\n--- Spatial EI Diagnosis ---")
+    print("Peak-to-Peak Amplitudes by Channel:")
+    print(ptp_amps)
+    print("--------------------------\n")
+
     grid_x, grid_y, grid_z = spatial_features['grid_x'], spatial_features['grid_y'], spatial_features['grid_z']
     peak_times_ms = spatial_features['peak_times_ms']
     active_channels = spatial_features['active_channels']

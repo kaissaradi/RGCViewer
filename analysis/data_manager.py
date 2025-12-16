@@ -9,7 +9,7 @@ from analysis import vision_integration
 from analysis.constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
 import pickle
 import os
-import pickle
+import tempfile
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
@@ -57,8 +57,14 @@ def ei_corr(ref_ei_dict, test_ei_dict,
         ref_eis = [np.delete(ei, ref_to_remove[idx], axis = 0) for idx, ei in enumerate(ref_eis)]
 
     # Set any EI value where the ei is less than 1.5* its standard deviation to 0
+    # Added check for std to avoid division by zero (when std is 0)
     for idx, ei in enumerate(ref_eis):
-        ref_eis[idx][abs(ei) < (ei.std()*1.5)] = 0
+        ei_std = ei.std()
+        if ei_std > 0:
+            ref_eis[idx][abs(ei) < (ei_std*1.5)] = 0
+        else:
+            # If std is 0, all values are the same, set all to 0
+            ref_eis[idx][:] = 0
 
     # For 'full' method: flatten each 512 x 201 ei array into a vector
     # and stack flattened eis into a numpy array
@@ -97,7 +103,12 @@ def ei_corr(ref_ei_dict, test_ei_dict,
 
     # Set the EI value where the EI is less than 1.5* its standard deviation to 0
     for idx, ei in enumerate(test_eis):
-        test_eis[idx][abs(ei) < (ei.std()*1.5)] = 0
+        ei_std = ei.std()
+        if ei_std > 0:
+            test_eis[idx][abs(ei) < (ei_std*1.5)] = 0
+        else:
+            # If std is 0, all values are the same, set all to 0
+            test_eis[idx][:] = 0
 
     # For 'full' method: flatten each 512 x 201 ei array into a vector
     # and stack flattened eis into a numpy array
@@ -130,7 +141,8 @@ def ei_corr(ref_ei_dict, test_ei_dict,
     covs = c - d
 
     std_calc = np.std(test_eis, axis = 1)[:,None] * np.std(ref_eis, axis = 1)[:, None].T
-    corr = covs / std_calc
+    # Avoid division by zero - set to 0 if std calculation is 0
+    corr = np.divide(covs, std_calc, out=np.zeros_like(covs), where=std_calc!=0)
 
     # Set nan values and infinite values to 0
     np.nan_to_num(corr, copy=False, nan = 0, posinf = 0, neginf = 0)
@@ -188,12 +200,44 @@ class DataManager(QObject):
         self.vision_eis = None
         self.vision_stas = None
         self.vision_params = None
+        self.vision_channel_positions = None # Store channel positions from vision data
         self.vision_sta_width = None  # Store stimulus width for coordinate alignment
         self.vision_sta_height = None  # Store stimulus height for coordinate alignment
         self.ei_corr_dict = None  # Initialize to None, will be set when vision data is loaded
 
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
+
+    def _save_pickle_with_fallback(self, data, filepath):
+        """
+        Save pickle data to the original filepath. If permission is denied,
+        save to a temporary location instead.
+
+        Returns the path where the data was actually saved.
+        """
+        try:
+            # Try to save to the original location first
+            with open(filepath, 'wb') as f:
+                pickle.dump(data, f)
+            print(f"[DEBUG] Successfully saved pickle to {filepath}")
+            return filepath
+        except PermissionError:
+            # If permission denied, save to a temporary location
+            temp_dir = Path(tempfile.gettempdir())
+            filename = Path(filepath).name
+            temp_path = temp_dir / filename
+
+            try:
+                with open(temp_path, 'wb') as f:
+                    pickle.dump(data, f)
+                print(f"[DEBUG] Saved pickle to temporary location: {temp_path} (original location was not writable)")
+                return temp_path
+            except Exception as e:
+                print(f"[ERROR] Failed to save pickle to both original and temporary locations: {e}")
+                raise e
+        except Exception as e:
+            print(f"[ERROR] Failed to save pickle: {e}")
+            raise e
 
     def _sanitize_ei_dict(self, ei_dict):
         """
@@ -367,7 +411,13 @@ class DataManager(QObject):
         print(f"[DEBUG] Completed vision_integration.load_vision_data call")  # Debug
 
         if vision_data:
-            self.vision_eis = vision_data.get('ei')
+            ei_bundle = vision_data.get('ei')
+            if ei_bundle:
+                self.vision_eis = ei_bundle.get('ei_data')
+                self.vision_channel_positions = ei_bundle.get('electrode_map')
+                if self.vision_eis:
+                    print(f"[DEBUG] Available Vision EI IDs (sample): {list(self.vision_eis.keys())[:10]}")
+
             self.vision_stas = vision_data.get('sta')
             self.vision_params = vision_data.get('params')
 
@@ -429,9 +479,8 @@ class DataManager(QObject):
                             'space': space_corr,
                             'power': power_corr
                         }
-                        with open(str_corr_pkl, 'wb') as f:
-                            pickle.dump(self.ei_corr_dict, f)
-                        print(f"[DEBUG] EI correlations recomputed and saved to {str_corr_pkl}")
+                        saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
+                        print(f"[DEBUG] EI correlations recomputed and saved to {saved_path}")
                 else:
                     print(f'[DEBUG] Computing EI correlations')
                     full_corr = ei_corr(sanitized_eis, sanitized_eis, method='full', n_removed_channels=1)
@@ -442,9 +491,8 @@ class DataManager(QObject):
                         'space': space_corr,
                         'power': power_corr
                     }
-                    with open(str_corr_pkl, 'wb') as f:
-                        pickle.dump(self.ei_corr_dict, f)
-                    print(f"[DEBUG] EI correlations computed successfully and saved to {str_corr_pkl}")
+                    saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
+                    print(f"[DEBUG] EI correlations computed successfully and saved to {saved_path}")
 
                 # Update cluster_df to mark potential duplicates based on any EI correlation > threshold
                 if not self.cluster_df.empty:
@@ -535,7 +583,11 @@ class DataManager(QObject):
                         print(f"Error loading STA: {e}")
 
                 # Update the instance variables with any loaded data
-                self.vision_eis = vision_data.get('ei')
+                ei_bundle = vision_data.get('ei')
+                if ei_bundle:
+                    self.vision_eis = ei_bundle.get('ei_data')
+                    self.vision_channel_positions = ei_bundle.get('electrode_map')
+
                 self.vision_stas = vision_data.get('sta')
                 self.vision_params = vision_data.get('params')
 
@@ -658,11 +710,21 @@ class DataManager(QObject):
 
         # Initialize an empty cache for ISI violations
         self.isi_cache = {}
-        # Calculate ISI violations for all clusters and update the dataframe
-        for cluster_id in self.cluster_df['cluster_id']:
+        # Calculate ISI violations for all clusters with optimized approach
+        cluster_ids = self.cluster_df['cluster_id'].values
+        isi_values = []
+
+        # Calculate ISI for each cluster but show progress
+        total_clusters = len(cluster_ids)
+        for i, cluster_id in enumerate(cluster_ids):
             isi_value = self._calculate_isi_violations(cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS)
-            idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
-            self.cluster_df.at[idx, 'isi_violations_pct'] = isi_value
+            isi_values.append(isi_value)
+
+            # Print progress every 50 clusters to avoid too much output
+            if (i + 1) % 50 == 0 or i == total_clusters - 1:
+                print(f"[DEBUG] Calculated ISI for {i + 1}/{total_clusters} clusters")
+
+        self.cluster_df['isi_violations_pct'] = isi_values
         print(f"[DEBUG] ISI violations calculated and updated in cluster_df")
 
         # Load status

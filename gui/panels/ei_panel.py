@@ -14,8 +14,15 @@ def compute_ei_map(
     ei: np.ndarray,
     channel_positions: np.ndarray) -> np.ndarray:
 
+    if ei.shape[0] != channel_positions.shape[0]:
+        print(f"[ERROR] Failed to compute EI map: Mismatch between EI channels ({ei.shape[0]}) and position data ({channel_positions.shape[0]})")
+        return None
+
     if ei.shape[0] != 512:
-        print(f'Warning: Expected EI shape (512, n_timepoints), got {ei.shape}')
+        # This is normal for vision data which can have different number of channels
+        # Only print the warning if the number of channels differs significantly
+        if ei.shape[0] not in [512, 519]:  # Common sizes in vision data
+            print(f'Warning: Expected EI shape (n_channels, n_timepoints), got {ei.shape}')
 
     xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
     yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
@@ -33,8 +40,8 @@ def compute_ei_map(
     # ei_energy = np.log10(np.mean(np.power(ei, 2), axis=1) + .000000001)
     ei_energy = np.log10(np.max(np.abs(ei), axis=1) + 1e-9)
     ei_energy_grid = griddata(
-        channel_positions, ei_energy, 
-        (grid_x, grid_y), method='linear', 
+        channel_positions, ei_energy,
+        (grid_x, grid_y), method='linear',
         fill_value=np.median(ei_energy))
 
     return ei_energy_grid.T
@@ -78,7 +85,7 @@ class EIPanel(QWidget):
         self.overlay_right_btn.clicked.connect(self._on_overlay_right)
 
         # Key toggles for overlay navigation
-        
+
         # --- Temporal EI Canvas (right) ---
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -92,7 +99,7 @@ class EIPanel(QWidget):
         splitter.setSizes([400, 400])
         self.spatial_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.temporal_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
- 
+
         QTimer.singleShot(0, self.spatial_canvas.draw)
         # QTimer.singleShot(0, self.temporal_plot.draw)
 
@@ -118,7 +125,7 @@ class EIPanel(QWidget):
                 self.main_window.status_bar.showMessage(f"Channel ID {closest_idx}")
             else:
                 self.main_window.status_bar.clearMessage()
-    
+
     def update_ei(self, cluster_ids):
         """
         Main entry point: update the EI panel for one or more clusters.
@@ -136,7 +143,11 @@ class EIPanel(QWidget):
         if has_vision_ei:
             self._load_and_draw_vision_ei(cluster_ids)
         else:
-            self._load_and_draw_ks_ei(cluster_ids)
+            if self.main_window.data_manager.vision_eis is not None:
+                print(f"[DEBUG] No Vision EI found for cluster(s) {cluster_ids}. Falling back to Kilosort EI.")
+            else:
+                print(f"[DEBUG] Vision EIs not loaded. Falling back to Kilosort EI.")
+            self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
 
     def clear(self):
         self.spatial_canvas.fig.clear()
@@ -146,42 +157,86 @@ class EIPanel(QWidget):
 
     def _load_and_draw_vision_ei(self, cluster_ids):
         vision_cluster_ids = cluster_ids + 1
-        ei_data_list = []
-        for cid in vision_cluster_ids:
-            if cid in self.main_window.data_manager.vision_eis:
-                ei_data_list.append(self.main_window.data_manager.vision_eis[cid].ei)
-        if not ei_data_list:
+
+        # --- Data Gathering and Validation ---
+        valid_ei_data_list = []
+        valid_original_ids = []
+
+        # Filter out invalid cluster IDs before accessing vision data
+        for i, cid in enumerate(vision_cluster_ids):
+            original_id = cluster_ids[i]
+            if isinstance(cid, (int, np.integer)) and 0 < cid < 100000:  # Increased reasonable limit
+                if cid in self.main_window.data_manager.vision_eis:
+                    ei_entry = self.main_window.data_manager.vision_eis[cid]
+                    if hasattr(ei_entry, 'ei') and ei_entry.ei is not None and ei_entry.ei.ndim == 2:
+                        valid_ei_data_list.append(ei_entry.ei)
+                        valid_original_ids.append(original_id)
+                    else:
+                        print(f"[DEBUG] EI for Vision cluster ID {cid} is invalid or not a 2D array.")
+                else:
+                    print(f"[DEBUG] Vision cluster ID {cid} (from original {original_id}) not found in vision_eis")
+            else:
+                print(f"[DEBUG] Invalid Vision cluster ID {cid} (from original {original_id}) - skipping")
+
+        if not valid_ei_data_list:
+            print(f"[DEBUG] No valid EI data found for any of the provided cluster IDs {cluster_ids}")
             self.clear()
             return
 
-        self.current_ei_data = ei_data_list
-        self.current_cluster_ids = cluster_ids
-        self.n_frames = ei_data_list[0].shape[1]
-
-        # Make EI maps
+        # --- EI Map Computation ---
         ei_map_list = []
-        for ei_data in ei_data_list:
-            ei_map = compute_ei_map(
-                ei_data,
-                self.main_window.data_manager.channel_positions
-            )
-            ei_map_list.append(ei_map)
+        final_valid_ids = []
+        final_valid_ei_data = []
 
-        # Get top electrode for first cluster
-        top_channels = self._get_top_electrodes(
-            ei_data_list[0], 
-            n_interval=2, n_markers=3, b_sort=True
-        ) 
+        for i, ei_data in enumerate(valid_ei_data_list):
+            original_id = valid_original_ids[i]
+            try:
+                # Determine which channel positions to use
+                if self.main_window.data_manager.vision_channel_positions is not None:
+                    channel_positions = self.main_window.data_manager.vision_channel_positions
+                else:
+                    channel_positions = self.main_window.data_manager.channel_positions
 
+                ei_map = compute_ei_map(
+                    ei_data,
+                    channel_positions
+                )
+                if ei_map is not None:
+                    ei_map_list.append(ei_map)
+                    final_valid_ids.append(original_id)
+                    final_valid_ei_data.append(ei_data)
+                else:
+                    print(f"[WARN] Skipped drawing EI for cluster {original_id} due to data mismatch.")
+            except Exception as e:
+                print(f"[ERROR] Failed to compute EI map for cluster {original_id}: {e}")
+
+        if not ei_map_list:
+            print(f"[ERROR] Could not generate any valid EI maps.")
+            self.clear()
+            return
+
+        # --- Plotting ---
         self.current_ei_map_list = ei_map_list
-        self.current_cluster_ids = cluster_ids
+        self.current_cluster_ids = final_valid_ids
+        self.current_ei_data = final_valid_ei_data
+        self.n_frames = self.current_ei_data[0].shape[1] if self.current_ei_data else 0
+
+        # Get top electrode for first valid cluster
+        try:
+            top_channels = self._get_top_electrodes(
+                self.current_ei_data[0],
+                n_interval=2, n_markers=3, b_sort=True
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to get top electrodes: {e}")
+            top_channels = []
+
         self.current_channels = top_channels
         self.overlay_index = 0
-            
-        # Draw spatial and temporal EI
-        # self._draw_vision_ei_spatial(ei_map_list, cluster_ids, top_channels)
-        self._draw_vision_ei_spatial_overlay_only(ei_map_list, cluster_ids, top_channels)
-        self._draw_vision_ei_temporal(ei_data_list, cluster_ids, top_channels)
+
+        # Draw spatial and temporal EI using only the valid data
+        self._draw_vision_ei_spatial_overlay_only(self.current_ei_map_list, self.current_cluster_ids, top_channels)
+        self._draw_vision_ei_temporal(self.current_ei_data, self.current_cluster_ids, top_channels)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Left:
@@ -190,7 +245,7 @@ class EIPanel(QWidget):
             self._on_overlay_right()
         else:
             super().keyPressEvent(event)
-    
+
     def _draw_vision_ei_spatial_overlay_only(self, ei_map_list, cluster_ids, channels=None):
             """
             Draw only the overlay axis, even for multiple clusters.
@@ -243,7 +298,7 @@ class EIPanel(QWidget):
                 self.overlay_dropdown.addItem(str(cid))
             self.overlay_dropdown.setCurrentIndex(overlay_idx)
             self.overlay_dropdown.blockSignals(False)
-    
+
     def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
         """
         Plot temporal EI traces for the given clusters using pyqtgraph.
@@ -267,7 +322,7 @@ class EIPanel(QWidget):
         self.temporal_plot.setLabel('bottom', 'Time (ms)')
         # self.temporal_plot.setAspectLocked(True)
         # self.temporal_plot.showGrid(x=True, y=True)
-    
+
     # def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
     #     """
     #     Example: Plot temporal EI traces for the given clusters.
@@ -290,7 +345,7 @@ class EIPanel(QWidget):
     #         # ax.legend()
     #         ax.grid(True)
     #         ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-        
+
     #     # Turn off any unused axes
     #     for k in range(i+1, len(axes)):
     #         axes[k].axis('off')
@@ -299,11 +354,11 @@ class EIPanel(QWidget):
     #     handles, labels = axes[0].get_legend_handles_labels()
     #     if handles:
     #         self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
-        
+
     #     self.temporal_canvas.fig.suptitle("Temporal EI", color='white', fontsize=16)
     #     self.temporal_canvas.fig.tight_layout()
     #     self.temporal_canvas.draw()
-    
+
     # def _draw_vision_ei_spatial(self, ei_map_list, cluster_ids, channels=None):
     #     n_clusters = len(ei_map_list)
     #     self.spatial_canvas.fig.clear()
@@ -357,7 +412,7 @@ class EIPanel(QWidget):
     #         self.overlay_left_btn.hide()
     #         self.overlay_right_btn.hide()
     #         self.overlay_dropdown.hide()
-    #         ax = self.spatial_canvas.fig.add_subplot(111)
+    #         ax = self.spatial_canvas.fig.add_subplot(111)i NO
     #         ax.set_title(f"Cluster {cluster_ids[0]} EI")
     #         im = ax.imshow(ei_map_list[0], cmap='hot', aspect='equal', origin='lower')
     #         if channels is not None:
@@ -385,10 +440,10 @@ class EIPanel(QWidget):
         if self.overlay_index < self.overlay_dropdown.count() - 1:
             self.overlay_index += 1
             self.overlay_dropdown.setCurrentIndex(self.overlay_index)
-    
+
     def _get_top_electrodes(self, ei, n_interval=2, n_markers=5, b_sort=True):
         ## Label top n_markers pixels spaced by n_interval in the heatmap
-        
+
         # Compute simple EI map in channel space
         ei_map = np.max(np.abs(ei), axis=1)
         ei_map = np.log10(ei_map + 1e-6)
@@ -407,9 +462,17 @@ class EIPanel(QWidget):
         return top_idx
 
     # --- Internal: Kilosort EI ---
-    def _load_and_draw_ks_ei(self, cluster_ids):
-        lightweight_features = self.main_window.data_manager.get_lightweight_features(cluster_ids)
-        heavyweight_features = self.main_window.data_manager.get_heavyweight_features(cluster_ids)
+    def _load_and_draw_ks_ei(self, cluster_ids, is_fallback=False):
+        if not hasattr(cluster_ids, '__len__') or len(cluster_ids) == 0:
+            self.clear()
+            self.spatial_canvas.fig.text(0.5, 0.5, "No cluster ID provided.", ha='center', va='center', color='orange')
+            self.spatial_canvas.draw()
+            return
+
+        cluster_id = cluster_ids[0]  # Operate on the first cluster ID
+
+        lightweight_features = self.main_window.data_manager.get_lightweight_features(cluster_id)
+        heavyweight_features = self.main_window.data_manager.get_heavyweight_features(cluster_id)
         if lightweight_features is None or heavyweight_features is None:
             self.clear()
             self.spatial_canvas.fig.text(0.5, 0.5, "Error generating features.", ha='center', va='center', color='red')
@@ -423,9 +486,13 @@ class EIPanel(QWidget):
             self.main_window.data_manager.channel_positions,
             heavyweight_features, self.main_window.data_manager.sampling_rate, pre_samples=20
         )
-        self.spatial_canvas.fig.suptitle(f"Cluster {cluster_ids} Spatial Analysis", color='white', fontsize=16)
+
+        title = f"Cluster {cluster_id} Spatial Analysis"
+        if is_fallback:
+            title += " (Vision EI not found)"
+        self.spatial_canvas.fig.suptitle(title, color='white', fontsize=16)
         self.spatial_canvas.draw()
-    
+
     def _reshape_ei(
         self, ei: np.ndarray,
         sorted_electrodes: np.ndarray, n_rows: int=16) -> np.ndarray:
@@ -440,4 +507,4 @@ class EIPanel(QWidget):
         sorted_ei = ei[sorted_electrodes]
         reshaped_ei = sorted_ei.reshape(n_rows, n_cols, n_frames)
         return reshaped_ei
-    
+

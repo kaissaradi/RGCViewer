@@ -63,7 +63,8 @@ def load_ei_data(vision_dir: Path, dataset_name: str):
         dataset_name (str): The base name of the dataset.
 
     Returns:
-        dict: A dictionary of EI data keyed by cluster_id.
+        dict: A dictionary containing 'ei_data' (a dict of EIs keyed by cluster_id)
+              and 'electrode_map' (the numpy array of channel positions).
     """
     if not VISION_LOADER_AVAILABLE:
         return None
@@ -71,8 +72,9 @@ def load_ei_data(vision_dir: Path, dataset_name: str):
     try:
         with vl.EIReader(str(vision_dir), dataset_name) as eir:
             eis_by_cell_id = eir.get_all_eis_by_cell_id()
+            electrode_map = eir.get_electrode_map()
             print(f"Successfully loaded EIs for {len(eis_by_cell_id)} cells.")
-            return eis_by_cell_id
+            return {'ei_data': eis_by_cell_id, 'electrode_map': electrode_map}
     except FileNotFoundError:
         print(f"Error: EI file not found in {vision_dir}")
         return None

@@ -70,7 +70,7 @@ class SimilarityPanel(QWidget):
 
         # Connect selection change after model is set (see set_data)
         self.table_selection_connected = False
-    
+
     def set_data(self, similarity_df):
         """Set the DataFrame for the similarity table."""
         self.similarity_model = HighlightStatusPandasModel(similarity_df)
@@ -85,6 +85,9 @@ class SimilarityPanel(QWidget):
         if self.similarity_model is not None:
             selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
             self.selection_changed.emit(selected_ids)
+        else:
+            # If model is not set, emit empty list to handle deselection properly
+            self.selection_changed.emit([])
 
     def select_top_n_rows(self, n):
         """Select the top n rows in the table."""
@@ -127,14 +130,14 @@ class SimilarityPanel(QWidget):
 
     def reset_spacebar_counter(self):
         self._spacebar_select_count = 1
-    
+
     def _mark_status(self, status):
         """Emit the selected clusters along with main cluster ID as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()
         if self.similarity_model is None:
             print("[ERROR] Similarity model is not set.")
             return
-        
+
         # If status is Clean, only apply to main cluster.
         if status == 'Clean':
             selected_ids = [self.main_cluster_id]
@@ -169,20 +172,55 @@ class SimilarityPanel(QWidget):
             return
 
         self.main_cluster_id = cluster_id
-        
+
         ei_corr_dict = self.main_window.data_manager.ei_corr_dict
-        cluster_ids = np.array(list(self.main_window.data_manager.vision_eis.keys())) - 1
-        main_idx = np.where(cluster_ids == cluster_id)[0][0]
-        other_idx = np.where(cluster_ids != cluster_id)[0]
-        other_ids = cluster_ids[other_idx]
+        # Convert Vision IDs (1-indexed) to Kilosort IDs (0-indexed) for matching with cluster_id
+        vision_cluster_ids = np.array(list(self.main_window.data_manager.vision_eis.keys()))
+        kilosort_cluster_ids = vision_cluster_ids - 1  # Convert to 0-indexed
+
+        # Check if the selected cluster exists in vision data
+        cluster_match_idx = np.where(kilosort_cluster_ids == cluster_id)[0]
+        if len(cluster_match_idx) == 0:
+            print(f"Warning: Cluster ID {cluster_id} not found in Vision data.")
+            self.clear()
+            return
+
+        main_idx = cluster_match_idx[0]  # Get the first match index
+        other_idx = np.where(kilosort_cluster_ids != cluster_id)[0]
+        other_ids = kilosort_cluster_ids[other_idx]
+
+        # Only include other_ids that actually exist in the main cluster dataframe
+        valid_cluster_df_ids = set(self.main_window.data_manager.cluster_df['cluster_id'].values)
+        valid_other_ids = [oid for oid in other_ids if oid in valid_cluster_df_ids]
+
+        if not valid_other_ids:
+            print(f"Warning: No valid other clusters found for cluster {cluster_id}.")
+            self.clear()
+            return
+
+        valid_other_ids = np.array(valid_other_ids)
+        # Calculate which indices in the correlation matrix correspond to valid IDs
+        valid_other_idx = []
+        for oid in valid_other_ids:
+            oid_idx = np.where(kilosort_cluster_ids == oid)[0]
+            if len(oid_idx) > 0:
+                valid_other_idx.append(oid_idx[0])
+
+        if not valid_other_idx:
+            print(f"Warning: Could not find valid indices for valid_other_ids.")
+            self.clear()
+            return
+
+        valid_other_idx = np.array(valid_other_idx)
+
         d_df = {
-            'cluster_id': other_ids,
-            'space_ei_corr': ei_corr_dict['space'][main_idx, other_idx],
-            'full_ei_corr': ei_corr_dict['full'][main_idx, other_idx],
-            'power_ei_corr': ei_corr_dict['power'][main_idx, other_idx]
+            'cluster_id': valid_other_ids,
+            'space_ei_corr': ei_corr_dict['space'][main_idx, valid_other_idx],
+            'full_ei_corr': ei_corr_dict['full'][main_idx, valid_other_idx],
+            'power_ei_corr': ei_corr_dict['power'][main_idx, valid_other_idx]
         }
         df = pd.DataFrame(d_df)
-        
+
         # Add n_spikes and status column
         cluster_df = self.main_window.data_manager.cluster_df
         n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
@@ -193,7 +231,7 @@ class SimilarityPanel(QWidget):
 
         set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
         df['set'] = df['cluster_id'].map(set_map)
-        
+
         # Sort by space_ei_corr descending
         df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
 
@@ -208,5 +246,5 @@ class SimilarityPanel(QWidget):
             df[col] = df[col].map(lambda x: f"{x:.2f}")
 
         df['potential_dups'] = df['potential_dups'].map(lambda x: 'Yes' if x else '')
-        
+
         self.set_data(df)

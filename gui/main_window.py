@@ -3,7 +3,7 @@ from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
     QHeaderView, QMessageBox, QTabWidget,
-    QTreeView, QAbstractItemView, QSlider, QLabel, 
+    QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QLineEdit,
     QApplication
 )
@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self.selection_timer.setInterval(150)  # 150ms delay
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
-    
+
         # Auto-load if default paths are provided
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
             self.load_directory(default_kilosort_dir, default_dat_file)
@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
         # key forwarder
         self.key_forwarder = KeyForwarder(self)
         QApplication.instance().installEventFilter(self.key_forwarder)
-    
+
     def _move_selection_in_view(self, view, key):
         sel_model = view.selectionModel()
         model = view.model()
@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
             index = model.index(new_row, 0)
             sel_model.setCurrentIndex(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             view.scrollTo(index)
-    
+
     def _setup_style(self):
         """Sets the application's stylesheet."""
         self.setFont(QFont("Segoe UI", 9))
@@ -173,7 +173,7 @@ class MainWindow(QMainWindow):
             return
 
         self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
-        
+
         cached_features = self.data_manager.get_lightweight_features(cluster_id)
         if cached_features:
             self._draw_plots(cluster_id, cached_features)
@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
             # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
             if self.feature_worker_thread and self.feature_worker_thread.isRunning():
                 self.feature_worker_thread.quit()
-                self.feature_worker_thread.wait() # This is the critical addition
+                # self.feature_worker_thread.wait() # This is the critical addition
 
             self.feature_worker_thread = QThread()
             self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
@@ -203,7 +203,7 @@ class MainWindow(QMainWindow):
         """
         # Cache the newly computed features.
         self.data_manager.ei_cache[cluster_id] = features
-        
+
         # VERY IMPORTANT: Only draw if the returned data is for the currently selected cluster.
         # This prevents a slow, old request from overwriting a new, quick one.
         if cluster_id == self._get_selected_cluster_id():
@@ -213,28 +213,35 @@ class MainWindow(QMainWindow):
 
     def _draw_plots(self, cluster_id, features):
         """A single, centralized function to update all plots."""
-        # Update the standard plots.
-        # if features is not None:
-            # self.waveforms_panel.update_waveforms(cluster_id, {cluster_id: features})
-        # else:
-            # self.waveforms_panel.clear()
-            # self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
-        
+        # Update the waveforms panel first - this should work even without features
+        self.waveforms_panel.update_all(cluster_id)
+
         self.similarity_panel.update_main_cluster_id(cluster_id)
         # Select the top row in similarity panel by default. This updates waveforms and EI panel.
-        self.similarity_panel.select_top_n_rows(1)
-        
-        # self.waveforms_panel.update_all(cluster_id)
-        # self.ei_panel.update_ei(cluster_id)
+    
+
+        # Update EI panel - only if vision data exists, otherwise skip gracefully
+        if self.data_manager and hasattr(self.data_manager, 'vision_eis'):
+            self.ei_panel.update_ei([cluster_id])
+        else:
+            # Load EI from kilosort data if no vision data is available
+            self.ei_panel.update_ei([cluster_id])
 
         # Update the tab-specific plot (Raw Trace).
         if self.analysis_tabs.currentWidget() == self.raw_panel:
             self.raw_panel.load_data(cluster_id)
         else:
-            self.select_sta_view(self.current_sta_view)
-            
-        
-        
+            # Only update STA view if vision data is available
+            if self.data_manager and self.data_manager.vision_stas:
+                self.select_sta_view(self.current_sta_view)
+            else:
+                # Clear the STA canvas if no data is available
+                self.sta_canvas.fig.clear()
+                self.sta_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
+                self.sta_canvas.draw()
+
+
+
         self.status_bar.showMessage("Ready.", 2000)
 
     def _setup_ui(self):
@@ -246,13 +253,13 @@ class MainWindow(QMainWindow):
         # --- Left Pane ---
         self.left_pane = QWidget()
         left_layout = QVBoxLayout(self.left_pane)
-        
+
         # Add a toggle button for collapsing/expanding the sidebar
         self.sidebar_toggle_button = QPushButton("◀")
         self.sidebar_toggle_button.setFixedWidth(20)
         self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
         self.sidebar_collapsed = False
-        
+
         # Create a widget to contain the filter box and views
         left_content = QWidget()
         left_content_layout = QVBoxLayout(left_content)
@@ -275,7 +282,7 @@ class MainWindow(QMainWindow):
 
         # --- View Stack (Tree and Table) ---
         self.view_stack = QStackedWidget()
-        
+
         # Tree View
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
@@ -285,7 +292,7 @@ class MainWindow(QMainWindow):
         self.tree_view.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
-        
+
         # Table View
         self.table_view = CustomTableView()
         self.table_view.setSortingEnabled(True)
@@ -331,7 +338,7 @@ class MainWindow(QMainWindow):
         # --- STA Analysis Panel ---
         self.sta_panel = QWidget()
         sta_layout = QVBoxLayout(self.sta_panel)
-        
+
         # Add buttons to select different STA views
         sta_control_layout = QHBoxLayout()
         self.sta_rf_button = QPushButton("RF Plot")
@@ -339,21 +346,21 @@ class MainWindow(QMainWindow):
         self.sta_timecourse_button = QPushButton("Timecourse")
         self.sta_animation_button = QPushButton("Animate STA")
         self.sta_animation_stop_button = QPushButton("Stop Animation")
-        
+
         # Set up button functionality
         self.sta_rf_button.clicked.connect(lambda: self.select_sta_view("rf"))
         self.sta_population_rfs_button.clicked.connect(lambda: self.select_sta_view("population_rfs"))
         self.sta_timecourse_button.clicked.connect(lambda: self.select_sta_view("timecourse"))
         self.sta_animation_button.clicked.connect(lambda: self.select_sta_view("animation"))
         self.sta_animation_stop_button.clicked.connect(lambda: plotting.stop_sta_animation(self))
-        
+
         # Add buttons to layout
         sta_control_layout.addWidget(self.sta_rf_button)
         sta_control_layout.addWidget(self.sta_population_rfs_button)
         sta_control_layout.addWidget(self.sta_timecourse_button)
         sta_control_layout.addWidget(self.sta_animation_button)
         sta_control_layout.addWidget(self.sta_animation_stop_button)
-        
+
         # Add frame control elements
         sta_frame_layout = QHBoxLayout()
         self.sta_frame_slider = QSlider(Qt.Orientation.Horizontal)
@@ -364,19 +371,19 @@ class MainWindow(QMainWindow):
         self.sta_frame_label = QLabel("Frame: 0/30")
         self.sta_frame_prev_button = QPushButton("<< Prev")
         self.sta_frame_next_button = QPushButton("Next >>")
-        
+
         # Connect slider and buttons
         self.sta_frame_slider.valueChanged.connect(self.update_sta_frame_manual)
         self.sta_frame_prev_button.clicked.connect(self.prev_sta_frame)
         self.sta_frame_next_button.clicked.connect(self.next_sta_frame)
-        
+
         # Add frame controls to layout
         sta_frame_layout.addWidget(self.sta_frame_prev_button)
         sta_frame_layout.addWidget(self.sta_frame_slider)
         sta_frame_layout.addWidget(self.sta_frame_next_button)
         sta_frame_layout.addWidget(self.sta_frame_label)
         sta_control_layout.addLayout(sta_frame_layout)
-        
+
         # Add controls and canvas to layout
         sta_layout.addLayout(sta_control_layout)
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
@@ -406,7 +413,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(right_pane)
         self.main_splitter.setSizes([800, 600])
         main_layout.addWidget(self.main_splitter)
-        
+
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -420,7 +427,7 @@ class MainWindow(QMainWindow):
         self.load_classification_action.setEnabled(False)
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
-        
+
         # Connect Signals to Callback Functions ---
         load_ks_action.triggered.connect(lambda: self.load_directory()) # triggered(bool checked = false)
         self.load_vision_action.triggered.connect(self.load_vision_directory)
@@ -448,7 +455,7 @@ class MainWindow(QMainWindow):
         if current_view_index == 0:
             if not self.tree_view.selectionModel().hasSelection():
                 return None
-            
+
             index = self.tree_view.selectionModel().selectedIndexes()[0]
             item = self.tree_model.itemFromIndex(index)
 
@@ -460,9 +467,9 @@ class MainWindow(QMainWindow):
         elif current_view_index == 1:
             if not self.table_view.selectionModel().hasSelection() or self.main_cluster_model is None:
                 return None
-            
+
             selected_row = self.table_view.selectionModel().selectedIndexes()[0].row()
-            
+
             # Check if the model has mapToSource method (for proxy models)
             model = self.table_view.model()
             if hasattr(model, 'mapToSource'):
@@ -473,9 +480,9 @@ class MainWindow(QMainWindow):
                 # If no proxy model, use the row directly
                 cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
             return cluster_id
-        
+
         return None
-    
+
     def _get_group_cluster_ids(self, item):
         cluster_ids = []
         for i in range(item.rowCount()):
@@ -503,7 +510,7 @@ class MainWindow(QMainWindow):
         except (TypeError, RuntimeError):
             pass
         self.table_view.selectionModel().selectionChanged.connect(self.on_view_selection_changed)
-        
+
     # --- Methods to bridge UI signals to callback functions ---
     def load_directory(self, kilosort_dir=None, dat_file=None):
         callbacks.load_directory(self, kilosort_dir, dat_file)
@@ -520,7 +527,7 @@ class MainWindow(QMainWindow):
             return
 
         self._is_syncing = True
-        
+
         cluster_id = self._get_selected_cluster_id()
         sender = self.sender()
 
@@ -556,7 +563,7 @@ class MainWindow(QMainWindow):
                     else:
                         continue
                     break
-        
+
         # Now that views are synced, trigger the update callbacks
         callbacks.on_cluster_selection_changed(self)
         self._is_syncing = False
@@ -564,9 +571,16 @@ class MainWindow(QMainWindow):
         self.similarity_panel.reset_spacebar_counter()
 
     def on_similarity_selection_changed(self, selected_cluster_ids):
-        # Always include the main selected cluster
+        # Always include the main selected cluster if there is one selected
         main_cluster = self._get_selected_cluster_id()
-        clusters_to_plot = [main_cluster] + selected_cluster_ids
+        if main_cluster is not None and len(selected_cluster_ids) > 0:
+            clusters_to_plot = [main_cluster] + selected_cluster_ids
+        elif main_cluster is not None and len(selected_cluster_ids) == 0:
+            # If no similar clusters are selected, just plot the main cluster
+            clusters_to_plot = [main_cluster]
+        else:
+            # If no main cluster is selected, just plot the selected similar clusters
+            clusters_to_plot = selected_cluster_ids
         print(f'[DEBUG] on_similarity_selection_changed: main_cluster = {main_cluster}')
         print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
 
@@ -591,13 +605,13 @@ class MainWindow(QMainWindow):
                     child_item.setForeground(QColor('#FF2222'))  # Red text
                 else:
                     child_item.setForeground(QColor('white'))
-    
+
     def on_cluster_selection_changed(self, *args):
         callbacks.on_cluster_selection_changed(self)
-        
+
     def on_spatial_data_ready(self, cluster_id, features):
         callbacks.on_spatial_data_ready(self, cluster_id, features)
-        
+
     def on_refine_cluster(self):
         callbacks.on_refine_cluster(self)
 
@@ -609,7 +623,7 @@ class MainWindow(QMainWindow):
 
     def on_save_action(self):
         callbacks.on_save_action(self)
-        
+
     def apply_good_filter(self):
         callbacks.apply_good_filter(self)
 
@@ -622,7 +636,15 @@ class MainWindow(QMainWindow):
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is None:
             return
-        
+
+        # Only proceed if vision STA data is available
+        if not self.data_manager or not self.data_manager.vision_stas:
+            self.sta_canvas.fig.clear()
+            self.sta_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
+            self.sta_canvas.draw()
+            self.sta_frame_slider.setEnabled(False)
+            return
+
         # Call the appropriate plotting function based on the selected view
         if view_type == "rf":
             plotting.draw_sta_plot(self, cluster_id)
@@ -639,10 +661,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
             # Stop any running animation
             plotting.stop_sta_animation(self)
-            
+
             # Update the frame index
             self.current_frame_index = frame_index
-            
+
             # Update the label
             self.sta_frame_label.setText(f"Frame: {frame_index+1}/{self.total_sta_frames}")
             # Update the STA canvas with the new frame
@@ -693,10 +715,10 @@ class MainWindow(QMainWindow):
                 sta_height=self.data_manager.vision_sta_height
             )
             self.sta_canvas.draw()
-    
+
     def load_classification_file(self):
         callbacks.load_classification_file(self)
-        
+
     def open_tree_context_menu(self, position):
         menu = QMenu()
         index = self.tree_view.indexAt(position)
@@ -707,7 +729,7 @@ class MainWindow(QMainWindow):
             feature_extraction_action = menu.addAction("Feature Extraction")
 
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
-        
+
         if action == add_group_action:
             text, ok = QInputDialog.getText(self, 'New Group', 'Enter group name:')
             if ok and text:
@@ -715,11 +737,11 @@ class MainWindow(QMainWindow):
         elif action == feature_extraction_action:
             cluster_ids = self._get_group_cluster_ids(item)
             callbacks.feature_extraction(self, cluster_ids)
-    
+
     def toggle_sidebar(self):
         """Collapses or expands the left sidebar by manipulating the main splitter."""
         if self.sidebar_collapsed:
-            # --- EXPAND --- 
+            # --- EXPAND ---
             self.sidebar_toggle_button.setText("◀")
             widths = self.main_splitter.sizes()
             total_width = sum(widths)

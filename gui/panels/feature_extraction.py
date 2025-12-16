@@ -38,8 +38,11 @@ class FeatureExtractionWindow(QDialog):
         temporal_traces = []
         for cluster_index in self.cluster_ids:
             vision_cluster_index = cluster_index + 1
-            red_tc = self.main_window.data_manager.vision_params.get_data_for_cell(vision_cluster_index, 'RedTimeCourse')
-            temporal_traces.append(red_tc)
+            if vision_cluster_index in self.main_window.data_manager.vision_params.main_datatable:
+                red_tc = self.main_window.data_manager.vision_params.get_data_for_cell(vision_cluster_index, 'RedTimeCourse')
+                temporal_traces.append(red_tc)
+            else:
+                print(f"Warning: Cluster ID {cluster_index} (Vision ID {vision_cluster_index}) not found in Vision data. Skipping.")
         temporal_traces = np.array(temporal_traces)
         
         return temporal_traces
