@@ -8,6 +8,8 @@ from analysis.constants import EI_CORR_THRESHOLD
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
+import logging
+logger = logging.getLogger(__name__)
 
 class SimilarityPanel(QWidget):
     # Signal emitted when the selection changes; sends list of selected cluster IDs
@@ -135,7 +137,7 @@ class SimilarityPanel(QWidget):
         """Emit the selected clusters along with main cluster ID as a duplicate group."""
         indexes = self.table.selectionModel().selectedRows()
         if self.similarity_model is None:
-            print("[ERROR] Similarity model is not set.")
+            logger.error("Similarity model is not set")
             return
 
         # If status is Clean, only apply to main cluster.
@@ -167,7 +169,7 @@ class SimilarityPanel(QWidget):
     def update_main_cluster_id(self, cluster_id):
         # Get EI correlation values from data_manager
         if self.main_window.data_manager is None or self.main_window.data_manager.ei_corr_dict is None:
-            print("Error: DataManager or EI correlation data not available.")
+            logger.error("DataManager or EI correlation data not available")
             self.clear()
             return
 
@@ -181,7 +183,7 @@ class SimilarityPanel(QWidget):
         # Check if the selected cluster exists in vision data
         cluster_match_idx = np.where(kilosort_cluster_ids == cluster_id)[0]
         if len(cluster_match_idx) == 0:
-            print(f"Warning: Cluster ID {cluster_id} not found in Vision data.")
+            logger.warning("Cluster ID %s not found in Vision data", cluster_id)
             self.clear()
             return
 
@@ -194,7 +196,7 @@ class SimilarityPanel(QWidget):
         valid_other_ids = [oid for oid in other_ids if oid in valid_cluster_df_ids]
 
         if not valid_other_ids:
-            print(f"Warning: No valid other clusters found for cluster {cluster_id}.")
+            logger.warning("No valid other clusters found for cluster %s", cluster_id)
             self.clear()
             return
 
@@ -207,7 +209,7 @@ class SimilarityPanel(QWidget):
                 valid_other_idx.append(oid_idx[0])
 
         if not valid_other_idx:
-            print(f"Warning: Could not find valid indices for valid_other_ids.")
+            logger.warning("Could not find valid indices for valid_other_ids")
             self.clear()
             return
 

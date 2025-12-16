@@ -10,6 +10,9 @@ from analysis.constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_C
 import pickle
 import os
 import tempfile
+import logging
+logger = logging.getLogger(__name__)
+import threading
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
@@ -179,10 +182,12 @@ class DataManager(QObject):
         self.exp_name = self.kilosort_dir.parent.parent.name
         self.datafile_name = self.kilosort_dir.parent.name
         self.d_timing = {}
-        print(f"[DEBUG] Initializing DataManager for experiment: {self.exp_name}, datafile: {self.datafile_name}")
+        logger.debug(f"Initializing DataManager for experiment={self.exp_name}, datafile={self.datafile_name}")
         self.load_stim_timing()
         self.ei_cache = {}
         self.heavyweight_cache = {}
+        # Lock to protect accesses to heavyweight_cache from multiple threads
+        self._heavyweight_lock = threading.Lock()
         self.isi_cache = {}  # Cache for ISI violation calculations
         self.dat_path = None
         self.cluster_df = pd.DataFrame()
@@ -219,7 +224,7 @@ class DataManager(QObject):
             # Try to save to the original location first
             with open(filepath, 'wb') as f:
                 pickle.dump(data, f)
-            print(f"[DEBUG] Successfully saved pickle to {filepath}")
+            logger.debug("Successfully saved pickle to %s", filepath)
             return filepath
         except PermissionError:
             # If permission denied, save to a temporary location
@@ -230,13 +235,13 @@ class DataManager(QObject):
             try:
                 with open(temp_path, 'wb') as f:
                     pickle.dump(data, f)
-                print(f"[DEBUG] Saved pickle to temporary location: {temp_path} (original location was not writable)")
+                logger.debug("Saved pickle to temporary location: %s (original not writable)", temp_path)
                 return temp_path
             except Exception as e:
-                print(f"[ERROR] Failed to save pickle to both original and temporary locations: {e}")
+                logger.exception("Failed to save pickle to both original and temporary locations")
                 raise e
         except Exception as e:
-            print(f"[ERROR] Failed to save pickle: {e}")
+            logger.exception("Failed to save pickle")
             raise e
 
     def _sanitize_ei_dict(self, ei_dict):
@@ -258,7 +263,7 @@ class DataManager(QObject):
             if isinstance(ei_arr, np.ndarray) and ei_arr.size > 0:
                 out[key] = v
             else:
-                print(f"[WARN] Skipping EI for key {k}: invalid or empty EI data")
+                logger.warning("Skipping EI for key %s: invalid or empty EI data", k)
         return out
 
     def load_stim_timing(self):
@@ -266,14 +271,14 @@ class DataManager(QObject):
             import retinanalysis.utils.datajoint_utils as dju
             self.block_id = dju.get_block_id_from_datafile(self.exp_name, self.datafile_name)
             self.d_timing = dju.get_epochblock_timing(self.exp_name, self.block_id)
-            print("[DEBUG] Loaded stimulus timing data successfully.")
+            logger.debug("Loaded stimulus timing data successfully")
         except Exception as e:
-            print(f"[ERROR] Failed to load stimulus timing data: {e}")
+            logger.exception("Failed to load stimulus timing data")
             return
 
     def update_and_export_status(self, selected_ids, status):
         selected_ids = set(selected_ids)
-        print(f'[DEBUG] Marking {status}: {selected_ids}')
+        logger.debug("Marking %s: %s", status, selected_ids)
         # Update status_df
         for cid in selected_ids:
             # If Duplicate, all selected ids are a 'set', else only self
@@ -328,11 +333,11 @@ class DataManager(QObject):
             # Nothing to save
             return
 
-        try:
-            self.status_df.to_csv(self.status_csv, index=False)
-            print(f"[DEBUG] Exported {len(self.status_df)} status entries to {self.status_csv}")
-        except Exception as e:
-            print(f"[ERROR] Failed to export status entries: {e}")
+            try:
+                self.status_df.to_csv(self.status_csv, index=False)
+                logger.debug("Exported %d status entries to %s", len(self.status_df), self.status_csv)
+            except Exception as e:
+                logger.exception("Failed to export status entries")
 
     def load_status(self):
         """
@@ -349,14 +354,14 @@ class DataManager(QObject):
             status_df['set'] = status_df['set'].apply(lambda x: set(map(int, x.strip("{}").split(","))))
             self.status_df = status_df
 
-            print(f"[DEBUG] Loaded {self.status_csv}")
-            print(f"[DEBUG] {self.status_df['status'].value_counts().to_dict()}")
+            logger.debug("Loaded status csv: %s", self.status_csv)
+            logger.debug("Status counts: %s", self.status_df['status'].value_counts().to_dict())
 
             self.update_cluster_df_with_status()
 
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to load duplicate sets: {e}")
+            logger.exception("Failed to load duplicate sets")
             return False
 
     def load_kilosort_data(self):
@@ -384,7 +389,7 @@ class DataManager(QObject):
                 self.info_path = group_path
                 self.cluster_info = pd.read_csv(group_path, sep='\t')
             else:
-                print("Info: 'cluster_info.tsv' or 'cluster_group.tsv' not found. Labeling all clusters as 'unsorted'.")
+                logger.info("No 'cluster_info.tsv' or 'cluster_group.tsv' found; labeling clusters as 'unsorted'")
                 self.info_path = None
                 all_cluster_ids = np.unique(self.spike_clusters)
                 self.cluster_info = pd.DataFrame({
@@ -401,14 +406,14 @@ class DataManager(QObject):
         """
         Loads EI, STA, and params data from a specified Vision directory.
         """
-        print(f"[DEBUG] Starting to load vision data from {vision_dir}")  # Debug
+        logger.debug("Starting vision data load from %s", vision_dir)
         vision_path = Path(vision_dir)
 
         # To get the STA dimensions, we need to access them directly from the STAReader
         # The STAReader has width and height attributes that represent the stimulus dimensions
-        print(f"[DEBUG] About to call vision_integration.load_vision_data")  # Debug
+        logger.debug("Calling vision_integration.load_vision_data")
         vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
-        print(f"[DEBUG] Completed vision_integration.load_vision_data call")  # Debug
+        logger.debug("Completed vision_integration.load_vision_data call")
 
         if vision_data:
             ei_bundle = vision_data.get('ei')
@@ -416,7 +421,7 @@ class DataManager(QObject):
                 self.vision_eis = ei_bundle.get('ei_data')
                 self.vision_channel_positions = ei_bundle.get('electrode_map')
                 if self.vision_eis:
-                    print(f"[DEBUG] Available Vision EI IDs (sample): {list(self.vision_eis.keys())[:10]}")
+                    logger.debug("Available Vision EI IDs (sample): %s", list(self.vision_eis.keys())[:10])
 
             self.vision_stas = vision_data.get('sta')
             self.vision_params = vision_data.get('params')
@@ -462,15 +467,15 @@ class DataManager(QObject):
             if len(sanitized_eis) >= 2:
                 if os.path.exists(str_corr_pkl):
                     try:
-                        print(f"[DEBUG] Loading precomputed EI correlations from {str_corr_pkl}")
+                        logger.debug("Loading precomputed EI correlations from %s", str_corr_pkl)
                         with open(str_corr_pkl, 'rb') as f:
                             self.ei_corr_dict = pickle.load(f)
-                        print(f"[DEBUG] Loaded EI correlations successfully")
+                        logger.debug("Loaded EI correlations successfully")
                         full_corr = self.ei_corr_dict.get('full')
                         space_corr = self.ei_corr_dict.get('space')
                         power_corr = self.ei_corr_dict.get('power')
                     except Exception as e:
-                        print(f"[WARN] Failed to load EI correlation pickle: {e}. Recomputing.")
+                        logger.warning("Failed to load EI correlation pickle: %s; recomputing", e)
                         full_corr = ei_corr(sanitized_eis, sanitized_eis, method='full', n_removed_channels=1)
                         space_corr = ei_corr(sanitized_eis, sanitized_eis, method='space', n_removed_channels=1)
                         power_corr = ei_corr(sanitized_eis, sanitized_eis, method='power', n_removed_channels=1)
@@ -480,9 +485,9 @@ class DataManager(QObject):
                             'power': power_corr
                         }
                         saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
-                        print(f"[DEBUG] EI correlations recomputed and saved to {saved_path}")
+                        logger.debug("EI correlations recomputed and saved to %s", saved_path)
                 else:
-                    print(f'[DEBUG] Computing EI correlations')
+                    logger.debug('Computing EI correlations')
                     full_corr = ei_corr(sanitized_eis, sanitized_eis, method='full', n_removed_channels=1)
                     space_corr = ei_corr(sanitized_eis, sanitized_eis, method='space', n_removed_channels=1)
                     power_corr = ei_corr(sanitized_eis, sanitized_eis, method='power', n_removed_channels=1)
@@ -492,7 +497,7 @@ class DataManager(QObject):
                         'power': power_corr
                     }
                     saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
-                    print(f"[DEBUG] EI correlations computed successfully and saved to {saved_path}")
+                    logger.debug("EI correlations computed and saved to %s", saved_path)
 
                 # Update cluster_df to mark potential duplicates based on any EI correlation > threshold
                 if not self.cluster_df.empty:
@@ -527,9 +532,9 @@ class DataManager(QObject):
                     # Format to 2 decimal places
                     self.cluster_df['max_dup_r'] = self.cluster_df['max_dup_r'].map(lambda x: f"{x:.2f}")
 
-                    print(f"[DEBUG] Updated cluster_df with potential duplicates based on EI correlations")
+                    logger.debug("Updated cluster_df with potential duplicates based on EI correlations")
             else:
-                print("[WARN] Vision EIs are empty or not loaded. Skipping duplicate detection.")
+                logger.warning("Vision EIs empty or not loaded; skipping duplicate detection")
                 # Initialize columns so the GUI doesn't crash later if it expects them
                 if not self.cluster_df.empty:
                     self.cluster_df['potential_dups'] = False
@@ -537,35 +542,35 @@ class DataManager(QObject):
 
             # (Duplicate correlation-to-cluster_df update removed - handled above)
 
-            print(f"Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
+            logger.info("Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
             return True, f"Successfully loaded Vision data for {dataset_name}."
         else:
-            print(f"[DEBUG] Full vision loading failed, trying partial loading") # Debug
+            logger.debug("Full vision loading failed; attempting partial load")
             # Check if params or STA files exist even if the full loading failed
             params_path = vision_path / 'sta_params.params'
             sta_path = vision_path / 'sta_container.sta'
 
             if params_path.exists() or sta_path.exists():
-                print(f"[DEBUG] Found params or sta files, attempting partial load") # Debug
+                logger.debug("Found params/sta files; attempting partial load")
                 # Try to load the existing files one by one using the available functions
                 vision_data = {}
                 if params_path.exists():
-                    print(f"[DEBUG] Loading params data...") # Debug
+                    logger.debug("Loading params data")
                     try:
                         # Using the actual function name from vision_integration.py
                         params_data = vision_integration.load_params_data(vision_path, dataset_name)
                         vision_data['params'] = params_data
-                        print("Loaded Vision params data.")
+                        logger.info("Loaded Vision params data")
                     except Exception as e:
-                        print(f"Error loading params: {e}")
+                        logger.exception("Error loading params")
 
                 if sta_path.exists():
-                    print(f"[DEBUG] Loading STA data...") # Debug
+                    logger.debug("Loading STA data")
                     try:
                         # Using the actual function name from vision_integration.py
                         sta_data = vision_integration.load_sta_data(vision_path, dataset_name)
                         vision_data['sta'] = sta_data
-                        print("Loaded Vision STA data.")
+                        logger.info("Loaded Vision STA data")
 
                         # Extract dimensions from STA if it was loaded
                         if sta_data:
@@ -580,7 +585,7 @@ class DataManager(QObject):
                                     self.vision_sta_height = sta_shape[0]
                                     self.vision_sta_width = sta_shape[1]
                     except Exception as e:
-                        print(f"Error loading STA: {e}")
+                        logger.exception("Error loading STA data")
 
                 # Update the instance variables with any loaded data
                 ei_bundle = vision_data.get('ei')
@@ -592,20 +597,20 @@ class DataManager(QObject):
                 self.vision_params = vision_data.get('params')
 
                 if vision_data:  # If we loaded any data
-                    print(f"Partial Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
+                    logger.info("Partial Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
                     return True, f"Successfully loaded partial Vision data for {dataset_name}."
                 else:
-                    print(f"[DEBUG] No vision data could be loaded") # Debug
+                    logger.debug("No vision data could be loaded")
                     return False, "Failed to load Vision data but files were found."
             else:
-                print(f"[DEBUG] No vision files found in directory") # Debug
+                logger.debug("No vision files found in directory")
                 return False, "No Vision data files found in the directory."
     # --- End New Method ---
 
     def load_cell_type_file(self, txt_file: str=None):
-        print(f'[DEBUG] Loading cell type file: {txt_file}')
+        logger.debug("Loading cell type file: %s", txt_file)
         if txt_file is None:
-            print(f'[DEBUG] No cell type file provided, Unknown for all IDs.')
+            logger.debug("No cell type file provided; setting cell types to Unknown")
             # Drop existing cell_type column if exists
             if 'cell_type' in self.cluster_df.columns:
                 self.cluster_df.drop(columns=['cell_type'], inplace=True)
@@ -630,14 +635,14 @@ class DataManager(QObject):
 
             # Add to cluster_df
             self.cluster_df['cell_type'] = self.cluster_df['cluster_id'].map(d_result).fillna('Unknown')
-            print(f'[DEBUG] Loaded cell type file {txt_file}.')
+            logger.debug("Loaded cell type file: %s", txt_file)
 
             # If all are unknown, delete column and print
             if all(ct == 'Unknown' for ct in self.cluster_df['cell_type']):
                 self.cluster_df.drop(columns=['cell_type'], inplace=True)
-                print(f'[DEBUG] All cell type entries are Unknown, dropping cell_type column.')
+                logger.debug("All loaded cell types are Unknown; dropping cell_type column")
         except Exception as e:
-            print(f"Error loading cell type file: {e}")
+            logger.exception("Error loading cell type file")
 
 
 
@@ -674,9 +679,9 @@ class DataManager(QObject):
                                          shape=(self.n_samples, self.n_channels))
 
     def build_cluster_dataframe(self):
-        print(f"[DEBUG] Starting build_cluster_dataframe")  # Debug
+        logger.debug("Starting build_cluster_dataframe")
         cluster_ids, n_spikes = np.unique(self.spike_clusters, return_counts=True)
-        print(f"[DEBUG] Found {len(cluster_ids)} clusters")  # Debug
+        logger.debug("Found %d clusters", len(cluster_ids))
 
         # Create initial dataframe without ISI violations for faster loading
         df = pd.DataFrame({'cluster_id': cluster_ids, 'n_spikes': n_spikes})
@@ -706,7 +711,7 @@ class DataManager(QObject):
         self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'set', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
-        print(f"[DEBUG] build_cluster_dataframe complete")
+        logger.debug("build_cluster_dataframe complete")
 
         # Initialize an empty cache for ISI violations
         self.isi_cache = {}
@@ -722,10 +727,10 @@ class DataManager(QObject):
 
             # Print progress every 50 clusters to avoid too much output
             if (i + 1) % 50 == 0 or i == total_clusters - 1:
-                print(f"[DEBUG] Calculated ISI for {i + 1}/{total_clusters} clusters")
+                logger.debug("Calculated ISI for %d/%d clusters", i + 1, total_clusters)
 
         self.cluster_df['isi_violations_pct'] = isi_values
-        print(f"[DEBUG] ISI violations calculated and updated in cluster_df")
+        logger.debug("ISI violations calculated and updated in cluster_df")
 
         # Load status
         self.load_status()
@@ -778,13 +783,26 @@ class DataManager(QObject):
         return self.ei_cache.get(cluster_id, None)
 
     def get_heavyweight_features(self, cluster_id):
-        if cluster_id in self.heavyweight_cache: return self.heavyweight_cache[cluster_id]
+        # Fast-path: check cache under lock
+        with self._heavyweight_lock:
+            if cluster_id in self.heavyweight_cache:
+                return self.heavyweight_cache[cluster_id]
+
+        # If not cached, compute without holding the lock (expensive op)
         lightweight_data = self.get_lightweight_features(cluster_id)
-        if not lightweight_data: return None
+        if not lightweight_data:
+            return None
+
         features = analysis_core.compute_spatial_features(
             lightweight_data['median_ei'], self.channel_positions, self.sampling_rate)
-        self.heavyweight_cache[cluster_id] = features
-        return features
+
+        # Store computed features under lock
+        with self._heavyweight_lock:
+            # Another thread may have computed it while we were working; prefer existing
+            if cluster_id not in self.heavyweight_cache:
+                self.heavyweight_cache[cluster_id] = features
+
+        return self.heavyweight_cache.get(cluster_id, features)
 
     def get_nearest_channels(self, central_channel_idx, n_channels=3):
         """
@@ -845,6 +863,28 @@ class DataManager(QObject):
         uv_snippet = raw_snippet.astype(np.float32) * self.uV_per_bit
 
         return uv_snippet.T  # Transpose to have channels as rows and time as columns
+
+    def clear_caches(self):
+        """Clear large caches to free memory. Thread-safe for heavyweight_cache."""
+        try:
+            with self._heavyweight_lock:
+                self.heavyweight_cache.clear()
+        except Exception:
+            # If lock isn't present for any reason, fall back to clearing without lock
+            try:
+                self.heavyweight_cache.clear()
+            except Exception:
+                pass
+
+        # Clear other caches
+        try:
+            self.ei_cache.clear()
+        except Exception:
+            pass
+        try:
+            self.isi_cache.clear()
+        except Exception:
+            pass
 
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True

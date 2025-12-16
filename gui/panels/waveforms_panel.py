@@ -8,6 +8,8 @@ from analysis.constants import ISI_REFRACTORY_PERIOD_MS
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
+import logging
+logger = logging.getLogger(__name__)
 
 class WaveformPanel(QWidget):
     """
@@ -85,7 +87,7 @@ class WaveformPanel(QWidget):
             self.wf_scale *= 1.1 if delta > 0 else 1/1.1
         self._redraw_waveform_grid()
         ev.accept()
-        print(f'[DEBUG] Mouse wheel delta: {delta}')
+        logger.debug('Mouse wheel delta: %d', delta)
 
     def _on_key_press(self, ev):
         key = ev.key()
@@ -248,7 +250,7 @@ class WaveformPanel(QWidget):
 
         
             if sts is None or len(sts) < 2:
-                print(f'[DEBUG] No spike times for cluster {cid}')
+                logger.debug('No spike times for cluster %s', cid)
                 continue
             
             isi_ms = np.diff(sts) / self.sampling_rate * 1000
@@ -273,13 +275,13 @@ class WaveformPanel(QWidget):
             sts = data_manager.get_cluster_spikes(cluster_id)
 
             if sts is None or len(sts) < 2:
-                print(f'[DEBUG] No spike times for cluster {cluster_id}')
+                logger.debug('No spike times for cluster %s', cluster_id)
                 continue
 
             spike_times_sec = sts / self.sampling_rate
             duration = spike_times_sec[-1] - spike_times_sec[0]
             if duration <= 0:
-                print(f'[DEBUG] No valid duration for cluster {cluster_id}')
+                logger.debug('No valid duration for cluster %s', cluster_id)
                 continue
 
             bins = np.arange(0, duration+1, 1)

@@ -6,6 +6,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import QTableView
 from qtpy.QtGui import QPainter
+import logging
+logger = logging.getLogger(__name__)
 
 class CustomTableView(QTableView):
     def __init__(self, *args, **kwargs):
@@ -124,8 +126,8 @@ class HighlightStatusPandasModel(PandasModel):
                         return QColor('#000000')  # Black text
 
         except Exception as e:
-            # If any error occurs, just return the default value
-            print(f"[ERROR] HighlightDuplicatesPandasModel.data error: {e}")
+            # If any error occurs, log and return the default value
+            logger.exception("HighlightDuplicatesPandasModel.data error")
             pass
             
         return value

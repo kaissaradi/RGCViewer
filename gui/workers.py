@@ -19,10 +19,10 @@ class SpatialWorker(QObject):
         while self.is_running:
             if self.queue:
                 cluster_id = self.queue.popleft()
-                if cluster_id not in self.data_manager.heavyweight_cache:
-                    features = self.data_manager.get_heavyweight_features(cluster_id)
-                    if features:
-                        self.result_ready.emit(cluster_id, features)
+                # Use DataManager API which handles cache locking internally
+                features = self.data_manager.get_heavyweight_features(cluster_id)
+                if features:
+                    self.result_ready.emit(cluster_id, features)
             else:
                 QThread.msleep(100)
 
@@ -54,9 +54,11 @@ class RefinementWorker(QObject):
         try:
             spike_times_cluster = self.data_manager.get_cluster_spikes(self.cluster_id)
             params = {'min_spikes': 500, 'ei_sim_threshold': 0.90}
+            # Prefer passing the memmap if available to avoid reopening the dat file
+            dat_source = self.data_manager.raw_data_memmap if getattr(self.data_manager, 'raw_data_memmap', None) is not None else str(self.data_manager.dat_path)
             refined_clusters = analysis_core.refine_cluster_v2(
                 spike_times_cluster,
-                str(self.data_manager.dat_path),
+                dat_source,
                 self.data_manager.channel_positions,
                 params
             )
@@ -139,9 +141,14 @@ class FeatureWorker(QObject):
             sample_size = min(len(all_spikes), 100)
             spike_sample = all_spikes[:sample_size]
 
-            # 3. Perform the disk I/O for the small sample.
+            # 3. Perform the disk I/O for the small sample. Prefer memmap if set.
+            if getattr(self.data_manager, 'raw_data_memmap', None) is not None:
+                dat_source = self.data_manager.raw_data_memmap
+            else:
+                dat_source = str(self.data_manager.dat_path)
+
             snippets_raw = analysis_core.extract_snippets(
-                str(self.data_manager.dat_path), spike_sample.astype(int), n_channels=self.data_manager.n_channels
+                dat_source, spike_sample.astype(int), n_channels=self.data_manager.n_channels
             )
             
             # 4. Perform the rest of the feature calculation.

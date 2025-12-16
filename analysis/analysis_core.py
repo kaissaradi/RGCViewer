@@ -20,6 +20,8 @@ from scipy.interpolate import griddata
 import ipywidgets as widgets
 from ipywidgets import HBox
 from IPython.display import display
+import logging
+logger = logging.getLogger(__name__)
 
 def compute_per_spike_features(
     snippets: np.ndarray,
@@ -45,29 +47,53 @@ def compute_per_spike_features(
     all_features = np.hstack((waveform_features, spatial_features))
     return all_features
 
-def extract_snippets(dat_path, spike_times, window=(-20, 60), n_channels=512, dtype='int16'):
+def extract_snippets(dat_path_or_memmap, spike_times, window=(-20, 60), n_channels=512, dtype='int16'):
     """
-    Extracts snippets of raw data using memory-mapping for high efficiency.
+    Extracts snippets of raw data. Accepts either a file path (str/Path)
+    or a memory-mapped array (np.memmap / ndarray-like). Returns array of
+    shape (n_channels, snip_len, n_spikes).
     """
-    snip_len = window[1] - window[0]
+    snip_len = int(window[1] - window[0])
     spike_count = len(spike_times)
-    
+
     if spike_count == 0:
         return np.zeros((n_channels, snip_len, 0), dtype=np.float32)
 
-    raw_data = np.memmap(dat_path, dtype=dtype, mode='r').reshape(-1, n_channels)
+    # Accept either a path or an existing memmap/ndarray
+    if isinstance(dat_path_or_memmap, (str, Path)):
+        raw_data = np.memmap(str(dat_path_or_memmap), dtype=dtype, mode='r')
+        try:
+            raw_data = raw_data.reshape(-1, n_channels)
+        except Exception:
+            # If reshape fails, try inferring number of channels
+            raw_data = raw_data.reshape(-1, n_channels)
+    else:
+        # Assume it's an ndarray-like (memmap or already shaped array)
+        raw_data = dat_path_or_memmap
+        # If 1D memmap, reshape to (n_samples, n_channels)
+        if raw_data.ndim == 1:
+            raw_data = raw_data.reshape(-1, n_channels)
+
     total_samples = raw_data.shape[0]
 
+    # Preallocate in spike-major order then transpose for return
     snips = np.zeros((spike_count, n_channels, snip_len), dtype=np.float32)
 
+    # Ensure integer spike times
+    spike_times = np.asarray(spike_times, dtype=np.int64)
+
     for i, spike_time in enumerate(spike_times):
-        start_sample = spike_time.astype(np.int64) + window[0]
+        start_sample = int(spike_time) + int(window[0])
         end_sample = start_sample + snip_len
 
-        if start_sample >= 0 and end_sample < total_samples:
-            snippet = raw_data[start_sample:end_sample, :]
-            snips[i, :, :] = snippet.T
-            
+        # Skip out-of-bounds spikes
+        if start_sample < 0 or end_sample > total_samples:
+            continue
+
+        snippet = raw_data[start_sample:end_sample, :]
+        # snippet shape: (snip_len, n_channels) -> transpose to (n_channels, snip_len)
+        snips[i, :, :] = snippet.T
+
     return snips.transpose(1, 2, 0)
 
 def compare_eis(eis, ei_template=None, max_lag=3):
@@ -172,8 +198,7 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
     """
     Recursively refines neural spike clusters using PCA+KMeans clustering.
     """
-    print(f"\n=== Starting Cluster Refinement ===")
-    print(f"Input spikes: {len(spike_times)}")
+    logger.info("Starting cluster refinement; input_spikes=%d", len(spike_times))
     
     window = params.get('window', (-20, 60))
     min_spikes = params.get('min_spikes', 500)
@@ -233,7 +258,7 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
             if len(all_inds) >= min_spikes:
                 cluster_pool.append({'inds': all_inds, 'depth': depth + 1})
 
-    print(f"\n=== Refinement Complete: {len(final_clusters)} final clusters ===")
+    logger.info("Refinement complete: %d final clusters", len(final_clusters))
     return final_clusters
 
 def _spatial_smooth(values, positions, sigma=30):
@@ -287,11 +312,11 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     peak_negative_smooth = spatial_features['peak_negative_smooth']
     ptp_amps = spatial_features['ptp_amps']
 
-    # --- DIAGNOSTIC PRINT ---
-    print("\n--- Spatial EI Diagnosis ---")
-    print("Peak-to-Peak Amplitudes by Channel:")
-    print(ptp_amps)
-    print("--------------------------\n")
+    # Diagnostic: log summary statistics for spatial EI
+    try:
+        logger.debug("Spatial EI diagnostics: ptp_amps_mean=%f, ptp_amps_std=%f", float(np.mean(ptp_amps)), float(np.std(ptp_amps)))
+    except Exception:
+        logger.debug("Spatial EI diagnostics: ptp_amps unavailable or malformed")
 
     grid_x, grid_y, grid_z = spatial_features['grid_x'], spatial_features['grid_y'], spatial_features['grid_z']
     peak_times_ms = spatial_features['peak_times_ms']
@@ -426,7 +451,7 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
             )
             ax.add_patch(highlight_ellipse)
         except Exception as e:
-            print(f"Could not draw highlighted ellipse for cell {vision_cell_id_selected}: {e}")
+            logger.warning("Could not draw highlighted ellipse for cell %s: %s", vision_cell_id_selected, e)
 
     # --- Plot styling ---
     ax.set_xlim(x_range)
@@ -513,7 +538,7 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
             return
 
     # Fallback logic remains unchanged
-    print(f"Warning: Could not access pre-calculated timecourse data for cell {cell_id}, falling back to recalculation.")
+    logger.warning("No precomputed timecourse for cell %s; recomputing", cell_id)
     
     red_channel = sta_data.red
     green_channel = sta_data.green

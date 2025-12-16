@@ -12,6 +12,8 @@ from gui.widgets import HighlightStatusPandasModel
 import gui.plotting as plotting
 from gui.panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
+import logging
+logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
@@ -65,13 +67,13 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     vision_dir = Path(ks_dir_name)
     dataset_name = None
 
-    print(f"[DEBUG] Scanning for Vision files in {vision_dir}...")
+    logger.debug(f"Scanning for Vision files in {vision_dir}")
 
     # Find any .ei file and check if its siblings (.sta, .params) exist.
     for ei_file in vision_dir.glob('*.ei'):
         base_name = ei_file.stem  # Gets the filename without the extension
         dataset_name = base_name
-        print(f"[DEBUG] Found EI file with base name: '{dataset_name}'")
+        logger.debug(f"Found EI file with base name: '{dataset_name}'")
         break  # Use the first EI file found
 
         # Check if the corresponding .sta and .params files exist
@@ -89,9 +91,9 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
         # Call the updated method with the discovered dataset name
         success, message = main_window.data_manager.load_vision_data(vision_dir, dataset_name)
 
-        print(f"[DEBUG] Vision data load completed. Success: {success}, Message: {message}")
+        logger.debug(f"Vision data load completed. success={success}, message={message}")
     else:
-        print(f"[DEBUG] No complete set of .ei, .sta, and .params files found. Skipping automatic loading.")
+        logger.debug("No complete set of .ei, .sta, and .params files found; skipping automatic loading")
 
     # Load cell type file
     ls_txt = list(vision_dir.glob('*.txt'))

@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
             # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
             if self.feature_worker_thread and self.feature_worker_thread.isRunning():
                 self.feature_worker_thread.quit()
-                # self.feature_worker_thread.wait() # This is the critical addition
+                self.feature_worker_thread.wait() # ensure previous thread fully stops before starting a new one
 
             self.feature_worker_thread = QThread()
             self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
@@ -210,6 +210,12 @@ class MainWindow(QMainWindow):
             self._draw_plots(cluster_id, features)
 
         self.feature_worker_thread.quit()
+        try:
+            # Wait for the thread to finish teardown to avoid races
+            if self.feature_worker_thread and self.feature_worker_thread.isRunning():
+                self.feature_worker_thread.wait()
+        except Exception:
+            pass
 
     def _draw_plots(self, cluster_id, features):
         """A single, centralized function to update all plots."""

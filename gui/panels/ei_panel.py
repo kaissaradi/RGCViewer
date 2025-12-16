@@ -9,20 +9,22 @@ from scipy.interpolate import griddata
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
+import logging
+logger = logging.getLogger(__name__)
 
 def compute_ei_map(
     ei: np.ndarray,
     channel_positions: np.ndarray) -> np.ndarray:
 
     if ei.shape[0] != channel_positions.shape[0]:
-        print(f"[ERROR] Failed to compute EI map: Mismatch between EI channels ({ei.shape[0]}) and position data ({channel_positions.shape[0]})")
+        logger.error("EI channel count mismatch: ei=%d, positions=%d", ei.shape[0], channel_positions.shape[0])
         return None
 
     if ei.shape[0] != 512:
         # This is normal for vision data which can have different number of channels
         # Only print the warning if the number of channels differs significantly
         if ei.shape[0] not in [512, 519]:  # Common sizes in vision data
-            print(f'Warning: Expected EI shape (n_channels, n_timepoints), got {ei.shape}')
+            logger.warning('Unexpected EI shape: %s', ei.shape)
 
     xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
     yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
@@ -144,9 +146,9 @@ class EIPanel(QWidget):
             self._load_and_draw_vision_ei(cluster_ids)
         else:
             if self.main_window.data_manager.vision_eis is not None:
-                print(f"[DEBUG] No Vision EI found for cluster(s) {cluster_ids}. Falling back to Kilosort EI.")
+                logger.debug("No Vision EI found for cluster(s) %s; falling back to Kilosort EI", cluster_ids)
             else:
-                print(f"[DEBUG] Vision EIs not loaded. Falling back to Kilosort EI.")
+                logger.debug("Vision EIs not loaded; falling back to Kilosort EI")
             self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
 
     def clear(self):
@@ -172,14 +174,14 @@ class EIPanel(QWidget):
                         valid_ei_data_list.append(ei_entry.ei)
                         valid_original_ids.append(original_id)
                     else:
-                        print(f"[DEBUG] EI for Vision cluster ID {cid} is invalid or not a 2D array.")
+                        logger.debug("EI for Vision cluster ID %s is invalid or not a 2D array", cid)
                 else:
-                    print(f"[DEBUG] Vision cluster ID {cid} (from original {original_id}) not found in vision_eis")
+                    logger.debug("Vision cluster ID %s (from original %s) not found in vision_eis", cid, original_id)
             else:
-                print(f"[DEBUG] Invalid Vision cluster ID {cid} (from original {original_id}) - skipping")
+                logger.debug("Invalid Vision cluster ID %s (from original %s); skipping", cid, original_id)
 
         if not valid_ei_data_list:
-            print(f"[DEBUG] No valid EI data found for any of the provided cluster IDs {cluster_ids}")
+            logger.debug("No valid EI data found for cluster IDs %s", cluster_ids)
             self.clear()
             return
 
@@ -206,12 +208,12 @@ class EIPanel(QWidget):
                     final_valid_ids.append(original_id)
                     final_valid_ei_data.append(ei_data)
                 else:
-                    print(f"[WARN] Skipped drawing EI for cluster {original_id} due to data mismatch.")
+                    logger.warning("Skipped drawing EI for cluster %s due to data mismatch", original_id)
             except Exception as e:
-                print(f"[ERROR] Failed to compute EI map for cluster {original_id}: {e}")
+                logger.exception("Failed to compute EI map for cluster %s", original_id)
 
         if not ei_map_list:
-            print(f"[ERROR] Could not generate any valid EI maps.")
+            logger.error("No valid EI maps generated")
             self.clear()
             return
 
@@ -227,8 +229,8 @@ class EIPanel(QWidget):
                 self.current_ei_data[0],
                 n_interval=2, n_markers=3, b_sort=True
             )
-        except Exception as e:
-            print(f"[ERROR] Failed to get top electrodes: {e}")
+        except Exception:
+            logger.exception("Failed to get top electrodes")
             top_channels = []
 
         self.current_channels = top_channels

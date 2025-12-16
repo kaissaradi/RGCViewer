@@ -5,6 +5,8 @@ from scipy.spatial.distance import cdist
 from scipy.ndimage import gaussian_filter1d
 from analysis import analysis_core
 import matplotlib.pyplot as plt
+import logging
+logger = logging.getLogger(__name__)
 
 # Note: The update_raw_trace_plot function has been replaced by background loading
 # The functionality is now handled by MainWindow.load_raw_trace_data and related worker
@@ -71,7 +73,7 @@ def draw_sta_plot(main_window, cluster_id):
 
 def draw_population_rfs_plot(main_window, selected_cell_id=None):
     """Draws the population receptive field plot showing all cell RFs."""
-    print(f"--- 2. (Plotting): Received selected_cell_id = {selected_cell_id}. Passing to analysis_core. ---")
+    logger.debug("Received selected_cell_id=%s for population RF plot", selected_cell_id)
     # MODIFIED: This function now accepts 'selected_cell_id'
     has_vision_params = main_window.data_manager.vision_params
     
