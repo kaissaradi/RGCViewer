@@ -1,10 +1,23 @@
-Implemented new `WaveformPanel` and `StandardPlotsPanel` designs. Resolved an integration bug in `main_window.py` and a plotting error in `standard_plots_panel.py` related to `pyqtgraph`'s `stepMode`.
+# Project Progress
 
-Successfully completed Phase 3 enhancements to the Standard Plots Panel:
-- Removed uninformative orange amplitude drift line from firing rate plot
-- Added toggle to show main channel waveform only vs all channels
-- Added ISI vs amplitude scatter plot as an option in the ISI Distribution panel (accessible via toggle)
-- Added multiple visualization toggle controls (ISI histogram vs ISI vs amplitude, all channels vs main channel only)
-- Fixed syntax errors and completed the channel selection algorithm
+## Backend/Analysis Core
+- Kilosort data loading: ✅
+- Vision data loading (EIs, STAs, Params): ✅
+- Data management and caching: ✅
+- Core analysis functions (ISI, spatial features): ✅
+- 3D surface data preparation for EI plots: ✅
 
-Remaining work: Continue with Phase 4 - implementing advanced EI analysis features including contour topography, propagation vector fields, temporal animations, and heat diffusion visualizations as specified in the PLAN.md.
+## GUI
+- Main window structure and panels: ✅
+- Cluster table and tree views: ✅
+- Standard plots (ACG, ISI, Firing Rate, Amplitudes): ✅
+- Waveform snippets view ("Snippet Cloud"): ✅
+- Similarity matrix: ✅
+- Raw trace viewer: ✅
+- EI Analysis panel now features a switchable view with the original 2D heatmap and a new 3D "mountain plot" visualization: ✅
+
+## Remaining High-Level Tasks
+- Complete the remaining advanced EI analysis visualizations (vector fields, movies, etc.).
+- Refine the channel selection algorithm for the dominant waveform view.
+- Finalize the layout of the Standard Plots panel.
+- Add export functionality for analyses and plots.

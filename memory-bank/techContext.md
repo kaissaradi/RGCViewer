@@ -1,1 +1,1 @@
-Python, PyQt/qtpy, pyqtgraph, numpy, scipy.
+Python 3.9+, PyQt6/qtpy, pyqtgraph, numpy, scipy, matplotlib, pyopengl, pyopengl_accelerate. The GUI is built with PyQt components and visualization is handled by both matplotlib and pyqtgraph. Data analysis uses numpy and scipy. OpenGL is used for 3D visualizations.

@@ -1,1 +1,1 @@
-A viewer for retinal ganglion cell (RGC) electrophysiology data.
+A viewer for retinal ganglion cell (RGC) electrophysiology data that supports both Kilosort and Vision analysis data formats. The application displays waveforms, spike trains, spatial features, and extracellular impulse (EI) responses for neural clusters. Key functionality includes visualization of raw traces, autocorrelograms (ACG), inter-spike intervals (ISI), firing rate plots, and spatial receptive fields.

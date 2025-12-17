@@ -298,6 +298,41 @@ def compute_spatial_features(ei, channel_positions, sampling_rate=20000, pre_sam
         'grid_z': grid_z,
     }
 
+def get_ei_surface_data(mean_ei, channel_positions, grid_resolution=100j):
+    """
+    Prepares data for 3D EI surface visualization (mountain plot).
+
+    Args:
+        mean_ei (np.ndarray): The mean waveform template (n_channels, n_timepoints).
+        channel_positions (np.ndarray): Electrode coordinates (n_channels, 2).
+        grid_resolution (complex): The number of points for the interpolation grid.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: grid_x, grid_y, grid_z for surface plotting.
+    """
+    if mean_ei is None or channel_positions is None:
+        return None, None, None
+
+    # Z-axis is the most negative point (trough) of the waveform on each channel
+    trough_amplitudes = mean_ei.min(axis=1)
+
+    # Define the grid for interpolation
+    grid_x, grid_y = np.mgrid[
+        channel_positions[:, 0].min():channel_positions[:, 0].max():grid_resolution,
+        channel_positions[:, 1].min():channel_positions[:, 1].max():grid_resolution
+    ]
+
+    # Interpolate the sparse data onto the grid
+    grid_z = griddata(
+        channel_positions,
+        trough_amplitudes,
+        (grid_x, grid_y),
+        method='cubic',
+        fill_value=0  # Fill areas outside the electrode array with zero
+    )
+
+    return grid_x, grid_y, grid_z
+
 # =============================================================================
 # Plotting Functions
 # =============================================================================

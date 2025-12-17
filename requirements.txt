@@ -8,6 +8,8 @@ scikit-learn>=1.0.0
 torch>=1.9.0
 networkx>=2.6.0
 PyQt5>=5.15.0
+PyOpenGL
+PyOpenGL_accelerate
 # Included for analysis functions, can be used in notebook environments
 ipywidgets>=7.6.0
 IPython>=7.0.0

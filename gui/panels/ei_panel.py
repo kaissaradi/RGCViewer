@@ -3,14 +3,18 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlid
 from qtpy.QtCore import Qt, QTimer
 import numpy as np
 from gui.widgets import MplCanvas
-from qtpy.QtWidgets import QSizePolicy, QComboBox, QScrollArea
+from qtpy.QtWidgets import QSizePolicy, QComboBox, QScrollArea, QStackedWidget
 import pyqtgraph as pg
+import pyqtgraph.opengl as gl
+from analysis import analysis_core
 from scipy.interpolate import griddata
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 import logging
 logger = logging.getLogger(__name__)
+
+from gui.plot_widgets import EIMountainPlotWidget
 
 def compute_ei_map(
     ei: np.ndarray,
@@ -57,20 +61,21 @@ class EIPanel(QWidget):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
 
-         # --- Splitter for spatial (left) and temporal (right) EI ---
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
+        # --- Create stacked widget for switching between 2D and 3D views ---
+        self.spatial_stack_widget = QStackedWidget()
 
-        # --- Spatial EI Canvas ---
+        # --- 2D Matplotlib view ---
+        self.spatial_2d_widget = QWidget()
+        self.spatial_2d_layout = QVBoxLayout(self.spatial_2d_widget)
+        self.spatial_2d_layout.setContentsMargins(0, 0, 0, 0)
+        self.spatial_2d_layout.setSpacing(0)
+
+        # --- 2D Spatial EI Canvas ---
         self.spatial_canvas = MplCanvas(self, width=10, height=8, dpi=120)
-        left_layout.addWidget(self.spatial_canvas)
+        self.spatial_2d_layout.addWidget(self.spatial_canvas)
         self.spatial_canvas.fig.canvas.mpl_connect('motion_notify_event', self.on_canvas_hover)
-        splitter.addWidget(left_widget)
 
-        # Overlay controls
+        # Overlay controls for 2D view
         overlay_control_layout = QHBoxLayout()
         self.overlay_left_btn = QPushButton("◀")
         self.overlay_right_btn = QPushButton("▶")
@@ -79,12 +84,51 @@ class EIPanel(QWidget):
         overlay_control_layout.addWidget(self.overlay_left_btn)
         overlay_control_layout.addWidget(self.overlay_dropdown)
         overlay_control_layout.addWidget(self.overlay_right_btn)
-        left_layout.addLayout(overlay_control_layout)
+        self.spatial_2d_layout.addLayout(overlay_control_layout)
 
         self.overlay_index = 0
         self.overlay_dropdown.currentIndexChanged.connect(self._on_overlay_dropdown_changed)
         self.overlay_left_btn.clicked.connect(self._on_overlay_left)
         self.overlay_right_btn.clicked.connect(self._on_overlay_right)
+
+        # Add 2D view to the stacked widget
+        self.spatial_stack_widget.addWidget(self.spatial_2d_widget)
+
+        # --- 3D Mountain Plot View ---
+        self.spatial_3d_widget = QWidget()
+        self.spatial_3d_layout = QVBoxLayout(self.spatial_3d_widget)
+        self.spatial_3d_layout.setContentsMargins(0, 0, 0, 0)
+        self.spatial_3d_layout.setSpacing(0)
+
+        # Create 3D mountain plot widget
+        self.mountain_plot_widget = EIMountainPlotWidget()
+        self.spatial_3d_layout.addWidget(self.mountain_plot_widget)
+
+        # Add 3D view to the stacked widget
+        self.spatial_stack_widget.addWidget(self.spatial_3d_widget)
+
+        # --- Dropdown for switching between 2D and 3D views ---
+        view_selection_layout = QHBoxLayout()
+        view_selection_layout.addWidget(QLabel("View:"))
+        self.view_dropdown = QComboBox()
+        self.view_dropdown.addItems(["2D Heatmap", "3D Mountain Plot"])
+        self.view_dropdown.currentTextChanged.connect(self._on_view_changed)
+        view_selection_layout.addWidget(self.view_dropdown)
+        view_selection_layout.addStretch()  # Add stretch to push dropdown to the left
+
+        # --- Splitter for spatial (left) and temporal (right) EI ---
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        # Add view selection dropdown to the left widget
+        left_layout.addLayout(view_selection_layout)
+
+        # Add the stacked widget to the left widget
+        left_layout.addWidget(self.spatial_stack_widget)
+        splitter.addWidget(left_widget)
 
         # Key toggles for overlay navigation
 
@@ -239,6 +283,15 @@ class EIPanel(QWidget):
         # Draw spatial and temporal EI using only the valid data
         self._draw_vision_ei_spatial_overlay_only(self.current_ei_map_list, self.current_cluster_ids, top_channels)
         self._draw_vision_ei_temporal(self.current_ei_data, self.current_cluster_ids, top_channels)
+
+        # Update the 3D plot if it's available and we have valid data
+        if self.current_ei_data and len(self.current_ei_data) > 0:
+            # Use the first EI data for the 3D visualization (for now)
+            ei_data = self.current_ei_data[0]
+            channel_positions = self.main_window.data_manager.channel_positions
+            if self.main_window.data_manager.vision_channel_positions is not None:
+                channel_positions = self.main_window.data_manager.vision_channel_positions
+            self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Left:
@@ -423,9 +476,9 @@ class EIPanel(QWidget):
     #                 ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
     #                 ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
 
-    #     self.spatial_canvas.fig.suptitle("Spatial EI", color='white', fontsize=16)
-    #     self.spatial_canvas.fig.tight_layout()
-    #     self.spatial_canvas.draw()
+        self.spatial_canvas.fig.suptitle("Spatial EI", color='white', fontsize=16)
+        self.spatial_canvas.fig.tight_layout()
+        self.spatial_canvas.draw()
 
     def _on_overlay_dropdown_changed(self, idx):
         self.overlay_index = idx
@@ -442,6 +495,22 @@ class EIPanel(QWidget):
         if self.overlay_index < self.overlay_dropdown.count() - 1:
             self.overlay_index += 1
             self.overlay_dropdown.setCurrentIndex(self.overlay_index)
+
+    def _on_view_changed(self, text):
+        """Handle switching between 2D and 3D views."""
+        if text == "2D Heatmap":
+            self.spatial_stack_widget.setCurrentIndex(0)  # 2D view
+        elif text == "3D Mountain Plot":
+            self.spatial_stack_widget.setCurrentIndex(1)  # 3D view
+
+            # Update the 3D plot with current data if available
+            if self.current_ei_data is not None:
+                # Use the first EI data for the 3D visualization
+                ei_data = self.current_ei_data[0]
+                channel_positions = self.main_window.data_manager.channel_positions
+                if self.main_window.data_manager.vision_channel_positions is not None:
+                    channel_positions = self.main_window.data_manager.vision_channel_positions
+                self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
 
     def _get_top_electrodes(self, ei, n_interval=2, n_markers=5, b_sort=True):
         ## Label top n_markers pixels spaced by n_interval in the heatmap
@@ -494,6 +563,12 @@ class EIPanel(QWidget):
             title += " (Vision EI not found)"
         self.spatial_canvas.fig.suptitle(title, color='white', fontsize=16)
         self.spatial_canvas.draw()
+
+        # Update the 3D plot if it's available and we have the median EI data
+        if lightweight_features and 'median_ei' in lightweight_features:
+            ei_data = lightweight_features['median_ei']
+            channel_positions = self.main_window.data_manager.channel_positions
+            self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
 
     def _reshape_ei(
         self, ei: np.ndarray,
