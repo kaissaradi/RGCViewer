@@ -740,6 +740,26 @@ class DataManager(QObject):
     def get_cluster_spikes(self, cluster_id):
         return self.spike_times[self.spike_clusters == cluster_id]
 
+    def get_cluster_spike_indices(self, cluster_id):
+        """Return the indices into the master spike arrays for spikes of a cluster."""
+        return np.where(self.spike_clusters == cluster_id)[0]
+
+    def get_cluster_spike_amplitudes(self, cluster_id):
+        """Return the per-spike amplitudes for a cluster (empty array if not available)."""
+        if not hasattr(self, 'spike_amplitudes') or self.spike_amplitudes is None:
+            return np.array([])
+        inds = self.get_cluster_spike_indices(cluster_id)
+        return self.spike_amplitudes[inds]
+
+    def get_cluster_mean_amplitude(self, cluster_id, method='mean'):
+        """Return a scalar amplitude for the cluster (mean or median)."""
+        amps = self.get_cluster_spike_amplitudes(cluster_id)
+        if amps.size == 0:
+            return 0.0
+        if method == 'median':
+            return float(np.median(amps))
+        return float(np.mean(amps))
+
     def get_cluster_spikes_in_window(self, cluster_id, start_time, end_time):
         """
         Efficiently get spikes for a cluster within a specific time window.
