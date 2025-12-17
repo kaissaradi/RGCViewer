@@ -1,10 +1,34 @@
-The last session focused on implementing a 3D "mountain plot" for EI (Extracellular Impulse) visualization in the `EIPanel`.
+# Active Context: EI 3D Visualization Enhancement
 
-- Created a new `EIMountainPlotWidget` in `gui/plot_widgets.py` using pyqtgraph's OpenGL for 3D visualization.
-- Updated the `EIPanel` in `gui/panels/ei_panel.py` to use a `QStackedWidget` allowing users to switch between 2D heatmap and 3D mountain plot views.
-- Added a dropdown menu to control the visualization type selection.
-- Modified both `_load_and_draw_vision_ei` and `_load_and_draw_ks_ei` methods to update the 3D visualization when data is loaded.
-- Fixed an issue with the 3D visualization not handling the `EIContainer` format from Vision data files.
-- Resolved the `setColorMap` error by removing it since `GLSurfacePlotItem` doesn't support this method.
+## Current Task: Stable EI Spatial Visualizations (Matplotlib-based)
 
-The 3D visualization now properly handles both Kilosort and Vision EI data formats and provides a dropdown menu for switching between 2D and 3D views.
+### Date: December 17, 2025
+### Status: COMPLETED (engine switch, integration, and robustness fixes)
+
+### Task Summary
+We replaced an unstable OpenGL-based 3D renderer with a stable Matplotlib-based visualization suite and applied several robustness fixes to prevent GL-context crashes. The result is a working interactive analysis UI that provides:
+- A rotatable Matplotlib 3D Max-Projection surface (EI mountain)
+- A 2D Latency Map scatter view (time-to-peak colored map)
+- Stable 2D contour (animated) visualization as a fallback
+
+### Files Modified
+- `gui/plot_widgets.py`: Implemented Matplotlib 3D `EIMountainPlotWidget` (max-projection surface) and removed the OpenGL-dependent variant.
+- `gui/panels/ei_panel.py`: Added `plot_latency_map` helper and integrated "Latency Map" into the view dropdown.
+- `main.py`: Added a conservative `QSurfaceFormat` and software-OpenGL attribute to reduce driver-related crashes.
+- `requirements.txt`: Removed `PyOpenGL_accelerate` to avoid context/driver issues.
+
+### Key Features Implemented
+1. Matplotlib 3D Max-Projection surface (rotatable, stable across platforms)
+2. 2D Latency Map showing per-channel time-to-peak (ms) with colorbar
+3. Preserved voltage inversion and Z-scaling semantics (mountain metaphor)
+4. Defensive updates: deferred first GL-like draw, retry on transient errors, and guarded updates
+5. Dropdown integration for switching between 2D heatmap, 3D mountain, and latency map
+
+### Technical Details
+- Uses `scipy.interpolate.griddata` for spatial interpolation (same as prior approach)
+- Uses `gui.widgets.MplCanvas` as the Matplotlib wrapper for embedding canvases
+- Preserves existing EI data workflows for Vision and Kilosort formats
+
+### Integration Status
+- Visualization integrated into `EIPanel`; calls to `mountain_plot_widget.plot_ei_3d(...)` and `plot_latency_map(...)` are wired where EI is loaded.
+- OpenGL-accelerator-related crashes have been addressed by removing `PyOpenGL_accelerate` and adding Qt fallbacks; the project now prefers Matplotlib for 3D.

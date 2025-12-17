@@ -1,88 +1,90 @@
 """
-3D visualization widgets for the RGC Viewer application.
+Visualization widgets for the RGC Viewer application.
+This module contains widgets for displaying EI data as contour plots (replacing 3D visualization).
 """
 import numpy as np
-import pyqtgraph.opengl as gl
-from qtpy.QtWidgets import QWidget, QVBoxLayout
-from analysis import analysis_core
-from collections import OrderedDict
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSlider, QLabel
+from qtpy.QtCore import Qt, QTimer
+from scipy.interpolate import griddata
+from gui.widgets import MplCanvas
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
 
 class EIMountainPlotWidget(QWidget):
     """
-    3D visualization widget for displaying EI data as a mountain/surface plot.
+    Matplotlib 3D static mountain plot for EI max-projection.
+    This provides a stable, non-OpenGL 3D surface that can be rotated
+    with the mouse and works across platforms.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Create layout
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        # Main Layout
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
 
-        # Create the GL View Widget for 3D plotting
-        self.gl_view = gl.GLViewWidget()
-        self.gl_view.setBackgroundColor('k')  # Black background
+        # Matplotlib canvas
+        self.canvas = MplCanvas(self, width=8, height=6, dpi=100)
+        self.layout.addWidget(self.canvas)
 
-        # Add to layout
-        layout.addWidget(self.gl_view)
-
-        # Initialize surfaces
-        self.surface_items = []
-
-    def clear_plot(self):
-        """Clear all surfaces from the 3D plot."""
-        for item in self.surface_items:
-            self.gl_view.removeItem(item)
-        self.surface_items = []
+        self.ei_data = None
+        self.channel_positions = None
+        # grid resolution for interpolation
+        self.grid_res = 60j
 
     def plot_ei_3d(self, ei_data, channel_positions):
         """
-        Plot EI data in 3D surface view.
-
-        Args:
-            ei_data: EI data array (n_channels, time_points)
-            channel_positions: Channel position array (n_channels, 2)
+        Plot the Max-Projection (min over time, inverted) as a 3D surface.
         """
-        # Clear previous surfaces
-        self.clear_plot()
+        self.ei_data = ei_data
+        self.channel_positions = channel_positions
 
-        # Prepare data for 3D visualization
-        grid_x, grid_y, grid_z = analysis_core.get_ei_surface_data(
-            ei_data,
-            channel_positions,
-            grid_resolution=50j  # Lower resolution for faster rendering
+        # Compute spatial footprint (deepest negative trough per channel)
+        spatial_footprint = np.min(self.ei_data, axis=1)
+        # Invert so mountains rise up
+        z_values = spatial_footprint * -1.0
+
+        # Interpolate to grid
+        min_x, max_x = self.channel_positions[:, 0].min(), self.channel_positions[:, 0].max()
+        min_y, max_y = self.channel_positions[:, 1].min(), self.channel_positions[:, 1].max()
+
+        grid_x, grid_y = np.mgrid[min_x:max_x:self.grid_res, min_y:max_y:self.grid_res]
+
+        grid_z = griddata(
+            self.channel_positions,
+            z_values,
+            (grid_x, grid_y),
+            method='linear',
+            fill_value=0
         )
-
-        if grid_x is None or grid_y is None or grid_z is None:
-            print("Error: Could not compute surface data for 3D plot")
-            return
-
-        # Replace NaN values with zeros
         grid_z = np.nan_to_num(grid_z, nan=0.0)
 
-        # Create a surface plot item with color gradient based on height
-        surface = gl.GLSurfacePlotItem(
-            x=grid_x[:, 0],  # x coordinates (first column)
-            y=grid_y[0, :],  # y coordinates (first row)
-            z=grid_z,        # z values (height)
-            shader='shaded',
-            smooth=True
+        # Render using Matplotlib 3D
+        self.canvas.fig.clear()
+        ax = self.canvas.fig.add_subplot(111, projection='3d')
+        ax.set_facecolor('#1f1f1f')
+        self.canvas.fig.patch.set_facecolor('#1f1f1f')
+
+        surf = ax.plot_surface(
+            grid_x, grid_y, grid_z,
+            cmap='plasma',
+            linewidth=0,
+            antialiased=False,
+            rcount=grid_z.shape[0],
+            ccount=grid_z.shape[1]
         )
 
-        # Add the surface to the view
-        self.gl_view.addItem(surface)
-        self.surface_items.append(surface)
+        # Styling: hide axes for cleaner view
+        ax.set_axis_off()
+        ax.set_title('EI Max Projection (Voltage)', color='white')
 
-        # Add axes
-        axis = gl.GLAxisItem()
-        self.gl_view.addItem(axis)
+        # Optional subtle floor grid
+        # Draw and finish
+        self.canvas.draw()
 
-        # Add grid
-        grid = gl.GLGridItem()
-        grid.setSize(x=100, y=100, z=100)
-        grid.setSpacing(10, 10, 10)
-        self.gl_view.addItem(grid)
-
-        # Set initial viewing angle
-        self.gl_view.opts['distance'] = 150
-        self.gl_view.setCameraPosition(distance=150, elevation=30, azimuth=45)
+    def clear_plot(self):
+        self.canvas.fig.clear()
+        self.canvas.draw()
+        self.ei_data = None
+        self.channel_positions = None

@@ -14,7 +14,57 @@ if TYPE_CHECKING:
 import logging
 logger = logging.getLogger(__name__)
 
+import matplotlib.pyplot as plt
 from gui.plot_widgets import EIMountainPlotWidget
+
+
+def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
+    """
+    Plots the propagation latency.
+    Color = Time to Peak (Blue -> Red = Start -> End).
+    """
+    fig.clear()
+    ax = fig.add_subplot(111)
+
+    # 1. Calculate Time to Peak (Latency) for every channel
+    peak_indices = np.argmin(ei_data, axis=1)
+    peak_times_ms = (peak_indices / sampling_rate) * 1000.0
+
+    # 2. Filter: Only plot channels with meaningful amplitude
+    amplitudes = np.min(ei_data, axis=1)
+    # Keep channels deeper than a small fraction of the min amplitude
+    threshold = amplitudes.min() * 0.2
+    mask = amplitudes < threshold
+    if mask.sum() == 0:
+        ax.text(0.5, 0.5, 'No significant channels', ha='center', va='center', color='orange')
+        fig.canvas.draw()
+        return
+
+    sc = ax.scatter(
+        channel_positions[mask, 0],
+        channel_positions[mask, 1],
+        c=peak_times_ms[mask],
+        s=80,
+        cmap='turbo',
+        edgecolor='white',
+        linewidth=0.4
+    )
+
+    ax.set_facecolor('#1f1f1f')
+    fig.patch.set_facecolor('#1f1f1f')
+    ax.set_title('Signal Propagation Latency', color='white')
+    ax.set_xlabel('X (µm)', color='gray')
+    ax.set_ylabel('Y (µm)', color='gray')
+    ax.tick_params(colors='gray')
+    ax.set_aspect('equal')
+
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_label('Time to Peak (ms)', color='gray')
+    cbar.ax.yaxis.set_tick_params(color='gray')
+    plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='gray')
+
+    fig.tight_layout()
+    fig.canvas.draw()
 
 def compute_ei_map(
     ei: np.ndarray,
@@ -111,7 +161,7 @@ class EIPanel(QWidget):
         view_selection_layout = QHBoxLayout()
         view_selection_layout.addWidget(QLabel("View:"))
         self.view_dropdown = QComboBox()
-        self.view_dropdown.addItems(["2D Heatmap", "3D Mountain Plot"])
+        self.view_dropdown.addItems(["2D Heatmap", "3D Mountain Plot", "Latency Map"])
         self.view_dropdown.currentTextChanged.connect(self._on_view_changed)
         view_selection_layout.addWidget(self.view_dropdown)
         view_selection_layout.addStretch()  # Add stretch to push dropdown to the left
@@ -511,6 +561,15 @@ class EIPanel(QWidget):
                 if self.main_window.data_manager.vision_channel_positions is not None:
                     channel_positions = self.main_window.data_manager.vision_channel_positions
                 self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
+        elif text == "Latency Map":
+            # Use the existing 2D canvas for the latency scatter
+            self.spatial_stack_widget.setCurrentIndex(0)
+            if self.current_ei_data is not None:
+                ei_data = self.current_ei_data[0]
+                channel_positions = self.main_window.data_manager.channel_positions
+                if self.main_window.data_manager.vision_channel_positions is not None:
+                    channel_positions = self.main_window.data_manager.vision_channel_positions
+                plot_latency_map(self.spatial_canvas.fig, ei_data, channel_positions, self.main_window.data_manager.sampling_rate)
 
     def _get_top_electrodes(self, ei, n_interval=2, n_markers=5, b_sort=True):
         ## Label top n_markers pixels spaced by n_interval in the heatmap
