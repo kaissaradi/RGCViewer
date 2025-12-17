@@ -22,32 +22,52 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     """
     Plots the propagation latency.
     Color = Time to Peak (Blue -> Red = Start -> End).
+    Size = Amplitude of signal (bigger dots = larger amplitude).
     """
     fig.clear()
     ax = fig.add_subplot(111)
 
-    # 1. Calculate Time to Peak (Latency) for every channel
-    peak_indices = np.argmin(ei_data, axis=1)
+    # 1. Calculate Time to First Significant Deflection (Latency) for every channel
+    # Instead of just finding the minimum, find when the signal first crosses a threshold
+    baseline = ei_data[:, :10].mean(axis=1)  # Use first 10 samples as baseline
+    baseline_corrected = ei_data - baseline[:, np.newaxis]
+
+    # Calculate amplitude-based threshold (20% of the min amplitude)
+    min_amplitudes = np.min(baseline_corrected, axis=1)
+    threshold = min_amplitudes * 0.2  # 20% of minimum amplitude
+
+    # Find the first sample where the signal crosses the threshold
+    peak_indices = np.zeros(ei_data.shape[0], dtype=int)
+    for i in range(ei_data.shape[0]):
+        # Look for first crossing of the threshold
+        crossing_samples = np.where(baseline_corrected[i, :] <= threshold[i])[0]
+        if len(crossing_samples) > 0:
+            peak_indices[i] = crossing_samples[0]  # First crossing
+        else:
+            # If no crossing found, use argmin as fallback
+            peak_indices[i] = np.argmin(baseline_corrected[i, :])
+
     peak_times_ms = (peak_indices / sampling_rate) * 1000.0
 
-    # 2. Filter: Only plot channels with meaningful amplitude
-    amplitudes = np.min(ei_data, axis=1)
-    # Keep channels deeper than a small fraction of the min amplitude
-    threshold = amplitudes.min() * 0.2
-    mask = amplitudes < threshold
-    if mask.sum() == 0:
-        ax.text(0.5, 0.5, 'No significant channels', ha='center', va='center', color='orange')
-        fig.canvas.draw()
-        return
+    # Calculate amplitudes for sizing the dots
+    amplitudes = np.abs(np.min(ei_data, axis=1))  # Use absolute value of minimum for sizing
+    # Normalize amplitudes for display (min size 10, max size 150)
+    min_amp, max_amp = amplitudes.min(), amplitudes.max()
+    if max_amp > min_amp:  # Avoid division by zero
+        normalized_sizes = 10 + 140 * (amplitudes - min_amp) / (max_amp - min_amp)
+    else:
+        normalized_sizes = np.full_like(amplitudes, 80.0)  # Default size if all amplitudes are the same
 
+    # 2. Plot all electrode positions with latency (color) and amplitude (size)
     sc = ax.scatter(
-        channel_positions[mask, 0],
-        channel_positions[mask, 1],
-        c=peak_times_ms[mask],
-        s=80,
+        channel_positions[:, 0],
+        channel_positions[:, 1],
+        c=peak_times_ms,
+        s=normalized_sizes,
         cmap='turbo',
         edgecolor='white',
-        linewidth=0.4
+        linewidth=0.4,
+        alpha=0.8  # Slight transparency to handle overlapping dots
     )
 
     ax.set_facecolor('#1f1f1f')
@@ -58,10 +78,33 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     ax.tick_params(colors='gray')
     ax.set_aspect('equal')
 
+    # Colorbar for latency
     cbar = fig.colorbar(sc, ax=ax)
     cbar.set_label('Time to Peak (ms)', color='gray')
     cbar.ax.yaxis.set_tick_params(color='gray')
     plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='gray')
+
+    # Create a second legend-like axis for amplitude sizes
+    # This will show the relationship between dot size and amplitude
+    axins = ax.inset_axes([0.02, 0.02, 0.4, 0.1])  # [left, bottom, width, height] in axes fraction
+    axins.set_facecolor((0.12, 0.12, 0.12, 0.7))  # Semi-transparent dark background
+
+    # Show a few representative dot sizes
+    example_sizes = [20, 80, 140]  # Representing small, medium, large
+    example_amps = []
+    for size in example_sizes:
+        # Calculate the amplitude value for each example size
+        amp_val = ((size - 10) / 140.0) * (max_amp - min_amp) + min_amp
+        example_amps.append(amp_val)
+
+    axins.scatter([0.2, 0.5, 0.8], [0.5, 0.5, 0.5], s=example_sizes, c='white', edgecolor='white', alpha=0.8)
+    axins.text(0.2, 0.7, f'{example_amps[0]:.1f} µV', color='white', fontsize=8, ha='center')
+    axins.text(0.5, 0.7, f'{example_amps[1]:.1f} µV', color='white', fontsize=8, ha='center')
+    axins.text(0.8, 0.7, f'{example_amps[2]:.1f} µV', color='white', fontsize=8, ha='center')
+    axins.text(0.5, 0.9, 'Amplitude Size Legend', color='white', fontsize=9, ha='center')
+    axins.set_xlim(0, 1)
+    axins.set_ylim(0, 1)
+    axins.axis('off')
 
     fig.tight_layout()
     fig.canvas.draw()
@@ -110,6 +153,9 @@ class EIPanel(QWidget):
     def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
+
+        # Track the current view to properly update when cluster changes
+        self.current_view = "2D Heatmap"
 
         # --- Create stacked widget for switching between 2D and 3D views ---
         self.spatial_stack_widget = QStackedWidget()
@@ -244,6 +290,15 @@ class EIPanel(QWidget):
             else:
                 logger.debug("Vision EIs not loaded; falling back to Kilosort EI")
             self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
+
+        # If the current view is the latency map, refresh it with the new cluster data
+        if self.current_view == "Latency Map":
+            if self.current_ei_data is not None and len(self.current_ei_data) > 0:
+                ei_data = self.current_ei_data[0]  # Use the first cluster's data
+                channel_positions = self.main_window.data_manager.channel_positions
+                if self.main_window.data_manager.vision_channel_positions is not None:
+                    channel_positions = self.main_window.data_manager.vision_channel_positions
+                plot_latency_map(self.spatial_canvas.fig, ei_data, channel_positions, self.main_window.data_manager.sampling_rate)
 
     def clear(self):
         self.spatial_canvas.fig.clear()
@@ -548,6 +603,9 @@ class EIPanel(QWidget):
 
     def _on_view_changed(self, text):
         """Handle switching between 2D and 3D views."""
+        # Store the current view to handle updates when cluster changes
+        self.current_view = text
+
         if text == "2D Heatmap":
             self.spatial_stack_widget.setCurrentIndex(0)  # 2D view
         elif text == "3D Mountain Plot":
