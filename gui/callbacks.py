@@ -341,7 +341,7 @@ def apply_good_filter(main_window: MainWindow):
     groups = {}
     for label in df['KSLabel'].unique():
         group_item = QStandardItem(label)
-        group_item.setEditable(False)
+        # group_item.setEditable(False)
         group_item.setDropEnabled(True)  # Can drop cells into it
 
         # Style group items differently from cells
@@ -498,8 +498,7 @@ def feature_extraction(main_window: MainWindow, cluster_ids):
     """Feature extraction for selected clusters."""
     logger.info(f"feature extraction for clusters: {cluster_ids}")
     dlg = FeatureExtractionWindow(main_window, cluster_ids)
-    dlg.exec_()
-    pass
+    dlg.show()
 
 def stop_worker(main_window: MainWindow):
     """Stops the background spatial worker thread."""
