@@ -11,7 +11,7 @@ import matplotlib.gridspec as gridspec
 from matplotlib.patches import Ellipse
 import networkx as nx
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import correlate
+from scipy.signal import correlate, find_peaks, peak_widths
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from scipy.interpolate import griddata
@@ -22,6 +22,244 @@ from ipywidgets import HBox
 from IPython.display import display
 import logging
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# STA Analysis Utilities
+# =============================================================================
+
+def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
+    """
+    Retrieves or calculates the STA timecourse for a cell.
+    Returns (time_axis, timecourse_matrix, source)
+    """
+    timecourse_matrix = None
+    source = "precalculated"
+    
+    # Try pre-calculated first
+    try:
+        red_tc = vision_params.get_data_for_cell(cell_id, 'RedTimeCourse')
+        green_tc = vision_params.get_data_for_cell(cell_id, 'GreenTimeCourse')
+        blue_tc = vision_params.get_data_for_cell(cell_id, 'BlueTimeCourse')
+        if red_tc is not None and green_tc is not None and blue_tc is not None:
+            timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
+    except Exception:
+        pass
+
+    # Fallback to calculation from raw STA
+    if timecourse_matrix is None and sta_data is not None:
+        source = "recalculated"
+        red_channel = sta_data.red
+        green_channel = sta_data.green
+        blue_channel = sta_data.blue
+
+        if stafit:
+            center_x = int(stafit.center_x)
+            center_y = int(stafit.center_y)
+            std_x = int(max(1, stafit.std_x))
+            std_y = int(max(1, stafit.std_y))
+
+            x_min = max(0, center_x - std_x)
+            x_max = min(red_channel.shape[1], center_x + std_x + 1)
+            y_min = max(0, center_y - std_y)
+            y_max = min(red_channel.shape[0], center_y + std_y + 1)
+
+            red_timecourse = np.mean(red_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+            green_timecourse = np.mean(green_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+            blue_timecourse = np.mean(blue_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+        else:
+             # Fallback if no fit: use max pixel
+            peak_idx = np.unravel_index(np.argmax(np.abs(red_channel)), red_channel.shape)
+            y_idx, x_idx = peak_idx[0], peak_idx[1]
+            red_timecourse = red_channel[y_idx, x_idx, :]
+            green_timecourse = green_channel[y_idx, x_idx, :]
+            blue_timecourse = blue_channel[y_idx, x_idx, :]
+
+        timecourse_matrix = np.stack([red_timecourse, green_timecourse, blue_timecourse], axis=1)
+
+    if timecourse_matrix is None:
+        return None, None, None
+
+    n_timepoints = timecourse_matrix.shape[0]
+    
+    # Calculate time axis
+    if sta_data and hasattr(sta_data, 'refresh_time'):
+        refresh_ms = sta_data.refresh_time
+    else:
+        refresh_ms = 1000.0 / 60.0 # Default approx 60Hz
+
+    total_duration_ms = (n_timepoints - 1) * refresh_ms
+    time_axis = np.linspace(-total_duration_ms, 0, n_timepoints)
+
+    return time_axis, timecourse_matrix, source
+
+def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
+    """
+    Computes scalar metrics from the STA.
+    """
+    metrics = {}
+    
+    # 1. Temporal Metrics
+    time_axis, tc_matrix, _ = get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id)
+    
+    if tc_matrix is not None:
+        # Identify dominant channel
+        energies = np.sum(tc_matrix**2, axis=0)
+        dom_idx = np.argmax(energies)
+        dom_trace = tc_matrix[:, dom_idx]
+        
+        # Normalize for analysis
+        abs_max = np.max(np.abs(dom_trace))
+        if abs_max > 0:
+            norm_trace = dom_trace / abs_max
+        else:
+            norm_trace = dom_trace
+            
+        # Polarity
+        peak_val = np.max(norm_trace)
+        trough_val = np.min(norm_trace)
+        is_off = abs(trough_val) > abs(peak_val)
+        polarity = "OFF" if is_off else "ON"
+        
+        # Significant peak index (min or max based on polarity)
+        if is_off:
+            peak_idx = np.argmin(norm_trace)
+        else:
+            peak_idx = np.argmax(norm_trace)
+            
+        time_to_peak = time_axis[peak_idx]
+        
+        # Zero crossing (first crossing after peak towards zero)
+        zero_crossing_time = None
+        # Look backwards from peak if it's late, or just find zero crossings
+        # Simple approach: find zero crossings in the whole trace
+        zcs = np.where(np.diff(np.signbit(norm_trace)))[0]
+        
+        # Biphasic Index
+        # |Peak| / (|Peak| + |SecondaryPeak|)
+        # Simplified: Just report Peak/Trough ratio
+        if is_off:
+            biphasic_index = abs(peak_val) / (abs(trough_val) + 1e-9) # invalid for OFF
+            rebound = peak_val
+        else:
+            biphasic_index = abs(trough_val) / (abs(peak_val) + 1e-9)
+            rebound = trough_val
+
+        metrics.update({
+            "Dominant Channel": ["Red", "Green", "Blue"][dom_idx],
+            "Polarity": polarity,
+            "Time to Peak (ms)": f"{time_to_peak:.1f}",
+            "Zero Crossing": f"{len(zcs)} detected",
+            "Biphasic Index": f"{biphasic_index:.2f}"
+        })
+        
+        # FWHM (Duration)
+        # Find width at 0.5 height of the main peak
+        try:
+            # We need positive peaks for peak_widths, so flip if OFF
+            trace_for_width = -norm_trace if is_off else norm_trace
+            # Shift to make baseline 0 roughly (or just use relative height)
+            # peak_widths uses relative height.
+            # We need to find the specific peak index in the flipped trace
+            p_idx_for_width = peak_idx 
+            
+            widths, width_heights, left_ips, right_ips = peak_widths(
+                trace_for_width, [p_idx_for_width], rel_height=0.5
+            )
+            if len(widths) > 0:
+                # Convert width in samples to ms
+                sample_interval = abs(time_axis[1] - time_axis[0])
+                fwhm_ms = widths[0] * sample_interval
+                metrics["FWHM (Duration)"] = f"{fwhm_ms:.1f} ms"
+        except Exception as e:
+            metrics["FWHM (Duration)"] = "N/A"
+
+    # 2. Spatial Metrics
+    if stafit:
+        metrics["RF Center X"] = f"{stafit.center_x:.1f}"
+        metrics["RF Center Y"] = f"{stafit.center_y:.1f}"
+        metrics["RF Sigma X"] = f"{stafit.std_x:.2f}"
+        metrics["RF Sigma Y"] = f"{stafit.std_y:.2f}"
+        metrics["Orientation"] = f"{np.rad2deg(stafit.rot):.1f}°"
+        
+        # Effective Area (Pi * sx * sy)
+        area = np.pi * stafit.std_x * stafit.std_y
+        metrics["RF Area (sq stix)"] = f"{area:.1f}"
+        
+    return metrics
+
+def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_id):
+    """
+    Plots the temporal filter with annotations for metrics.
+    """
+    fig.clear()
+    ax = fig.add_subplot(111)
+    
+    time_axis, tc_matrix, _ = get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id)
+    
+    if tc_matrix is None:
+        ax.text(0.5, 0.5, "No temporal data", ha='center', va='center', color='gray')
+        return
+
+    # Dominant channel
+    energies = np.sum(tc_matrix**2, axis=0)
+    dom_idx = np.argmax(energies)
+    dom_trace = tc_matrix[:, dom_idx]
+    dom_color = ['red', 'green', 'blue'][dom_idx]
+    
+    # Normalize
+    abs_max = np.max(np.abs(dom_trace))
+    if abs_max == 0: abs_max = 1
+    norm_trace = dom_trace / abs_max
+    
+    ax.plot(time_axis, norm_trace, color=dom_color, linewidth=2, label='Filter')
+    ax.fill_between(time_axis, norm_trace, 0, color=dom_color, alpha=0.1)
+    
+    # Find peak
+    peak_idx = np.argmax(np.abs(norm_trace))
+    peak_time = time_axis[peak_idx]
+    peak_val = norm_trace[peak_idx]
+    
+    # Annotate Peak
+    ax.scatter([peak_time], [peak_val], color='white', s=50, zorder=5)
+    ax.annotate(f"Peak: {peak_time:.1f}ms", 
+                xy=(peak_time, peak_val), 
+                xytext=(0, 10 if peak_val > 0 else -15),
+                textcoords='offset points',
+                ha='center', color='white', fontsize=9)
+    
+    # FWHM
+    try:
+        is_off = peak_val < 0
+        trace_for_width = -norm_trace if is_off else norm_trace
+        widths, width_heights, left_ips, right_ips = peak_widths(
+            trace_for_width, [peak_idx], rel_height=0.5
+        )
+        if len(widths) > 0:
+            width = widths[0]
+            # Interpolate time points
+            sample_interval = abs(time_axis[1] - time_axis[0])
+            start_time = time_axis[0] + left_ips[0] * sample_interval
+            end_time = time_axis[0] + right_ips[0] * sample_interval
+            
+            h = width_heights[0]
+            if is_off: h = -h
+            
+            ax.hlines(h, start_time, end_time, colors='yellow', linestyles='-', linewidth=2)
+            ax.annotate(f"FWHM: {width * sample_interval:.1f}ms",
+                        xy=((start_time+end_time)/2, h),
+                        xytext=(0, 5), textcoords='offset points',
+                        ha='center', color='yellow', fontsize=8)
+    except Exception:
+        pass
+
+    ax.set_title("Temporal Dynamics Analysis", color='white')
+    ax.set_xlabel("Time (ms)", color='gray')
+    ax.set_facecolor('#1f1f1f')
+    ax.tick_params(colors='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('gray')
+    ax.grid(True, alpha=0.2)
+    ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
 
 def compute_per_spike_features(
     snippets: np.ndarray,
@@ -199,14 +437,14 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
     Recursively refines neural spike clusters using PCA+KMeans clustering.
     """
     logger.info("Starting cluster refinement; input_spikes=%d", len(spike_times))
-    
+
     window = params.get('window', (-20, 60))
     min_spikes = params.get('min_spikes', 500)
     k_start = params.get('k_start', 3)
     k_refine = params.get('k_refine', 2)
     ei_sim_threshold = params.get('ei_sim_threshold', 0.9)
     max_depth = params.get('max_depth', 10)
-    
+
     if isinstance(dat_path, np.ndarray):
         snips = dat_path
     elif isinstance(dat_path, str):
@@ -222,7 +460,7 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
         cl = cluster_pool.pop(0)
         inds = cl['inds']
         depth = cl['depth']
-        
+
         if depth >= max_depth:
             final_clusters.append({'inds': inds})
             continue
@@ -231,7 +469,7 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
             continue
 
         k = k_start if depth == 0 else k_refine
-        
+
         snips_cl = snips[:, :, inds]
         ei = compute_ei(snips_cl)
         selected = select_channels(ei)
@@ -242,9 +480,9 @@ def refine_cluster_v2(spike_times, dat_path, channel_positions, params):
         labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(pcs)
 
         subclusters = [{'inds': inds[np.where(labels == i)[0]]} for i in range(k)]
-        
+
         large_subclusters = [sc for sc in subclusters if len(sc['inds']) >= min_spikes]
-        
+
         if len(large_subclusters) <= 1:
             final_clusters.append({'inds': inds})
             continue
@@ -366,15 +604,15 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     v_min, v_max = np.percentile(peak_negative_smooth, [5, 95])
     contour_fill = ax1.contourf(grid_x, grid_y, grid_z, levels=20, cmap='RdBu_r', alpha=0.7, vmin=v_min, vmax=v_max)
     ax1.contour(grid_x, grid_y, grid_z, levels=20, colors='white', linewidths=0.5, alpha=0.4)
-    
+
     # --- CHANGE START: Thresholding and scaling for scatter plot ---
     # Set a threshold to only show channels with significant peak-to-peak amplitude
     ptp_threshold = np.percentile(ptp_amps, 80) # Only show top 20% of channels
     active_mask = ptp_amps > ptp_threshold
-    
+
     # Create an array for dot sizes, defaulting to 0 (invisible)
     sizes = np.zeros_like(ptp_amps)
-    
+
     # Calculate sizes only for the active channels
     if np.any(active_mask):
         max_active_ptp = ptp_amps[active_mask].max()
@@ -384,7 +622,7 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     ax1.scatter(channel_positions[:, 0], channel_positions[:, 1], s=sizes, c=peak_negative_smooth,
                 cmap='RdBu_r', edgecolor='black', linewidth=0.7, zorder=2, vmin=v_min, vmax=v_max)
     # --- CHANGE END ---
-    
+
     fig.colorbar(contour_fill, ax=ax1, label='Smoothed Peak Amp (µV)', shrink=0.8)
 
     ax2.set_title('Spike Propagation', color='white')
@@ -420,16 +658,16 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
     """
     fig.clear()
     ax = fig.add_subplot(111)
-    
+
     cell_ids = vision_params.get_cell_ids()
-    
+
     if not cell_ids:
         ax.text(0.5, 0.5, "No RF data available", ha='center', va='center', color='gray')
         ax.set_title("Population Receptive Fields", color='white')
         return
 
     vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
-    
+
     # --- Auto-determine plot boundaries from data ---
     x_coords, y_coords = [], []
     for cell_id in cell_ids:
@@ -439,20 +677,20 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
             y_coords.append(stafit.center_y)
         except Exception:
             continue
-    
+
     x_range = (min(x_coords) - 20, max(x_coords) + 20) if x_coords else (0, 100)
     y_range = (min(y_coords) - 20, max(y_coords) + 20) if y_coords else (0, 100)
-    
+
     # --- STAGE 1: Draw all non-selected ellipses first to make them faint background ---
     for cell_id in cell_ids:
         # Skip the selected cell for now; we'll draw it separately.
         if cell_id == vision_cell_id_selected:
             continue
-            
+
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-            
+
             ellipse = Ellipse(
                 xy=(stafit.center_x, adjusted_y),
                 width=2 * stafit.std_x,
@@ -505,7 +743,7 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
     """
     Visualizes the timecourse of the STA response for a specific cell.
     The x-axis shows time from -500ms to 0ms before the spike.
-    
+
     Args:
         fig (matplotlib.figure.Figure): The figure object to draw on.
         sta_data (STAContainer): Named tuple containing the raw STA movie.
@@ -515,7 +753,7 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
         sampling_rate (float): Sampling rate in Hz for the STA data (stixels per second).
     """
     fig.clear()
-    
+
     timecourse_matrix = None
     try:
         red_tc = vision_params.get_data_for_cell(cell_id, 'RedTimeCourse')
@@ -529,16 +767,16 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
     if timecourse_matrix is not None and hasattr(timecourse_matrix, 'shape'):
         if len(timecourse_matrix.shape) == 2:
             n_timepoints, n_channels = timecourse_matrix.shape
-            
+
             # --- DYNAMIC X-AXIS CALCULATION ---
             # Get the refresh time (in ms) from the STA data container.
             # This makes the time axis accurate to the original experiment.
-            refresh_ms = getattr(sta_data, 'refresh_time', 1000.0 / 60.0) 
+            refresh_ms = getattr(sta_data, 'refresh_time', 1000.0 / 60.0)
             total_duration_ms = (n_timepoints - 1) * refresh_ms
-            
+
             # Create the accurate time axis based on the data's properties
             time_axis = np.linspace(-total_duration_ms, 0, n_timepoints)
-            
+
             ax = fig.add_subplot(111)
 
             n_channels_to_plot = min(n_channels, 3)
@@ -553,14 +791,15 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
             ax.set_ylabel("Response", color='gray')
             ax.grid(True, alpha=0.3)
             ax.legend(facecolor='#1f1f1f', labelcolor='white')
-            
+
             ax.set_facecolor('#1f1f1f')
             ax.tick_params(colors='gray')
             for spine in ax.spines.values():
                 spine.set_edgecolor('gray')
-            
+
             ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
-            
+            ax.axhline(y=0, color='white', linestyle=':', alpha=0.5)  # Add dotted line at y=0
+
             # --- ACCURATE Y-AXIS SCALING ---
             # This logic fits the axis tightly to the min/max of the saved data.
             if timecourse_matrix.size > 0:
@@ -569,54 +808,55 @@ def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_
                 y_range = y_max - y_min if y_max > y_min else 1.0
                 y_margin = y_range * 0.10  # Add a 10% margin for readability
                 ax.set_ylim(y_min - y_margin, y_max + y_margin)
-                
+
             return
 
     # Fallback logic remains unchanged
     logger.warning("No precomputed timecourse for cell %s; recomputing", cell_id)
-    
+
     red_channel = sta_data.red
     green_channel = sta_data.green
     blue_channel = sta_data.blue
-    
+
     n_timepoints = red_channel.shape[2]
-    
+
     center_x = int(stafit.center_x)
     center_y = int(stafit.center_y)
     std_x = int(max(1, stafit.std_x))
     std_y = int(max(1, stafit.std_y))
-    
+
     x_min = max(0, center_x - std_x)
     x_max = min(red_channel.shape[1], center_x + std_x + 1)
     y_min = max(0, center_y - std_y)
     y_max = min(red_channel.shape[0], center_y + std_y + 1)
-    
+
     red_timecourse = np.mean(red_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
     green_timecourse = np.mean(green_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
     blue_timecourse = np.mean(blue_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
-    
+
     # Fallback uses a hardcoded duration as it has no refresh_time metadata
     total_time_ms = 1500
     time_axis = np.linspace(-total_time_ms, 0, n_timepoints)
-    
+
     ax = fig.add_subplot(111)
-    
+
     ax.plot(time_axis, red_timecourse, color='red', linewidth=1.5, label='Red')
     ax.plot(time_axis, green_timecourse, color='green', linewidth=1.5, label='Green')
     ax.plot(time_axis, blue_timecourse, color='blue', linewidth=1.5, label='Blue')
-    
+
     ax.set_title("STA Timecourse (Recalculated)", color='white')
     ax.set_xlabel("Time (ms)", color='gray')
     ax.set_ylabel("Response", color='gray')
     ax.grid(True, alpha=0.3)
     ax.legend(facecolor='#1f1f1f', labelcolor='white')
-    
+
     ax.set_facecolor('#1f1f1f')
     ax.tick_params(colors='gray')
     for spine in ax.spines.values():
         spine.set_edgecolor('gray')
-    
+
     ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
+    ax.axhline(y=0, color='white', linestyle=':', alpha=0.5)  # Add dotted line at y=0
 
 
 def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None, sta_height=None, ax=None):
@@ -627,7 +867,7 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
     if ax is None:
         fig.clear()
         ax = fig.add_subplot(111)
-    
+
     n_frames = sta_data.red.shape[2]
     if frame_index >= n_frames:
         frame_index = 0
@@ -635,19 +875,19 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
     red_frame = sta_data.red[:, :, frame_index]
     green_frame = sta_data.green[:, :, frame_index]
     blue_frame = sta_data.blue[:, :, frame_index]
-    
+
     sta_rgb = np.stack([red_frame, green_frame, blue_frame], axis=-1)
-    
+
     min_val, max_val = np.min(sta_rgb), np.max(sta_rgb)
     if max_val != min_val:
         sta_rgb_normalized = (sta_rgb - min_val) / (max_val - min_val)
     else:
         sta_rgb_normalized = np.zeros_like(sta_rgb)
-    
+
     extent = [0, sta_width, sta_height, 0] if sta_width is not None else [0, red_frame.shape[1], red_frame.shape[0], 0]
-    
+
     ax.imshow(sta_rgb_normalized, origin='upper', extent=extent)
-    
+
     # --- ADDED: Logic to draw the STAFit ellipse if provided ---
     if stafit:
         if sta_height is not None:
@@ -655,7 +895,7 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
         else:
             image_height = red_frame.shape[0]
             adjusted_y = image_height - stafit.center_y
-        
+
         ellipse = Ellipse(
             xy=(stafit.center_x, adjusted_y),
             width=2 * stafit.std_x,
@@ -666,7 +906,7 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
             lw=2
         )
         ax.add_patch(ellipse)
-    
+
     ax.set_title(f"STA Movie - Frame {frame_index+1}/{n_frames}", color='white')
     ax.set_xlabel("X (stixels)", color='gray')
     ax.set_ylabel("Y (stixels)", color='gray')
@@ -674,7 +914,7 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
     ax.tick_params(colors='gray')
     for spine in ax.spines.values():
         spine.set_edgecolor('gray')
-    
+
     fig.tight_layout()
 
 
@@ -682,7 +922,7 @@ def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None,
 def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=None):
     """
     Visualizes the receptive field from loaded Vision STA and parameter data.
-    
+
     Args:
         fig (matplotlib.figure.Figure): The figure object to draw on.
         sta_data (STAContainer): Named tuple containing the raw STA movie.
@@ -694,38 +934,38 @@ def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=No
     if ax is None:
         fig.clear()
         ax = fig.add_subplot(111)
-    
+
     # Check if the STA has multiple color channels
     red_channel = sta_data.red
     green_channel = sta_data.green
     blue_channel = sta_data.blue
-    
+
     # Determine the peak frame for each channel
     peak_frame_idx_red = np.argmax(np.max(np.abs(red_channel), axis=(0, 1)))
     peak_frame_idx_green = np.argmax(np.max(np.abs(green_channel), axis=(0, 1)))
     peak_frame_idx_blue = np.argmax(np.max(np.abs(blue_channel), axis=(0, 1)))
-    
+
     # Get the peak frames of each channel
     red_frame = red_channel[:, :, peak_frame_idx_red]
     green_frame = green_channel[:, :, peak_frame_idx_green]
     blue_frame = blue_channel[:, :, peak_frame_idx_blue]
-    
+
     # Stack the peak frames to create a multi-channel RGB image
     # Note: The actual protocol for combining channels depends on the stimulus type
     # e.g., for blue-yellow protocol, you might want to show blue/yellow opponent channels
     # For now, we'll create an RGB image from the peak frames
     sta_rgb = np.stack([red_frame, green_frame, blue_frame], axis=-1)
-    
+
     # Normalize the values to [0, 1] for proper color display
     # Find min/max across all channels to maintain relative scaling
     min_val = min(red_frame.min(), green_frame.min(), blue_frame.min())
     max_val = max(red_frame.max(), green_frame.max(), blue_frame.max())
-    
+
     if max_val != min_val:
         sta_rgb_normalized = (sta_rgb - min_val) / (max_val - min_val)
     else:
         sta_rgb_normalized = np.zeros_like(sta_rgb)
-    
+
     # Determine the extent for the imshow based on provided dimensions or data shape
     if sta_width is not None and sta_height is not None:
         # Use the provided dimensions for proper coordinate alignment
@@ -734,10 +974,10 @@ def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=No
     else:
         # Fallback to the shape of the peak frame
         extent = [0, red_frame.shape[1], red_frame.shape[0], 0]  # [0, width, height, 0]
-    
+
     # Display the colored STA frame with correct orientation
     ax.imshow(sta_rgb_normalized, origin='upper', extent=extent)
-    
+
     # Overlay the Gaussian fit ellipse using Vision coordinates
     # Since we're using origin='upper', the y-coordinate needs to be inverted
     if sta_width is not None and sta_height is not None:
@@ -764,9 +1004,9 @@ def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=No
             facecolor='none',
             lw=2
         )
-        
+
     ax.add_patch(ellipse)
-    
+
     # Style the plot
     ax.set_title("Receptive Field (STA + Fit)", color='white')
     ax.set_xlabel("X (stixels)", color='gray')
@@ -775,6 +1015,6 @@ def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=No
     ax.tick_params(colors='gray')
     for spine in ax.spines.values():
         spine.set_edgecolor('gray')
-    
+
     fig.tight_layout()
 

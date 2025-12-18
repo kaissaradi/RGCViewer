@@ -26,6 +26,14 @@ PLANNED FEATURES
 - Class Creation: Clustering algorithms, manual tools, validation metrics
 - Data Persistence: Save/load classifications, version control, export options
 
+STA ANALYSIS TAB ENHANCEMENTS
+- [ ] **Interactive Time-Slicing**: Link the "Timecourse" plot click event to the "RF Movie" frame. Clicking a time point updates the RF view to that time lag.
+- [ ] **Color Opponency Metric**: Calculate and display Red-Green / Blue-Yellow opponency indices in the metrics box.
+- [ ] **SVD Separability**: Implement Space-Time SVD to calculate a "Separability Index" and display it.
+- [ ] **Fit Residuals**: Add a toggle to show the "Residual" (Raw STA - Gaussian Fit) in the RF view to judge fit quality.
+- [ ] **Population Percentiles**: Display where this cell's properties (Area, Latency) sit relative to the population (e.g., "Latency: 45ms (80th %ile)").
+- [ ] **Export Report**: Button to save the current 4-panel view as a high-res PDF/PNG.
+
 DEVELOPMENT APPROACH
 - Follow TDD methodology with atomic steps from this plan
 - Maintain Python, PyQt, pyqtgraph, numpy, scipy tech stack
