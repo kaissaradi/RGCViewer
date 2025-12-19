@@ -1,11 +1,12 @@
 import pandas as pd
 from qtpy.QtGui import QPainter
 from PyQt5.QtGui import QColor
-from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex
+from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import QTableView
 from qtpy.QtGui import QPainter
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -73,9 +74,22 @@ class PandasModel(QAbstractTableModel):
 
 class MplCanvas(FigureCanvas):
     """A canvas that displays a matplotlib figure."""
+    # Add a signal for mouse clicks
+    clicked = Signal()
+    
     def __init__(self, parent=None, width=5, height=4, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#1f1f1f')
         super().__init__(self.fig)
+        
+        # Enable mouse tracking and set cursor
+        self.setCursor(Qt.PointingHandCursor)
+        
+        # Connect matplotlib mouse press event
+        self.mpl_connect('button_press_event', self._on_click)
+    
+    def _on_click(self, event):
+        """Handle matplotlib mouse click events."""
+        self.clicked.emit()
 
 class HighlightStatusPandasModel(PandasModel):
     STATUS_COLORS = {

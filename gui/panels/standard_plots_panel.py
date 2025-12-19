@@ -230,6 +230,15 @@ class StandardPlotsPanel(QWidget):
         if cluster_id is None: return
         dm = self.main_window.data_manager
 
+        # --- Clear similarity panel selection if main cluster changed ---
+        sim_panel = getattr(self.main_window, 'similarity_panel', None)
+        if sim_panel is not None:
+            # Check if this is a different main cluster than before
+            if hasattr(sim_panel, 'main_cluster_id') and sim_panel.main_cluster_id != cluster_id:
+                # Clear selection in similarity table
+                if sim_panel.table and sim_panel.table.selectionModel():
+                    sim_panel.table.selectionModel().clearSelection()
+
         # --- 1. Template Grid (Spatial) ---
         self.grid_plot.clear()
         if hasattr(dm, 'templates') and cluster_id < dm.templates.shape[0]:
@@ -368,125 +377,141 @@ class StandardPlotsPanel(QWidget):
         # Safely get selected similar clusters from the similarity panel (if present)
         sim_panel = getattr(self.main_window, 'similarity_panel', None)
         selected_similar = []
+        valid_similar_id = None
+
         if sim_panel is not None and getattr(sim_panel, 'table', None) is not None:
             sel_model = sim_panel.table.selectionModel()
             if sel_model is not None:
                 selected_similar = sel_model.selectedRows()
 
-        # If a similar cluster is selected, compute cross-correlogram
+        # If a similar cluster is selected, validate it belongs to current main cluster's similarity table
         if selected_similar and hasattr(sim_panel, 'similarity_model'):
             sim_model = sim_panel.similarity_model
-            similar_id = sim_model._dataframe.iloc[selected_similar[0].row()]['cluster_id']
+            
+            # Check if the model exists and the selected row is valid
+            if sim_model is not None and selected_similar[0].row() < len(sim_model._dataframe):
+                similar_id = sim_model._dataframe.iloc[selected_similar[0].row()]['cluster_id']
+                
+                # CRITICAL FIX: Check if similar_id is in the current similarity table
+                # Also check it's not the main cluster itself and is a valid cluster
+                if (similar_id != cluster_id and 
+                    similar_id < dm.templates.shape[0] and
+                    hasattr(sim_panel, 'main_cluster_id') and 
+                    sim_panel.main_cluster_id == cluster_id):  # This ensures we're looking at the right table
+                    
+                    # Get spike trains for both clusters
+                    spikes1 = dm.get_cluster_spikes(cluster_id)
+                    spikes2 = dm.get_cluster_spikes(similar_id)
 
-            # Get spike trains for both clusters
-            spikes1 = dm.get_cluster_spikes(cluster_id)
-            spikes2 = dm.get_cluster_spikes(similar_id)
+                    # Only proceed if both clusters have >1 spike
+                    if len(spikes1) > 1 and len(spikes2) > 1:
+                        # Convert spike times to ms
+                        spikes1_ms = (spikes1 / sr * 1000).astype(int)
+                        spikes2_ms = (spikes2 / sr * 1000).astype(int)
 
-            # Only proceed if both clusters have >1 spike
-            if len(spikes1) > 1 and len(spikes2) > 1:
-                # Convert spike times to ms
-                spikes1_ms = (spikes1 / sr * 1000).astype(int)
-                spikes2_ms = (spikes2 / sr * 1000).astype(int)
+                        duration = max(spikes1_ms[-1], spikes2_ms[-1]) if len(spikes1_ms) > 0 and len(spikes2_ms) > 0 else 0
 
-                duration = max(spikes1_ms[-1], spikes2_ms[-1]) if len(spikes1_ms) > 0 and len(spikes2_ms) > 0 else 0
+                        if duration > 0:
+                            bin_width_ms = 1
+                            bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
 
-                if duration > 0:
-                    bin_width_ms = 1
-                    bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                            binned1, _ = np.histogram(spikes1_ms, bins=bins)
+                            binned2, _ = np.histogram(spikes2_ms, bins=bins)
 
-                    binned1, _ = np.histogram(spikes1_ms, bins=bins)
-                    binned2, _ = np.histogram(spikes2_ms, bins=bins)
+                            centered1 = binned1 - np.mean(binned1)
+                            centered2 = binned2 - np.mean(binned2)
 
-                    centered1 = binned1 - np.mean(binned1)
-                    centered2 = binned2 - np.mean(binned2)
+                            ccg_full = correlate(centered1, centered2, mode='full')
+                            zero_lag_idx = len(ccg_full) // 2
+                            max_lag_ms = 100
+                            num_bins = int(max_lag_ms / bin_width_ms)
+                            lag_range = min(num_bins, zero_lag_idx)
 
-                    ccg_full = correlate(centered1, centered2, mode='full')
-                    zero_lag_idx = len(ccg_full) // 2
-                    max_lag_ms = 100
-                    num_bins = int(max_lag_ms / bin_width_ms)
-                    lag_range = min(num_bins, zero_lag_idx)
+                            ccg_symmetric = ccg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
+                            time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
 
-                    ccg_symmetric = ccg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
-                    time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+                            # Normalize if possible
+                            variance = np.sqrt(np.var(binned1) * np.var(binned2))
+                            if variance != 0:
+                                ccg_norm = ccg_symmetric / variance / len(binned1)
+                            else:
+                                ccg_norm = ccg_symmetric
 
-                    # Normalize if possible
-                    variance = np.sqrt(np.var(binned1) * np.var(binned2))
-                    if variance != 0:
-                        ccg_norm = ccg_symmetric / variance / len(binned1)
-                    else:
-                        ccg_norm = ccg_symmetric
+                            # Draw CCG as bars
+                            bar_graph = pg.BarGraphItem(
+                                x=time_lags,
+                                height=ccg_norm,
+                                width=0.8,
+                                brush=(255, 152, 0, 100),
+                                pen=pg.mkPen('#ff9800', width=1),
+                            )
+                            self.acg_plot.addItem(bar_graph)
 
-                    # Draw CCG as bars
-                    bar_graph = pg.BarGraphItem(
-                        x=time_lags,
-                        height=ccg_norm,
-                        width=0.8,
-                        brush=(255, 152, 0, 100),
-                        pen=pg.mkPen('#ff9800', width=1),
-                    )
-                    self.acg_plot.addItem(bar_graph)
+                            self.acg_plot.setTitle(f"CCG: {cluster_id} vs {similar_id}")
 
-                    self.acg_plot.setTitle(f"CCG: {cluster_id} vs {similar_id}")
+                            # Add a vertical zero-lag line
+                            zero_line = pg.InfiniteLine(
+                                pos=0, angle=90,
+                                pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
+                            )
+                            self.acg_plot.addItem(zero_line)
+                            
+                            # Skip the autocorrelation code below
+                            return
 
-                    # Add a vertical zero-lag line
-                    zero_line = pg.InfiniteLine(
-                        pos=0, angle=90,
-                        pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
-                    )
-                    self.acg_plot.addItem(zero_line)
+        # If we get here, either no valid similar cluster is selected or CCG couldn't be computed
+        # So draw the autocorrelation instead
 
-        else:
-            # Autocorrelation for a single cluster (original logic)
+        # Autocorrelation for a single cluster (original logic)
+        # Convert spike times to ms
+        spikes_ms = (spikes / sr * 1000).astype(int)
 
-            # Convert spike times to ms
-            spikes_ms = (spikes / sr * 1000).astype(int)
+        if len(spikes_ms) > 1:
+            duration = spikes_ms[-1]
+            if duration > 0:
+                bin_width_ms = 1
+                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
 
-            if len(spikes_ms) > 1:
-                duration = spikes_ms[-1]
-                if duration > 0:
-                    bin_width_ms = 1
-                    bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
-                    binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
+                centered = binned_spikes - np.mean(binned_spikes)
+                acg_full = correlate(centered, centered, mode='full')
 
-                    centered = binned_spikes - np.mean(binned_spikes)
-                    acg_full = correlate(centered, centered, mode='full')
+                zero_lag_idx = len(acg_full) // 2
+                max_lag_ms = 100
+                num_bins = int(max_lag_ms / bin_width_ms)
+                lag_range = min(num_bins, zero_lag_idx)
 
-                    zero_lag_idx = len(acg_full) // 2
-                    max_lag_ms = 100
-                    num_bins = int(max_lag_ms / bin_width_ms)
-                    lag_range = min(num_bins, zero_lag_idx)
+                acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
+                time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
 
-                    acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
-                    time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+                # Zero out the central peak so refractory effects are visible
+                zero_idx = np.where(time_lags == 0)[0]
+                if len(zero_idx) > 0:
+                    acg_symmetric[zero_idx[0]] = 0
 
-                    # Zero out the central peak so refractory effects are visible
-                    zero_idx = np.where(time_lags == 0)[0]
-                    if len(zero_idx) > 0:
-                        acg_symmetric[zero_idx[0]] = 0
+                # Normalize by variance and length
+                spike_variance = np.var(binned_spikes)
+                if spike_variance != 0:
+                    acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
+                else:
+                    acg_norm = acg_symmetric
 
-                    # Normalize by variance and length
-                    spike_variance = np.var(binned_spikes)
-                    if spike_variance != 0:
-                        acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
-                    else:
-                        acg_norm = acg_symmetric
+                # Draw ACG as bars
+                bar_graph = pg.BarGraphItem(
+                    x=time_lags,
+                    height=acg_norm,
+                    width=0.8,
+                    brush=(170, 0, 255, 100),
+                    pen=pg.mkPen('#aa00ff', width=1),
+                )
+                self.acg_plot.addItem(bar_graph)
 
-                    # Draw ACG as bars
-                    bar_graph = pg.BarGraphItem(
-                        x=time_lags,
-                        height=acg_norm,
-                        width=0.8,
-                        brush=(170, 0, 255, 100),
-                        pen=pg.mkPen('#aa00ff', width=1),
-                    )
-                    self.acg_plot.addItem(bar_graph)
-
-                    # Vertical zero-lag line
-                    zero_line = pg.InfiniteLine(
-                        pos=0, angle=90,
-                        pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
-                    )
-                    self.acg_plot.addItem(zero_line)
+                # Vertical zero-lag line
+                zero_line = pg.InfiniteLine(
+                    pos=0, angle=90,
+                    pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
+                )
+                self.acg_plot.addItem(zero_line)
 
         # --- 3. ISI (Blue Step + Filled) ---
         self.isi_plot.clear()
@@ -514,28 +539,35 @@ class StandardPlotsPanel(QWidget):
             self.isi_plot.setLabel('left', "Count")
         elif current_isi_view == 'ISI vs Amplitude':
             # ISI vs amplitude view (scatter or 2D density)
-
-            # NOTE: pairing convention:
-            #   ISI between spikes (i, i+1) is associated with the amplitude of spike i+1.
-            spike_indices = dm.get_cluster_spike_indices(cluster_id)
+            
+            # Get amplitudes for this cluster
             all_amplitudes = dm.get_cluster_spike_amplitudes(cluster_id)
-
+            
             if len(isi_ms) > 0 and len(all_amplitudes) > 1:
-                # Align ISI and amplitude data according to the convention above
-                if len(all_amplitudes) > len(isi_ms):
-                    amplitude_values = all_amplitudes[1:len(isi_ms) + 1]
-                else:
-                    min_len = min(len(isi_ms), len(all_amplitudes) - 1)
-                    isi_ms = isi_ms[:min_len]
-                    amplitude_values = all_amplitudes[1:min_len + 1]
-
-                if len(amplitude_values) > 10 and len(isi_ms) > 10:
+                # FIX: Align ISI and amplitude data correctly
+                # ISI[i] is the interval between spike i and spike i+1
+                # This should be paired with amplitude of spike i+1 (the second spike in the pair)
+                # So we need amplitudes[1:] to match with isi_ms
+                
+                # Make sure we have compatible lengths
+                min_len = min(len(isi_ms), len(all_amplitudes) - 1)
+                
+                if min_len > 0:
+                    # Take only the valid pairs
+                    valid_isi = isi_ms[:min_len]
+                    # Amplitudes for spikes 1 through min_len+1 (since spike 0 doesn't have a preceding ISI)
+                    valid_amplitudes = all_amplitudes[1:min_len + 1]
+                    
+                    # Auto-switch to density view when there are many ISIs
+                    if len(valid_isi) > ISI_DENSITY_THRESHOLD and self.isi_display_combo.currentText() == 'Scatter':
+                        self.isi_display_combo.setCurrentText('Density')
+                    
                     display_mode = self.isi_display_combo.currentText()
 
                     if display_mode == 'Scatter':
                         # Classic scatter plot
                         self.isi_plot.plot(
-                            isi_ms, amplitude_values,
+                            valid_isi, valid_amplitudes,
                             pen=None,
                             symbol='o',
                             symbolSize=5,
@@ -547,17 +579,18 @@ class StandardPlotsPanel(QWidget):
                         nbins_isi = 100
                         nbins_amp = 80
 
-                        isi_min, isi_max = float(isi_ms.min()), float(isi_ms.max())
-                        amp_min, amp_max = float(amplitude_values.min()), float(amplitude_values.max())
+                        isi_min, isi_max = float(valid_isi.min()), float(valid_isi.max())
+                        amp_min, amp_max = float(valid_amplitudes.min()), float(valid_amplitudes.max())
 
+                        # Add small padding to avoid zero range
                         if isi_max <= isi_min:
                             isi_max = isi_min + 1e-3
                         if amp_max <= amp_min:
                             amp_max = amp_min + 1e-3
 
                         H, xedges, yedges = np.histogram2d(
-                            isi_ms,
-                            amplitude_values,
+                            valid_isi,
+                            valid_amplitudes,
                             bins=[nbins_isi, nbins_amp],
                             range=[[isi_min, isi_max], [amp_min, amp_max]]
                         )
@@ -580,15 +613,14 @@ class StandardPlotsPanel(QWidget):
                         img.setRect(rect)
                         self.isi_plot.addItem(img)
 
-
                     # Common axis labels
                     self.isi_plot.setLabel('bottom', "ISI (ms)")
                     self.isi_plot.setLabel('left', "Amplitude (µV)")
 
                     # Apply X-range preset for this view
-                    self._apply_isi_range_preset(isi_ms)
+                    self._apply_isi_range_preset(valid_isi)
                 else:
-                    # Not enough data for any meaningful plot
+                    # Not enough valid pairs
                     self.isi_plot.plot([], [], pen=None, symbol='o', symbolSize=5)
                     self.isi_plot.setLabel('bottom', "ISI (ms)")
                     self.isi_plot.setLabel('left', "Amplitude (µV)")

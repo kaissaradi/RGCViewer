@@ -214,6 +214,10 @@ class SimilarityPanel(QWidget):
             self.clear()
             return
 
+        # Clear selection in the table when switching main cluster ID
+        if self.table and self.table.selectionModel():
+            self.table.selectionModel().clearSelection()
+
         self.main_cluster_id = cluster_id
 
         # Determine which source to use and get appropriate similarity data

@@ -367,7 +367,8 @@ class MainWindow(QMainWindow):
         
         # Note: pop_view_checkbox was removed from here
 
-        self.sta_population_rfs_button.clicked.connect(lambda: self.select_sta_view("population_rfs"))
+        self.sta_population_rfs_button.clicked.connect(
+    lambda: self.select_sta_view("rf" if self.current_sta_view == "population_rfs" else "population_rfs"))
         self.sta_animation_button.clicked.connect(self.toggle_animation)
         self.sta_animation_stop_button.clicked.connect(self.stop_animation)
         sta_control_layout.addWidget(self.sta_population_rfs_button)
@@ -407,6 +408,10 @@ class MainWindow(QMainWindow):
         self.rf_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.rf_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
         self.rf_canvas.draw()
+
+        # Connect to the canvas's clicked signal (not mpl_connect)
+        self.rf_canvas.clicked.connect(self.on_rf_canvas_clicked)
+        self.rf_canvas.setToolTip("Click to toggle between RF view and animation")
 
         # Top Right: Timecourse
         self.timecourse_canvas = MplCanvas(self, width=5, height=4, dpi=120)
@@ -689,6 +694,9 @@ class MainWindow(QMainWindow):
 
         self.ei_panel.update_ei(clusters_to_plot)
         self.waveforms_panel.update_all(main_cluster)
+        
+        if main_cluster is not None:
+            self.standard_plots_panel.update_all(main_cluster)
 
     def _update_table_view_duplicate_highlight(self):
         df = self.data_manager.cluster_df
@@ -752,10 +760,18 @@ class MainWindow(QMainWindow):
             self.sta_frame_slider.setEnabled(False)
             return
 
+        # Update button text based on current view
+        if view_type == "rf":
+            self.sta_animation_button.setText("Play Animation")
+        elif view_type == "animation":
+            self.sta_animation_button.setText("Pause Animation")
+        elif view_type == "population_rfs":
+            self.sta_animation_button.setText("Play Animation")
+
         # For split view, draw both plots regardless of the selected view type
         plotting.draw_sta_plot(self, cluster_id)
         plotting.draw_sta_timecourse_plot(self, cluster_id)
-        
+
         # Update Population Context if enabled
         if self.population_view_enabled:
              plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id)
@@ -895,6 +911,33 @@ class MainWindow(QMainWindow):
             # Currently paused or stopped, so start it
             plotting.draw_sta_animation_plot(self, cluster_id)
             self.sta_animation_button.setText("Pause Animation")
+
+    def on_rf_canvas_clicked(self):
+        """Handle clicks on the RF canvas in STA tab - toggle between RF and animation."""
+        if not self.data_manager or not self.data_manager.vision_stas:
+            return
+
+        cluster_id = self._get_selected_cluster_id()
+        if cluster_id is None:
+            return
+
+        # Toggle between RF and animation views
+        if self.current_sta_view == "rf":
+            # Start animation
+            self.current_sta_view = "animation"
+            self.select_sta_view("animation", force_animation=True)
+            self.status_bar.showMessage("Started animation. Click again to stop.", 2000)
+        elif self.current_sta_view == "animation":
+            # Stop animation and go back to RF
+            self.stop_animation()
+            self.current_sta_view = "rf"
+            self.select_sta_view("rf")
+            self.status_bar.showMessage("Stopped animation.", 2000)
+        elif self.current_sta_view == "population_rfs":
+            # From population view, go to RF view
+            self.current_sta_view = "rf"
+            self.select_sta_view("rf")
+            self.status_bar.showMessage("Switched to single-cell RF view.", 2000)
 
     def stop_animation(self):
         """Stop the animation completely."""

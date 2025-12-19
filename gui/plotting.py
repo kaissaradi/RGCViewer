@@ -27,45 +27,81 @@ def update_raw_trace_plot(main_window, cluster_id):
 
 # In gui/plotting.py
 
+# In plotting.py, update the draw_sta_metrics function:
+
 def draw_sta_metrics(main_window, cluster_id):
     """
-    Calculates and displays STA metrics in the text box.
+    Calculates and displays STA metrics in the text box with improved organization.
     """
     vision_cluster_id = cluster_id + 1
     has_vision_sta = main_window.data_manager.vision_stas and vision_cluster_id in main_window.data_manager.vision_stas
-
+    
     if has_vision_sta:
         sta_data = main_window.data_manager.vision_stas[vision_cluster_id]
         stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_cluster_id)
-
+        
         metrics = analysis_core.compute_sta_metrics(
             sta_data, stafit, main_window.data_manager.vision_params, vision_cluster_id
         )
-
-        # Format metrics as HTML table
+        
+        # Format metrics as HTML table with sections
         html = """
         <style>
             table { width: 100%; border-collapse: collapse; color: #e0e0e0; font-family: sans-serif; }
-            th { text-align: left; color: #aaa; border-bottom: 1px solid #555; padding: 2px; }
-            td { padding: 4px; border-bottom: 1px solid #333; }
-            .section { font-weight: bold; color: #4282DA; margin-top: 10px; display: block; }
+            th { text-align: left; color: #aaa; border-bottom: 1px solid #555; padding: 4px; }
+            td { padding: 6px; border-bottom: 1px solid #333; }
+            .section { font-weight: bold; color: #4282DA; margin-top: 12px; display: block; font-size: 1.1em; }
+            .subsection { font-weight: bold; color: #6AA84F; margin-top: 8px; display: block; }
+            .metric-name { font-weight: 600; color: #cccccc; }
+            .metric-value { color: #ffffff; }
+            .highlight { background-color: rgba(66, 130, 218, 0.1); }
         </style>
         """
+        
         html += "<table>"
+        
+        # Temporal Properties
         html += "<tr><th colspan='2' class='section'>Temporal Properties</th></tr>"
-        for k in ["Dominant Channel", "Polarity", "Time to Peak (ms)", "FWHM (Duration)", "Biphasic Index"]:
+        temporal_keys = ["Dominant Channel", "Polarity", "Time to Peak (ms)", 
+                        "Response Duration (ms)", "Zero Crossing (ms)", 
+                        "FWHM (Duration)", "Biphasic Index", "SNR (std ratio)"]
+        for k in temporal_keys:
             if k in metrics:
-                html += f"<tr><td>{k}</td><td>{metrics[k]}</td></tr>"
-
+                html += f"<tr><td class='metric-name'>{k}</td><td class='metric-value'>{metrics[k]}</td></tr>"
+        
+        # Response Strength
+        html += "<tr><th colspan='2' class='subsection'>Response Strength</th></tr>"
+        strength_keys = ["Response Integral", "Total Energy"]
+        for k in strength_keys:
+            if k in metrics:
+                html += f"<tr><td class='metric-name'>{k}</td><td class='metric-value'>{metrics[k]}</td></tr>"
+        
+        # Color Properties
+        if "Color Opponency" in metrics:
+            html += "<tr><th colspan='2' class='subsection'>Color Properties</th></tr>"
+            html += f"<tr><td class='metric-name'>Color Opponency</td><td class='metric-value'>{metrics['Color Opponency']}</td></tr>"
+        
+        # Spatial Properties
         html += "<tr><th colspan='2' class='section'>Spatial Properties</th></tr>"
-        for k in ["RF Area (sq stix)", "Orientation", "RF Sigma X", "RF Sigma Y"]:
+        spatial_keys = ["RF Center X", "RF Center Y", "RF Sigma X", "RF Sigma Y", 
+                       "Orientation", "RF Area (sq stix)", "RF Ellipticity (σy/σx)", 
+                       "RF Elongation"]
+        for k in spatial_keys:
             if k in metrics:
-                html += f"<tr><td>{k}</td><td>{metrics[k]}</td></tr>"
+                html += f"<tr><td class='metric-name'>{k}</td><td class='metric-value'>{metrics[k]}</td></tr>"
+        
+        # Spatial Asymmetry
+        html += "<tr><th colspan='2' class='subsection'>Spatial Asymmetry</th></tr>"
+        asymmetry_keys = ["Spatial Peak", "Spatial Trough", "Peak/Trough Ratio", "Spatial Skewness"]
+        for k in asymmetry_keys:
+            if k in metrics:
+                html += f"<tr><td class='metric-name'>{k}</td><td class='metric-value'>{metrics[k]}</td></tr>"
+        
         html += "</table>"
-
+        
         main_window.sta_metrics_text.setHtml(html)
     else:
-        main_window.sta_metrics_text.setHtml("<div style='color:gray; text-align:center;'>No Data</div>")
+        main_window.sta_metrics_text.setHtml("<div style='color:gray; text-align:center; padding:20px;'>No STA Data Available</div>")
 
 def draw_temporal_filter_plot(main_window, cluster_id):
     """
