@@ -6,6 +6,8 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
 from scipy.interpolate import interp1d
 from analysis.constants import ISI_REFRACTORY_PERIOD_MS
+ISI_DENSITY_THRESHOLD = 5000  # switch to density view when > this many ISIs
+
 
 # Configure pyqtgraph for antialiasing
 pg.setConfigOptions(antialias=True)
@@ -70,39 +72,47 @@ class StandardPlotsPanel(QWidget):
         self.acg_plot.setLabel('left', "Autocorrelation")
         self._style_plot(self.acg_plot)
         self.top_splitter.addWidget(self.acg_plot)
-
         # 3. ISI (Bottom Left) with dropdown
         isi_container = QWidget()
         isi_layout = QVBoxLayout(isi_container)
         isi_layout.setContentsMargins(0, 0, 0, 0)
 
         isi_controls = QHBoxLayout()
+
+        # --- View selector ---
+        isi_controls.addWidget(QLabel('View:'))
         self.isi_view_combo = QComboBox()
         self.isi_view_combo.addItems(['ISI Histogram', 'ISI vs Amplitude'])
-        isi_controls.addWidget(QLabel('View:'))
         isi_controls.addWidget(self.isi_view_combo)
 
-        # Refractory period line toggle
-        self.show_refractory_line_checkbox = QCheckBox('Show Refractory Line')
-        self.show_refractory_line_checkbox.setChecked(True)  # Default to True
+        # --- Refractory controls (short labels to keep bar compact) ---
+        self.show_refractory_line_checkbox = QCheckBox('Refr line')
+        self.show_refractory_line_checkbox.setChecked(True)
         isi_controls.addWidget(self.show_refractory_line_checkbox)
 
-        # Connect to update the plot when checkbox is toggled
-        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
-
-        # Refractory period control
-        isi_controls.addWidget(QLabel('Refractory Period (ms):'))
+        isi_controls.addWidget(QLabel('Ref (ms):'))
         self.refractory_spinbox = QDoubleSpinBox()
-        self.refractory_spinbox.setRange(0.1, 10.0)  # Reasonable range for refractory period
+        self.refractory_spinbox.setRange(0.1, 10.0)
         self.refractory_spinbox.setDecimals(2)
         self.refractory_spinbox.setSingleStep(0.1)
         self.refractory_spinbox.setValue(ISI_REFRACTORY_PERIOD_MS)
         isi_controls.addWidget(self.refractory_spinbox)
 
-        # Update refractory period button
-        self.update_refractory_btn = QPushButton('Update')
+        self.update_refractory_btn = QPushButton('Set')
         isi_controls.addWidget(self.update_refractory_btn)
-        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
+
+        # --- ISI display mode + X-range presets ---
+        isi_controls.addWidget(QLabel('Plot:'))
+        self.isi_display_combo = QComboBox()
+        self.isi_display_combo.addItems(['Scatter', 'Density'])
+        self.isi_display_combo.setCurrentText('Scatter')
+        isi_controls.addWidget(self.isi_display_combo)
+
+        isi_controls.addWidget(QLabel('X:'))
+        self.isi_range_combo = QComboBox()
+        self.isi_range_combo.addItems(['0–50 ms', '0–500 ms', 'Full'])
+        self.isi_range_combo.setCurrentText('0–500 ms')
+        isi_controls.addWidget(self.isi_range_combo)
 
         isi_controls.addStretch()
         isi_layout.addLayout(isi_controls)
@@ -113,7 +123,16 @@ class StandardPlotsPanel(QWidget):
         isi_layout.addWidget(self.isi_plot)
         self.bottom_splitter.addWidget(isi_container)
 
+        # ISI controls update the plot
         self.isi_view_combo.currentTextChanged.connect(self._on_control_changed)
+        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
+        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
+        self.isi_display_combo.currentTextChanged.connect(self._on_control_changed)
+        self.isi_range_combo.currentTextChanged.connect(self._on_control_changed)
+
+        # Colormap for density view
+        self._hot_lut = self._create_hot_colormap()
+
 
         # 4. Firing Rate (Bottom Right) with dual-axis for amplitude
         self.fr_plot = pg.PlotWidget(title="Signal Health")
@@ -178,6 +197,21 @@ class StandardPlotsPanel(QWidget):
         positions = [0, 0.33, 0.66, 1.0]
         cmap = pg.ColorMap(pos=positions, color=colors)
         return cmap.getLookupTable(start=0.0, stop=1.0, nPts=256)
+    
+    def _apply_isi_range_preset(self, isi_ms):
+        """Apply the X-range preset for the ISI plot."""
+        if len(isi_ms) == 0:
+            return
+
+        preset = self.isi_range_combo.currentText()
+        if preset == '0–50 ms':
+            self.isi_plot.setXRange(0.0, 50.0, padding=0)
+        elif preset == '0–500 ms':
+            self.isi_plot.setXRange(0.0, 500.0, padding=0)
+        else:  # 'Full'
+            x_max = float(isi_ms.max())
+            self.isi_plot.setXRange(0.0, x_max * 1.05, padding=0)
+
 
     def _on_control_changed(self):
         """Called when a control changes; refresh the panel for the current selection."""
@@ -297,77 +331,161 @@ class StandardPlotsPanel(QWidget):
                                          pen=pg.mkPen('#ffffff', width=1, style=Qt.DashLine))
                 self.grid_plot.addItem(h_line)
 
+            # After plotting main cluster template, add similar cluster overlays (if similarity panel exists)
+            sim_panel = getattr(self.main_window, 'similarity_panel', None)
+            selected_similar = []
+            if sim_panel is not None and getattr(sim_panel, 'table', None) is not None:
+                sel_model = sim_panel.table.selectionModel()
+                if sel_model is not None:
+                    selected_similar = sel_model.selectedRows()
+
+            if selected_similar and hasattr(sim_panel, 'similarity_model'):
+                sim_model = sim_panel.similarity_model
+                for idx in selected_similar[:3]:  # Limit to 3 similar clusters
+                    similar_id = sim_model._dataframe.iloc[idx.row()]['cluster_id']
+                    if similar_id < dm.templates.shape[0]:
+                        sim_template = dm.templates[similar_id]
+                        sim_ptp = sim_template.max(axis=0) - sim_template.min(axis=0)
+                        # Plot in semi-transparent orange/yellow
+                        for ch in waveform_channels:
+                            if ch >= len(pos): continue
+                            x, y = pos[ch]
+                            trace = sim_template[:, ch]
+                            trace_scaled = (trace / max_ptp) * 20
+                            t_offset = np.linspace(-10, 10, len(trace))
+                            self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled,
+                                                pen=pg.mkPen('#ff9800', width=1.5))
+
+
         # --- Data Prep for Metrics ---
         spikes = dm.get_cluster_spikes(cluster_id)
         if len(spikes) < 2: return
         sr = dm.sampling_rate
 
-        # --- 2. Autocorrelation (Histogram-style) ---
+        # --- 2. Cross-Correlogram or Autocorrelation ---
         self.acg_plot.clear()
 
-        # Bin spikes for autocorrelation with 1ms precision
-        spikes_ms = (spikes / sr * 1000).astype(int)
-        if len(spikes_ms) > 0:
-            duration = spikes_ms[-1]
-            if duration > 0:  # Only proceed if the duration is positive
-                # Use 1ms bins to match the temporal precision of spike data
-                bin_width_ms = 1
-                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
-                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
+        # Safely get selected similar clusters from the similarity panel (if present)
+        sim_panel = getattr(self.main_window, 'similarity_panel', None)
+        selected_similar = []
+        if sim_panel is not None and getattr(sim_panel, 'table', None) is not None:
+            sel_model = sim_panel.table.selectionModel()
+            if sel_model is not None:
+                selected_similar = sel_model.selectedRows()
 
-                # Make sure we have enough data points for meaningful autocorrelation
-                if len(binned_spikes) > 1:
-                    # Center the spike train by subtracting the mean to get zero-mean signal
-                    centered_spikes = binned_spikes - np.mean(binned_spikes)
+        # If a similar cluster is selected, compute cross-correlogram
+        if selected_similar and hasattr(sim_panel, 'similarity_model'):
+            sim_model = sim_panel.similarity_model
+            similar_id = sim_model._dataframe.iloc[selected_similar[0].row()]['cluster_id']
 
-                    # Compute raw spike train autocorrelation using cross-correlation
-                    # This gives the proper symmetric autocorrelation
-                    acg_full = correlate(centered_spikes, centered_spikes, mode='full')
+            # Get spike trains for both clusters
+            spikes1 = dm.get_cluster_spikes(cluster_id)
+            spikes2 = dm.get_cluster_spikes(similar_id)
 
-                    # The zero-lag is now in the center of the result
-                    zero_lag_idx = len(acg_full) // 2
+            # Only proceed if both clusters have >1 spike
+            if len(spikes1) > 1 and len(spikes2) > 1:
+                # Convert spike times to ms
+                spikes1_ms = (spikes1 / sr * 1000).astype(int)
+                spikes2_ms = (spikes2 / sr * 1000).astype(int)
 
-                    # Extract symmetric range around zero (-100ms to +100ms)
+                duration = max(spikes1_ms[-1], spikes2_ms[-1]) if len(spikes1_ms) > 0 and len(spikes2_ms) > 0 else 0
+
+                if duration > 0:
+                    bin_width_ms = 1
+                    bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+
+                    binned1, _ = np.histogram(spikes1_ms, bins=bins)
+                    binned2, _ = np.histogram(spikes2_ms, bins=bins)
+
+                    centered1 = binned1 - np.mean(binned1)
+                    centered2 = binned2 - np.mean(binned2)
+
+                    ccg_full = correlate(centered1, centered2, mode='full')
+                    zero_lag_idx = len(ccg_full) // 2
                     max_lag_ms = 100
                     num_bins = int(max_lag_ms / bin_width_ms)
-
-                    # Calculate the range of lags to extract
                     lag_range = min(num_bins, zero_lag_idx)
 
-                    # Extract symmetric portion around zero lag
-                    acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
-
-                    # Create time axis from negative to positive lags
+                    ccg_symmetric = ccg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
                     time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
 
-                    # Zero out the zero-lag peak to see refractory period better
+                    # Normalize if possible
+                    variance = np.sqrt(np.var(binned1) * np.var(binned2))
+                    if variance != 0:
+                        ccg_norm = ccg_symmetric / variance / len(binned1)
+                    else:
+                        ccg_norm = ccg_symmetric
+
+                    # Draw CCG as bars
+                    bar_graph = pg.BarGraphItem(
+                        x=time_lags,
+                        height=ccg_norm,
+                        width=0.8,
+                        brush=(255, 152, 0, 100),
+                        pen=pg.mkPen('#ff9800', width=1),
+                    )
+                    self.acg_plot.addItem(bar_graph)
+
+                    self.acg_plot.setTitle(f"CCG: {cluster_id} vs {similar_id}")
+
+                    # Add a vertical zero-lag line
+                    zero_line = pg.InfiniteLine(
+                        pos=0, angle=90,
+                        pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
+                    )
+                    self.acg_plot.addItem(zero_line)
+
+        else:
+            # Autocorrelation for a single cluster (original logic)
+
+            # Convert spike times to ms
+            spikes_ms = (spikes / sr * 1000).astype(int)
+
+            if len(spikes_ms) > 1:
+                duration = spikes_ms[-1]
+                if duration > 0:
+                    bin_width_ms = 1
+                    bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                    binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
+
+                    centered = binned_spikes - np.mean(binned_spikes)
+                    acg_full = correlate(centered, centered, mode='full')
+
+                    zero_lag_idx = len(acg_full) // 2
+                    max_lag_ms = 100
+                    num_bins = int(max_lag_ms / bin_width_ms)
+                    lag_range = min(num_bins, zero_lag_idx)
+
+                    acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
+                    time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+
+                    # Zero out the central peak so refractory effects are visible
                     zero_idx = np.where(time_lags == 0)[0]
                     if len(zero_idx) > 0:
-                        acg_symmetric[zero_idx[0]] = 0  # Remove auto-correlation at zero lag
+                        acg_symmetric[zero_idx[0]] = 0
 
-                    # Normalize by the variance of the original binned spikes
-                    # This gives normalized autocorrelation values
+                    # Normalize by variance and length
                     spike_variance = np.var(binned_spikes)
                     if spike_variance != 0:
-                        acg_norm = acg_symmetric / spike_variance
-                        # Also normalize by the number of samples to get proper normalization
-                        acg_norm = acg_norm / len(binned_spikes)
+                        acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
                     else:
-                        acg_norm = acg_symmetric  # Fallback if variance is zero
+                        acg_norm = acg_symmetric
 
-                    # Create histogram-style bars for the autocorrelogram
-                    # We need to use a BarGraphItem instead of stepMode for proper histogram bars
-                    if len(acg_norm) > 0:
-                        # Create bar graph to represent histogram-style autocorrelogram
-                        bar_width = 0.8  # Slightly less than bin width to show gaps between bars
-                        bar_graph = pg.BarGraphItem(x=time_lags, height=acg_norm, width=bar_width,
-                                                   brush=(170, 0, 255, 100),  # Purple fill
-                                                   pen=pg.mkPen('#aa00ff', width=1))  # Purple outline
-                        self.acg_plot.addItem(bar_graph)
+                    # Draw ACG as bars
+                    bar_graph = pg.BarGraphItem(
+                        x=time_lags,
+                        height=acg_norm,
+                        width=0.8,
+                        brush=(170, 0, 255, 100),
+                        pen=pg.mkPen('#aa00ff', width=1),
+                    )
+                    self.acg_plot.addItem(bar_graph)
 
-                    # Add a vertical line at zero lag to highlight the center
-                    zero_line = pg.InfiniteLine(pos=0, angle=90,
-                                               pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
+                    # Vertical zero-lag line
+                    zero_line = pg.InfiniteLine(
+                        pos=0, angle=90,
+                        pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine)
+                    )
                     self.acg_plot.addItem(zero_line)
 
         # --- 3. ISI (Blue Step + Filled) ---
@@ -395,40 +513,91 @@ class StandardPlotsPanel(QWidget):
             self.isi_plot.setLabel('bottom', "ISI (ms)")
             self.isi_plot.setLabel('left', "Count")
         elif current_isi_view == 'ISI vs Amplitude':
-            # ISI vs amplitude as scatter plot with mean line
+            # ISI vs amplitude view (scatter or 2D density)
+
+            # NOTE: pairing convention:
+            #   ISI between spikes (i, i+1) is associated with the amplitude of spike i+1.
             spike_indices = dm.get_cluster_spike_indices(cluster_id)
             all_amplitudes = dm.get_cluster_spike_amplitudes(cluster_id)
 
             if len(isi_ms) > 0 and len(all_amplitudes) > 1:
-                # Align ISI and amplitude data
+                # Align ISI and amplitude data according to the convention above
                 if len(all_amplitudes) > len(isi_ms):
-                    amplitude_values = all_amplitudes[1:len(isi_ms)+1]
+                    amplitude_values = all_amplitudes[1:len(isi_ms) + 1]
                 else:
-                    min_len = min(len(isi_ms), len(all_amplitudes)-1)
+                    min_len = min(len(isi_ms), len(all_amplitudes) - 1)
                     isi_ms = isi_ms[:min_len]
-                    amplitude_values = all_amplitudes[1:min_len+1]
+                    amplitude_values = all_amplitudes[1:min_len + 1]
 
                 if len(amplitude_values) > 10 and len(isi_ms) > 10:
-                    # Scatter plot for ISI vs amplitude
-                    self.isi_plot.plot(
-                        isi_ms, amplitude_values,
-                        pen=None, symbol='o', symbolSize=5, symbolBrush=(255, 165, 0, 150),
-                        name="ISI vs Amplitude Scatter"
-                    )
+                    display_mode = self.isi_display_combo.currentText()
 
-                    # Update labels
+                    if display_mode == 'Scatter':
+                        # Classic scatter plot
+                        self.isi_plot.plot(
+                            isi_ms, amplitude_values,
+                            pen=None,
+                            symbol='o',
+                            symbolSize=5,
+                            symbolBrush=(255, 165, 0, 150),
+                            name="ISI vs Amplitude Scatter"
+                        )
+                    else:  # 'Density'
+                        # 2D histogram / heatmap
+                        nbins_isi = 100
+                        nbins_amp = 80
+
+                        isi_min, isi_max = float(isi_ms.min()), float(isi_ms.max())
+                        amp_min, amp_max = float(amplitude_values.min()), float(amplitude_values.max())
+
+                        if isi_max <= isi_min:
+                            isi_max = isi_min + 1e-3
+                        if amp_max <= amp_min:
+                            amp_max = amp_min + 1e-3
+
+                        H, xedges, yedges = np.histogram2d(
+                            isi_ms,
+                            amplitude_values,
+                            bins=[nbins_isi, nbins_amp],
+                            range=[[isi_min, isi_max], [amp_min, amp_max]]
+                        )
+
+                        # Log-compress to keep dynamic range reasonable
+                        H = np.log1p(H)
+                        H = H.T                      # (y, x)
+                        H = np.flipud(H)            # flip vertically so low amps at bottom, high at top
+
+                        img = pg.ImageItem(H)
+                        if hasattr(self, "_hot_lut") and self._hot_lut is not None:
+                            img.setLookupTable(self._hot_lut)
+
+                        rect = pg.QtCore.QRectF(
+                            xedges[0],
+                            yedges[0],
+                            xedges[-1] - xedges[0],
+                            yedges[-1] - yedges[0]
+                        )
+                        img.setRect(rect)
+                        self.isi_plot.addItem(img)
+
+
+                    # Common axis labels
                     self.isi_plot.setLabel('bottom', "ISI (ms)")
                     self.isi_plot.setLabel('left', "Amplitude (µV)")
+
+                    # Apply X-range preset for this view
+                    self._apply_isi_range_preset(isi_ms)
                 else:
-                    # Not enough data for scatter plot
+                    # Not enough data for any meaningful plot
                     self.isi_plot.plot([], [], pen=None, symbol='o', symbolSize=5)
                     self.isi_plot.setLabel('bottom', "ISI (ms)")
                     self.isi_plot.setLabel('left', "Amplitude (µV)")
             else:
                 # If not enough data, plot empty
-                self.isi_plot.plot([], [], pen=None, symbol='o', symbolSize=5)
+                self.isi_plot.plot([], [], pen=None, symbolSize=5)
                 self.isi_plot.setLabel('bottom', "ISI (ms)")
                 self.isi_plot.setLabel('left', "Amplitude (µV)")
+
 
         # --- 4. Firing Rate (Yellow) + Amplitude (Gold) Dual-Axis ---
         self.fr_plot.clear()

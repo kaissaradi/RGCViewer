@@ -33,15 +33,15 @@ def draw_sta_metrics(main_window, cluster_id):
     """
     vision_cluster_id = cluster_id + 1
     has_vision_sta = main_window.data_manager.vision_stas and vision_cluster_id in main_window.data_manager.vision_stas
-    
+
     if has_vision_sta:
         sta_data = main_window.data_manager.vision_stas[vision_cluster_id]
         stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_cluster_id)
-        
+
         metrics = analysis_core.compute_sta_metrics(
             sta_data, stafit, main_window.data_manager.vision_params, vision_cluster_id
         )
-        
+
         # Format metrics as HTML table
         html = """
         <style>
@@ -56,13 +56,13 @@ def draw_sta_metrics(main_window, cluster_id):
         for k in ["Dominant Channel", "Polarity", "Time to Peak (ms)", "FWHM (Duration)", "Biphasic Index"]:
             if k in metrics:
                 html += f"<tr><td>{k}</td><td>{metrics[k]}</td></tr>"
-                
+
         html += "<tr><th colspan='2' class='section'>Spatial Properties</th></tr>"
         for k in ["RF Area (sq stix)", "Orientation", "RF Sigma X", "RF Sigma Y"]:
             if k in metrics:
                 html += f"<tr><td>{k}</td><td>{metrics[k]}</td></tr>"
         html += "</table>"
-        
+
         main_window.sta_metrics_text.setHtml(html)
     else:
         main_window.sta_metrics_text.setHtml("<div style='color:gray; text-align:center;'>No Data</div>")
@@ -73,11 +73,11 @@ def draw_temporal_filter_plot(main_window, cluster_id):
     """
     vision_cluster_id = cluster_id + 1
     has_vision_sta = main_window.data_manager.vision_stas and vision_cluster_id in main_window.data_manager.vision_stas
-    
+
     if has_vision_sta:
         sta_data = main_window.data_manager.vision_stas[vision_cluster_id]
         stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_cluster_id)
-        
+
         analysis_core.plot_temporal_filter_properties(
             main_window.temporal_filter_canvas.fig,
             sta_data, stafit, main_window.data_manager.vision_params, vision_cluster_id
@@ -131,18 +131,18 @@ def draw_sta_plot(main_window, cluster_id):
             sta_height=main_window.data_manager.vision_sta_height
         )
         main_window.rf_canvas.draw()
-        
+
         # --- Update New Panels ---
         draw_sta_metrics(main_window, cluster_id)
         draw_temporal_filter_plot(main_window, cluster_id)
-        
+
     else:
         # No Vision STA data available
         main_window.rf_canvas.fig.clear()
         main_window.rf_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
         main_window.rf_canvas.draw()
         main_window.sta_frame_slider.setEnabled(False)
-        
+
         # Clear other panels
         main_window.sta_metrics_text.clear()
         main_window.temporal_filter_canvas.fig.clear()
@@ -150,29 +150,59 @@ def draw_sta_plot(main_window, cluster_id):
 
 
 
-def draw_population_rfs_plot(main_window, selected_cell_id=None):
+def draw_population_rfs_plot(main_window, selected_cell_id=None, subset_cell_ids=None, canvas=None):
     """Draws the population receptive field plot showing all cell RFs."""
-    logger.debug("Received selected_cell_id=%s for population RF plot", selected_cell_id)
-    # MODIFIED: This function now accepts 'selected_cell_id'
+    logger.debug("Received selected_cell_id=%s, subset_cell_ids=%s for population RF plot", selected_cell_id, subset_cell_ids)
+    
+    # 1. Determine target canvas
+    if canvas is None:
+        # If population view is enabled, prefer the dedicated mosaic canvas
+        # unless specifically overridden or if we are in a mode that implies the main view
+        if hasattr(main_window, 'population_view_enabled') and main_window.population_view_enabled:
+            canvas = getattr(main_window, 'pop_mosaic_canvas', main_window.rf_canvas)
+        else:
+            canvas = main_window.rf_canvas
+
+    # 2. Smart Group Detection (if single unit selected but no subset provided)
+    # This ensures that when we click a unit in Split View, the Context pane shows its group.
+    if selected_cell_id is not None and subset_cell_ids is None:
+         # Only do auto-group detection if we are targeting the population canvas
+         # (If we are in "Population RFs" main view mode, maybe we want to see ALL cells?)
+         # Let's assume for Split View we want the group context.
+         if hasattr(main_window, 'population_view_enabled') and main_window.population_view_enabled:
+             df = main_window.data_manager.cluster_df
+             if not df.empty and 'cluster_id' in df.columns:
+                 if selected_cell_id in df['cluster_id'].values:
+                     # Find the group/label
+                     try:
+                         row = df[df['cluster_id'] == selected_cell_id].iloc[0]
+                         # Try 'KSLabel' first, then 'group' if available (custom groups)
+                         group_label = row.get('KSLabel') 
+                         
+                         if group_label:
+                             subset_cell_ids = df[df['KSLabel'] == group_label]['cluster_id'].tolist()
+                     except Exception as e:
+                         logger.warning(f"Error determining group for cluster {selected_cell_id}: {e}")
+
     has_vision_params = main_window.data_manager.vision_params
 
     if has_vision_params:
-        # Use RF canvas for population RFs plot since it's related to RF visualization
-        main_window.rf_canvas.fig.clear()
+        canvas.fig.clear()
 
         analysis_core.plot_population_rfs(
-            main_window.rf_canvas.fig,
+            canvas.fig,
             main_window.data_manager.vision_params,
             sta_width=main_window.data_manager.vision_sta_width,
             sta_height=main_window.data_manager.vision_sta_height,
-            selected_cell_id=selected_cell_id # Pass the ID along to the core plotting function
+            selected_cell_id=selected_cell_id, # Pass the ID along to the core plotting function
+            subset_cell_ids=subset_cell_ids
         )
-        main_window.rf_canvas.draw()
+        canvas.draw()
     else:
-        main_window.rf_canvas.fig.clear()
-        main_window.rf_canvas.fig.text(0.5, 0.5, "No Vision parameters available",
+        canvas.fig.clear()
+        canvas.fig.text(0.5, 0.5, "No Vision parameters available",
                                        ha='center', va='center', color='gray')
-        main_window.rf_canvas.draw()
+        canvas.draw()
 
 def draw_sta_timecourse_plot(main_window, cluster_id):
     # Draws the STA timecourse plot for a specific cell.
@@ -215,7 +245,7 @@ def draw_sta_animation_plot(main_window, cluster_id):
         # Ensure the animation timer is properly created
         if main_window.sta_animation_timer is None:
             main_window.sta_animation_timer = QTimer()
-            main_window.sta_animation_timer.timeout.connect(lambda: update_sta_frame(main_window))
+            main_window.sta_animation_timer.timeout.connect(main_window._advance_frame_internal)
 
         # Stop any currently running animation first to prevent conflicts
         if main_window.sta_animation_timer and main_window.sta_animation_timer.isActive():
@@ -241,8 +271,10 @@ def draw_sta_animation_plot(main_window, cluster_id):
         main_window.rf_canvas.draw()
         main_window.sta_frame_slider.setEnabled(False)
 
+
 def update_sta_frame(main_window):
     # Updates the STA visualization to the next frame in the animation.
+    # This is for external calls (manual frame advance) and will stop the timer.
     if not hasattr(main_window, 'current_sta_data') or main_window.current_sta_data is None:
         # Stop the timer if there's no data to animate
         stop_sta_animation(main_window)

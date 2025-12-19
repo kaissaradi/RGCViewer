@@ -126,6 +126,10 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     else:
         main_window.sta_panel.hide()
 
+    # Notify the similarity panel that vision data has been loaded if available
+    if hasattr(main_window, 'similarity_panel') and main_window.data_manager.vision_available:
+        main_window.similarity_panel.on_vision_loaded()
+
 def load_vision_directory(main_window: MainWindow):
     """Handles the logic for loading a Vision analysis directory."""
     if not main_window.data_manager:
@@ -176,11 +180,27 @@ def on_cluster_selection_changed(main_window: MainWindow):
     Handles a cluster selection by triggering the main window's selection timer.
     """
     cluster_id = main_window._get_selected_cluster_id()
-    if cluster_id is None:
-        return
 
-    # This single call now handles the debouncing logic.
-    main_window.update_cluster_views(cluster_id)
+    if cluster_id is not None:
+        # Single unit selected - Debounced update
+        main_window.update_cluster_views(cluster_id)
+    else:
+        # Potentially a Group Folder selected (Tree View)
+        if main_window.view_stack.currentIndex() == 0: # Tree View
+            selection = main_window.tree_view.selectionModel().selectedIndexes()
+            if selection:
+                index = selection[0]
+                item = main_window.tree_model.itemFromIndex(index)
+
+                # Check if it is a group (groups store None in UserRole)
+                if item and item.data(Qt.ItemDataRole.UserRole) is None:
+                    # It's a group!
+                    group_ids = main_window._get_group_cluster_ids(item)
+
+                    if group_ids and main_window.population_view_enabled:
+                        # Update the population view immediately for the group
+                        # Note: We don't have a 'selected' cell to highlight, just the population
+                        plotting.draw_population_rfs_plot(main_window, subset_cell_ids=group_ids)
 
 # In gui/callbacks.py
 

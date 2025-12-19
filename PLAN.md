@@ -20,8 +20,16 @@ UPDATES
 
 CURRENT DEVELOPMENT
 - EI Panel: Adding population statistics and correlation matrix visualization
+- Population Split View: Implement checkbox toggle for population RF visualization
+
+COMPLETED FEATURES
+- Kilosort Guide Enhancements: Added per-cluster metrics (best channel, x/y coordinates, firing rate, contamination, amplitude)
+- MEA Similarity Infrastructure: Added caching and similarity calculations with distance and template similarity
+- Similarity Panel Rework: Now always loads MEA-based sim table with toggle for Vision-based similarity
+- Vision/Mean Similarity Toggle: Added UI elements to switch between MEA and Vision-based similarity tables
 
 PLANNED FEATURES
+- Population Split View: Split view activated by checkbox in top-right corner showing population RFs initially, with additional metrics
 - STA Panel: Consolidate statistics, add population metrics, improve visualizations
 - Feature Selection: Interface for extraction, dimensionality reduction, importance scoring
 - Class Creation: Clustering algorithms, manual tools, validation metrics
@@ -219,13 +227,13 @@ Here is the step-by-step implementation plan for your developer. This plan is de
 ```python
 def plot_population_rfs(fig, vision_params, ..., subset_cell_ids=None):
     # ... existing setup ...
-    
+
     # 1. Draw "Ghost" Population (Optional context)
     if subset_cell_ids is not None:
         for cell_id in all_cells:
             if cell_id not in subset_cell_ids:
                 draw_ellipse(..., alpha=0.1, color='gray') # Faint background
-    
+
     # 2. Draw "Selected Group"
     target_ids = subset_cell_ids if subset_cell_ids else all_cells
     for cell_id in target_ids:
@@ -333,7 +341,7 @@ def _advance_frame_internal(self):
         self.current_frame_index = (self.current_frame_index + 1) % self.total_sta_frames
         self.sta_frame_slider.setValue(self.current_frame_index)
         self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
-        
+
         self.rf_canvas.fig.clear()
         analysis_core.animate_sta_movie(
             self.rf_canvas.fig,
@@ -360,3 +368,73 @@ In the code where your timer is created (likely inside `gui/plotting.py` in the 
 Since you are about to implement the **Population View**, this "Silent Update" method is even more important. When you have a population of 50 cells, you don't want 50 different timers fighting each other. You will want one single "Global Timer" that calls a single update function to redraw the entire population mosaic at once.
 
 **Would you like me to check your `gui/plotting.py` file next to see exactly where the timer connection needs to be swapped?**
+
+## Implementation Plan: Population Split View with Checkbox Toggle
+
+### 1. UI Component: Top-Right Checkbox Toggle
+
+**Goal:** Implement a checkbox in the top-right corner of the main window to activate/deactivate the population split view.
+
+**File:** `gui/main_window.py`
+**Changes:**
+- Add a `QCheckBox` titled "Population View" to the main toolbar or top-right area
+- Connect the checkbox's stateChanged signal to a new method `toggle_population_split_view()`
+- Set default state to unchecked (population view disabled)
+
+### 2. State Management: Population Mode Flag
+
+**Goal:** Add a flag to track the population view state throughout the application.
+
+**File:** `gui/main_window.py`
+**Changes:**
+- Add instance variable `self.population_view_enabled = False`
+- Update the flag when the checkbox changes state
+- Add logic to refresh all panels when the mode changes
+
+### 3. Visualization Engine: Population RF Mosaic
+
+**Goal:** Create the population RF visualization to display when the split view is enabled.
+
+**File:** `analysis/analysis_core.py`
+**Changes:**
+- Enhance `plot_population_rfs` to support different visualization modes
+- Implement overlay functionality for population RFs with individual unit highlights
+- Ensure efficient rendering for large populations
+
+### 4. Panel Integration: Dynamic View Switching
+
+**Goal:** Update all panels to respond to the population view state.
+
+**Files:** `gui/plot_widgets.py`, `gui/plotting.py`
+**Changes:**
+- Add conditional logic in plotting functions to check `population_view_enabled` state
+- Modify STA panel to show population RFs side-by-side with individual metrics
+- Update all relevant plots to support both individual and population views
+
+### 5. User Experience: Smooth Transitions
+
+**Goal:** Ensure seamless switching between individual and population views.
+
+**Implementation:**
+- Add visual indicators showing which mode is active
+- Implement smooth transitions when switching between views
+- Maintain user's current selection when toggling the view
+
+### 6. Additional Metrics: Population Analysis
+
+**Goal:** Expand the population view to include various metrics beyond RFs.
+
+**Planned Metrics:**
+- Population correlation matrices
+- Average firing rates across selected groups
+- Distribution of key parameters (latency, area, etc.)
+- Population-level statistical summaries
+
+### 7. Technical Architecture: Asynchronous Processing
+
+**Goal:** Ensure responsive UI during population analysis computations.
+
+**Implementation:**
+- Use a dedicated population analysis worker thread
+- Implement progress indicators for large population computations
+- Cache population results to prevent repeated calculations

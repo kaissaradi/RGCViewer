@@ -1,5 +1,5 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox, QButtonGroup, QRadioButton
 from qtpy.QtCore import Signal, QItemSelectionModel
 from gui.widgets import HighlightStatusPandasModel, CustomTableView
 import numpy as np
@@ -20,11 +20,31 @@ class SimilarityPanel(QWidget):
         self.main_window = main_window
         self.main_cluster_id = None
         self._spacebar_select_count = 1
+        self.current_source = "MEA"  # Default to MEA-based similarity
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.label = QLabel("Similar Clusters")
         layout.addWidget(self.label)
+
+        # Add source selection buttons (MEA / Vision toggle)
+        source_layout = QHBoxLayout()
+        self.source_button_group = QButtonGroup()
+
+        self.mea_radio = QRadioButton("MEA Similarity")
+        self.vision_radio = QRadioButton("Vision Similarity")
+        self.mea_radio.setChecked(True)  # Default to MEA
+
+        self.source_button_group.addButton(self.mea_radio)
+        self.source_button_group.addButton(self.vision_radio)
+
+        source_layout.addWidget(self.mea_radio)
+        source_layout.addWidget(self.vision_radio)
+        source_layout.addStretch()
+        layout.addLayout(source_layout)
+
+        # Connect radio buttons to source change handler
+        self.mea_radio.toggled.connect(self._on_source_toggled)
 
         self.table = CustomTableView()
         self.table.setSortingEnabled(True)
@@ -166,87 +186,83 @@ class SimilarityPanel(QWidget):
         self.table.setModel(None)
         self.similarity_model = None
 
+    def on_vision_loaded(self):
+        """Called when vision data is loaded - enables vision similarity option."""
+        # Enable the vision radio button
+        self.vision_radio.setEnabled(True)
+
+        # Update the table if vision similarity is currently selected
+        if self.current_source == "vision" and self.main_cluster_id is not None:
+            self.update_main_cluster_id(self.main_cluster_id)
+
+    def _on_source_toggled(self):
+        """Handle when the user toggles between MEA and Vision similarity sources."""
+        if self.mea_radio.isChecked():
+            self.current_source = "MEA"
+        else:
+            self.current_source = "vision"
+
+        # Update the table with the new source if a main cluster is selected
+        if self.main_cluster_id is not None:
+            self.update_main_cluster_id(self.main_cluster_id)
+
     def update_main_cluster_id(self, cluster_id):
-        # Get EI correlation values from data_manager
-        if self.main_window.data_manager is None or self.main_window.data_manager.ei_corr_dict is None:
-            logger.error("DataManager or EI correlation data not available")
+        """Update the similarity table for the given cluster_id."""
+        dm = self.main_window.data_manager
+        if dm is None:
+            logger.error("DataManager not available")
             self.clear()
             return
 
         self.main_cluster_id = cluster_id
 
-        ei_corr_dict = self.main_window.data_manager.ei_corr_dict
-        # Convert Vision IDs (1-indexed) to Kilosort IDs (0-indexed) for matching with cluster_id
-        vision_cluster_ids = np.array(list(self.main_window.data_manager.vision_eis.keys()))
-        kilosort_cluster_ids = vision_cluster_ids - 1  # Convert to 0-indexed
+        # Determine which source to use and get appropriate similarity data
+        try:
+            if self.current_source == "MEA":
+                # Get MEA-based similarity data
+                similarity_df = dm.get_similarity_table(cluster_id, source="MEA")
 
-        # Check if the selected cluster exists in vision data
-        cluster_match_idx = np.where(kilosort_cluster_ids == cluster_id)[0]
-        if len(cluster_match_idx) == 0:
-            logger.warning("Cluster ID %s not found in Vision data", cluster_id)
+                # Add any custom columns that are useful for display if not already present
+                if similarity_df is not None and not similarity_df.empty:
+                    # Add n_spikes and status from main cluster_df for consistency
+                    cluster_df = dm.cluster_df
+                    if 'n_spikes' not in similarity_df.columns:
+                        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
+                        similarity_df['n_spikes'] = similarity_df['cluster_id'].map(n_spikes_map)
+
+                    if 'status' not in similarity_df.columns:
+                        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
+                        similarity_df['status'] = similarity_df['cluster_id'].map(status_map)
+
+                    if 'set' not in similarity_df.columns:
+                        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
+                        similarity_df['set'] = similarity_df['cluster_id'].map(set_map)
+
+            elif self.current_source == "vision":
+                # Check if vision data is available
+                if not dm.vision_available:
+                    logger.warning("Vision data not available for similarity table")
+                    # Show empty table or placeholder data
+                    similarity_df = pd.DataFrame(columns=['cluster_id', 'n_spikes', 'status'])
+                else:
+                    # Get vision-based similarity data
+                    similarity_df = dm.get_similarity_table(cluster_id, source="vision")
+            else:
+                logger.error(f"Unknown source: {self.current_source}")
+                self.clear()
+                return
+
+        except Exception as e:
+            logger.error(f"Error getting similarity table for source {self.current_source}: {e}")
             self.clear()
             return
 
-        main_idx = cluster_match_idx[0]  # Get the first match index
-        other_idx = np.where(kilosort_cluster_ids != cluster_id)[0]
-        other_ids = kilosort_cluster_ids[other_idx]
+        if similarity_df is not None and not similarity_df.empty:
+            # Add potential_dups based on relevant threshold if not already present
+            if 'potential_dups' not in similarity_df.columns:
+                # Default to no potential duplicates if not specifically computed
+                similarity_df['potential_dups'] = ''
 
-        # Only include other_ids that actually exist in the main cluster dataframe
-        valid_cluster_df_ids = set(self.main_window.data_manager.cluster_df['cluster_id'].values)
-        valid_other_ids = [oid for oid in other_ids if oid in valid_cluster_df_ids]
-
-        if not valid_other_ids:
-            logger.warning("No valid other clusters found for cluster %s", cluster_id)
+            self.set_data(similarity_df)
+        else:
             self.clear()
-            return
-
-        valid_other_ids = np.array(valid_other_ids)
-        # Calculate which indices in the correlation matrix correspond to valid IDs
-        valid_other_idx = []
-        for oid in valid_other_ids:
-            oid_idx = np.where(kilosort_cluster_ids == oid)[0]
-            if len(oid_idx) > 0:
-                valid_other_idx.append(oid_idx[0])
-
-        if not valid_other_idx:
-            logger.warning("Could not find valid indices for valid_other_ids")
-            self.clear()
-            return
-
-        valid_other_idx = np.array(valid_other_idx)
-
-        d_df = {
-            'cluster_id': valid_other_ids,
-            'space_ei_corr': ei_corr_dict['space'][main_idx, valid_other_idx],
-            'full_ei_corr': ei_corr_dict['full'][main_idx, valid_other_idx],
-            'power_ei_corr': ei_corr_dict['power'][main_idx, valid_other_idx]
-        }
-        df = pd.DataFrame(d_df)
-
-        # Add n_spikes and status column
-        cluster_df = self.main_window.data_manager.cluster_df
-        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
-        df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
-
-        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
-        df['status'] = df['cluster_id'].map(status_map)
-
-        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
-        df['set'] = df['cluster_id'].map(set_map)
-
-        # Sort by space_ei_corr descending
-        df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
-
-        df['potential_dups'] = (
-            (df['full_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
-            (df['space_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
-            (df['power_ei_corr'].astype(float) > EI_CORR_THRESHOLD)
-        )
-
-        # Format correlation columns to 2 decimal places
-        for col in ['full_ei_corr', 'space_ei_corr', 'power_ei_corr']:
-            df[col] = df[col].map(lambda x: f"{x:.2f}")
-
-        df['potential_dups'] = df['potential_dups'].map(lambda x: 'Yes' if x else '')
-
-        self.set_data(df)

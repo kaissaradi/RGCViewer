@@ -210,6 +210,13 @@ class DataManager(QObject):
         self.vision_sta_height = None  # Store stimulus height for coordinate alignment
         self.ei_corr_dict = None  # Initialize to None, will be set when vision data is loaded
 
+        # --- MEA Similarity Data ---
+        self.similar_templates = None          # (n_templates, n_templates) from Kilosort
+        self.cluster_to_template = None        # dict[int -> int]
+        self.mea_sim_cache = {}                # cluster_id -> DataFrame
+        self.vision_sim_cache = {}             # cluster_id -> DataFrame
+        self.vision_available = False
+
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
@@ -428,6 +435,10 @@ class DataManager(QObject):
                 })
 
             self._load_kilosort_params()
+
+            # Load Kilosort similarity data
+            self._load_kilosort_similarity()
+
             return True, "Successfully loaded Kilosort data."
         except Exception as e:
             return False, f"Error during Kilosort data loading: {e}"
@@ -445,6 +456,7 @@ class DataManager(QObject):
         vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
         logger.debug("Completed vision_integration.load_vision_data call")
 
+        success = False
         if vision_data:
             ei_bundle = vision_data.get('ei')
             if ei_bundle:
@@ -573,7 +585,8 @@ class DataManager(QObject):
             # (Duplicate correlation-to-cluster_df update removed - handled above)
 
             logger.info("Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
-            return True, f"Successfully loaded Vision data for {dataset_name}."
+            success = True
+
         else:
             logger.debug("Full vision loading failed; attempting partial load")
             # Check if params or STA files exist even if the full loading failed
@@ -628,14 +641,15 @@ class DataManager(QObject):
 
                 if vision_data:  # If we loaded any data
                     logger.info("Partial Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
-                    return True, f"Successfully loaded partial Vision data for {dataset_name}."
+                    success = True
                 else:
                     logger.debug("No vision data could be loaded")
-                    return False, "Failed to load Vision data but files were found."
             else:
                 logger.debug("No vision files found in directory")
-                return False, "No Vision data files found in the directory."
-    # --- End New Method ---
+
+        # Mark vision as available if we have the required data
+        self.vision_available = success and (self.vision_eis is not None or self.vision_stas is not None)
+        return success, f"{'Successfully' if success else 'Failed to'} load Vision data for {dataset_name}."
 
     def load_cell_type_file(self, txt_file: str=None):
         logger.debug("Loading cell type file: %s", txt_file)
@@ -764,6 +778,10 @@ class DataManager(QObject):
 
         # Load status
         self.load_status()
+
+        # Add per-cluster metrics
+        self._compute_cluster_geometry()
+        self._merge_cluster_tsvs()
 
 
 
@@ -1089,3 +1107,287 @@ class DataManager(QObject):
         except (IndexError, TypeError):
             # Return None if any error occurs (e.g., empty arrays).
             return None
+
+    def _compute_cluster_geometry(self):
+        """
+        Compute best_chan, x_um, y_um, and template_amp for each cluster.
+        Uses templates.npy, templates_ind.npy, channel_positions.npy.
+        """
+        import numpy as np
+        ks_dir = self.kilosort_dir
+
+        # Load required files
+        try:
+            templates = np.load(ks_dir / "templates.npy", mmap_mode="r")        # (n_templates, nt, n_tempCh)
+            templates_ind = np.load(ks_dir / "templates_ind.npy", mmap_mode="r")  # (n_templates, n_tempCh)
+            chan_pos = np.load(ks_dir / "channel_positions.npy")               # (n_channels, 2)
+        except FileNotFoundError:
+            logger.warning("Required files for cluster geometry computation not found, skipping...")
+            return
+
+        # optional but nice: unwhiten before computing PTP
+        try:
+            W_inv = np.load(ks_dir / "whitening_mat_inv.npy", mmap_mode="r")
+        except FileNotFoundError:
+            W_inv = None
+
+        n_templates = templates.shape[0]
+
+        best_chan_per_template = np.zeros(n_templates, dtype=int)
+        ptp_per_template = np.zeros(n_templates, dtype=float)
+
+        for k in range(n_templates):
+            T_white = templates[k]  # (nt, n_tempCh)
+
+            if W_inv is not None:
+                # Expand to full channel set, then unwhiten along channel axis
+                chans = templates_ind[k].astype(int)
+                nt, n_tempCh = T_white.shape
+                n_channels = W_inv.shape[0]
+                T_full_white = np.zeros((nt, n_channels), dtype=T_white.dtype)
+                T_full_white[:, chans] = T_white
+                T = T_full_white @ W_inv        # unwhitened (nt, n_channels)
+            else:
+                # Use whitened template directly; still OK for relative PTP
+                chans = templates_ind[k].astype(int)
+                T = np.zeros((T_white.shape[0], chan_pos.shape[0]), dtype=T_white.dtype)
+                T[:, chans] = T_white
+
+            ptp = T.max(axis=0) - T.min(axis=0)   # (n_channels,)
+            best_chan = int(ptp.argmax())
+            best_chan_per_template[k] = best_chan
+            ptp_per_template[k] = float(ptp[best_chan])
+
+        # Map cluster_id -> template index (for KS4, cluster == template; for KS2/3 use spike_templates)
+        # You likely already have something like this; keep your existing logic if so.
+        cluster_to_template = self._build_cluster_to_template_map()
+
+        # Add new columns to cluster_df (without changing existing ones)
+        if "best_chan" not in self.cluster_df.columns:
+            cluster_to_best_chan = {}
+            for cid in self.cluster_df["cluster_id"]:
+                if cid in cluster_to_template:
+                    template_idx = cluster_to_template[cid]
+                    if template_idx < len(best_chan_per_template):
+                        cluster_to_best_chan[cid] = best_chan_per_template[template_idx]
+            self.cluster_df["best_chan"] = self.cluster_df["cluster_id"].map(cluster_to_best_chan)
+
+        if "x_um" not in self.cluster_df.columns or "y_um" not in self.cluster_df.columns:
+            self.cluster_df["x_um"] = self.cluster_df["best_chan"].map(lambda ch: chan_pos[ch, 0] if ch < len(chan_pos) else np.nan)
+            self.cluster_df["y_um"] = self.cluster_df["best_chan"].map(lambda ch: chan_pos[ch, 1] if ch < len(chan_pos) else np.nan)
+
+        if "template_amp" not in self.cluster_df.columns:
+            cluster_to_template_amp = {}
+            for cid in self.cluster_df["cluster_id"]:
+                if cid in cluster_to_template:
+                    template_idx = cluster_to_template[cid]
+                    if template_idx < len(ptp_per_template):
+                        cluster_to_template_amp[cid] = ptp_per_template[template_idx]
+            self.cluster_df["template_amp"] = self.cluster_df["cluster_id"].map(cluster_to_template_amp)
+
+    def _build_cluster_to_template_map(self):
+        """
+        Returns dict: cluster_id -> template_index.
+        For KS4, cluster ids and template indices are 0..n_clusters-1.
+        For KS2/3 you can use spike_templates for spikes in each cluster.
+        """
+        # For KS4, assume cluster_id == template index
+        # If you have a more accurate mapping already, keep that instead.
+        n_templates = self.templates.shape[0] if hasattr(self, 'templates') else None
+        mapping = {}
+        for cid in self.cluster_df["cluster_id"]:
+            # For Kilosort4, cluster_id is the same as template index
+            # For other versions, this mapping might be different
+            mapping[cid] = int(cid) if 0 <= int(cid) < n_templates else -1
+
+        return mapping
+
+    def _merge_cluster_tsvs(self):
+        """
+        Merge standard Phy/Kilosort cluster tsvs into self.cluster_df.
+        Do NOT rename existing columns; only add if missing.
+        """
+        import pandas as pd
+        ks_dir = self.kilosort_dir
+
+        tsvs = {
+            "firing_rate_hz": "cluster_firing_rate.tsv",
+            "contam_pct": "cluster_ContamPct.tsv",
+            "amp_median": "cluster_Amplitude.tsv",    # or whatever name you like
+        }
+
+        for col, fname in tsvs.items():
+            path = ks_dir / fname
+            if path.exists() and col not in self.cluster_df.columns:
+                try:
+                    df = pd.read_csv(path, sep="\t")
+                    # Assume df has columns ['cluster_id', 'value'] or similar
+                    # adapt if your files have different schema
+                    value_col = [c for c in df.columns if c != "cluster_id"][0]
+                    cluster_id_to_value = df.set_index("cluster_id")[value_col].to_dict()
+                    self.cluster_df[col] = self.cluster_df["cluster_id"].map(cluster_id_to_value)
+                except Exception as e:
+                    logger.warning(f"Could not load {fname}: {e}")
+
+    def _load_kilosort_similarity(self):
+        """
+        Load Kilosort similarity matrix (similar_templates.npy).
+        """
+        ks_dir = self.kilosort_dir
+        try:
+            self.similar_templates = np.load(ks_dir / "similar_templates.npy", mmap_mode="r")
+            logger.debug("Loaded similar_templates.npy with shape: %s", self.similar_templates.shape)
+        except FileNotFoundError:
+            logger.warning("similar_templates.npy not found; MEA-based similarity will not be available")
+            self.similar_templates = None
+
+    def get_similarity_table(self, cluster_id: int, source: str = "MEA"):
+        """
+        Get similarity table for a cluster from the specified source.
+        """
+        if source == "MEA":
+            return self._get_mea_similarity_table(cluster_id)
+        elif source == "vision":
+            return self._get_vision_similarity_table(cluster_id)
+        else:
+            raise ValueError(f"Unknown sim source: {source}")
+
+    def _get_mea_similarity_table(self, cluster_id: int):
+        """
+        Get MEA-based similarity table for a cluster.
+        """
+        import numpy as np
+        import pandas as pd
+
+        if cluster_id in self.mea_sim_cache:
+            return self.mea_sim_cache[cluster_id]
+
+        if "x_um" not in self.cluster_df.columns or "y_um" not in self.cluster_df.columns:
+            logger.error("x_um / y_um missing; call _compute_cluster_geometry first.")
+            return pd.DataFrame()  # Return empty DataFrame
+
+        cluster_to_template = self._build_cluster_to_template_map()
+
+        main_row = self.cluster_df.loc[self.cluster_df["cluster_id"] == cluster_id].iloc[0]
+        x0, y0 = main_row["x_um"], main_row["y_um"]
+        k0 = cluster_to_template[cluster_id]
+
+        # copy to avoid mutating cluster_df
+        sim_df = self.cluster_df.copy()
+        sim_df = sim_df[sim_df["cluster_id"] != cluster_id]  # drop self
+
+        # distance in probe space
+        dx = sim_df["x_um"] - x0
+        dy = sim_df["y_um"] - y0
+        sim_df["distance_um"] = np.sqrt(dx * dx + dy * dy)
+
+        # template similarity from similar_templates.npy if available
+        if self.similar_templates is not None:
+            def _tpl_sim(cid):
+                k = cluster_to_template[cid]
+                return float(self.similar_templates[k0, k])
+            sim_df["template_sim"] = sim_df["cluster_id"].map(_tpl_sim)
+        else:
+            sim_df["template_sim"] = np.nan
+
+        # *** sort by closest cells, then similarity ***
+        sim_df.sort_values(
+            by=["distance_um", "template_sim"],
+            ascending=[True, False],
+            inplace=True
+        )
+
+        # Optionally keep only top K neighbors
+        # sim_df = sim_df.head(50)
+
+        self.mea_sim_cache[cluster_id] = sim_df
+        return sim_df
+
+    def _get_vision_similarity_table(self, cluster_id: int):
+        """
+        Get vision-based similarity table for a cluster.
+        """
+        import pandas as pd
+
+        if cluster_id in self.vision_sim_cache:
+            return self.vision_sim_cache[cluster_id]
+
+        # Check if vision data is available
+        if self.ei_corr_dict is None or self.vision_eis is None:
+            logger.error("Vision data not available for similarity table")
+            return pd.DataFrame()  # Return empty DataFrame
+
+        # Get vision correlation values for the main cluster
+        vision_cluster_ids = np.array(list(self.vision_eis.keys()))
+        kilosort_cluster_ids = vision_cluster_ids - 1  # Convert to 0-indexed
+
+        # Check if the selected cluster exists in vision data
+        cluster_match_idx = np.where(kilosort_cluster_ids == cluster_id)[0]
+        if len(cluster_match_idx) == 0:
+            logger.warning("Cluster ID %s not found in Vision data", cluster_id)
+            return pd.DataFrame()
+
+        main_idx = cluster_match_idx[0]  # Get the first match index
+        other_idx = np.where(kilosort_cluster_ids != cluster_id)[0]
+        other_ids = kilosort_cluster_ids[other_idx]
+
+        # Only include other_ids that actually exist in the main cluster dataframe
+        valid_cluster_df_ids = set(self.cluster_df['cluster_id'].values)
+        valid_other_ids = [oid for oid in other_ids if oid in valid_cluster_df_ids]
+
+        if not valid_other_ids:
+            logger.warning("No valid other clusters found for cluster %s", cluster_id)
+            return pd.DataFrame()
+
+        valid_other_ids = np.array(valid_other_ids)
+        # Calculate which indices in the correlation matrix correspond to valid IDs
+        valid_other_idx = []
+        for oid in valid_other_ids:
+            oid_idx = np.where(kilosort_cluster_ids == oid)[0]
+            if len(oid_idx) > 0:
+                valid_other_idx.append(oid_idx[0])
+
+        if not valid_other_idx:
+            logger.warning("Could not find valid indices for valid_other_ids")
+            return pd.DataFrame()
+
+        valid_other_idx = np.array(valid_other_idx)
+
+        d_df = {
+            'cluster_id': valid_other_ids,
+            'space_ei_corr': self.ei_corr_dict['space'][main_idx, valid_other_idx],
+            'full_ei_corr': self.ei_corr_dict['full'][main_idx, valid_other_idx],
+            'power_ei_corr': self.ei_corr_dict['power'][main_idx, valid_other_idx]
+        }
+        df = pd.DataFrame(d_df)
+
+        # Add n_spikes and status column
+        cluster_df = self.cluster_df
+        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
+        df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
+
+        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
+        df['status'] = df['cluster_id'].map(status_map)
+
+        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
+        df['set'] = df['cluster_id'].map(set_map)
+
+        # Sort by space_ei_corr descending
+        df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
+
+        df['potential_dups'] = (
+            (df['full_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
+            (df['space_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
+            (df['power_ei_corr'].astype(float) > EI_CORR_THRESHOLD)
+        )
+
+        # Format correlation columns to 2 decimal places
+        for col in ['full_ei_corr', 'space_ei_corr', 'power_ei_corr']:
+            df[col] = df[col].map(lambda x: f"{x:.2f}")
+
+        df['potential_dups'] = df['potential_dups'].map(lambda x: 'Yes' if x else '')
+
+        self.vision_sim_cache[cluster_id] = df
+        return df
+
+

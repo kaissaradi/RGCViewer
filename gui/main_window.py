@@ -6,7 +6,7 @@ from qtpy.QtWidgets import (
     QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QLineEdit,
-    QApplication, QTextEdit
+    QApplication, QTextEdit, QCheckBox
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self._is_syncing = False
         self.last_left_width = 450
         self.feature_worker_thread = None
+        self.population_view_enabled = False
 
         # --- UI Setup ---
         self._setup_style()
@@ -151,12 +152,6 @@ class MainWindow(QMainWindow):
             QStatusBar { color: white; }
         """)
 
-# In main_window.py, add these new methods to the MainWindow class.
-# Also, add 'self.feature_worker_thread = None' to the __init__ method.
-# Make sure to add `from gui.workers import FeatureWorker` to your imports.
-
-    # In MainWindow, ensure you have these two methods.
-    # update_cluster_views catches the rapid clicks.
     def update_cluster_views(self, cluster_id):
         """
         Receives a selection event, stores the cluster_id, and restarts the
@@ -164,9 +159,6 @@ class MainWindow(QMainWindow):
         """
         self._pending_cluster_id = cluster_id
         self.selection_timer.start()
-
-    # _process_selection runs only after the user pauses.
-    # In gui/main_window.py
 
     def _process_selection(self):
         """
@@ -345,7 +337,16 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
+        # Create Tab Widget
         self.analysis_tabs = QTabWidget()
+        
+        # New Checkbox for Population Split View (Moved to Top Right of Tabs)
+        self.pop_view_checkbox = QCheckBox("Population Split View")
+        self.pop_view_checkbox.toggled.connect(self.toggle_population_split_view)
+        
+        # Place checkbox in the top-right corner of the tab bar
+        self.analysis_tabs.setCornerWidget(self.pop_view_checkbox, Qt.TopRightCorner)
+
         right_layout.addWidget(self.analysis_tabs)
 
         # --- Panels ---
@@ -363,17 +364,27 @@ class MainWindow(QMainWindow):
         self.sta_population_rfs_button = QPushButton("Population RFs")
         self.sta_animation_button = QPushButton("Play Animation")
         self.sta_animation_stop_button = QPushButton("Stop Animation")
+        
+        # Note: pop_view_checkbox was removed from here
+
         self.sta_population_rfs_button.clicked.connect(lambda: self.select_sta_view("population_rfs"))
         self.sta_animation_button.clicked.connect(self.toggle_animation)
         self.sta_animation_stop_button.clicked.connect(self.stop_animation)
         sta_control_layout.addWidget(self.sta_population_rfs_button)
         sta_control_layout.addWidget(self.sta_animation_button)
         sta_control_layout.addWidget(self.sta_animation_stop_button)
+        
+        sta_control_layout.addStretch() # Push buttons to left
 
         # --- Add Frame Slider and Label for STA Animation ---
         self.sta_frame_controls_layout = QHBoxLayout()
+        self.sta_frame_controls_layout.setSpacing(5)
+        self.sta_frame_controls_layout.setContentsMargins(0, 0, 0, 0)
+
         self.sta_frame_prev_button = QPushButton("Previous Frame")
         self.sta_frame_slider = QSlider(Qt.Horizontal)
+        self.sta_frame_slider.setFixedWidth(200)
+        self.sta_frame_slider.setMaximumHeight(30)  # Try this instead
         self.sta_frame_next_button = QPushButton("Next Frame")
         self.sta_frame_label = QLabel("Frame: 0/0")
 
@@ -385,26 +396,30 @@ class MainWindow(QMainWindow):
         self.sta_frame_controls_layout.addWidget(self.sta_frame_slider)
         self.sta_frame_controls_layout.addWidget(self.sta_frame_next_button)
         self.sta_frame_controls_layout.addWidget(self.sta_frame_label)
+        self.sta_frame_controls_layout.addStretch()
+
+        # ADD THIS LINE - this is key:
+        sta_layout.setStretch(1, 0)  # Give the controls_layout NO stretch factor
 
         # --- Create 4 Quadrants for STA Analysis ---
-        
+
         # Top Left: RF Visualization
         self.rf_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.rf_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
         self.rf_canvas.draw()
-        
+
         # Top Right: Timecourse
         self.timecourse_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.timecourse_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
         self.timecourse_canvas.draw()
-        
+
         # Bottom Left: Metrics Box
         self.sta_metrics_text = QTextEdit()
         self.sta_metrics_text.setReadOnly(True)
         self.sta_metrics_text.setStyleSheet("""
             QTextEdit {
-                background-color: #1f1f1f; 
-                color: #e0e0e0; 
+                background-color: #1f1f1f;
+                color: #e0e0e0;
                 font-family: Consolas, "Courier New", monospace;
                 font-size: 11pt;
                 border: 1px solid #333;
@@ -417,6 +432,23 @@ class MainWindow(QMainWindow):
         self.temporal_filter_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.temporal_filter_canvas.fig.text(0.5, 0.5, "Temporal Analysis", ha='center', va='center', color='gray')
         self.temporal_filter_canvas.draw()
+        
+        # --- NEW: Population View Context Widget ---
+        self.sta_context_widget = QWidget()
+        sta_context_layout = QVBoxLayout(self.sta_context_widget)
+        
+        self.pop_mosaic_canvas = MplCanvas(self, width=5, height=4, dpi=120)
+        self.pop_mosaic_canvas.fig.text(0.5, 0.5, "Population Mosaic", ha='center', va='center', color='gray')
+        
+        self.pop_dynamics_canvas = MplCanvas(self, width=5, height=4, dpi=120)
+        self.pop_dynamics_canvas.fig.text(0.5, 0.5, "Population Dynamics", ha='center', va='center', color='gray')
+        
+        sta_context_splitter = QSplitter(Qt.Vertical)
+        sta_context_splitter.addWidget(self.pop_mosaic_canvas)
+        sta_context_splitter.addWidget(self.pop_dynamics_canvas)
+        sta_context_layout.addWidget(sta_context_splitter)
+        
+        self.sta_context_widget.hide() # Hidden by default
 
         # Create the general sta_canvas for backward compatibility with plotting functions
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
@@ -424,7 +456,7 @@ class MainWindow(QMainWindow):
         self.sta_canvas.hide()
 
         # --- Layout Assembly ---
-        
+
         # Top Row Splitter (RF | Timecourse)
         self.top_splitter = QSplitter(Qt.Horizontal)
         self.top_splitter.addWidget(self.rf_canvas)
@@ -442,10 +474,16 @@ class MainWindow(QMainWindow):
         self.sta_splitter.addWidget(self.top_splitter)
         self.sta_splitter.addWidget(self.bottom_splitter)
         self.sta_splitter.setSizes([400, 300]) # Give more space to top row initially
+        
+        # --- NEW: Master Horizontal Splitter (Focus | Context) ---
+        self.sta_main_splitter = QSplitter(Qt.Horizontal)
+        self.sta_main_splitter.addWidget(self.sta_splitter)
+        self.sta_main_splitter.addWidget(self.sta_context_widget)
+        self.sta_main_splitter.setSizes([800, 0]) # Initial size, context hidden
 
-        sta_layout.addLayout(sta_control_layout)
-        sta_layout.addLayout(self.sta_frame_controls_layout)  # Add frame controls layout
-        sta_layout.addWidget(self.sta_splitter)
+        sta_layout.addLayout(sta_control_layout, 0)  # 0 = no stretch
+        sta_layout.addLayout(self.sta_frame_controls_layout, 0)  # 0 = no stretch
+        sta_layout.addWidget(self.sta_main_splitter, 1)  # 1 = takes all remaining space
 
         # --- Tab Order ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard Plots")
@@ -488,6 +526,23 @@ class MainWindow(QMainWindow):
         # Connect the raw panel's status and error messages to the status bar
         self.raw_panel.status_message.connect(lambda msg: self.status_bar.showMessage(msg, 3000))
         self.raw_panel.error_message.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
+
+    def toggle_population_split_view(self, checked):
+        """Toggles the visibility of the population analysis context pane."""
+        self.population_view_enabled = checked
+        if checked:
+            self.sta_context_widget.show()
+            # Adjust sizes to give roughly 50/50 split if it was hidden
+            current_width = self.sta_main_splitter.width()
+            self.sta_main_splitter.setSizes([int(current_width * 0.55), int(current_width * 0.45)])
+            
+            # Trigger update if a cluster is selected
+            cluster_id = self._get_selected_cluster_id()
+            if cluster_id is not None:
+                self.select_sta_view(self.current_sta_view)
+        else:
+            self.sta_context_widget.hide()
+            # self.sta_main_splitter.setSizes([1, 0]) # handled by hide() usually
 
 
     def _switch_left_view(self, index):
@@ -700,6 +755,10 @@ class MainWindow(QMainWindow):
         # For split view, draw both plots regardless of the selected view type
         plotting.draw_sta_plot(self, cluster_id)
         plotting.draw_sta_timecourse_plot(self, cluster_id)
+        
+        # Update Population Context if enabled
+        if self.population_view_enabled:
+             plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id)
 
         # Handle specific view types that might require different behavior
         if view_type == "population_rfs":
@@ -708,30 +767,6 @@ class MainWindow(QMainWindow):
         elif view_type == "animation" or force_animation:
             # Animation should only affect the RF plot
             plotting.draw_sta_animation_plot(self, cluster_id)
-
-    def on_tab_changed(self, index):
-        """Handles updates when the user switches tabs."""
-        cluster_id = self._get_selected_cluster_id()
-        if cluster_id is None:
-            return
-
-        current_panel = self.analysis_tabs.widget(index)
-
-        if current_panel == self.ei_panel:
-            self.ei_panel.update_ei([cluster_id])
-        elif current_panel == self.waveforms_panel:
-            self.waveforms_panel.update_all(cluster_id)
-        elif current_panel == self.raw_panel:
-            self.raw_panel.load_data(cluster_id)
-        elif current_panel == self.sta_panel:
-            if self.data_manager and self.data_manager.vision_stas:
-                self.select_sta_view(self.current_sta_view)
-            else:
-                # Use the appropriate canvas based on current view - use RF canvas as default
-                canvas_to_use = self.rf_canvas
-                canvas_to_use.fig.clear()
-                canvas_to_use.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
-                canvas_to_use.draw()
 
     def update_sta_frame_manual(self, frame_index):
         """Updates the STA visualization to a specific frame manually."""
@@ -757,10 +792,36 @@ class MainWindow(QMainWindow):
             self.rf_canvas.fig.suptitle(f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}", color='white', fontsize=16) # this overlaps with self.sta_frame_label
             self.rf_canvas.draw()
 
+    def _advance_frame_internal(self):
+        """Internal method for the timer to call without stopping itself."""
+        if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
+            # Increment frame and loop back to 0 if at the end
+            self.current_frame_index = (self.current_frame_index + 1) % self.total_sta_frames
+
+            # --- FIX: Block signals so we don't trigger update_sta_frame_manual ---
+            self.sta_frame_slider.blockSignals(True)
+            self.sta_frame_slider.setValue(self.current_frame_index)
+            self.sta_frame_slider.blockSignals(False)
+            # ---------------------------------------------------------------------
+
+            self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
+
+            # Redraw the RF canvas
+            self.rf_canvas.fig.clear()
+            analysis_core.animate_sta_movie(
+                self.rf_canvas.fig,
+                self.current_sta_data,
+                stafit=self.current_stafit,
+                frame_index=self.current_frame_index,
+                sta_width=self.data_manager.vision_sta_width,
+                sta_height=self.data_manager.vision_sta_height
+            )
+            self.rf_canvas.draw()
+
     def prev_sta_frame(self):
         """Go to the previous frame in the STA animation."""
         if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
-            plotting.stop_sta_animation(self)
+            plotting.stop_sta_animation(self)  # Stop the animation when manually navigating
             self.current_frame_index = (self.current_frame_index - 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
             self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
@@ -778,7 +839,7 @@ class MainWindow(QMainWindow):
     def next_sta_frame(self):
         """Go to the next frame in the STA animation."""
         if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
-            plotting.stop_sta_animation(self)
+            plotting.stop_sta_animation(self)  # Stop the animation when manually navigating
             self.current_frame_index = (self.current_frame_index + 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
             self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
@@ -826,7 +887,7 @@ class MainWindow(QMainWindow):
             return
 
         # Update the animation button text based on current state
-        if self.sta_animation_timer and self.sta_animation_timer.isActive():
+        if hasattr(self, 'sta_animation_timer') and self.sta_animation_timer and self.sta_animation_timer.isActive():
             # Currently playing, so stop it
             plotting.stop_sta_animation(self)
             self.sta_animation_button.setText("Play Animation")

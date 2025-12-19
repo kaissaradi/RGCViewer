@@ -688,26 +688,41 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     ax2.axis('equal')
 
 
-def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None):
+def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None, subset_cell_ids=None):
     """
     Visualizes the receptive fields of all cells, highlighting the selected cell
     by filling its true ellipse shape and making other ellipses more faint.
+
+    Args:
+        subset_cell_ids (list): List of 0-indexed cluster IDs to include in the population view.
+                                If None, all cells are shown.
     """
     fig.clear()
     ax = fig.add_subplot(111)
 
-    cell_ids = vision_params.get_cell_ids()
+    all_cell_ids = vision_params.get_cell_ids()
 
-    if not cell_ids:
+    if not all_cell_ids:
         ax.text(0.5, 0.5, "No RF data available", ha='center', va='center', color='gray')
         ax.set_title("Population Receptive Fields", color='white')
         return
 
     vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
+    
+    # Convert subset IDs to Vision IDs (1-based) if provided
+    vision_subset_ids = None
+    if subset_cell_ids is not None:
+        vision_subset_ids = [cid + 1 for cid in subset_cell_ids]
 
     # --- Auto-determine plot boundaries from data ---
     x_coords, y_coords = [], []
-    for cell_id in cell_ids:
+    
+    # Determine which cells to use for boundary calculation
+    # If subset is provided, prioritize their boundaries, but maybe keep global context?
+    # Let's use the target population (subset or all) for boundaries
+    target_ids_for_bounds = vision_subset_ids if vision_subset_ids else all_cell_ids
+    
+    for cell_id in target_ids_for_bounds:
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             x_coords.append(stafit.center_x)
@@ -715,12 +730,43 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
         except Exception:
             continue
 
-    x_range = (min(x_coords) - 20, max(x_coords) + 20) if x_coords else (0, 100)
-    y_range = (min(y_coords) - 20, max(y_coords) + 20) if y_coords else (0, 100)
+    if x_coords:
+        x_range = (min(x_coords) - 20, max(x_coords) + 20)
+        y_range = (min(y_coords) - 20, max(y_coords) + 20)
+    else:
+        x_range = (0, 100)
+        y_range = (0, 100)
 
-    # --- STAGE 1: Draw all non-selected ellipses first to make them faint background ---
-    for cell_id in cell_ids:
-        # Skip the selected cell for now; we'll draw it separately.
+    # --- STAGE 1: Draw "Ghost" Population (Optional context) ---
+    # If a subset is defined, draw the excluded cells very faintly
+    if vision_subset_ids is not None:
+        for cell_id in all_cell_ids:
+            if cell_id in vision_subset_ids:
+                continue # specific drawing later
+                
+            try:
+                stafit = vision_params.get_stafit_for_cell(cell_id)
+                adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+
+                ellipse = Ellipse(
+                    xy=(stafit.center_x, adjusted_y),
+                    width=2 * stafit.std_x,
+                    height=2 * stafit.std_y,
+                    angle=np.rad2deg(stafit.rot),
+                    edgecolor='gray',
+                    facecolor='none',
+                    lw=0.5,
+                    alpha=0.05  # Very faint ghost
+                )
+                ax.add_patch(ellipse)
+            except Exception:
+                continue
+
+    # --- STAGE 2: Draw the Target Population (Subset or All) ---
+    target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
+    
+    for cell_id in target_ids:
+        # Skip the selected cell for now; we'll draw it on top.
         if cell_id == vision_cell_id_selected:
             continue
 
@@ -736,14 +782,16 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
                 edgecolor='white',
                 facecolor='none',
                 lw=0.5,
-                alpha=0.2  # <-- CHANGE: Made even more faint (more transparent)
+                alpha=0.3  # Standard visibility
             )
             ax.add_patch(ellipse)
         except Exception:
             continue
 
-    # --- STAGE 2: Draw the single, highlighted ellipse on top of everything else ---
+    # --- STAGE 3: Draw the single, highlighted ellipse on top of everything else ---
     if vision_cell_id_selected is not None:
+        # Only draw if it's in the current view (or force it?)
+        # Generally we want to see the selected cell even if it's not in the subset (e.g. outlier analysis)
         try:
             stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
@@ -754,9 +802,9 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
                 width=2 * stafit.std_x,
                 height=2 * stafit.std_y,
                 angle=np.rad2deg(stafit.rot),
-                edgecolor='red',
-                facecolor=(1.0, 0.0, 0.0, 0.4), # Filled with semi-transparent red
-                lw=1.5, # A slightly thicker line to stand out
+                edgecolor='cyan', # Changed to cyan as per request
+                facecolor=(0.0, 1.0, 1.0, 0.3), # Filled with semi-transparent cyan
+                lw=2.0, # Thicker line
                 zorder=10 # Ensure it's drawn on top
             )
             ax.add_patch(highlight_ellipse)
@@ -766,7 +814,7 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
     # --- Plot styling ---
     ax.set_xlim(x_range)
     ax.set_ylim(y_range[1], y_range[0])
-    ax.set_title("Population Receptive Fields", color='white')
+    ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color='white')
     ax.set_xlabel("X (stixels)", color='gray')
     ax.set_ylabel("Y (stixels)", color='gray')
     ax.set_facecolor('#1f1f1f')
