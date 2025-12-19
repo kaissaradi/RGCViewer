@@ -213,6 +213,21 @@ class DataManager(QObject):
         # Initialize raw data memmap attribute (will hold memmap object)
         self.raw_data_memmap = None
 
+        # Initialize refractory period (default from constants)
+        self.refractory_period_ms = ISI_REFRACTORY_PERIOD_MS
+
+    def set_refractory_period(self, new_period_ms):
+        """
+        Set the refractory period for ISI analysis.
+        """
+        self.refractory_period_ms = float(new_period_ms)
+
+    def get_refractory_period(self):
+        """
+        Get the current refractory period.
+        """
+        return self.refractory_period_ms
+
     def _save_pickle_with_fallback(self, data, filepath):
         """
         Save pickle data to the original filepath. If permission is denied,
@@ -371,8 +386,23 @@ class DataManager(QObject):
             self.channel_positions = np.load(self.kilosort_dir / 'channel_positions.npy')
             self.sorted_channels = sort_electrode_map(self.channel_positions)
 
-            # templates is (n_clusters, n_timepoints, n_channels)
+            # Load whitening matrix inverse to unwhiten templates (templates are stored in whitened space)
             self.templates = np.load(self.kilosort_dir / 'templates.npy')
+
+            # Check if whitening_mat_inv exists and apply it to unwhiten templates
+            whitening_mat_inv_path = self.kilosort_dir / 'whitening_mat_inv.npy'
+            if whitening_mat_inv_path.exists():
+                whitening_mat_inv = np.load(whitening_mat_inv_path)
+                # Apply inverse whitening matrix to convert templates from whitened to unwhitened space
+                # Templates shape: (n_clusters, n_timepoints, n_channels)
+                # Whitening matrix shape: (n_channels, n_channels)
+                # For each template, multiply each timepoint by whitening_mat_inv along channel dimension
+                unwhitened_templates = np.einsum('ijk,kl->ijl', self.templates, whitening_mat_inv)
+                self.templates = unwhitened_templates
+                logger.debug("Applied whitening_mat_inv to templates for proper unwhitened visualization")
+            else:
+                logger.warning("whitening_mat_inv.npy not found; templates may be displayed in whitened space")
+
             d_mappings = get_channel_template_mappings(self.templates)
             self.channel_to_templates = d_mappings['channel_to_templates']
             self.template_to_channels = d_mappings['template_to_channels']

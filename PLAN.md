@@ -4,6 +4,7 @@ OBJECTIVES
 - Enhance EI panel with population statistics and improved visualizations
 - Improve STA panel to display comprehensive statistics and population data
 - Implement feature selection, class creation, and classification saving
+- Fix spatial waveform visualization to properly handle whitened templates per kilosort guide
 
 COMPLETED FEATURES
 - Snippet Cloud implementation in waveforms panel
@@ -25,6 +26,7 @@ PLANNED FEATURES
 - Feature Selection: Interface for extraction, dimensionality reduction, importance scoring
 - Class Creation: Clustering algorithms, manual tools, validation metrics
 - Data Persistence: Save/load classifications, version control, export options
+- Spatial Waveform View: Properly handle whitened templates per kilosort guide
 
 STA ANALYSIS TAB ENHANCEMENTS
 - [ ] **Interactive Time-Slicing**: Link the "Timecourse" plot click event to the "RF Movie" frame. Clicking a time point updates the RF view to that time lag.
@@ -34,7 +36,17 @@ STA ANALYSIS TAB ENHANCEMENTS
 - [ ] **Population Percentiles**: Display where this cell's properties (Area, Latency) sit relative to the population (e.g., "Latency: 45ms (80th %ile)").
 - [ ] **Export Report**: Button to save the current 4-panel view as a high-res PDF/PNG.
 
+SPATIAL WAVEFORM ENHANCEMENTS
+- [x] **Template Unwhitening**: Load whitening_mat_inv.npy and apply to templates for proper visualization per kilosort guide
+- [ ] **Weighting Combo Fix**: Add missing weighting combo box to UI controls
+- [ ] **Amplitude Calculation**: Improve cluster amplitude calculation with proper whitening handling
+
 DEVELOPMENT APPROACH
 - Follow TDD methodology with atomic steps from this plan
 - Maintain Python, PyQt, pyqtgraph, numpy, scipy tech stack
 - Integrate with existing analysis engine and vision modules
+
+
+
+
+

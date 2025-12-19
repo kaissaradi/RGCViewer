@@ -34,7 +34,7 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
     """
     timecourse_matrix = None
     source = "precalculated"
-    
+
     # Try pre-calculated first
     try:
         red_tc = vision_params.get_data_for_cell(cell_id, 'RedTimeCourse')
@@ -80,7 +80,7 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
         return None, None, None
 
     n_timepoints = timecourse_matrix.shape[0]
-    
+
     # Calculate time axis
     if sta_data and hasattr(sta_data, 'refresh_time'):
         refresh_ms = sta_data.refresh_time
@@ -97,61 +97,98 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
     Computes scalar metrics from the STA.
     """
     metrics = {}
-    
+
     # 1. Temporal Metrics
     time_axis, tc_matrix, _ = get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id)
-    
+
     if tc_matrix is not None:
-        # Identify dominant channel
-        energies = np.sum(tc_matrix**2, axis=0)
-        dom_idx = np.argmax(energies)
-        dom_trace = tc_matrix[:, dom_idx]
-        
+        # Check if this is a black/white recording (only has one channel that represents B/W)
+        # For B/W recordings, use the blue channel to represent the black/white signal
+        if tc_matrix.shape[1] == 1:
+            # B/W recording - force to blue channel
+            dom_idx = 2  # Blue channel for B/W
+            # Extend the single channel data to 3 channels for compatibility
+            dom_trace = tc_matrix[:, 0]  # Use the single available channel data
+        else:
+            # Color recording - identify dominant channel by energy
+            energies = np.sum(tc_matrix**2, axis=0)
+            dom_idx = np.argmax(energies)
+            dom_trace = tc_matrix[:, dom_idx]
+
         # Normalize for analysis
         abs_max = np.max(np.abs(dom_trace))
         if abs_max > 0:
             norm_trace = dom_trace / abs_max
         else:
             norm_trace = dom_trace
-            
-        # Polarity
-        peak_val = np.max(norm_trace)
-        trough_val = np.min(norm_trace)
+
+        # Apply smoothing to reduce noise effects
+        smoothed_trace = gaussian_filter1d(norm_trace, sigma=1.5)
+
+        # Polarity based on smoothed trace
+        peak_val = np.max(smoothed_trace)
+        trough_val = np.min(smoothed_trace)
         is_off = abs(trough_val) > abs(peak_val)
         polarity = "OFF" if is_off else "ON"
-        
-        # Significant peak index (min or max based on polarity)
+
+        # Find first significant deflection from zero (polarity-based peak)
         if is_off:
-            peak_idx = np.argmin(norm_trace)
+            # Find first significant negative deflection
+            peak_idx = np.argmin(smoothed_trace)
         else:
-            peak_idx = np.argmax(norm_trace)
-            
+            # Find first significant positive deflection
+            peak_idx = np.argmax(smoothed_trace)
+
         time_to_peak = time_axis[peak_idx]
-        
+
         # Zero crossing (first crossing after peak towards zero)
         zero_crossing_time = None
         # Look backwards from peak if it's late, or just find zero crossings
         # Simple approach: find zero crossings in the whole trace
         zcs = np.where(np.diff(np.signbit(norm_trace)))[0]
-        
-        # Biphasic Index
-        # |Peak| / (|Peak| + |SecondaryPeak|)
-        # Simplified: Just report Peak/Trough ratio
+
+        # Biphasic Index calculation: Find primary and secondary peaks
+        # Primary peak has the largest absolute magnitude
+        primary_peak_idx = np.argmax(np.abs(smoothed_trace))
+        primary_val = smoothed_trace[primary_peak_idx]
+        primary_magnitude = np.abs(primary_val)
+
+        # Find the secondary peak that occurs after the primary peak in time
+        # Look for the next largest peak (in absolute value) after the primary peak
+        if primary_peak_idx < len(smoothed_trace) - 1:
+            post_primary_segment = smoothed_trace[primary_peak_idx + 1:]
+            if len(post_primary_segment) > 0:
+                secondary_peak_idx_rel = np.argmax(np.abs(post_primary_segment))
+                secondary_peak_val = post_primary_segment[secondary_peak_idx_rel]
+                secondary_magnitude = np.abs(secondary_peak_val)
+            else:
+                secondary_magnitude = 0  # No secondary peak found
+        else:
+            secondary_magnitude = 0  # No secondary peak possible
+
+        # Calculate biphasic index as |Secondary Peak| / |Primary Peak|
+        biphasic_index = secondary_magnitude / (primary_magnitude + 1e-9)
+
+        # Store the primary and secondary peak values for debugging if needed
         if is_off:
-            biphasic_index = abs(peak_val) / (abs(trough_val) + 1e-9) # invalid for OFF
             rebound = peak_val
         else:
-            biphasic_index = abs(trough_val) / (abs(peak_val) + 1e-9)
             rebound = trough_val
 
+        # For B/W recordings, always report "Blue" as the dominant channel
+        if tc_matrix.shape[1] == 1:
+            dominant_channel_name = "Blue (B/W)"
+        else:
+            dominant_channel_name = ["Red", "Green", "Blue"][dom_idx]
+
         metrics.update({
-            "Dominant Channel": ["Red", "Green", "Blue"][dom_idx],
+            "Dominant Channel": dominant_channel_name,
             "Polarity": polarity,
             "Time to Peak (ms)": f"{time_to_peak:.1f}",
             "Zero Crossing": f"{len(zcs)} detected",
             "Biphasic Index": f"{biphasic_index:.2f}"
         })
-        
+
         # FWHM (Duration)
         # Find width at 0.5 height of the main peak
         try:
@@ -160,8 +197,8 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
             # Shift to make baseline 0 roughly (or just use relative height)
             # peak_widths uses relative height.
             # We need to find the specific peak index in the flipped trace
-            p_idx_for_width = peak_idx 
-            
+            p_idx_for_width = peak_idx
+
             widths, width_heights, left_ips, right_ips = peak_widths(
                 trace_for_width, [p_idx_for_width], rel_height=0.5
             )
@@ -180,11 +217,11 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
         metrics["RF Sigma X"] = f"{stafit.std_x:.2f}"
         metrics["RF Sigma Y"] = f"{stafit.std_y:.2f}"
         metrics["Orientation"] = f"{np.rad2deg(stafit.rot):.1f}°"
-        
+
         # Effective Area (Pi * sx * sy)
         area = np.pi * stafit.std_x * stafit.std_y
         metrics["RF Area (sq stix)"] = f"{area:.1f}"
-        
+
     return metrics
 
 def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_id):
@@ -193,9 +230,9 @@ def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_i
     """
     fig.clear()
     ax = fig.add_subplot(111)
-    
+
     time_axis, tc_matrix, _ = get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id)
-    
+
     if tc_matrix is None:
         ax.text(0.5, 0.5, "No temporal data", ha='center', va='center', color='gray')
         return
@@ -205,28 +242,28 @@ def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_i
     dom_idx = np.argmax(energies)
     dom_trace = tc_matrix[:, dom_idx]
     dom_color = ['red', 'green', 'blue'][dom_idx]
-    
+
     # Normalize
     abs_max = np.max(np.abs(dom_trace))
     if abs_max == 0: abs_max = 1
     norm_trace = dom_trace / abs_max
-    
+
     ax.plot(time_axis, norm_trace, color=dom_color, linewidth=2, label='Filter')
     ax.fill_between(time_axis, norm_trace, 0, color=dom_color, alpha=0.1)
-    
+
     # Find peak
     peak_idx = np.argmax(np.abs(norm_trace))
     peak_time = time_axis[peak_idx]
     peak_val = norm_trace[peak_idx]
-    
+
     # Annotate Peak
     ax.scatter([peak_time], [peak_val], color='white', s=50, zorder=5)
-    ax.annotate(f"Peak: {peak_time:.1f}ms", 
-                xy=(peak_time, peak_val), 
+    ax.annotate(f"Peak: {peak_time:.1f}ms",
+                xy=(peak_time, peak_val),
                 xytext=(0, 10 if peak_val > 0 else -15),
                 textcoords='offset points',
                 ha='center', color='white', fontsize=9)
-    
+
     # FWHM
     try:
         is_off = peak_val < 0
@@ -240,10 +277,10 @@ def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_i
             sample_interval = abs(time_axis[1] - time_axis[0])
             start_time = time_axis[0] + left_ips[0] * sample_interval
             end_time = time_axis[0] + right_ips[0] * sample_interval
-            
+
             h = width_heights[0]
             if is_off: h = -h
-            
+
             ax.hlines(h, start_time, end_time, colors='yellow', linestyles='-', linewidth=2)
             ax.annotate(f"FWHM: {width * sample_interval:.1f}ms",
                         xy=((start_time+end_time)/2, h),

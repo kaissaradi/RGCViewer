@@ -1,6 +1,6 @@
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QCheckBox, QComboBox, QLabel
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QCheckBox, QComboBox, QLabel, QPushButton, QDoubleSpinBox
 from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
@@ -21,24 +21,58 @@ class StandardPlotsPanel(QWidget):
         self.main_window = main_window
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
-        
-        # Controls: main channel toggle
+
+        # Controls: top control bar
         ctrl_bar = QHBoxLayout()
         # Set fixed height for control bar for consistency during rapid scrolling
         ctrl_bar_widget = QWidget()
         ctrl_bar_widget.setMaximumHeight(35)
         ctrl_bar_widget.setLayout(ctrl_bar)
-        
-        self.main_channel_checkbox = QCheckBox('Show Main Channel Only')
-        self.main_channel_checkbox.setChecked(False)
-        ctrl_bar.addWidget(self.main_channel_checkbox)
-        
+
+        # Channel display mode
+        ctrl_bar.addWidget(QLabel('Channel Display:'))
+        self.channel_mode_combo = QComboBox()
+        self.channel_mode_combo.addItems(['Main Channel', 'Top Channels', 'Whole Array'])
+        ctrl_bar.addWidget(self.channel_mode_combo)
+
         ctrl_bar.addStretch()
 
         # connect controls to refresh the panel immediately
-        self.main_channel_checkbox.toggled.connect(self._on_control_changed)
+        self.channel_mode_combo.currentTextChanged.connect(self._on_control_changed)
 
         layout.addWidget(ctrl_bar_widget)
+
+        # ISI controls bar
+        isi_ctrl_bar = QHBoxLayout()
+        isi_ctrl_widget = QWidget()
+        isi_ctrl_widget.setMaximumHeight(35)
+        isi_ctrl_widget.setLayout(isi_ctrl_bar)
+
+        # Refractory period line toggle
+        self.show_refractory_line_checkbox = QCheckBox('Show Refractory Line')
+        self.show_refractory_line_checkbox.setChecked(True)  # Default to True
+        isi_ctrl_bar.addWidget(self.show_refractory_line_checkbox)
+
+        # Connect to update the plot when checkbox is toggled
+        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
+
+        # Refractory period control
+        isi_ctrl_bar.addWidget(QLabel('Refractory Period (ms):'))
+        self.refractory_spinbox = QDoubleSpinBox()
+        self.refractory_spinbox.setRange(0.1, 10.0)  # Reasonable range for refractory period
+        self.refractory_spinbox.setDecimals(2)
+        self.refractory_spinbox.setSingleStep(0.1)
+        self.refractory_spinbox.setValue(ISI_REFRACTORY_PERIOD_MS)
+        isi_ctrl_bar.addWidget(self.refractory_spinbox)
+
+        # Update refractory period button
+        self.update_refractory_btn = QPushButton('Update')
+        isi_ctrl_bar.addWidget(self.update_refractory_btn)
+        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
+
+        isi_ctrl_bar.addStretch()
+
+        layout.addWidget(isi_ctrl_widget)
 
         # 2x2 Layout using Splitters
         self.vert_splitter = QSplitter(Qt.Vertical)
@@ -49,18 +83,11 @@ class StandardPlotsPanel(QWidget):
         self.vert_splitter.addWidget(self.top_splitter)
         self.vert_splitter.addWidget(self.bottom_splitter)
 
-        # 1. Template Grid (Top Left) with checkbox
+        # 1. Template Grid (Top Left) - no more checkbox
         template_container = QWidget()
         template_layout = QVBoxLayout(template_container)
         template_layout.setContentsMargins(0, 0, 0, 0)
-        
-        template_controls = QHBoxLayout()
-        self.heatmap_checkbox = QCheckBox('Show Channels Up Close')
-        self.heatmap_checkbox.setChecked(True)
-        template_controls.addWidget(self.heatmap_checkbox)
-        template_controls.addStretch()
-        template_layout.addLayout(template_controls)
-        
+
         self.grid_widget = pg.GraphicsLayoutWidget()
         self.grid_plot = self.grid_widget.addPlot(title="Spatial Template")
         self.grid_plot.setAspectLocked(True)
@@ -68,8 +95,6 @@ class StandardPlotsPanel(QWidget):
         self.grid_plot.hideAxis('left')
         template_layout.addWidget(self.grid_widget)
         self.top_splitter.addWidget(template_container)
-        
-        self.heatmap_checkbox.toggled.connect(self._on_control_changed)
 
         # 2. Autocorrelation (Top Right)
         self.acg_plot = pg.PlotWidget(title="Autocorrelation")
@@ -81,7 +106,7 @@ class StandardPlotsPanel(QWidget):
         isi_container = QWidget()
         isi_layout = QVBoxLayout(isi_container)
         isi_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         isi_controls = QHBoxLayout()
         self.isi_view_combo = QComboBox()
         self.isi_view_combo.addItems(['ISI Histogram', 'ISI vs Amplitude'])
@@ -89,13 +114,13 @@ class StandardPlotsPanel(QWidget):
         isi_controls.addWidget(self.isi_view_combo)
         isi_controls.addStretch()
         isi_layout.addLayout(isi_controls)
-        
+
         self.isi_plot = pg.PlotWidget(title="ISI Distribution")
         self.isi_plot.setLabel('bottom', "ISI (ms)")
         self._style_plot(self.isi_plot)
         isi_layout.addWidget(self.isi_plot)
         self.bottom_splitter.addWidget(isi_container)
-        
+
         self.isi_view_combo.currentTextChanged.connect(self._on_control_changed)
 
         # 4. Firing Rate (Bottom Right) with dual-axis for amplitude
@@ -103,24 +128,24 @@ class StandardPlotsPanel(QWidget):
         self.fr_plot.setLabel('bottom', "Time (s)")
         self.fr_plot.setLabel('left', "Firing Rate (Hz)", color='#ffeb3b')
         self._style_plot(self.fr_plot)
-        
+
         # Create a secondary ViewBox for amplitude on the right axis
         self.fr_viewbox = self.fr_plot.plotItem.getViewBox()
         self.fr_viewbox_right = pg.ViewBox()
         self.fr_plot.plotItem.scene().addItem(self.fr_viewbox_right)
         # Link the right viewbox to the main one for synchronized panning/zooming on X-axis
         self.fr_viewbox_right.linkView(pg.ViewBox.XAxis, self.fr_viewbox)
-        
+
         # Create right axis
         self.fr_axis_right = pg.AxisItem(orientation='right')
         self.fr_axis_right.linkToView(self.fr_viewbox_right)
         self.fr_plot.plotItem.layout.addItem(self.fr_axis_right, 2, 3)
         self.fr_axis_right.setLabel('Amplitude (µV)', color='#ffd700')
-        
+
         # Handle axis label color
         self.fr_axis_right.setPen(pg.mkPen('#888888'))
         self.fr_axis_right.setTextPen(pg.mkPen('#888888'))
-        
+
         self.bottom_splitter.addWidget(self.fr_plot)
 
         self.vert_splitter.setSizes([500, 300])
@@ -129,17 +154,26 @@ class StandardPlotsPanel(QWidget):
             self._on_control_changed()
         except Exception:
             pass
-    
+
+    def _update_refractory_period(self):
+        """Update the refractory period in the data manager and refresh the plot."""
+        new_period = self.refractory_spinbox.value()
+        self.main_window.data_manager.set_refractory_period(new_period)
+        # Refresh the current plot to show the updated refractory line
+        cluster_id = self.main_window._get_selected_cluster_id()
+        if cluster_id is not None:
+            self.update_all(cluster_id)
+
     def _style_plot(self, plot):
         """Apply consistent styling to plots: grid lines and axis colors."""
         plot.showGrid(x=True, y=True, alpha=0.2)
-        
+
         # Style axis colors
         plot.getAxis('bottom').setPen(pg.mkPen('#888888'))
         plot.getAxis('bottom').setTextPen(pg.mkPen('#888888'))
         plot.getAxis('left').setPen(pg.mkPen('#888888'))
         plot.getAxis('left').setTextPen(pg.mkPen('#888888'))
-    
+
     def _create_hot_colormap(self):
         """Create a 'hot'-like colormap: black -> red -> yellow -> white."""
         # Define the colormap: black -> red -> yellow -> white
@@ -180,9 +214,38 @@ class StandardPlotsPanel(QWidget):
             # Per-channel peak-to-peak
             ptp = template.max(axis=0) - template.min(axis=0)
             max_ptp = ptp.max() if ptp.size>0 else 1.0
-            # Cluster amplitude (mean or median)
-            weighting_mode = self.weighting_combo.currentText() if hasattr(self, 'weighting_combo') else 'mean'
-            cluster_amp = dm.get_cluster_mean_amplitude(cluster_id, method=weighting_mode)
+
+            # Find the main/dominant channel (highest PTP)
+            main_channel_idx = np.argmax(ptp) if ptp.size > 0 else 0
+
+            # Determine channels to show based on channel mode selection
+            current_mode = self.channel_mode_combo.currentText()
+            if current_mode == 'Main Channel':
+                # Show ONLY the main/dominant channel
+                relevant_channels = [main_channel_idx]
+                # For single channel, show waveform but no dots (not meaningful)
+                show_waveforms = True
+                show_dots = False
+                waveform_channels = [main_channel_idx]  # Waveforms for this channel
+            elif current_mode == 'Top Channels':
+                # Show top 3 channels with highest PTP
+                top_channel_indices = np.argsort(ptp)[::-1][:3]  # Get indices of top 3 channels
+                relevant_channels = top_channel_indices
+                # Show waveforms and dots for these top channels
+                show_waveforms = True
+                show_dots = True
+                waveform_channels = top_channel_indices  # Waveforms for these channels
+            else:  # 'Whole Array'
+                # Show ALL channels as dots (for spatial distribution visualization)
+                # Show waveforms for top 6 channels with highest PTP
+                relevant_channels = np.arange(len(ptp))  # All channels for dots
+                top_waveform_channels = np.argsort(ptp)[::-1][:6]  # Top 6 for waveforms
+                waveform_channels = top_waveform_channels  # Channels to show waveforms for
+                show_waveforms = True  # Show waveforms for top channels
+                show_dots = True  # And show dots for all channels
+
+            # Cluster amplitude (using mean as default since mean/median was removed)
+            cluster_amp = dm.get_cluster_mean_amplitude(cluster_id, method='mean')
 
             # Channel values = normalized ptp * cluster amplitude
             if max_ptp == 0:
@@ -191,13 +254,14 @@ class StandardPlotsPanel(QWidget):
                 norm_ptp = ptp / max_ptp
             channel_values = norm_ptp * cluster_amp
 
-            # Optionally draw amplitude-weighted scatter under traces
-            if self.heatmap_checkbox.isChecked():
+            # Draw amplitude-weighted scatter under traces based on mode
+            if show_dots:
                 # Build scatter spots
                 spots = []
                 vmin, vmax = channel_values.min(), channel_values.max()
                 vrange = max(vmax - vmin, 1e-6)
-                for ch in range(len(channel_values)):
+                for ch in relevant_channels:  # Only show relevant channels
+                    if ch >= len(channel_values): continue  # Safety check
                     x, y = pos[ch]
                     val = (channel_values[ch] - vmin) / vrange
                     size = 6 + val * 20
@@ -207,20 +271,21 @@ class StandardPlotsPanel(QWidget):
                     b = int(255 * (1 - val))
                     brush = pg.mkBrush(r, g, b, 180)
                     spots.append({'pos': (x * x_scale, y * y_scale), 'size': size, 'brush': brush, 'pen': pg.mkPen(None)})
-                scatter = pg.ScatterPlotItem(size=8)
-                scatter.addPoints(spots)
-                scatter.setZValue(-10)
-                self.grid_plot.addItem(scatter)
+                if spots:  # Only add scatter if there are spots to plot
+                    scatter = pg.ScatterPlotItem(size=8)
+                    scatter.addPoints(spots)
+                    scatter.setZValue(-10)
+                    self.grid_plot.addItem(scatter)
 
-            # Plot traces on top for relevant channels
+            # Plot traces on top for waveform channels (not necessarily all channels)
             # Add subtle dark border/shadow to green traces for visibility pop
-            relevant_chans = np.where(ptp > 0.05 * max_ptp)[0]
-            for ch in relevant_chans:
+            for ch in waveform_channels:  # Only plot waveforms for specified channels
+                if ch >= len(pos): continue  # Safety check
                 x, y = pos[ch]
                 trace = template[:, ch]
                 trace_scaled = (trace / max_ptp) * 20
                 t_offset = np.linspace(-10, 10, len(trace))
-                
+
                 # Draw shadow/border with darker color behind the main trace
                 self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled,
                                     pen=pg.mkPen('#00331f', width=2.5), alpha=0.6)
@@ -262,14 +327,20 @@ class StandardPlotsPanel(QWidget):
         current_isi_view = self.isi_view_combo.currentText()
 
         if current_isi_view == 'ISI Histogram':
-            # Original histogram view
+            # Original histogram view with toggleable refractory line
             y, x = np.histogram(isi_ms, bins=np.linspace(0, 50, 101))
 
             self.isi_plot.plot(x, y, stepMode="center", fillLevel=0,
                                brush=(0, 163, 224, 150),
                                pen=pg.mkPen('#33b5e5', width=2))
-            self.isi_plot.addItem(pg.InfiniteLine(ISI_REFRACTORY_PERIOD_MS, angle=90,
-                                                  pen=pg.mkPen('r', style=Qt.DashLine)))
+
+            # Get current refractory period from data manager
+            refractory_period = dm.get_refractory_period()
+
+            # Conditionally add refractory period line based on checkbox
+            if self.show_refractory_line_checkbox.isChecked():
+                self.isi_plot.addItem(pg.InfiniteLine(refractory_period, angle=90,
+                                                      pen=pg.mkPen('r', style=Qt.DashLine)))
             self.isi_plot.setLabel('bottom', "ISI (ms)")
             self.isi_plot.setLabel('left', "Count")
         elif current_isi_view == 'ISI vs Amplitude':
@@ -315,32 +386,32 @@ class StandardPlotsPanel(QWidget):
         counts, bin_edges = np.histogram(spikes_sec, bins=bins)
         rate = gaussian_filter1d(counts.astype(float), sigma=5)  # Smooth for firing rate
         bin_centers = bin_edges[:-1]
-        
+
         # Plot yellow firing rate line on left axis
         self.fr_plot.plot(bin_centers, rate, pen=pg.mkPen('#ffeb3b', width=2))
-        
+
         # --- Compute and plot amplitude on dual-axis (Gold line) ---
         all_amplitudes = dm.get_cluster_spike_amplitudes(cluster_id)
-        
+
         if len(all_amplitudes) > 0 and len(spikes) > 0:
             # Bin amplitudes into same 1-second bins as firing rate
             amplitude_binned = []
-            
+
             for bin_idx in range(len(bin_centers)):
                 bin_start = bin_centers[bin_idx]
                 bin_end = bin_start + 1.0  # 1-second bin
                 # Use spikes_sec (already in seconds) for binning
                 mask = (spikes_sec >= bin_start) & (spikes_sec < bin_end)
-                
+
                 if np.any(mask):
                     # Average amplitude in this bin
                     amplitude_binned.append(np.mean(all_amplitudes[mask]))
                 else:
                     # Empty bin - use NaN
                     amplitude_binned.append(np.nan)
-            
+
             amplitude_binned = np.array(amplitude_binned)
-            
+
             # Interpolate NaN values
             if np.any(np.isnan(amplitude_binned)):
                 valid_idx = ~np.isnan(amplitude_binned)
@@ -354,11 +425,11 @@ class StandardPlotsPanel(QWidget):
                 else:
                     # No valid data
                     amplitude_binned = None
-            
+
             if amplitude_binned is not None:
                 # Apply gaussian smoothing to match firing rate smoothness
                 amplitude_smoothed = gaussian_filter1d(amplitude_binned, sigma=5)
-                
+
                 # Sync Y-range: scale amplitude to match visual prominence of firing rate
                 # Use the spatial template's max PTP as reference
                 if cluster_id < dm.templates.shape[0]:
@@ -366,10 +437,10 @@ class StandardPlotsPanel(QWidget):
                     max_ptp = ptp.max() if ptp.size > 0 else 1.0
                 else:
                     max_ptp = amplitude_smoothed.max() if amplitude_smoothed.max() > 0 else 1.0
-                
+
                 # Set the right-axis range to match the amplitude data
                 self.fr_viewbox_right.setYRange(0, max_ptp * 1.1, padding=0)
-                
+
                 # Create a PlotDataItem for the amplitude line
                 amp_curve = pg.PlotCurveItem(bin_centers, amplitude_smoothed,
                                             pen=pg.mkPen('#ffd700', width=3))  # Gold
@@ -387,6 +458,6 @@ class StandardPlotsPanel(QWidget):
                     pen=pg.mkPen('#00FF00', width=2),  # Green line for averaged amplitude
                     name="Averaged Amplitude"
                 )
-        
+
         self.fr_plot.setLabel('bottom', "Time (s)")
         self.fr_plot.setLabel('left', "Firing Rate (Hz)", color='#ffeb3b')
