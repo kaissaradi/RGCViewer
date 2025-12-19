@@ -42,38 +42,6 @@ class StandardPlotsPanel(QWidget):
 
         layout.addWidget(ctrl_bar_widget)
 
-        # ISI controls bar
-        isi_ctrl_bar = QHBoxLayout()
-        isi_ctrl_widget = QWidget()
-        isi_ctrl_widget.setMaximumHeight(35)
-        isi_ctrl_widget.setLayout(isi_ctrl_bar)
-
-        # Refractory period line toggle
-        self.show_refractory_line_checkbox = QCheckBox('Show Refractory Line')
-        self.show_refractory_line_checkbox.setChecked(True)  # Default to True
-        isi_ctrl_bar.addWidget(self.show_refractory_line_checkbox)
-
-        # Connect to update the plot when checkbox is toggled
-        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
-
-        # Refractory period control
-        isi_ctrl_bar.addWidget(QLabel('Refractory Period (ms):'))
-        self.refractory_spinbox = QDoubleSpinBox()
-        self.refractory_spinbox.setRange(0.1, 10.0)  # Reasonable range for refractory period
-        self.refractory_spinbox.setDecimals(2)
-        self.refractory_spinbox.setSingleStep(0.1)
-        self.refractory_spinbox.setValue(ISI_REFRACTORY_PERIOD_MS)
-        isi_ctrl_bar.addWidget(self.refractory_spinbox)
-
-        # Update refractory period button
-        self.update_refractory_btn = QPushButton('Update')
-        isi_ctrl_bar.addWidget(self.update_refractory_btn)
-        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
-
-        isi_ctrl_bar.addStretch()
-
-        layout.addWidget(isi_ctrl_widget)
-
         # 2x2 Layout using Splitters
         self.vert_splitter = QSplitter(Qt.Vertical)
         layout.addWidget(self.vert_splitter)
@@ -98,7 +66,8 @@ class StandardPlotsPanel(QWidget):
 
         # 2. Autocorrelation (Top Right)
         self.acg_plot = pg.PlotWidget(title="Autocorrelation")
-        self.acg_plot.setLabel('bottom', "Lag (ms)")
+        self.acg_plot.setLabel('bottom', "Time lag (ms)")
+        self.acg_plot.setLabel('left', "Autocorrelation")
         self._style_plot(self.acg_plot)
         self.top_splitter.addWidget(self.acg_plot)
 
@@ -112,6 +81,29 @@ class StandardPlotsPanel(QWidget):
         self.isi_view_combo.addItems(['ISI Histogram', 'ISI vs Amplitude'])
         isi_controls.addWidget(QLabel('View:'))
         isi_controls.addWidget(self.isi_view_combo)
+
+        # Refractory period line toggle
+        self.show_refractory_line_checkbox = QCheckBox('Show Refractory Line')
+        self.show_refractory_line_checkbox.setChecked(True)  # Default to True
+        isi_controls.addWidget(self.show_refractory_line_checkbox)
+
+        # Connect to update the plot when checkbox is toggled
+        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
+
+        # Refractory period control
+        isi_controls.addWidget(QLabel('Refractory Period (ms):'))
+        self.refractory_spinbox = QDoubleSpinBox()
+        self.refractory_spinbox.setRange(0.1, 10.0)  # Reasonable range for refractory period
+        self.refractory_spinbox.setDecimals(2)
+        self.refractory_spinbox.setSingleStep(0.1)
+        self.refractory_spinbox.setValue(ISI_REFRACTORY_PERIOD_MS)
+        isi_controls.addWidget(self.refractory_spinbox)
+
+        # Update refractory period button
+        self.update_refractory_btn = QPushButton('Update')
+        isi_controls.addWidget(self.update_refractory_btn)
+        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
+
         isi_controls.addStretch()
         isi_layout.addLayout(isi_controls)
 
@@ -293,31 +285,90 @@ class StandardPlotsPanel(QWidget):
                 self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled,
                                     pen=pg.mkPen('#00e6a0', width=1.2))
 
+            # Add horizontal line at y=0 for the main channel template view
+            if current_mode == 'Main Channel' and len(waveform_channels) > 0:
+                # Create a horizontal line at y=0 voltage level
+                # Since templates are centered around 0 voltage, this is a horizontal line at y=0 in the plot
+                # We need to account for the y position offset we added when plotting the template
+                main_x, main_y = pos[main_channel_idx]
+                # The template is plotted at y * y_scale + trace_scaled, where trace_scaled has the voltage values
+                # So the y=0 voltage line should be at y * y_scale level
+                h_line = pg.InfiniteLine(pos=main_y * y_scale, angle=0,
+                                         pen=pg.mkPen('#ffffff', width=1, style=Qt.DashLine))
+                self.grid_plot.addItem(h_line)
+
         # --- Data Prep for Metrics ---
         spikes = dm.get_cluster_spikes(cluster_id)
         if len(spikes) < 2: return
         sr = dm.sampling_rate
 
-        # --- 2. Autocorrelation (Purple) ---
+        # --- 2. Autocorrelation (Histogram-style) ---
         self.acg_plot.clear()
-        # Bin spikes at 1ms
+
+        # Bin spikes for autocorrelation with 1ms precision
         spikes_ms = (spikes / sr * 1000).astype(int)
         if len(spikes_ms) > 0:
             duration = spikes_ms[-1]
-            bins = np.arange(0, duration + 1, 1)
-            binned, _ = np.histogram(spikes_ms, bins=bins)
+            if duration > 0:  # Only proceed if the duration is positive
+                # Use 1ms bins to match the temporal precision of spike data
+                bin_width_ms = 1
+                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
 
-            # Compute ACG via FFT (Fast)
-            # Pad to power of 2 for speed
-            n = 1 << (len(binned) * 2 - 1).bit_length()
-            ft = np.fft.rfft(binned, n)
-            acg = np.fft.irfft(ft * np.conj(ft))
-            # Keep center 100ms
-            acg = acg[:100]
-            acg[0] = 0 # Remove zero-lag peak
+                # Make sure we have enough data points for meaningful autocorrelation
+                if len(binned_spikes) > 1:
+                    # Center the spike train by subtracting the mean to get zero-mean signal
+                    centered_spikes = binned_spikes - np.mean(binned_spikes)
 
-            self.acg_plot.plot(np.arange(101), acg, fillLevel=0, stepMode=True,
-                               brush=(170, 0, 255, 100), pen='#aa00ff')
+                    # Compute raw spike train autocorrelation using cross-correlation
+                    # This gives the proper symmetric autocorrelation
+                    acg_full = correlate(centered_spikes, centered_spikes, mode='full')
+
+                    # The zero-lag is now in the center of the result
+                    zero_lag_idx = len(acg_full) // 2
+
+                    # Extract symmetric range around zero (-100ms to +100ms)
+                    max_lag_ms = 100
+                    num_bins = int(max_lag_ms / bin_width_ms)
+
+                    # Calculate the range of lags to extract
+                    lag_range = min(num_bins, zero_lag_idx)
+
+                    # Extract symmetric portion around zero lag
+                    acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
+
+                    # Create time axis from negative to positive lags
+                    time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+
+                    # Zero out the zero-lag peak to see refractory period better
+                    zero_idx = np.where(time_lags == 0)[0]
+                    if len(zero_idx) > 0:
+                        acg_symmetric[zero_idx[0]] = 0  # Remove auto-correlation at zero lag
+
+                    # Normalize by the variance of the original binned spikes
+                    # This gives normalized autocorrelation values
+                    spike_variance = np.var(binned_spikes)
+                    if spike_variance != 0:
+                        acg_norm = acg_symmetric / spike_variance
+                        # Also normalize by the number of samples to get proper normalization
+                        acg_norm = acg_norm / len(binned_spikes)
+                    else:
+                        acg_norm = acg_symmetric  # Fallback if variance is zero
+
+                    # Create histogram-style bars for the autocorrelogram
+                    # We need to use a BarGraphItem instead of stepMode for proper histogram bars
+                    if len(acg_norm) > 0:
+                        # Create bar graph to represent histogram-style autocorrelogram
+                        bar_width = 0.8  # Slightly less than bin width to show gaps between bars
+                        bar_graph = pg.BarGraphItem(x=time_lags, height=acg_norm, width=bar_width,
+                                                   brush=(170, 0, 255, 100),  # Purple fill
+                                                   pen=pg.mkPen('#aa00ff', width=1))  # Purple outline
+                        self.acg_plot.addItem(bar_graph)
+
+                    # Add a vertical line at zero lag to highlight the center
+                    zero_line = pg.InfiniteLine(pos=0, angle=90,
+                                               pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
+                    self.acg_plot.addItem(zero_line)
 
         # --- 3. ISI (Blue Step + Filled) ---
         self.isi_plot.clear()
