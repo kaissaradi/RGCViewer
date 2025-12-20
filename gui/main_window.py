@@ -26,6 +26,7 @@ from gui.panels.raw_panel import RawPanel
 from gui.workers import FeatureWorker
 from gui.shortcuts import KeyForwarder
 from PyQt5.QtGui import QColor
+from gui.panels.umap_panel import UMAPPanel
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
@@ -403,6 +404,8 @@ class MainWindow(QMainWindow):
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
+        
+        self.umap_panel = UMAPPanel(self)
 
         # --- STA Analysis Panel (Re-parented) ---
         self.sta_panel = QWidget()
@@ -543,6 +546,7 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard Plots")
         self.analysis_tabs.addTab(self.ei_panel, "EI Analysis")
         self.analysis_tabs.addTab(self.sta_panel, "STA Analysis")
+        self.analysis_tabs.addTab(self.umap_panel, "Class Discovery (UMAP)")
         self.analysis_tabs.addTab(self.waveforms_panel, "Raw Waveforms")
         self.analysis_tabs.addTab(self.raw_panel, "Raw Trace")
 
