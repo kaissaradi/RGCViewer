@@ -227,6 +227,7 @@ class StandardPlotsPanel(QWidget):
                 pass
 
     def update_all(self, cluster_id):
+        if not self.isVisible(): return
         if cluster_id is None: return
         dm = self.main_window.data_manager
 

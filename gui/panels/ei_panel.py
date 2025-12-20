@@ -272,6 +272,7 @@ class EIPanel(QWidget):
         """
         Main entry point: update the EI panel for one or more clusters.
         """
+        if not self.isVisible(): return
         cluster_ids = np.array(cluster_ids, dtype=int)
         if cluster_ids.ndim == 0:
             cluster_ids = np.array([cluster_ids], dtype=int)

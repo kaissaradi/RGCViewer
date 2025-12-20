@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         # --- UI Setup ---
         self._setup_style()
         self._setup_ui()
+        self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
         self.status_bar.showMessage("Welcome to axolotl. Please load a Kilosort directory to begin.")
 
@@ -239,15 +240,27 @@ class MainWindow(QMainWindow):
                 canvas_to_use.draw()
 
     def _draw_plots(self, cluster_id, features):
-        """
-        A centralized function to update plots. Updates the main panels
-        and then calls on_tab_changed to handle the visible tab.
-        """
+        """Only update what's actually visible."""
+
+        # --- ALWAYS UPDATE (cheap + always visible) ---
         self.standard_plots_panel.update_all(cluster_id)
         self.similarity_panel.update_main_cluster_id(cluster_id)
 
-        # Trigger an update for the currently visible tab
-        self.on_tab_changed(self.analysis_tabs.currentIndex())
+        # --- ONLY UPDATE THE CURRENT TAB ---
+        current_tab = self.analysis_tabs.currentWidget()
+
+        if current_tab == self.ei_panel:
+            self.ei_panel.update_ei([cluster_id])
+
+        elif current_tab == self.waveforms_panel:
+            self.waveforms_panel.update_all(cluster_id)
+
+        elif current_tab == self.raw_panel:
+            self.raw_panel.load_data(cluster_id)
+
+        elif current_tab == self.sta_panel:
+            if self.data_manager and self.data_manager.vision_stas:
+                self.select_sta_view(self.current_sta_view)
 
         self.status_bar.showMessage("Ready.", 2000)
 

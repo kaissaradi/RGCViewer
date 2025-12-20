@@ -26,6 +26,7 @@ class WaveformPanel(QWidget):
         self.layout.addWidget(self.plot_widget)
 
     def update_all(self, cluster_id):
+        if not self.isVisible(): return
         self.plot_widget.clear()
         if cluster_id is None:
             return

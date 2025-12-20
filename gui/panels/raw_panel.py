@@ -80,6 +80,7 @@ class RawPanel(QWidget):
 
     def load_data(self, cluster_id):
         """Load and display raw trace data for a cluster (called by main window)."""
+        if not self.isVisible(): return
         dm = self.main_window.data_manager
         if dm.raw_data_memmap is None:
             self.status_message.emit("No raw data file loaded.")
