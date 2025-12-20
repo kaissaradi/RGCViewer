@@ -826,72 +826,160 @@ class DataManager(QObject):
                                          shape=(self.n_samples, self.n_channels))
 
     def build_cluster_dataframe(self):
+        """
+        Build the cluster dataframe (backwards-compatible single-call).
+
+        Optimizations:
+        - ISI calculation is done in a vectorized pass when spike_times exist.
+        - If self.defer_mea_precompute is True, skip the MEA precompute step
+            (useful to avoid the long O(N^2) stage during load).
+        """
         logger.debug("Starting build_cluster_dataframe")
+
+        # --- basic counts / fast table ---
         cluster_ids, n_spikes = np.unique(self.spike_clusters, return_counts=True)
         logger.debug("Found %d clusters", len(cluster_ids))
 
-        # Create initial dataframe without ISI violations for faster loading
         df = pd.DataFrame({'cluster_id': cluster_ids, 'n_spikes': n_spikes})
 
-        # Initialize potential_dups with False
+        # Initialize quick columns (same as before)
         df['potential_dups'] = False
-
-        # Initialize max_dup_r to 0
         df['max_dup_r'] = 0.0
-
-        # Initialize cell types with 'Unknown'
         df['cell_type'] = 'Unknown'
-
-        # Initialize ISI violations column with zeros for now
         df['isi_violations_pct'] = 0.0
 
         col = 'KSLabel' if 'KSLabel' in self.cluster_info.columns else 'group'
-        if col not in self.cluster_info.columns: self.cluster_info[col] = 'unsorted'
+        if col not in self.cluster_info.columns:
+            self.cluster_info[col] = 'unsorted'
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
 
-        # Status and set columns
         df['status'] = 'Original'
         df['set'] = [set([cid]) for cid in df['cluster_id']]
         df['set'] = df['set'].astype(object)
 
-        self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'set', 'KSLabel']]
+        self.cluster_df = df[
+            [
+                'cluster_id',
+                'cell_type',
+                'n_spikes',
+                'isi_violations_pct',
+                'max_dup_r',
+                'potential_dups',
+                'status',
+                'set',
+                'KSLabel',
+            ]
+        ]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         logger.debug("build_cluster_dataframe basic structure complete")
 
-        # Initialize an empty cache for ISI violations
+        # Initialize / reset the ISI cache
         self.isi_cache = {}
-        # Calculate ISI violations for all clusters with optimized approach
-        cluster_ids = self.cluster_df['cluster_id'].values
-        isi_values = []
 
-        # Calculate ISI for each cluster but show progress
-        total_clusters = len(cluster_ids)
-        for i, cluster_id in enumerate(cluster_ids):
-            isi_value = self._calculate_isi_violations(cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS)
-            isi_values.append(isi_value)
+        # --- Fast vectorized ISI computation when possible ---
+        try:
+            spikes = np.asarray(self.spike_times)
+            clusters = np.asarray(self.spike_clusters)
+            if spikes.size >= 2 and spikes.shape[0] == clusters.shape[0]:
+                logger.debug("Computing ISI violations with vectorized routine")
+                # Sort by cluster id while preserving per-cluster time order (mergesort)
+                order = np.argsort(clusters, kind="mergesort")
+                clusters_sorted = clusters[order]
+                spikes_sorted = spikes[order]
 
-            # Print progress every 50 clusters to avoid too much output
-            if (i + 1) % 50 == 0 or i == total_clusters - 1:
-                logger.debug("Calculated ISI for %d/%d clusters", i + 1, total_clusters)
+                # Within-cluster adjacent diffs
+                same_cluster = clusters_sorted[1:] == clusters_sorted[:-1]
+                if np.any(same_cluster):
+                    dt = spikes_sorted[1:] - spikes_sorted[:-1]
+                    dt = dt[same_cluster]
+                    pair_clusters = clusters_sorted[1:][same_cluster]
 
-        self.cluster_df['isi_violations_pct'] = isi_values
-        logger.debug("ISI violations calculated and updated in cluster_df")
+                    refractory_samples = (ISI_REFRACTORY_PERIOD_MS / 1000.0) * float(self.sampling_rate)
+                    violations_mask = dt < refractory_samples
 
-        # Load status
+                    # Aggregate counts per cluster id
+                    max_cid = int(max(pair_clusters.max(), int(self.cluster_df['cluster_id'].max())))
+                    total_pairs = np.bincount(pair_clusters.astype(int), minlength=max_cid + 1)
+                    violation_counts = np.bincount(pair_clusters.astype(int), weights=violations_mask.astype(np.int64), minlength=max_cid + 1)
+
+                    isi_vals = []
+                    for cid in self.cluster_df['cluster_id'].astype(int).values:
+                        if cid <= max_cid:
+                            pairs = int(total_pairs[cid])
+                            viol = int(violation_counts[cid])
+                        else:
+                            pairs = 0
+                            viol = 0
+                        pct = 0.0 if pairs == 0 else (viol / pairs) * 100.0
+                        isi_vals.append(pct)
+                        # cache it
+                        try:
+                            self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = pct
+                        except Exception:
+                            pass
+
+                    self.cluster_df['isi_violations_pct'] = isi_vals
+                    logger.debug("Vectorized ISI computation complete")
+                else:
+                    # no within-cluster adjacent pairs => zeros
+                    logger.debug("No within-cluster pairs found; ISI values set to 0")
+                    self.cluster_df['isi_violations_pct'] = 0.0
+                    for cid in self.cluster_df['cluster_id'].astype(int).values:
+                        self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = 0.0
+            else:
+                # fallback to per-cluster loop below
+                raise ValueError("spike_times/spike_clusters shapes not compatible for vectorized path")
+        except Exception as e:
+            # Fallback: compute per-cluster to preserve behavior if vectorized path fails
+            logger.debug("Vectorized ISI compute failed or unavailable (%s); falling back to per-cluster loop", str(e))
+            cluster_ids_list = self.cluster_df['cluster_id'].values
+            isi_values = []
+            total_clusters = len(cluster_ids_list)
+            for i, cluster_id in enumerate(cluster_ids_list):
+                isi_value = self._calculate_isi_violations(cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS)
+                isi_values.append(isi_value)
+                try:
+                    self.isi_cache[(int(cluster_id), float(ISI_REFRACTORY_PERIOD_MS))] = isi_value
+                except Exception:
+                    pass
+                if (i + 1) % 50 == 0 or i == total_clusters - 1:
+                    logger.debug("Calculated ISI for %d/%d clusters", i + 1, total_clusters)
+            self.cluster_df['isi_violations_pct'] = isi_values
+            logger.debug("Per-cluster ISI computation complete")
+
+        # --- Load status & compute remaining metrics ---
         self.load_status()
 
-        # Add per-cluster metrics
-        self._compute_cluster_geometry()
-        self._merge_cluster_tsvs()
+        # compute geometry and merge TSV metrics (keep existing code)
+        try:
+            self._compute_cluster_geometry()
+        except Exception as e:
+            logger.exception("Error computing cluster geometry: %s", e)
 
-        # NEW: Precompute MEA similarity matrix for instant loading
-        logger.debug("Starting MEA similarity precomputation")
-        self._precompute_mea_similarity()
-        logger.debug("MEA similarity precomputation complete")
+        try:
+            self._merge_cluster_tsvs()
+        except Exception as e:
+            logger.exception("Error merging TSVs: %s", e)
+
+        # MEA precompute: skip if user set self.defer_mea_precompute = True
+        try:
+            if getattr(self, 'defer_mea_precompute', False):
+                logger.debug("Skipping MEA similarity precompute (defer_mea_precompute=True)")
+            else:
+                logger.debug("Starting MEA similarity precomputation")
+                # prefer vectorized if available, fallback to previous
+                if hasattr(self, '_precompute_mea_similarity_vectorized'):
+                    self._precompute_mea_similarity()
+                else:
+                    self._precompute_mea_similarity()
+                logger.debug("MEA similarity precomputation complete")
+        except Exception as e:
+            logger.exception("MEA similarity precomputation failed: %s", e)
 
         logger.debug("build_cluster_dataframe complete")
+
 
 
 

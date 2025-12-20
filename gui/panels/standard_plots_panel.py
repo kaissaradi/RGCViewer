@@ -161,6 +161,30 @@ class StandardPlotsPanel(QWidget):
 
         self.vert_splitter.setSizes([500, 300])
         # ensure controls reflect current selection on init
+
+        # --- persistent ACG bar item (reuse each update) ---
+        self._acg_bar = None      # will be a BarGraphItem (or None if no data)
+        self._acg_zero_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
+
+        # --- persistent ISI objects ---
+        self._isi_hist_item = None     # step histogram as PlotDataItem (stepMode implemented via x,y)
+        self._isi_refractory_line = pg.InfiniteLine(0, angle=90, pen=pg.mkPen('r', style=Qt.DashLine))
+
+        # --- persistent ISI vs Amp items ---
+        self._isi_scatter = None
+        self._isi_image = None
+
+        # --- persistent FR items ---
+        self._fr_rate_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#ffeb3b', width=2), name='fr')
+        self._fr_amp_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#ffd700', width=1), name='amp')
+
+        # keep a ref to image item LUT if needed
+        if hasattr(self, '_hot_lut') and self._hot_lut is not None:
+            self._hot_lut_local = self._hot_lut
+        else:
+            self._hot_lut_local = None
+
+
         try:
             self._on_control_changed()
         except Exception:
