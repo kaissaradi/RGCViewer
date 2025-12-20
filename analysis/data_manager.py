@@ -212,6 +212,10 @@ class DataManager(QObject):
         self.status_df['set'] = self.status_df['set'].astype(object)
         self.status_csv = self.kilosort_dir / 'status.csv'
 
+        self.mea_similarity_matrix = None  # Full (n_clusters x n_clusters) similarity matrix
+        self.mea_sorted_indices = None  # Pre-sorted indices for each cluster
+        self.cluster_id_to_idx = None  # Map cluster_id -> row index
+
         # --- Vision Data ---
         self.vision_eis = None
         self.vision_stas = None
@@ -854,7 +858,7 @@ class DataManager(QObject):
         self.cluster_df = df[['cluster_id', 'cell_type', 'n_spikes', 'isi_violations_pct', 'max_dup_r', 'potential_dups', 'status', 'set', 'KSLabel']]
         self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
-        logger.debug("build_cluster_dataframe complete")
+        logger.debug("build_cluster_dataframe basic structure complete")
 
         # Initialize an empty cache for ISI violations
         self.isi_cache = {}
@@ -881,6 +885,13 @@ class DataManager(QObject):
         # Add per-cluster metrics
         self._compute_cluster_geometry()
         self._merge_cluster_tsvs()
+
+        # NEW: Precompute MEA similarity matrix for instant loading
+        logger.debug("Starting MEA similarity precomputation")
+        self._precompute_mea_similarity()
+        logger.debug("MEA similarity precomputation complete")
+
+        logger.debug("build_cluster_dataframe complete")
 
 
 
@@ -1307,6 +1318,22 @@ class DataManager(QObject):
             except Exception:
                 pass
 
+        # Clear similarity precomputation
+        self.mea_similarity_matrix = None
+        self.mea_sorted_indices = None
+        self.cluster_id_to_idx = None
+        self.cluster_idx_to_id = None  # Added for reverse lookup
+        
+        # Clear old caches
+        try:
+            self.mea_sim_cache.clear()
+        except Exception:
+            pass
+        try:
+            self.vision_sim_cache.clear()
+        except Exception:
+            pass
+
         # Clear other caches
         try:
             self.ei_cache.clear()
@@ -1316,6 +1343,14 @@ class DataManager(QObject):
             self.isi_cache.clear()
         except Exception:
             pass
+
+        # Clear standard plots cache
+        if hasattr(self, 'standard_plot_cache'):
+            try:
+                with getattr(self, '_standard_plot_lock', threading.Lock()):
+                    self.standard_plot_cache.clear()
+            except Exception:
+                pass
 
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True
@@ -1622,54 +1657,67 @@ class DataManager(QObject):
 
     def _get_mea_similarity_table(self, cluster_id: int):
         """
-        Get MEA-based similarity table for a cluster.
+        Fast retrieval of precomputed similarity table.
         """
         import numpy as np
         import pandas as pd
-
-        if cluster_id in self.mea_sim_cache:
-            return self.mea_sim_cache[cluster_id]
-
-        if "x_um" not in self.cluster_df.columns or "y_um" not in self.cluster_df.columns:
-            logger.error("x_um / y_um missing; call _compute_cluster_geometry first.")
-            return pd.DataFrame()  # Return empty DataFrame
-
-        cluster_to_template = self._build_cluster_to_template_map()
-
-        main_row = self.cluster_df.loc[self.cluster_df["cluster_id"] == cluster_id].iloc[0]
-        x0, y0 = main_row["x_um"], main_row["y_um"]
-        k0 = cluster_to_template[cluster_id]
-
-        # copy to avoid mutating cluster_df
-        sim_df = self.cluster_df.copy()
-        sim_df = sim_df[sim_df["cluster_id"] != cluster_id]  # drop self
-
-        # distance in probe space
-        dx = sim_df["x_um"] - x0
-        dy = sim_df["y_um"] - y0
-        sim_df["distance_um"] = np.sqrt(dx * dx + dy * dy)
-
-        # template similarity from similar_templates.npy if available
-        if self.similar_templates is not None:
-            def _tpl_sim(cid):
-                k = cluster_to_template[cid]
-                return float(self.similar_templates[k0, k])
-            sim_df["template_sim"] = sim_df["cluster_id"].map(_tpl_sim)
-        else:
-            sim_df["template_sim"] = np.nan
-
-        # *** sort by closest cells, then similarity ***
-        sim_df.sort_values(
-            by=["distance_um", "template_sim"],
-            ascending=[True, False],
-            inplace=True
-        )
-
-        # Optionally keep only top K neighbors
-        # sim_df = sim_df.head(50)
-
-        self.mea_sim_cache[cluster_id] = sim_df
-        return sim_df
+        
+        # Check if precomputed
+        if (self.mea_similarity_matrix is None or 
+            self.mea_sorted_indices is None or 
+            self.cluster_id_to_idx is None):
+            # Fall back to original method if not precomputed
+            return self._get_mea_similarity_table_legacy(cluster_id)
+        
+        # Get index
+        idx = self.cluster_id_to_idx.get(cluster_id)
+        if idx is None:
+            return pd.DataFrame()
+        
+        # Get pre-sorted indices
+        sorted_indices = self.mea_sorted_indices[idx]
+        
+        # Get cluster IDs from indices
+        all_cluster_ids = self.cluster_df['cluster_id'].values
+        
+        # Build DataFrame quickly
+        result_ids = all_cluster_ids[sorted_indices]
+        
+        # Get template similarity and distance values
+        template_sim = self.similar_templates if self.similar_templates is not None else None
+        
+        # Build DataFrame
+        rows = []
+        for j, other_idx in enumerate(sorted_indices[:50]):  # Limit to top 50
+            other_id = all_cluster_ids[other_idx]
+            
+            # Get values from cluster_df
+            other_row = self.cluster_df.iloc[other_idx]
+            
+            # Calculate distance
+            x0, y0 = self.cluster_df.iloc[idx][['x_um', 'y_um']]
+            x1, y1 = other_row[['x_um', 'y_um']]
+            distance = np.sqrt((x1 - x0)**2 + (y1 - y0)**2)
+            
+            # Get template similarity if available
+            if template_sim is not None:
+                cluster_to_template = self._build_cluster_to_template_map()
+                t1 = cluster_to_template[cluster_id]
+                t2 = cluster_to_template[other_id]
+                tpl_sim = float(template_sim[t1, t2]) if t1 < template_sim.shape[0] and t2 < template_sim.shape[1] else 0.0
+            else:
+                tpl_sim = 0.0
+            
+            rows.append({
+                'cluster_id': int(other_id),
+                'n_spikes': int(other_row['n_spikes']),
+                'status': str(other_row['status']),
+                'set': other_row.get('set', set()),
+                'distance_um': float(distance),
+                'template_sim': tpl_sim
+            })
+        
+        return pd.DataFrame(rows)
 
     def _get_vision_similarity_table(self, cluster_id: int):
         """
@@ -1765,5 +1813,165 @@ class DataManager(QObject):
         self.vision_sim_cache[cluster_id] = df
         return df
 
+    def _precompute_mea_similarity(self):
+        """
+        Precompute the complete MEA similarity matrix and sorted indices.
+        Called once during data loading.
+        """
+        if self.similar_templates is None:
+            return
+        
+        n_clusters = len(self.cluster_df)
+        
+        # Create mapping from cluster_id to index
+        self.cluster_id_to_idx = {
+            cid: idx for idx, cid in enumerate(self.cluster_df['cluster_id'])
+        }
+        
+        # Get positions
+        x_pos = self.cluster_df['x_um'].values
+        y_pos = self.cluster_df['y_um'].values
+        
+        # Build template similarity matrix
+        template_matrix = np.zeros((n_clusters, n_clusters))
+        distance_matrix = np.zeros((n_clusters, n_clusters))
+        
+        # Precompute template indices
+        cluster_to_template = self._build_cluster_to_template_map()
+        
+        # Fill matrices
+        for i, cid_i in enumerate(self.cluster_df['cluster_id']):
+            template_i = cluster_to_template[cid_i]
+            
+            for j, cid_j in enumerate(self.cluster_df['cluster_id']):
+                if i == j:
+                    continue
+                    
+                template_j = cluster_to_template[cid_j]
+                
+                # Template similarity
+                template_matrix[i, j] = self.similar_templates[template_i, template_j]
+                
+                # Euclidean distance
+                dx = x_pos[i] - x_pos[j]
+                dy = y_pos[i] - y_pos[j]
+                distance_matrix[i, j] = np.sqrt(dx*dx + dy*dy)
+        
+        # Combine into single similarity score (weight distance more)
+        # Formula: similarity = template_sim - (distance / max_distance) * distance_weight
+        max_dist = distance_matrix.max() if distance_matrix.max() > 0 else 1
+        distance_weight = 0.7  # Weight distance vs template similarity
+        
+        self.mea_similarity_matrix = template_matrix - (distance_matrix / max_dist) * distance_weight
+        
+        # Pre-sort indices for each cluster
+        self.mea_sorted_indices = []
+        for i in range(n_clusters):
+            # Get indices sorted by similarity (descending)
+            sorted_idx = np.argsort(-self.mea_similarity_matrix[i])
+            # Remove self
+            sorted_idx = sorted_idx[sorted_idx != i]
+            self.mea_sorted_indices.append(sorted_idx)
+
+    def _precompute_mea_similarity_vectorized(self):
+        """
+        Vectorized precomputation of MEA similarity matrix.
+        Called once during data loading for instant similarity table access.
+        """
+        if self.similar_templates is None:
+            logger.debug("similar_templates.npy not available, skipping MEA similarity precomputation")
+            return
+        
+        n_clusters = len(self.cluster_df)
+        logger.debug(f"Precomputing MEA similarity matrix for {n_clusters} clusters")
+        
+        # Create bidirectional mappings between cluster_id and index
+        self.cluster_id_to_idx = {}
+        self.cluster_idx_to_id = []
+        
+        for idx, cid in enumerate(self.cluster_df['cluster_id']):
+            self.cluster_id_to_idx[cid] = idx
+            self.cluster_idx_to_id.append(cid)
+        
+        # Get positions
+        x_pos = self.cluster_df['x_um'].fillna(0).values.astype(np.float32)
+        y_pos = self.cluster_df['y_um'].fillna(0).values.astype(np.float32)
+        
+        # Precompute template indices
+        cluster_to_template = self._build_cluster_to_template_map()
+        
+        # Build template index array
+        template_indices = np.zeros(n_clusters, dtype=np.int32)
+        for i, cid in enumerate(self.cluster_df['cluster_id']):
+            template_indices[i] = cluster_to_template.get(cid, -1)
+        
+        # Calculate distance matrix using vectorized operations
+        # Broadcast x and y positions to create all pairwise differences
+        x_diff = x_pos[:, np.newaxis] - x_pos[np.newaxis, :]
+        y_diff = y_pos[:, np.newaxis] - y_pos[np.newaxis, :]
+        distance_matrix = np.sqrt(x_diff**2 + y_diff**2).astype(np.float32)
+        
+        # Calculate template similarity matrix
+        n_templates = self.similar_templates.shape[0]
+        template_matrix = np.zeros((n_clusters, n_clusters), dtype=np.float32)
+        
+        # Create mask for valid template indices
+        valid_i = template_indices >= 0
+        valid_i_idx = np.where(valid_i)[0]
+        
+        # Only compute similarities for clusters with valid template indices
+        for i in valid_i_idx:
+            t_i = template_indices[i]
+            if t_i >= n_templates:
+                continue
+                
+            # Get template similarities for this template
+            for j in valid_i_idx:
+                if i == j:
+                    continue
+                t_j = template_indices[j]
+                if t_j >= n_templates:
+                    continue
+                template_matrix[i, j] = self.similar_templates[t_i, t_j]
+        
+        # Normalize distance matrix (0-1 range)
+        max_dist = distance_matrix.max()
+        if max_dist > 0:
+            norm_distance = distance_matrix / max_dist
+        else:
+            norm_distance = np.zeros_like(distance_matrix)
+        
+        # Set diagonal to 0
+        np.fill_diagonal(norm_distance, 0)
+        
+        # Combine into similarity score (distance is negative influence)
+        # Weight factors can be adjusted
+        template_weight = 0.3
+        distance_weight = 0.7
+        
+        self.mea_similarity_matrix = (
+            template_matrix * template_weight - 
+            norm_distance * distance_weight
+        ).astype(np.float32)
+        
+        # Pre-sort indices for each cluster (descending similarity)
+        self.mea_sorted_indices = []
+        for i in range(n_clusters):
+            # Get all similarities for this cluster
+            similarities = self.mea_similarity_matrix[i]
+            
+            # Sort indices by similarity (descending)
+            sorted_idx = np.argsort(-similarities)
+            
+            # Remove self from the list
+            sorted_idx = sorted_idx[sorted_idx != i]
+            
+            # Limit to top N (e.g., 100) for memory efficiency
+            if len(sorted_idx) > 100:
+                sorted_idx = sorted_idx[:100]
+            
+            self.mea_sorted_indices.append(sorted_idx.astype(np.int32))
+        
+        logger.debug(f"MEA similarity precomputation complete. Matrix shape: {self.mea_similarity_matrix.shape}")
 
 
