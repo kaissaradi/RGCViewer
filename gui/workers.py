@@ -166,3 +166,49 @@ class FeatureWorker(QObject):
 
         except Exception as e:
             self.error.emit(f"Feature extraction failed for cluster {self.cluster_id}: {str(e)}")
+
+class StandardPlotsWorker(QObject):
+    """
+    Background worker that pre-computes and caches standard plots (ISI/ACG/FR)
+    for clusters so that UI tab switches are nearly instant.
+    """
+    finished_cluster = Signal(int)
+    error = Signal(str)
+
+    def __init__(self, data_manager):
+        super().__init__()
+        self.data_manager = data_manager
+        self.queue = deque()
+        self.is_running = True
+
+    def run(self):
+        """
+        Main worker loop. Pulls cluster IDs off a queue and asks the DataManager
+        to compute standard-plot data for each one.
+        """
+        while self.is_running:
+            if self.queue:
+                cluster_id = self.queue.popleft()
+                try:
+                    # This call does all the heavy lifting and fills the cache.
+                    self.data_manager.get_standard_plot_data(cluster_id)
+                    self.finished_cluster.emit(int(cluster_id))
+                except Exception as e:
+                    # Don't crash the worker on a single failure.
+                    self.error.emit(f"Standard plot precompute failed for cluster {cluster_id}: {e}")
+            else:
+                QThread.msleep(100)
+
+    def add_to_queue(self, cluster_id, high_priority=False):
+        """
+        Enqueue a cluster for background caching. Duplicate IDs are ignored.
+        """
+        if cluster_id in self.queue:
+            return
+        if high_priority:
+            self.queue.appendleft(cluster_id)
+        else:
+            self.queue.append(cluster_id)
+
+    def stop(self):
+        self.is_running = False

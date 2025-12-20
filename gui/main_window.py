@@ -43,12 +43,24 @@ class MainWindow(QMainWindow):
         # --- Application State ---
         self.data_manager: Optional[DataManager] = None
         self.main_cluster_model = None
+
+
         self.tree_model = QStandardItemModel()
         self.refine_thread = None
         self.refinement_worker = None
+
+        # Spatial (EI) worker
         self.worker_thread = None
         self.spatial_worker = None
+
+        # NEW: standard-plots (ISI/ACG/FR) worker
+        self.standard_worker_thread = None
+        self.standard_plots_worker = None
+
         self.spatial_plot_dirty = False
+
+
+
         self.current_spatial_features = None
         # --- Timer for EI Animation ---
         self.ei_animation_timer = None  # To prevent garbage collection
@@ -216,19 +228,31 @@ class MainWindow(QMainWindow):
             pass
 
     def on_tab_changed(self, index):
-        """Handles updates when the user switches tabs."""
+        """
+        Handles updates when the user switches tabs OR when the active tab
+        is refreshed after a cluster change.
+
+        Only the active panel is updated.
+        """
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is None:
             return
 
         current_panel = self.analysis_tabs.widget(index)
 
-        if current_panel == self.ei_panel:
+        if current_panel == self.standard_plots_panel:
+            # Only compute standard plots when this tab is actually visible
+            self.standard_plots_panel.update_all(cluster_id)
+
+        elif current_panel == self.ei_panel:
             self.ei_panel.update_ei([cluster_id])
+
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
+
         elif current_panel == self.raw_panel:
             self.raw_panel.load_data(cluster_id)
+
         elif current_panel == self.sta_panel:
             if self.data_manager and self.data_manager.vision_stas:
                 self.select_sta_view(self.current_sta_view)
@@ -236,21 +260,31 @@ class MainWindow(QMainWindow):
                 # Use the appropriate canvas based on current view - use RF canvas as default
                 canvas_to_use = self.rf_canvas
                 canvas_to_use.fig.clear()
-                canvas_to_use.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
+                canvas_to_use.fig.text(
+                    0.5,
+                    0.5,
+                    "No Vision STA data available",
+                    ha='center',
+                    va='center',
+                    color='gray',
+                )
                 canvas_to_use.draw()
+
 
     def _draw_plots(self, cluster_id, features):
         """Only update what's actually visible."""
 
-        # --- ALWAYS UPDATE (cheap + always visible) ---
-        self.standard_plots_panel.update_all(cluster_id)
-        self.similarity_panel.update_main_cluster_id(cluster_id)
-
-        # --- ONLY UPDATE THE CURRENT TAB ---
         current_tab = self.analysis_tabs.currentWidget()
 
+        # --- ONLY UPDATE STANDARD PLOTS WHEN THAT TAB IS VISIBLE ---
+        if current_tab == self.standard_plots_panel:
+            self.standard_plots_panel.update_all(cluster_id)
+            self.similarity_panel.update_main_cluster_id(cluster_id)
+
+        # --- UPDATE ONLY THE ACTIVE TAB ---
         if current_tab == self.ei_panel:
             self.ei_panel.update_ei([cluster_id])
+            self.similarity_panel.update_main_cluster_id(cluster_id)
 
         elif current_tab == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
@@ -259,10 +293,12 @@ class MainWindow(QMainWindow):
             self.raw_panel.load_data(cluster_id)
 
         elif current_tab == self.sta_panel:
+            # STA tab must be FAST — no standard plots, no recompute
             if self.data_manager and self.data_manager.vision_stas:
                 self.select_sta_view(self.current_sta_view)
 
         self.status_bar.showMessage("Ready.", 2000)
+
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""

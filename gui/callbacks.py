@@ -7,7 +7,7 @@ from qtpy.QtGui import QStandardItem, QStandardItemModel, QColor, QIcon
 from qtpy.QtCore import Qt
 
 from analysis.data_manager import DataManager
-from gui.workers import RefinementWorker, SpatialWorker
+from gui.workers import RefinementWorker, SpatialWorker, StandardPlotsWorker
 from gui.widgets import HighlightStatusPandasModel
 import gui.plotting as plotting
 from gui.panels.feature_extraction import FeatureExtractionWindow
@@ -416,15 +416,32 @@ def reset_views(main_window: MainWindow):
     populate_tree_view(main_window)
 
 def start_worker(main_window: MainWindow):
-    """Starts the background spatial worker thread."""
-    if main_window.worker_thread is not None:
+    """Starts the background worker threads (spatial features + standard plots)."""
+    # Stop anything that might already be running
+    if main_window.worker_thread is not None or getattr(main_window, "standard_worker_thread", None) is not None:
         stop_worker(main_window)
+
+    # --- Spatial features worker (existing behaviour) ---
     main_window.worker_thread = QThread()
     main_window.spatial_worker = SpatialWorker(main_window.data_manager)
     main_window.spatial_worker.moveToThread(main_window.worker_thread)
     main_window.worker_thread.started.connect(main_window.spatial_worker.run)
     main_window.spatial_worker.result_ready.connect(main_window.on_spatial_data_ready)
     main_window.worker_thread.start()
+
+    # --- NEW: Standard plots worker for ISI/ACG/FR caching ---
+    main_window.standard_worker_thread = QThread()
+    main_window.standard_plots_worker = StandardPlotsWorker(main_window.data_manager)
+    main_window.standard_plots_worker.moveToThread(main_window.standard_worker_thread)
+    main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)
+    main_window.standard_worker_thread.start()
+
+    # Kick off low‑priority background caching for all clusters
+    dm = main_window.data_manager
+    if dm is not None and not dm.cluster_df.empty:
+        for cid in dm.cluster_df['cluster_id']:
+            main_window.standard_plots_worker.add_to_queue(int(cid))
+
 
 def populate_tree_view(main_window: MainWindow):
     """Builds the initial tree and table from the loaded Kilosort data."""
@@ -521,11 +538,24 @@ def feature_extraction(main_window: MainWindow, cluster_ids):
     dlg.show()
 
 def stop_worker(main_window: MainWindow):
-    """Stops the background spatial worker thread."""
-    if main_window.worker_thread and main_window.worker_thread.isRunning():
-        main_window.spatial_worker.stop()
+    """Stops the background worker threads (spatial + standard plots)."""
+    # Spatial worker
+    if getattr(main_window, "worker_thread", None) and main_window.worker_thread.isRunning():
+        if getattr(main_window, "spatial_worker", None) is not None:
+            main_window.spatial_worker.stop()
         main_window.worker_thread.quit()
         main_window.worker_thread.wait()
+        main_window.worker_thread = None
+        main_window.spatial_worker = None
+
+    # Standard plots worker
+    if getattr(main_window, "standard_worker_thread", None) and main_window.standard_worker_thread.isRunning():
+        if getattr(main_window, "standard_plots_worker", None) is not None:
+            main_window.standard_plots_worker.stop()
+        main_window.standard_worker_thread.quit()
+        main_window.standard_worker_thread.wait()
+        main_window.standard_worker_thread = None
+        main_window.standard_plots_worker = None
 
 
 def load_classification_file(main_window: MainWindow):

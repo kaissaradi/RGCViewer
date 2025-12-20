@@ -13,6 +13,10 @@ import tempfile
 import logging
 logger = logging.getLogger(__name__)
 import threading
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import correlate
+from scipy.interpolate import interp1d
+
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
@@ -184,12 +188,19 @@ class DataManager(QObject):
         self.d_timing = {}
         logger.debug(f"Initializing DataManager for experiment={self.exp_name}, datafile={self.datafile_name}")
         self.load_stim_timing()
+
         self.ei_cache = {}
         self.heavyweight_cache = {}
         # Lock to protect accesses to heavyweight_cache from multiple threads
         self._heavyweight_lock = threading.Lock()
         self.isi_cache = {}  # Cache for ISI violation calculations
+
+        # Cache + lock for standard plots (ISI / ACG / FR)
+        self.standard_plot_cache = {}
+        self._standard_plot_lock = threading.Lock()
+
         self.dat_path = None
+
         self.cluster_df = pd.DataFrame()
         self.original_cluster_df = pd.DataFrame()
         self.info_path = None
@@ -446,40 +457,44 @@ class DataManager(QObject):
     def load_vision_data(self, vision_dir, dataset_name):
         """
         Loads EI, STA, and params data from a specified Vision directory.
+
+        IMPORTANT: Heavy EI correlation computations are now deferred and
+        run lazily the first time Vision similarity is requested, so this
+        call returns much faster.
         """
         logger.debug("Starting vision data load from %s", vision_dir)
         vision_path = Path(vision_dir)
 
-        # To get the STA dimensions, we need to access them directly from the STAReader
-        # The STAReader has width and height attributes that represent the stimulus dimensions
+        # Use the high-level helper in vision_integration
         logger.debug("Calling vision_integration.load_vision_data")
         vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
         logger.debug("Completed vision_integration.load_vision_data call")
 
         success = False
+
         if vision_data:
+            # --- Full load path (EI + STA + params) ---
             ei_bundle = vision_data.get('ei')
             if ei_bundle:
                 self.vision_eis = ei_bundle.get('ei_data')
                 self.vision_channel_positions = ei_bundle.get('electrode_map')
                 if self.vision_eis:
-                    logger.debug("Available Vision EI IDs (sample): %s", list(self.vision_eis.keys())[:10])
+                    logger.debug(
+                        "Available Vision EI IDs (sample): %s",
+                        list(self.vision_eis.keys())[:10],
+                    )
 
             self.vision_stas = vision_data.get('sta')
             self.vision_params = vision_data.get('params')
 
             # Extract and store stimulus dimensions for coordinate alignment
-            # Get dimensions from the STA data structure if available
             if self.vision_stas and len(self.vision_stas) > 0:
                 # Get the first available STA to extract dimensions
                 first_cell_id = next(iter(self.vision_stas))
                 first_sta = self.vision_stas[first_cell_id]
 
                 # The STA structure is likely a container with red, green, blue channels
-                # Extract spatial dimensions from the shape of one of the channels
-                if hasattr(first_sta, 'red') and first_sta.red is not None:
-                    # Get the dimensions from the STA container
-                    # Use the shape of the red channel to extract width and height
+                if hasattr(first_sta, "red") and first_sta.red is not None:
                     sta_shape = first_sta.red.shape
                     if len(sta_shape) >= 2:
                         # Dimensions are [height, width, timepoints]
@@ -491,135 +506,67 @@ class DataManager(QObject):
                         self.vision_sta_width = sta_shape[1]
                 else:
                     # Fallback if red channel is not available
-                    print("Warning: Could not extract dimensions from STA data, using defaults.")
+                    logger.warning(
+                        "Could not extract dimensions from STA data, using defaults."
+                    )
                     self.vision_sta_width = 100
                     self.vision_sta_height = 100
             else:
                 # Fallback if no STA data is available
-                print("Warning: No STA data available to extract dimensions, using defaults.")
+                logger.warning(
+                    "No STA data available to extract dimensions, using defaults."
+                )
                 self.vision_sta_width = 100
                 self.vision_sta_height = 100
 
-            # Compute correlation matrices for EIs
-            str_corr_pkl = os.path.join(self.kilosort_dir, 'ei_corr_dict.pkl')
-
-            # Sanitize loaded EIs before any numeric operations
-            sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
-
-            if len(sanitized_eis) >= 2:
-                if os.path.exists(str_corr_pkl):
-                    try:
-                        logger.debug("Loading precomputed EI correlations from %s", str_corr_pkl)
-                        with open(str_corr_pkl, 'rb') as f:
-                            self.ei_corr_dict = pickle.load(f)
-                        logger.debug("Loaded EI correlations successfully")
-                        full_corr = self.ei_corr_dict.get('full')
-                        space_corr = self.ei_corr_dict.get('space')
-                        power_corr = self.ei_corr_dict.get('power')
-                    except Exception as e:
-                        logger.warning("Failed to load EI correlation pickle: %s; recomputing", e)
-                        full_corr = ei_corr(sanitized_eis, sanitized_eis, method='full', n_removed_channels=1)
-                        space_corr = ei_corr(sanitized_eis, sanitized_eis, method='space', n_removed_channels=1)
-                        power_corr = ei_corr(sanitized_eis, sanitized_eis, method='power', n_removed_channels=1)
-                        self.ei_corr_dict = {
-                            'full': full_corr,
-                            'space': space_corr,
-                            'power': power_corr
-                        }
-                        saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
-                        logger.debug("EI correlations recomputed and saved to %s", saved_path)
-                else:
-                    logger.debug('Computing EI correlations')
-                    full_corr = ei_corr(sanitized_eis, sanitized_eis, method='full', n_removed_channels=1)
-                    space_corr = ei_corr(sanitized_eis, sanitized_eis, method='space', n_removed_channels=1)
-                    power_corr = ei_corr(sanitized_eis, sanitized_eis, method='power', n_removed_channels=1)
-                    self.ei_corr_dict = {
-                        'full': full_corr,
-                        'space': space_corr,
-                        'power': power_corr
-                    }
-                    saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
-                    logger.debug("EI correlations computed and saved to %s", saved_path)
-
-                # Update cluster_df to mark potential duplicates based on any EI correlation > threshold
-                if not self.cluster_df.empty:
-                    # For each cluster, check if any other cluster has a correlation > threshold
-                    cluster_ids = list(sanitized_eis.keys())
-                    cluster_ids = np.array(cluster_ids) - 1 # Vision to ks IDs
-                    potential_dups_map = {}
-                    max_dup_r_map = {}
-                    for i, cid in enumerate(cluster_ids):
-                        # Exclude self-comparison by masking the diagonal
-                        full_mask = np.delete(full_corr[i, :], i)
-                        space_mask = np.delete(space_corr[i, :], i)
-                        power_mask = np.delete(power_corr[i, :], i)
-                        if (
-                            np.any(full_mask > EI_CORR_THRESHOLD) or
-                            np.any(space_mask > EI_CORR_THRESHOLD) or
-                            np.any(power_mask > EI_CORR_THRESHOLD)
-                        ):
-                            potential_dups_map[cid] = True
-                        max_r = max(
-                            np.max(full_mask),
-                            np.max(space_mask),
-                            # np.max(power_mask)
-                        )
-                        max_dup_r_map[cid] = max_r
-
-                    self.cluster_df['potential_dups'] = self.cluster_df['cluster_id'].map(potential_dups_map).fillna(False)
-                    self.cluster_df['max_dup_r'] = self.cluster_df['cluster_id'].map(max_dup_r_map).fillna(0.0)
-                    # Sort cluster_df by max_dup_r descending
-                    self.cluster_df = self.cluster_df.sort_values(by='max_dup_r', ascending=False).reset_index(drop=True)
-
-                    # Format to 2 decimal places
-                    self.cluster_df['max_dup_r'] = self.cluster_df['max_dup_r'].map(lambda x: f"{x:.2f}")
-
-                    logger.debug("Updated cluster_df with potential duplicates based on EI correlations")
-            else:
-                logger.warning("Vision EIs empty or not loaded; skipping duplicate detection")
-                # Initialize columns so the GUI doesn't crash later if it expects them
-                if not self.cluster_df.empty:
-                    self.cluster_df['potential_dups'] = False
-                    self.cluster_df['max_dup_r'] = 0.0
-
-            # (Duplicate correlation-to-cluster_df update removed - handled above)
-
-            logger.info("Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
+            # NOTE: EI correlation matrices and duplicate detection
+            # are now computed lazily in _compute_ei_correlations_if_needed().
+            logger.info(
+                "Vision data loaded; STA dimensions: %sx%s",
+                self.vision_sta_width,
+                self.vision_sta_height,
+            )
             success = True
 
         else:
+            # --- Partial load path (if the combined loader failed) ---
             logger.debug("Full vision loading failed; attempting partial load")
+
             # Check if params or STA files exist even if the full loading failed
-            params_path = vision_path / 'sta_params.params'
-            sta_path = vision_path / 'sta_container.sta'
+            params_path = vision_path / "sta_params.params"
+            sta_path = vision_path / "sta_container.sta"
 
             if params_path.exists() or sta_path.exists():
                 logger.debug("Found params/sta files; attempting partial load")
+
                 # Try to load the existing files one by one using the available functions
                 vision_data = {}
+
                 if params_path.exists():
                     logger.debug("Loading params data")
                     try:
-                        # Using the actual function name from vision_integration.py
-                        params_data = vision_integration.load_params_data(vision_path, dataset_name)
-                        vision_data['params'] = params_data
+                        params_data = vision_integration.load_params_data(
+                            vision_path, dataset_name
+                        )
+                        vision_data["params"] = params_data
                         logger.info("Loaded Vision params data")
-                    except Exception as e:
+                    except Exception:
                         logger.exception("Error loading params")
 
                 if sta_path.exists():
                     logger.debug("Loading STA data")
                     try:
-                        # Using the actual function name from vision_integration.py
-                        sta_data = vision_integration.load_sta_data(vision_path, dataset_name)
-                        vision_data['sta'] = sta_data
+                        sta_data = vision_integration.load_sta_data(
+                            vision_path, dataset_name
+                        )
+                        vision_data["sta"] = sta_data
                         logger.info("Loaded Vision STA data")
 
                         # Extract dimensions from STA if it was loaded
                         if sta_data:
                             first_cell_id = next(iter(sta_data))
                             first_sta = sta_data[first_cell_id]
-                            if hasattr(first_sta, 'red') and first_sta.red is not None:
+                            if hasattr(first_sta, "red") and first_sta.red is not None:
                                 sta_shape = first_sta.red.shape
                                 if len(sta_shape) >= 2:
                                     self.vision_sta_height = sta_shape[0]
@@ -627,20 +574,24 @@ class DataManager(QObject):
                                 else:
                                     self.vision_sta_height = sta_shape[0]
                                     self.vision_sta_width = sta_shape[1]
-                    except Exception as e:
+                    except Exception:
                         logger.exception("Error loading STA data")
 
-                # Update the instance variables with any loaded data
-                ei_bundle = vision_data.get('ei')
+                # Update instance variables with any loaded data
+                ei_bundle = vision_data.get("ei")
                 if ei_bundle:
-                    self.vision_eis = ei_bundle.get('ei_data')
-                    self.vision_channel_positions = ei_bundle.get('electrode_map')
+                    self.vision_eis = ei_bundle.get("ei_data")
+                    self.vision_channel_positions = ei_bundle.get("electrode_map")
 
-                self.vision_stas = vision_data.get('sta')
-                self.vision_params = vision_data.get('params')
+                self.vision_stas = vision_data.get("sta")
+                self.vision_params = vision_data.get("params")
 
                 if vision_data:  # If we loaded any data
-                    logger.info("Partial Vision data loaded; STA dimensions: %sx%s", self.vision_sta_width, self.vision_sta_height)
+                    logger.info(
+                        "Partial Vision data loaded; STA dimensions: %sx%s",
+                        self.vision_sta_width,
+                        self.vision_sta_height,
+                    )
                     success = True
                 else:
                     logger.debug("No vision data could be loaded")
@@ -648,8 +599,156 @@ class DataManager(QObject):
                 logger.debug("No vision files found in directory")
 
         # Mark vision as available if we have the required data
-        self.vision_available = success and (self.vision_eis is not None or self.vision_stas is not None)
+        self.vision_available = success and (
+            self.vision_eis is not None or self.vision_stas is not None
+        )
+
         return success, f"{'Successfully' if success else 'Failed to'} load Vision data for {dataset_name}."
+
+    def _compute_ei_correlations_if_needed(self):
+        """
+        Lazily compute EI correlation matrices and duplicate flags.
+
+        This used to run inside load_vision_data() and block Vision loading.
+        Now it is called on-demand (e.g. from the Vision similarity table).
+        """
+        # Already computed / loaded?
+        if self.ei_corr_dict is not None:
+            return
+
+        # Must have Vision EIs to do anything
+        if self.vision_eis is None:
+            logger.warning("Cannot compute EI correlations: vision_eis is None")
+            if not self.cluster_df.empty:
+                if "potential_dups" not in self.cluster_df.columns:
+                    self.cluster_df["potential_dups"] = False
+                if "max_dup_r" not in self.cluster_df.columns:
+                    self.cluster_df["max_dup_r"] = 0.0
+            return
+
+        str_corr_pkl = os.path.join(self.kilosort_dir, "ei_corr_dict.pkl")
+
+        # Sanitize loaded EIs before any numeric operations
+        sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
+
+        if len(sanitized_eis) < 2:
+            logger.warning(
+                "Not enough Vision EIs to compute correlations; skipping duplicate detection"
+            )
+            if not self.cluster_df.empty:
+                if "potential_dups" not in self.cluster_df.columns:
+                    self.cluster_df["potential_dups"] = False
+                if "max_dup_r" not in self.cluster_df.columns:
+                    self.cluster_df["max_dup_r"] = 0.0
+            return
+
+        # Try to load existing correlations from disk
+        if os.path.exists(str_corr_pkl):
+            try:
+                logger.debug("Loading precomputed EI correlations from %s", str_corr_pkl)
+                with open(str_corr_pkl, "rb") as f:
+                    self.ei_corr_dict = pickle.load(f)
+                logger.debug("Loaded EI correlations successfully")
+                full_corr = self.ei_corr_dict.get("full")
+                space_corr = self.ei_corr_dict.get("space")
+                power_corr = self.ei_corr_dict.get("power")
+            except Exception as e:
+                logger.warning(
+                    "Failed to load EI correlation pickle: %s; recomputing", e
+                )
+                full_corr = ei_corr(
+                    sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
+                )
+                space_corr = ei_corr(
+                    sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
+                )
+                power_corr = ei_corr(
+                    sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
+                )
+                self.ei_corr_dict = {
+                    "full": full_corr,
+                    "space": space_corr,
+                    "power": power_corr,
+                }
+                saved_path = self._save_pickle_with_fallback(
+                    self.ei_corr_dict, str_corr_pkl
+                )
+                logger.debug("EI correlations recomputed and saved to %s", saved_path)
+        else:
+            # Compute from scratch
+            logger.debug("Computing EI correlations")
+            full_corr = ei_corr(
+                sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
+            )
+            space_corr = ei_corr(
+                sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
+            )
+            power_corr = ei_corr(
+                sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
+            )
+            self.ei_corr_dict = {
+                "full": full_corr,
+                "space": space_corr,
+                "power": power_corr,
+            }
+            saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
+            logger.debug("EI correlations computed and saved to %s", saved_path)
+
+        # With correlation matrices available, update cluster_df duplicate-related columns
+        if not self.cluster_df.empty:
+            cluster_ids = list(sanitized_eis.keys())
+            # Vision IDs are 1-based; convert to 0-based Kilosort cluster IDs
+            cluster_ids = np.array(cluster_ids) - 1
+            potential_dups_map = {}
+            max_dup_r_map = {}
+
+            for i, cid in enumerate(cluster_ids):
+                # Exclude self-comparison by masking the diagonal
+                full_mask = np.delete(self.ei_corr_dict["full"][i, :], i)
+                space_mask = np.delete(self.ei_corr_dict["space"][i, :], i)
+                power_mask = np.delete(self.ei_corr_dict["power"][i, :], i)
+
+                if (
+                    np.any(full_mask > EI_CORR_THRESHOLD)
+                    or np.any(space_mask > EI_CORR_THRESHOLD)
+                    or np.any(power_mask > EI_CORR_THRESHOLD)
+                ):
+                    potential_dups_map[cid] = True
+
+                    max_r = max(
+                        np.max(full_mask) if full_mask.size > 0 else 0,
+                        np.max(space_mask) if space_mask.size > 0 else 0,
+                        np.max(power_mask) if power_mask.size > 0 else 0,
+                    )
+                    max_dup_r_map[cid] = max_r
+
+            self.cluster_df["potential_dups"] = (
+                self.cluster_df["cluster_id"]
+                .map(potential_dups_map)
+                .fillna(False)
+            )
+            self.cluster_df["max_dup_r"] = (
+                self.cluster_df["cluster_id"]
+                .map(max_dup_r_map)
+                .fillna(0.0)
+            )
+
+            # Sort in-place by max_dup_r
+            self.cluster_df = (
+                self.cluster_df.sort_values(by="max_dup_r", ascending=False)
+                .reset_index(drop=True)
+            )
+            # Format to 2 decimal places for display
+            self.cluster_df["max_dup_r"] = self.cluster_df["max_dup_r"].map(
+                lambda x: f"{x:.2f}"
+            )
+
+            logger.debug(
+                "Updated cluster_df with potential duplicates based on EI correlations"
+            )
+        else:
+            logger.warning("cluster_df is empty; cannot update duplicate columns")
+
 
     def load_cell_type_file(self, txt_file: str=None):
         logger.debug("Loading cell type file: %s", txt_file)
@@ -798,6 +897,270 @@ class DataManager(QObject):
             return np.array([])
         inds = self.get_cluster_spike_indices(cluster_id)
         return self.spike_amplitudes[inds]
+    
+    def get_standard_plot_data(self, cluster_id):
+        """Return cached standard-plot data (ISI/ACG/FR) for a cluster.
+
+        Heavy computations are done once per cluster and stored in
+        self.standard_plot_cache, protected by self._standard_plot_lock.
+        """
+        # Ensure the cache attributes exist (for older sessions)
+        if not hasattr(self, 'standard_plot_cache'):
+            self.standard_plot_cache = {}
+            self._standard_plot_lock = threading.Lock()
+
+        # Fast path: check cache under lock
+        with self._standard_plot_lock:
+            cached = self.standard_plot_cache.get(cluster_id)
+        if cached is not None:
+            return cached
+
+        # Compute outside the lock (expensive)
+        data = self._compute_standard_plots(cluster_id)
+
+        # Store back under lock
+        with self._standard_plot_lock:
+            self.standard_plot_cache[cluster_id] = data
+        return data
+
+    def get_acg_data(self, cluster_id):
+        """Convenience wrapper: return (time_lags_ms, acg_values)."""
+        data = self.get_standard_plot_data(cluster_id)
+        return data.get('acg_time_lags'), data.get('acg_norm')
+
+    def get_isi_data(self, cluster_id):
+        """Convenience wrapper: return (isi_ms, hist_x, hist_y)."""
+        data = self.get_standard_plot_data(cluster_id)
+        return data.get('isi_ms'), data.get('isi_hist_x'), data.get('isi_hist_y')
+
+    def get_isi_vs_amplitude_data(self, cluster_id):
+        """Convenience wrapper for ISI vs amplitude scatter/density.
+
+        Returns (valid_isi_ms, valid_amplitudes_uV) or (None, None) if unavailable.
+        """
+        data = self.get_standard_plot_data(cluster_id)
+        return data.get('isi_vs_amp_valid_isi'), data.get('isi_vs_amp_valid_amplitudes')
+
+    def get_firing_rate_data(self, cluster_id):
+        """Convenience wrapper for firing-rate / amplitude plot.
+
+        Returns:
+            bin_centers_sec, rate_hz, amp_x_sec, amp_y_uV, amp_ymax, overlay_x_sec, overlay_y
+        """
+        data = self.get_standard_plot_data(cluster_id)
+        return (
+            data.get('fr_bin_centers'),
+            data.get('fr_rate'),
+            data.get('fr_amp_x'),
+            data.get('fr_amp_y'),
+            data.get('fr_amp_ymax'),
+            data.get('fr_overlay_x'),
+            data.get('fr_overlay_y'),
+        )
+
+    def _compute_standard_plots(self, cluster_id):
+        """Internal helper that actually computes all standard-plot data.
+
+        This mirrors the logic in StandardPlotsPanel.update_all for:
+        - autocorrelation (ACG)
+        - ISI histogram
+        - firing rate + amplitude
+        and packs the numeric results into a dict.
+        """
+        data = {
+            'spikes': None,
+            'spikes_sec': None,
+            'spikes_ms': None,
+            'isi_ms': None,
+            'isi_hist_x': None,
+            'isi_hist_y': None,
+            'acg_time_lags': None,
+            'acg_norm': None,
+            'fr_bin_centers': None,
+            'fr_rate': None,
+            'fr_amp_x': None,
+            'fr_amp_y': None,
+            'fr_amp_ymax': None,
+            'fr_overlay_x': None,
+            'fr_overlay_y': None,
+            'isi_vs_amp_valid_isi': None,
+            'isi_vs_amp_valid_amplitudes': None,
+        }
+
+        # Basic safety checks
+        if not hasattr(self, 'spike_times') or self.spike_times is None:
+            return data
+        if not hasattr(self, 'spike_clusters') or self.spike_clusters is None:
+            return data
+        if getattr(self, 'sampling_rate', 0) <= 0:
+            return data
+
+        # --- Gather spikes & amplitudes for this cluster ---
+        spikes = self.get_cluster_spikes(cluster_id)
+        spikes = np.asarray(spikes)
+        data['spikes'] = spikes
+
+        if spikes.size == 0:
+            return data
+
+        sr = float(self.sampling_rate)
+
+        # Convert to seconds and milliseconds
+        spikes_sec = spikes / sr
+        spikes_ms = (spikes_sec * 1000.0).astype(int)
+        data['spikes_sec'] = spikes_sec
+        data['spikes_ms'] = spikes_ms
+
+        # ISI vector (ms) and histogram
+        if spikes.size > 1:
+            sorted_spikes = np.sort(spikes)
+            isi_ms = np.diff(sorted_spikes) / sr * 1000.0
+            data['isi_ms'] = isi_ms
+
+            if isi_ms.size > 0:
+                hist_y, hist_x = np.histogram(isi_ms, bins=np.linspace(0, 50, 101))
+                data['isi_hist_x'] = hist_x
+                data['isi_hist_y'] = hist_y
+
+        # Get per-spike amplitudes (may be empty)
+        all_amplitudes = self.get_cluster_spike_amplitudes(cluster_id)
+        all_amplitudes = np.asarray(all_amplitudes)
+
+        # ISI vs amplitude alignment (for scatter/density)
+        if data['isi_ms'] is not None and all_amplitudes.size > 1:
+            isi_ms = data['isi_ms']
+            min_len = min(len(isi_ms), all_amplitudes.size - 1)
+            if min_len > 0:
+                valid_isi = isi_ms[:min_len]
+                valid_amplitudes = all_amplitudes[1:min_len + 1]
+                data['isi_vs_amp_valid_isi'] = valid_isi
+                data['isi_vs_amp_valid_amplitudes'] = valid_amplitudes
+
+        # --- Autocorrelation (ACG) ---
+        if spikes_ms.size > 1:
+            duration = int(spikes_ms[-1])
+            if duration > 0:
+                bin_width_ms = 1
+                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
+
+                if binned_spikes.size > 0:
+                    centered = binned_spikes - np.mean(binned_spikes)
+                    acg_full = correlate(centered, centered, mode='full')
+
+                    zero_lag_idx = len(acg_full) // 2
+                    max_lag_ms = 100
+                    num_bins = int(max_lag_ms / bin_width_ms)
+                    lag_range = min(num_bins, zero_lag_idx)
+
+                    if lag_range > 0:
+                        acg_symmetric = acg_full[zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1]
+                        time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+
+                        # Zero out the central peak so refractory effects are visible
+                        zero_idx = np.where(time_lags == 0)[0]
+                        if zero_idx.size > 0:
+                            acg_symmetric[zero_idx[0]] = 0
+
+                        # Normalize by variance and length
+                        spike_variance = np.var(binned_spikes)
+                        if spike_variance != 0:
+                            acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
+                        else:
+                            acg_norm = acg_symmetric.astype(float)
+
+                        data['acg_time_lags'] = time_lags.astype(float)
+                        data['acg_norm'] = acg_norm.astype(float)
+
+        # --- Firing rate & amplitude over time ---
+        if spikes_sec.size > 0:
+            max_t = float(spikes_sec.max())
+            if max_t <= 0:
+                bins = np.array([0.0, 1.0], dtype=float)
+            else:
+                # 1-second bins from 0 to floor(max_t)+1
+                bins = np.arange(0.0, max_t + 1.0, 1.0, dtype=float)
+
+            counts, bin_edges = np.histogram(spikes_sec, bins=bins)
+            bin_centers = bin_edges[:-1]
+            data['fr_bin_centers'] = bin_centers
+
+            if counts.size > 0:
+                rate = gaussian_filter1d(counts.astype(float), sigma=5)
+            else:
+                rate = np.zeros_like(bin_centers, dtype=float)
+            data['fr_rate'] = rate
+
+            # Amplitude on the right axis (gold line)
+            if all_amplitudes.size > 0 and bin_centers.size > 0:
+                amplitude_binned = []
+                for bin_start in bin_centers:
+                    bin_end = bin_start + 1.0
+                    mask = (spikes_sec >= bin_start) & (spikes_sec < bin_end)
+                    if np.any(mask):
+                        amplitude_binned.append(float(np.mean(all_amplitudes[mask])))
+                    else:
+                        amplitude_binned.append(np.nan)
+
+                amplitude_binned = np.asarray(amplitude_binned, dtype=float)
+
+                # Interpolate NaNs if needed
+                if np.any(np.isnan(amplitude_binned)):
+                    valid_idx = ~np.isnan(amplitude_binned)
+                    if np.sum(valid_idx) > 1:
+                        f = interp1d(
+                            bin_centers[valid_idx],
+                            amplitude_binned[valid_idx],
+                            kind='linear',
+                            bounds_error=False,
+                            fill_value='extrapolate',
+                        )
+                        amplitude_binned = f(bin_centers)
+                    elif np.sum(valid_idx) == 1:
+                        amplitude_binned = np.full_like(amplitude_binned, amplitude_binned[valid_idx][0])
+                    else:
+                        amplitude_binned = None
+
+                if amplitude_binned is not None:
+                    amplitude_smoothed = gaussian_filter1d(amplitude_binned, sigma=5)
+                    data['fr_amp_x'] = bin_centers
+                    data['fr_amp_y'] = amplitude_smoothed
+
+                    # Use template PTP to set a sensible right-axis scale when available
+                    max_ptp = 1.0
+                    templates = getattr(self, 'templates', None)
+                    try:
+                        if templates is not None and cluster_id < templates.shape[0]:
+                            ptp = templates[cluster_id].max(axis=0) - templates[cluster_id].min(axis=0)
+                            if ptp.size > 0:
+                                max_ptp = float(ptp.max())
+                        # Fallback: use amplitude range
+                        if not np.isfinite(max_ptp) or max_ptp <= 0:
+                            max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(amplitude_smoothed) > 0 else 1.0
+                    except Exception:
+                        max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(amplitude_smoothed) > 0 else 1.0
+
+                    data['fr_amp_ymax'] = max_ptp * 1.1
+
+            # Overlay averaged amplitude on firing-rate trace (left axis)
+            if all_amplitudes.size > 0 and rate.size > 0 and spikes_sec.size > 10:
+                max_amp = float(np.max(all_amplitudes))
+                if max_amp > 0:
+                    normalized_amplitudes = all_amplitudes / max_amp
+                else:
+                    normalized_amplitudes = all_amplitudes.astype(float)
+
+                if normalized_amplitudes.size > 10:
+                    avg_amplitude = np.convolve(normalized_amplitudes, np.ones(10) / 10.0, mode='valid')
+                    scaled_amplitude = avg_amplitude * 0.8 * float(np.max(rate))
+
+                    overlay_len = min(len(scaled_amplitude), len(spikes_sec))
+                    if overlay_len > 0:
+                        data['fr_overlay_x'] = spikes_sec[:overlay_len]
+                        data['fr_overlay_y'] = scaled_amplitude[:overlay_len]
+
+        return data
+
 
     def get_cluster_mean_amplitude(self, cluster_id, method='mean'):
         """Return a scalar amplitude for the cluster (mean or median)."""
@@ -971,6 +1334,11 @@ class DataManager(QObject):
             }
             new_rows.append(new_row)
         self.cluster_df = pd.concat([self.cluster_df, pd.DataFrame(new_rows)], ignore_index=True)
+        # Refinement changes spike assignments; cached standard plots are now stale.
+        if hasattr(self, 'standard_plot_cache'):
+            with getattr(self, '_standard_plot_lock', threading.Lock()):
+                self.standard_plot_cache.clear()
+
 
     def _calculate_isi_violations(self, cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS):
         # Check if we already have the ISI calculation for this cluster in cache
@@ -1306,13 +1674,19 @@ class DataManager(QObject):
     def _get_vision_similarity_table(self, cluster_id: int):
         """
         Get vision-based similarity table for a cluster.
+
+        EI correlation matrices are computed lazily the first time this
+        is called (via _compute_ei_correlations_if_needed).
         """
         import pandas as pd
 
         if cluster_id in self.vision_sim_cache:
             return self.vision_sim_cache[cluster_id]
 
-        # Check if vision data is available
+        # Ensure correlations exist (may trigger a one-time heavy compute)
+        self._compute_ei_correlations_if_needed()
+
+        # Check again if vision data is available
         if self.ei_corr_dict is None or self.vision_eis is None:
             logger.error("Vision data not available for similarity table")
             return pd.DataFrame()  # Return empty DataFrame
@@ -1332,62 +1706,64 @@ class DataManager(QObject):
         other_ids = kilosort_cluster_ids[other_idx]
 
         # Only include other_ids that actually exist in the main cluster dataframe
-        valid_cluster_df_ids = set(self.cluster_df['cluster_id'].values)
+        valid_cluster_df_ids = set(self.cluster_df["cluster_id"].values)
         valid_other_ids = [oid for oid in other_ids if oid in valid_cluster_df_ids]
 
         if not valid_other_ids:
-            logger.warning("No valid other clusters found for cluster %s", cluster_id)
+            logger.warning(
+                "No valid other cluster IDs found in Vision data for main cluster %s",
+                cluster_id,
+            )
             return pd.DataFrame()
 
-        valid_other_ids = np.array(valid_other_ids)
-        # Calculate which indices in the correlation matrix correspond to valid IDs
+        # Map valid other ids back to their Vision index positions
         valid_other_idx = []
         for oid in valid_other_ids:
-            oid_idx = np.where(kilosort_cluster_ids == oid)[0]
-            if len(oid_idx) > 0:
-                valid_other_idx.append(oid_idx[0])
+            matches = np.where(kilosort_cluster_ids == oid)[0]
+            if len(matches) > 0:
+                valid_other_idx.append(matches[0])
 
-        if not valid_other_idx:
-            logger.warning("Could not find valid indices for valid_other_ids")
-            return pd.DataFrame()
+        valid_other_idx = np.array(valid_other_idx, dtype=int)
+        valid_other_ids = np.array(valid_other_ids, dtype=int)
 
-        valid_other_idx = np.array(valid_other_idx)
-
+        # Build DataFrame with EI correlation values
         d_df = {
-            'cluster_id': valid_other_ids,
-            'space_ei_corr': self.ei_corr_dict['space'][main_idx, valid_other_idx],
-            'full_ei_corr': self.ei_corr_dict['full'][main_idx, valid_other_idx],
-            'power_ei_corr': self.ei_corr_dict['power'][main_idx, valid_other_idx]
+            "cluster_id": valid_other_ids,
+            "space_ei_corr": self.ei_corr_dict["space"][main_idx, valid_other_idx],
+            "full_ei_corr": self.ei_corr_dict["full"][main_idx, valid_other_idx],
+            "power_ei_corr": self.ei_corr_dict["power"][main_idx, valid_other_idx],
         }
         df = pd.DataFrame(d_df)
 
-        # Add n_spikes and status column
+        # Add n_spikes, status, set from main cluster_df
         cluster_df = self.cluster_df
-        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
-        df['n_spikes'] = df['cluster_id'].map(n_spikes_map)
+        n_spikes_map = dict(zip(cluster_df["cluster_id"], cluster_df["n_spikes"]))
+        df["n_spikes"] = df["cluster_id"].map(n_spikes_map)
 
-        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
-        df['status'] = df['cluster_id'].map(status_map)
+        status_map = dict(zip(cluster_df["cluster_id"], cluster_df["status"]))
+        df["status"] = df["cluster_id"].map(status_map)
 
-        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
-        df['set'] = df['cluster_id'].map(set_map)
+        set_map = dict(zip(cluster_df["cluster_id"], cluster_df["set"]))
+        df["set"] = df["cluster_id"].map(set_map)
 
-        # Sort by space_ei_corr descending
-        df = df.sort_values(by='space_ei_corr', ascending=False).reset_index(drop=True)
+        # Sort by EI correlation
+        df = df.sort_values(by="space_ei_corr", ascending=False).reset_index(drop=True)
 
-        df['potential_dups'] = (
-            (df['full_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
-            (df['space_ei_corr'].astype(float) > EI_CORR_THRESHOLD) |
-            (df['power_ei_corr'].astype(float) > EI_CORR_THRESHOLD)
+        # Potential duplicate flag (Vision-side)
+        df["potential_dups"] = (
+            (df["full_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
+            | (df["space_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
+            | (df["power_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
         )
 
         # Format correlation columns to 2 decimal places
-        for col in ['full_ei_corr', 'space_ei_corr', 'power_ei_corr']:
+        for col in ["full_ei_corr", "space_ei_corr", "power_ei_corr"]:
             df[col] = df[col].map(lambda x: f"{x:.2f}")
 
-        df['potential_dups'] = df['potential_dups'].map(lambda x: 'Yes' if x else '')
+        df["potential_dups"] = df["potential_dups"].map(lambda x: "Yes" if x else "")
 
         self.vision_sim_cache[cluster_id] = df
         return df
+
 
 
