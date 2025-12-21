@@ -904,7 +904,8 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
 def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None, subset_cell_ids=None):
     """
     Visualizes the receptive fields of all cells, highlighting the selected cell
-    by filling its true ellipse shape and making other ellipses more faint.
+    by filling its true ellipse shape and making other ellipses more faint. If the selected
+    cell has no RF data, no cell is highlighted.
 
     Args:
         subset_cell_ids (list): List of 0-indexed cluster IDs to include in the population view.
@@ -921,7 +922,17 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
         return
 
     vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
-    
+
+    # Check if the selected cell actually has RF data available (not just that it exists as a cell)
+    selected_cell_has_rf_data = False
+    if vision_cell_id_selected is not None and vision_cell_id_selected in all_cell_ids:
+        try:
+            # Test if selected cell has RF data by attempting to get its STAFit
+            test_stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
+            selected_cell_has_rf_data = True
+        except Exception:
+            selected_cell_has_rf_data = False
+
     # Convert subset IDs to Vision IDs (1-based) if provided
     vision_subset_ids = None
     if subset_cell_ids is not None:
@@ -929,19 +940,33 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
 
     # --- Auto-determine plot boundaries from data ---
     x_coords, y_coords = [], []
-    
+
     # Determine which cells to use for boundary calculation
     # If subset is provided, prioritize their boundaries, but maybe keep global context?
     # Let's use the target population (subset or all) for boundaries
     target_ids_for_bounds = vision_subset_ids if vision_subset_ids else all_cell_ids
-    
+
     for cell_id in target_ids_for_bounds:
+        # Only skip the selected cell if it has RF data (to avoid double-processing)
+        # If selected cell doesn't have RF data, include it in boundaries calculation normally
+        if cell_id == vision_cell_id_selected and selected_cell_has_rf_data:
+            continue
+
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             x_coords.append(stafit.center_x)
             y_coords.append(stafit.center_y)
         except Exception:
             continue
+
+    # Also include the selected cell in boundary calculation if it has RF data
+    if selected_cell_has_rf_data:
+        try:
+            stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
+            x_coords.append(stafit.center_x)
+            y_coords.append(stafit.center_y)
+        except Exception:
+            pass  # If selected cell has no RF data, it was already handled above
 
     if x_coords:
         x_range = (min(x_coords) - 20, max(x_coords) + 20)
@@ -956,7 +981,7 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
         for cell_id in all_cell_ids:
             if cell_id in vision_subset_ids:
                 continue # specific drawing later
-                
+
             try:
                 stafit = vision_params.get_stafit_for_cell(cell_id)
                 adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
@@ -977,10 +1002,22 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
 
     # --- STAGE 2: Draw the Target Population (Subset or All) ---
     target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
-    
+
+    # Check if the selected cell actually has RF data available (not just that it exists as a cell)
+    selected_cell_has_rf_data = False
+    if vision_cell_id_selected is not None and vision_cell_id_selected in all_cell_ids:
+        try:
+            # Test if selected cell has RF data by attempting to get its STAFit
+            test_stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
+            selected_cell_has_rf_data = True
+        except Exception:
+            selected_cell_has_rf_data = False
+
+    valid_target_ids = []
     for cell_id in target_ids:
-        # Skip the selected cell for now; we'll draw it on top.
-        if cell_id == vision_cell_id_selected:
+        # Skip the selected cell for now if it has RF data; we'll draw it on top.
+        # If the selected cell doesn't have RF data, include it in the general population
+        if cell_id == vision_cell_id_selected and selected_cell_has_rf_data:
             continue
 
         try:
@@ -998,13 +1035,13 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
                 alpha=0.3  # Standard visibility
             )
             ax.add_patch(ellipse)
+            valid_target_ids.append(cell_id)
         except Exception:
             continue
 
     # --- STAGE 3: Draw the single, highlighted ellipse on top of everything else ---
-    if vision_cell_id_selected is not None:
-        # Only draw if it's in the current view (or force it?)
-        # Generally we want to see the selected cell even if it's not in the subset (e.g. outlier analysis)
+    # Only highlight if the cell exists AND has RF data
+    if selected_cell_has_rf_data:
         try:
             stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
@@ -1022,7 +1059,11 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
             )
             ax.add_patch(highlight_ellipse)
         except Exception as e:
+            # This will now only be reached for unexpected errors, not for missing cells.
             logger.warning("Could not draw highlighted ellipse for cell %s: %s", vision_cell_id_selected, e)
+
+    # Update target_ids to only include cells that actually have RF data
+    target_ids = valid_target_ids
 
     # --- Plot styling ---
     ax.set_xlim(x_range)

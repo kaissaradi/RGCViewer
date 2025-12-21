@@ -177,13 +177,21 @@ def load_vision_directory(main_window: MainWindow):
 
 def on_cluster_selection_changed(main_window: MainWindow):
     """
-    Handles a cluster selection by triggering the main window's selection timer.
+    Handles a cluster selection by triggering the main window's selection timer
+    and updating the global population view if it is enabled.
     """
     cluster_id = main_window._get_selected_cluster_id()
 
     if cluster_id is not None:
-        # Single unit selected - Debounced update
+        # Single unit selected - Debounced update for main tabs
         main_window.update_cluster_views(cluster_id)
+
+        # --- NEW: Immediately update population pane if it's enabled ---
+        if main_window.population_view_enabled:
+            # This call is not debounced, for responsive feedback in the pop view.
+            plotting.draw_population_rfs_plot(main_window=main_window,
+                                             selected_cell_id=cluster_id,
+                                             canvas=main_window.pop_mosaic_canvas)
     else:
         # Potentially a Group Folder selected (Tree View)
         if main_window.view_stack.currentIndex() == 0: # Tree View
@@ -199,8 +207,10 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
                     if group_ids and main_window.population_view_enabled:
                         # Update the population view immediately for the group
-                        # Note: We don't have a 'selected' cell to highlight, just the population
-                        plotting.draw_population_rfs_plot(main_window, subset_cell_ids=group_ids)
+                        # A specific cell is not selected, so no highlight.
+                        plotting.draw_population_rfs_plot(main_window=main_window,
+                                                         subset_cell_ids=group_ids,
+                                                         canvas=main_window.pop_mosaic_canvas)
 
 # In gui/callbacks.py
 

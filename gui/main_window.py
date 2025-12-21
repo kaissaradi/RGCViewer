@@ -397,7 +397,26 @@ class MainWindow(QMainWindow):
         # Place checkbox in the top-right corner of the tab bar
         self.analysis_tabs.setCornerWidget(self.pop_view_checkbox, Qt.TopRightCorner)
 
-        right_layout.addWidget(self.analysis_tabs)
+        # --- NEW: population context widget (right side) ---
+        self.pop_context_widget = QWidget()
+        pop_layout = QVBoxLayout(self.pop_context_widget)
+        pop_layout.setContentsMargins(4, 4, 4, 4)
+        pop_layout.setSpacing(4)
+
+        # Make a plotting canvas for population mosaic
+        self.pop_mosaic_canvas = MplCanvas(width=6, height=6, dpi=100)
+        pop_layout.addWidget(self.pop_mosaic_canvas)
+
+        # --- NEW: right-side splitter containing tabs and pop widget ---
+        self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.right_splitter.addWidget(self.analysis_tabs)
+        self.right_splitter.addWidget(self.pop_context_widget)
+
+        # Start hidden by default
+        self.pop_context_widget.hide()
+        self.right_splitter.setSizes([1200, 0])  # initial ratio: all space to tabs
+
+        right_layout.addWidget(self.right_splitter)
 
         # --- Panels ---
         self.standard_plots_panel = StandardPlotsPanel(self)
@@ -417,8 +436,6 @@ class MainWindow(QMainWindow):
         self.sta_animation_button = QPushButton("Play Animation")
         self.sta_animation_stop_button = QPushButton("Stop Animation")
         
-        # Note: pop_view_checkbox was removed from here
-
         self.sta_population_rfs_button.clicked.connect(
     lambda: self.select_sta_view("rf" if self.current_sta_view == "population_rfs" else "population_rfs"))
         self.sta_animation_button.clicked.connect(self.toggle_animation)
@@ -437,7 +454,7 @@ class MainWindow(QMainWindow):
         self.sta_frame_prev_button = QPushButton("Previous Frame")
         self.sta_frame_slider = QSlider(Qt.Horizontal)
         self.sta_frame_slider.setFixedWidth(200)
-        self.sta_frame_slider.setMaximumHeight(30)  # Try this instead
+        self.sta_frame_slider.setMaximumHeight(30)
         self.sta_frame_next_button = QPushButton("Next Frame")
         self.sta_frame_label = QLabel("Frame: 0/0")
 
@@ -451,26 +468,19 @@ class MainWindow(QMainWindow):
         self.sta_frame_controls_layout.addWidget(self.sta_frame_label)
         self.sta_frame_controls_layout.addStretch()
 
-        # ADD THIS LINE - this is key:
-        sta_layout.setStretch(1, 0)  # Give the controls_layout NO stretch factor
+        sta_layout.setStretch(1, 0)
 
         # --- Create 4 Quadrants for STA Analysis ---
-
-        # Top Left: RF Visualization
         self.rf_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.rf_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
         self.rf_canvas.draw()
-
-        # Connect to the canvas's clicked signal (not mpl_connect)
         self.rf_canvas.clicked.connect(self.on_rf_canvas_clicked)
         self.rf_canvas.setToolTip("Click to toggle between RF view and animation")
 
-        # Top Right: Timecourse
         self.timecourse_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.timecourse_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
         self.timecourse_canvas.draw()
 
-        # Bottom Left: Metrics Box
         self.sta_metrics_text = QTextEdit()
         self.sta_metrics_text.setReadOnly(True)
         self.sta_metrics_text.setStyleSheet("""
@@ -485,62 +495,32 @@ class MainWindow(QMainWindow):
         """)
         self.sta_metrics_text.setPlaceholderText("Select a cell to view STA metrics...")
 
-        # Bottom Right: Temporal Filter Properties (New)
         self.temporal_filter_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.temporal_filter_canvas.fig.text(0.5, 0.5, "Temporal Analysis", ha='center', va='center', color='gray')
         self.temporal_filter_canvas.draw()
         
-        # --- NEW: Population View Context Widget ---
-        self.sta_context_widget = QWidget()
-        sta_context_layout = QVBoxLayout(self.sta_context_widget)
-        
-        self.pop_mosaic_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.pop_mosaic_canvas.fig.text(0.5, 0.5, "Population Mosaic", ha='center', va='center', color='gray')
-        
-        self.pop_dynamics_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.pop_dynamics_canvas.fig.text(0.5, 0.5, "Population Dynamics", ha='center', va='center', color='gray')
-        
-        sta_context_splitter = QSplitter(Qt.Vertical)
-        sta_context_splitter.addWidget(self.pop_mosaic_canvas)
-        sta_context_splitter.addWidget(self.pop_dynamics_canvas)
-        sta_context_layout.addWidget(sta_context_splitter)
-        
-        self.sta_context_widget.hide() # Hidden by default
-
-        # Create the general sta_canvas for backward compatibility with plotting functions
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
-        # Hide the sta_canvas as it's used internally
         self.sta_canvas.hide()
 
         # --- Layout Assembly ---
-
-        # Top Row Splitter (RF | Timecourse)
         self.top_splitter = QSplitter(Qt.Horizontal)
         self.top_splitter.addWidget(self.rf_canvas)
         self.top_splitter.addWidget(self.timecourse_canvas)
         self.top_splitter.setSizes([400, 400])
 
-        # Bottom Row Splitter (Metrics | Temporal Filter)
         self.bottom_splitter = QSplitter(Qt.Horizontal)
         self.bottom_splitter.addWidget(self.sta_metrics_text)
         self.bottom_splitter.addWidget(self.temporal_filter_canvas)
         self.bottom_splitter.setSizes([300, 500])
 
-        # Main Vertical Splitter (Top Row / Bottom Row)
         self.sta_splitter = QSplitter(Qt.Vertical)
         self.sta_splitter.addWidget(self.top_splitter)
         self.sta_splitter.addWidget(self.bottom_splitter)
-        self.sta_splitter.setSizes([400, 300]) # Give more space to top row initially
+        self.sta_splitter.setSizes([400, 300])
         
-        # --- NEW: Master Horizontal Splitter (Focus | Context) ---
-        self.sta_main_splitter = QSplitter(Qt.Horizontal)
-        self.sta_main_splitter.addWidget(self.sta_splitter)
-        self.sta_main_splitter.addWidget(self.sta_context_widget)
-        self.sta_main_splitter.setSizes([800, 0]) # Initial size, context hidden
-
-        sta_layout.addLayout(sta_control_layout, 0)  # 0 = no stretch
-        sta_layout.addLayout(self.sta_frame_controls_layout, 0)  # 0 = no stretch
-        sta_layout.addWidget(self.sta_main_splitter, 1)  # 1 = takes all remaining space
+        sta_layout.addLayout(sta_control_layout, 0)
+        sta_layout.addLayout(self.sta_frame_controls_layout, 0)
+        sta_layout.addWidget(self.sta_splitter, 1)
 
         # --- Tab Order ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard Plots")
@@ -585,22 +565,36 @@ class MainWindow(QMainWindow):
         self.raw_panel.status_message.connect(lambda msg: self.status_bar.showMessage(msg, 3000))
         self.raw_panel.error_message.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
 
-    def toggle_population_split_view(self, checked):
-        """Toggles the visibility of the population analysis context pane."""
-        self.population_view_enabled = checked
+    def toggle_population_split_view(self, checked: bool):
+        """Toggles the global population context pane (right side)."""
+        self.population_view_enabled = bool(checked)
+
         if checked:
-            self.sta_context_widget.show()
-            # Adjust sizes to give roughly 50/50 split if it was hidden
-            current_width = self.sta_main_splitter.width()
-            self.sta_main_splitter.setSizes([int(current_width * 0.55), int(current_width * 0.45)])
-            
-            # Trigger update if a cluster is selected
-            cluster_id = self._get_selected_cluster_id()
-            if cluster_id is not None:
-                self.select_sta_view(self.current_sta_view)
+            # show the right-hand population widget
+            self.pop_context_widget.show()
+
+            # Expand it to a sensible size (give about 20-30% to the right pane)
+            total = sum(self.right_splitter.sizes()) or 1400
+            left_size = max(int(total * 0.75), 400)
+            right_size = total - left_size
+            self.right_splitter.setSizes([left_size, right_size])
+
+            # If a cluster/cell is selected, draw its population mosaic immediately
+            selected = None
+            try:
+                selected = self._get_selected_cluster_id()  # adapt to your selector fun
+            except Exception:
+                selected = None
+
+            # Call plotting routine with explicit canvas
+            import gui.plotting as plotting
+            plotting.draw_population_rfs_plot(main_window=self, selected_cell_id=selected,
+                                             canvas=self.pop_mosaic_canvas)
         else:
-            self.sta_context_widget.hide()
-            # self.sta_main_splitter.setSizes([1, 0]) # handled by hide() usually
+            # hide it
+            self.pop_context_widget.hide()
+            # collapse the right column completely
+            self.right_splitter.setSizes([sum(self.right_splitter.sizes()), 0])
 
 
     def _switch_left_view(self, index):
@@ -821,18 +815,16 @@ class MainWindow(QMainWindow):
         elif view_type == "population_rfs":
             self.sta_animation_button.setText("Play Animation")
 
-        # For split view, draw both plots regardless of the selected view type
+        # Draw the single-cell plots for the STA quad-view.
+        # `draw_sta_plot` handles the main RF canvas and metrics.
         plotting.draw_sta_plot(self, cluster_id)
         plotting.draw_sta_timecourse_plot(self, cluster_id)
 
-        # Update Population Context if enabled
-        if self.population_view_enabled:
-             plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id)
-
-        # Handle specific view types that might require different behavior
+        # Handle specific view-type overrides for the main RF canvas
         if view_type == "population_rfs":
-            logger.debug(f"--- 1. DEBUG (MainWindow): Got selected_cell_id = {cluster_id}. Passing to plotting function. ---")
-            plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id)
+            # This button press should always draw the population plot in the MAIN STA view (rf_canvas),
+            # overriding the single-cell RF plot drawn by draw_sta_plot above.
+            plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id, canvas=self.rf_canvas)
         elif view_type == "animation" or force_animation:
             # Animation should only affect the RF plot
             plotting.draw_sta_animation_plot(self, cluster_id)
