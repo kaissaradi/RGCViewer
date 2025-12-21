@@ -1,7 +1,8 @@
 from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
-from analysis import analysis_core
+from ...analysis import analysis_core
 import numpy as np
+
 
 class SpatialWorker(QObject):
     """
@@ -20,7 +21,8 @@ class SpatialWorker(QObject):
             if self.queue:
                 cluster_id = self.queue.popleft()
                 # Use DataManager API which handles cache locking internally
-                features = self.data_manager.get_heavyweight_features(cluster_id)
+                features = self.data_manager.get_heavyweight_features(
+                    cluster_id)
                 if features:
                     self.result_ready.emit(cluster_id, features)
             else:
@@ -37,6 +39,7 @@ class SpatialWorker(QObject):
     def stop(self):
         self.is_running = False
 
+
 class RefinementWorker(QObject):
     """
     Runs the `refine_cluster_v2` function in a background thread.
@@ -52,10 +55,14 @@ class RefinementWorker(QObject):
 
     def run(self):
         try:
-            spike_times_cluster = self.data_manager.get_cluster_spikes(self.cluster_id)
+            spike_times_cluster = self.data_manager.get_cluster_spikes(
+                self.cluster_id)
             params = {'min_spikes': 500, 'ei_sim_threshold': 0.90}
-            # Prefer passing the memmap if available to avoid reopening the dat file
-            dat_source = self.data_manager.raw_data_memmap if getattr(self.data_manager, 'raw_data_memmap', None) is not None else str(self.data_manager.dat_path)
+            # Prefer passing the memmap if available to avoid reopening the dat
+            # file
+            dat_source = self.data_manager.raw_data_memmap if getattr(
+                self.data_manager, 'raw_data_memmap', None) is not None else str(
+                self.data_manager.dat_path)
             refined_clusters = analysis_core.refine_cluster_v2(
                 spike_times_cluster,
                 dat_source,
@@ -64,16 +71,28 @@ class RefinementWorker(QObject):
             )
             self.finished.emit(self.cluster_id, refined_clusters)
         except Exception as e:
-            self.error.emit(f"Refinement failed for cluster {self.cluster_id}: {str(e)}")
+            self.error.emit(
+                f"Refinement failed for cluster {self.cluster_id}: {str(e)}")
+
 
 class RawTraceWorker(QObject):
     """
     Runs in a separate thread to load raw trace data without freezing the UI.
     """
-    data_loaded = Signal(int, object, float, float)  # cluster_id, raw_trace_data, start_time, end_time
+    data_loaded = Signal(
+        int,
+        object,
+        float,
+        float)  # cluster_id, raw_trace_data, start_time, end_time
     error = Signal(str)
 
-    def __init__(self, data_manager, cluster_id, nearest_channels, start_time, end_time):
+    def __init__(
+            self,
+            data_manager,
+            cluster_id,
+            nearest_channels,
+            start_time,
+            end_time):
         super().__init__()
         self.data_manager = data_manager
         self.cluster_id = cluster_id
@@ -84,34 +103,44 @@ class RawTraceWorker(QObject):
     def run(self):
         try:
             # Convert time range from seconds to samples
-            start_sample = int(self.start_time * self.data_manager.sampling_rate)
+            start_sample = int(
+                self.start_time *
+                self.data_manager.sampling_rate)
             end_sample = int(self.end_time * self.data_manager.sampling_rate)
-            
+
             # Ensure we stay within bounds
             start_sample = max(0, start_sample)
             end_sample = min(self.data_manager.n_samples, end_sample)
-            
+
             # Get the raw trace data for the nearest channels
             raw_trace_data = self.data_manager.get_raw_trace_snippet(
                 self.nearest_channels, start_sample, end_sample
             )
-            
+
             if raw_trace_data is not None and raw_trace_data.size > 0:
                 # Emit the loaded data
-                self.data_loaded.emit(self.cluster_id, raw_trace_data, self.start_time, self.end_time)
+                self.data_loaded.emit(
+                    self.cluster_id,
+                    raw_trace_data,
+                    self.start_time,
+                    self.end_time)
             else:
-                self.error.emit(f"No raw trace data available for cluster {self.cluster_id}")
+                self.error.emit(
+                    f"No raw trace data available for cluster {self.cluster_id}")
         except Exception as e:
-            self.error.emit(f"Raw trace loading failed for cluster {self.cluster_id}: {str(e)}")
+            self.error.emit(
+                f"Raw trace loading failed for cluster {self.cluster_id}: {str(e)}")
 
 # Add this new class to gui/workers.py
+
 
 class FeatureWorker(QObject):
     """
     Worker to calculate features (EI, snippets) in the background.
     This moves the slowest part of the cluster selection process off the main thread.
     """
-    features_ready = Signal(int, dict)  # Emits cluster_id and the features dictionary
+    features_ready = Signal(
+        int, dict)  # Emits cluster_id and the features dictionary
     error = Signal(str)
 
     def __init__(self, data_manager, cluster_id):
@@ -141,31 +170,35 @@ class FeatureWorker(QObject):
             sample_size = min(len(all_spikes), 100)
             spike_sample = all_spikes[:sample_size]
 
-            # 3. Perform the disk I/O for the small sample. Prefer memmap if set.
+            # 3. Perform the disk I/O for the small sample. Prefer memmap if
+            # set.
             if getattr(self.data_manager, 'raw_data_memmap', None) is not None:
                 dat_source = self.data_manager.raw_data_memmap
             else:
                 dat_source = str(self.data_manager.dat_path)
 
             snippets_raw = analysis_core.extract_snippets(
-                dat_source, spike_sample.astype(int), n_channels=self.data_manager.n_channels
-            )
-            
+                dat_source, spike_sample.astype(int), n_channels=self.data_manager.n_channels)
+
             # 4. Perform the rest of the feature calculation.
-            snippets_uV = snippets_raw.astype(np.float32) * self.data_manager.uV_per_bit
-            snippets_bc = analysis_core.baseline_correct(snippets_uV, pre_samples=20)
+            snippets_uV = snippets_raw.astype(
+                np.float32) * self.data_manager.uV_per_bit
+            snippets_bc = analysis_core.baseline_correct(
+                snippets_uV, pre_samples=20)
             median_ei = analysis_core.compute_ei(snippets_bc, pre_samples=20)
 
             features = {
-                'median_ei': median_ei, 
+                'median_ei': median_ei,
                 'raw_snippets': snippets_bc[:, :, :min(30, snippets_bc.shape[2])]
             }
-            
+
             # 5. Emit the results back to the main thread.
             self.features_ready.emit(self.cluster_id, features)
 
         except Exception as e:
-            self.error.emit(f"Feature extraction failed for cluster {self.cluster_id}: {str(e)}")
+            self.error.emit(
+                f"Feature extraction failed for cluster {self.cluster_id}: {str(e)}")
+
 
 class StandardPlotsWorker(QObject):
     """
@@ -195,7 +228,8 @@ class StandardPlotsWorker(QObject):
                     self.finished_cluster.emit(int(cluster_id))
                 except Exception as e:
                     # Don't crash the worker on a single failure.
-                    self.error.emit(f"Standard plot precompute failed for cluster {cluster_id}: {e}")
+                    self.error.emit(
+                        f"Standard plot precompute failed for cluster {cluster_id}: {e}")
             else:
                 QThread.msleep(100)
 

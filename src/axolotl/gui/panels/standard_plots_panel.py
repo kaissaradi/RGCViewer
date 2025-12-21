@@ -5,12 +5,13 @@ from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
 from scipy.interpolate import interp1d
-from analysis.constants import ISI_REFRACTORY_PERIOD_MS
+from ...analysis.constants import ISI_REFRACTORY_PERIOD_MS
 ISI_DENSITY_THRESHOLD = 5000  # switch to density view when > this many ISIs
 
 
 # Configure pyqtgraph for antialiasing
 pg.setConfigOptions(antialias=True)
+
 
 class StandardPlotsPanel(QWidget):
     """
@@ -18,15 +19,17 @@ class StandardPlotsPanel(QWidget):
     [ Template Grid ] [ Autocorrelation ]
     [ ISI Hist      ] [ Firing Rate     ]
     """
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Controls: top control bar
         ctrl_bar = QHBoxLayout()
-        # Set fixed height for control bar for consistency during rapid scrolling
+        # Set fixed height for control bar for consistency during rapid
+        # scrolling
         ctrl_bar_widget = QWidget()
         ctrl_bar_widget.setMaximumHeight(35)
         ctrl_bar_widget.setLayout(ctrl_bar)
@@ -34,13 +37,15 @@ class StandardPlotsPanel(QWidget):
         # Channel display mode
         ctrl_bar.addWidget(QLabel('Channel Display:'))
         self.channel_mode_combo = QComboBox()
-        self.channel_mode_combo.addItems(['Main Channel', 'Top Channels', 'Whole Array'])
+        self.channel_mode_combo.addItems(
+            ['Main Channel', 'Top Channels', 'Whole Array'])
         ctrl_bar.addWidget(self.channel_mode_combo)
 
         ctrl_bar.addStretch()
 
         # connect controls to refresh the panel immediately
-        self.channel_mode_combo.currentTextChanged.connect(self._on_control_changed)
+        self.channel_mode_combo.currentTextChanged.connect(
+            self._on_control_changed)
 
         layout.addWidget(ctrl_bar_widget)
 
@@ -124,15 +129,19 @@ class StandardPlotsPanel(QWidget):
         self.bottom_splitter.addWidget(isi_container)
 
         # ISI controls update the plot
-        self.isi_view_combo.currentTextChanged.connect(self._on_control_changed)
-        self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
-        self.update_refractory_btn.clicked.connect(self._update_refractory_period)
-        self.isi_display_combo.currentTextChanged.connect(self._on_control_changed)
-        self.isi_range_combo.currentTextChanged.connect(self._on_control_changed)
+        self.isi_view_combo.currentTextChanged.connect(
+            self._on_control_changed)
+        self.show_refractory_line_checkbox.stateChanged.connect(
+            self._on_control_changed)
+        self.update_refractory_btn.clicked.connect(
+            self._update_refractory_period)
+        self.isi_display_combo.currentTextChanged.connect(
+            self._on_control_changed)
+        self.isi_range_combo.currentTextChanged.connect(
+            self._on_control_changed)
 
         # Colormap for density view
         self._hot_lut = self._create_hot_colormap()
-
 
         # 4. Firing Rate (Bottom Right) with dual-axis for amplitude
         self.fr_plot = pg.PlotWidget(title="Signal Health")
@@ -144,7 +153,8 @@ class StandardPlotsPanel(QWidget):
         self.fr_viewbox = self.fr_plot.plotItem.getViewBox()
         self.fr_viewbox_right = pg.ViewBox()
         self.fr_plot.plotItem.scene().addItem(self.fr_viewbox_right)
-        # Link the right viewbox to the main one for synchronized panning/zooming on X-axis
+        # Link the right viewbox to the main one for synchronized
+        # panning/zooming on X-axis
         self.fr_viewbox_right.linkView(pg.ViewBox.XAxis, self.fr_viewbox)
 
         # Create right axis
@@ -164,26 +174,31 @@ class StandardPlotsPanel(QWidget):
 
         # --- persistent ACG bar item (reuse each update) ---
         self._acg_bar = None      # will be a BarGraphItem (or None if no data)
-        self._acg_zero_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
+        self._acg_zero_line = pg.InfiniteLine(
+            pos=0, angle=90, pen=pg.mkPen(
+                '#ffffff', width=2, style=Qt.DashLine))
 
         # --- persistent ISI objects ---
-        self._isi_hist_item = None     # step histogram as PlotDataItem (stepMode implemented via x,y)
-        self._isi_refractory_line = pg.InfiniteLine(0, angle=90, pen=pg.mkPen('r', style=Qt.DashLine))
+        # step histogram as PlotDataItem (stepMode implemented via x,y)
+        self._isi_hist_item = None
+        self._isi_refractory_line = pg.InfiniteLine(
+            0, angle=90, pen=pg.mkPen('r', style=Qt.DashLine))
 
         # --- persistent ISI vs Amp items ---
         self._isi_scatter = None
         self._isi_image = None
 
         # --- persistent FR items ---
-        self._fr_rate_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#ffeb3b', width=2), name='fr')
-        self._fr_amp_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#ffd700', width=1), name='amp')
+        self._fr_rate_curve = self.fr_plot.plot(
+            [], [], pen=pg.mkPen('#ffeb3b', width=2), name='fr')
+        self._fr_amp_curve = self.fr_plot.plot(
+            [], [], pen=pg.mkPen('#ffd700', width=1), name='amp')
 
         # keep a ref to image item LUT if needed
         if hasattr(self, '_hot_lut') and self._hot_lut is not None:
             self._hot_lut_local = self._hot_lut
         else:
             self._hot_lut_local = None
-
 
         try:
             self._on_control_changed()
@@ -221,7 +236,7 @@ class StandardPlotsPanel(QWidget):
         positions = [0, 0.33, 0.66, 1.0]
         cmap = pg.ColorMap(pos=positions, color=colors)
         return cmap.getLookupTable(start=0.0, stop=1.0, nPts=256)
-    
+
     def _apply_isi_range_preset(self, isi_ms):
         """Apply the X-range preset for the ISI plot."""
         if len(isi_ms) == 0:
@@ -235,7 +250,6 @@ class StandardPlotsPanel(QWidget):
         else:  # 'Full'
             x_max = float(isi_ms.max())
             self.isi_plot.setXRange(0.0, x_max * 1.05, padding=0)
-
 
     def _on_control_changed(self):
         """Called when a control changes; refresh the panel for the current selection."""
@@ -270,7 +284,9 @@ class StandardPlotsPanel(QWidget):
         sim_panel = getattr(self.main_window, 'similarity_panel', None)
         if sim_panel is not None:
             try:
-                if hasattr(sim_panel, 'main_cluster_id') and sim_panel.main_cluster_id != cluster_id:
+                if hasattr(
+                        sim_panel,
+                        'main_cluster_id') and sim_panel.main_cluster_id != cluster_id:
                     table = getattr(sim_panel, 'table', None)
                     sel_model = table.selectionModel() if table is not None else None
                     if sel_model is not None:
@@ -284,7 +300,9 @@ class StandardPlotsPanel(QWidget):
         # ------------------------------------------------------------------
         self.grid_plot.clear()
         try:
-            if hasattr(dm, 'templates') and dm.templates is not None and cluster_id < dm.templates.shape[0]:
+            if hasattr(
+                    dm,
+                    'templates') and dm.templates is not None and cluster_id < dm.templates.shape[0]:
                 template = dm.templates[cluster_id]  # (n_time, n_chan)
                 pos = dm.channel_positions
                 x_scale, y_scale = 1.5, 1.0
@@ -320,7 +338,8 @@ class StandardPlotsPanel(QWidget):
                     show_dots = True
 
                 # Cluster amplitude (mean)
-                cluster_amp = dm.get_cluster_mean_amplitude(cluster_id, method='mean')
+                cluster_amp = dm.get_cluster_mean_amplitude(
+                    cluster_id, method='mean')
 
                 # Channel values = normalized PTP * amplitude
                 if max_ptp == 0:
@@ -366,7 +385,8 @@ class StandardPlotsPanel(QWidget):
                             continue
                         x, y = pos[ch]
                         trace = template[:, ch]
-                        trace_scaled = (trace / max_ptp) * 20 if max_ptp > 0 else trace
+                        trace_scaled = (trace / max_ptp) * \
+                            20 if max_ptp > 0 else trace
                         t_offset = np.linspace(-10, 10, len(trace))
 
                         # Dark border
@@ -384,26 +404,32 @@ class StandardPlotsPanel(QWidget):
                         )
 
                     # Zero line on main channel
-                    if current_mode == 'Main Channel' and waveform_channels and main_channel_idx < len(pos):
+                    if current_mode == 'Main Channel' and waveform_channels and main_channel_idx < len(
+                            pos):
                         _, main_y = pos[main_channel_idx]
                         h_line = pg.InfiniteLine(
                             pos=main_y * y_scale,
                             angle=0,
-                            pen=pg.mkPen('#ffffff', width=1, style=Qt.DashLine),
+                            pen=pg.mkPen(
+                                '#ffffff',
+                                width=1,
+                                style=Qt.DashLine),
                         )
                         self.grid_plot.addItem(h_line)
 
                 # Similar-cluster overlays
                 sim_panel = getattr(self.main_window, 'similarity_panel', None)
                 selected_similar = []
-                if sim_panel is not None and getattr(sim_panel, 'table', None) is not None:
+                if sim_panel is not None and getattr(
+                        sim_panel, 'table', None) is not None:
                     sel_model = sim_panel.table.selectionModel()
                     if sel_model is not None:
                         selected_similar = sel_model.selectedRows()
 
                 if selected_similar and hasattr(sim_panel, 'similarity_model'):
                     sim_model = sim_panel.similarity_model
-                    if sim_model is not None and hasattr(sim_model, '_dataframe'):
+                    if sim_model is not None and hasattr(
+                            sim_model, '_dataframe'):
                         for idx in selected_similar[:3]:  # up to 3 overlays
                             row = idx.row()
                             if row >= len(sim_model._dataframe):
@@ -416,7 +442,8 @@ class StandardPlotsPanel(QWidget):
                                         continue
                                     x, y = pos[ch]
                                     trace = sim_template[:, ch]
-                                    trace_scaled = (trace / max_ptp) * 20 if max_ptp > 0 else trace
+                                    trace_scaled = (
+                                        trace / max_ptp) * 20 if max_ptp > 0 else trace
                                     t_offset = np.linspace(-10, 10, len(trace))
                                     self.grid_plot.plot(
                                         x * x_scale + t_offset,
@@ -465,7 +492,8 @@ class StandardPlotsPanel(QWidget):
         sim_panel = getattr(self.main_window, 'similarity_panel', None)
         selected_similar = []
         try:
-            if sim_panel is not None and getattr(sim_panel, 'table', None) is not None:
+            if sim_panel is not None and getattr(
+                    sim_panel, 'table', None) is not None:
                 sel_model = sim_panel.table.selectionModel()
                 if sel_model is not None:
                     selected_similar = sel_model.selectedRows()
@@ -478,13 +506,13 @@ class StandardPlotsPanel(QWidget):
                 first_idx = selected_similar[0]
                 row = first_idx.row()
                 if 0 <= row < len(sim_model._dataframe):
-                    similar_id = int(sim_model._dataframe.iloc[row]['cluster_id'])
+                    similar_id = int(
+                        sim_model._dataframe.iloc[row]['cluster_id'])
 
                     templates = getattr(dm, 'templates', None)
                     templates_n = templates.shape[0] if templates is not None else 0
                     if (
                         similar_id != cluster_id
-                        and similar_id < templates_n
                         and hasattr(sim_panel, 'main_cluster_id')
                         and sim_panel.main_cluster_id == cluster_id
                     ):
@@ -500,7 +528,8 @@ class StandardPlotsPanel(QWidget):
                             if spikes2_ms is None:
                                 spikes2 = data2.get('spikes')
                                 if spikes2 is not None:
-                                    spikes2_ms = (np.asarray(spikes2) / float(sr) * 1000.0).astype(int)
+                                    spikes2_ms = (
+                                        np.asarray(spikes2) / float(sr) * 1000.0).astype(int)
 
                         if spikes2_ms is None:
                             # Fallback: direct cluster spikes
@@ -509,7 +538,8 @@ class StandardPlotsPanel(QWidget):
                             except Exception:
                                 spikes2 = None
                             if spikes2 is not None and len(spikes2) > 0:
-                                spikes2_ms = (np.asarray(spikes2) / float(sr) * 1000.0).astype(int)
+                                spikes2_ms = (
+                                    np.asarray(spikes2) / float(sr) * 1000.0).astype(int)
 
                         if (
                             spikes_ms is not None and spikes2_ms is not None
@@ -518,35 +548,46 @@ class StandardPlotsPanel(QWidget):
                             spikes1_ms = np.asarray(spikes_ms, dtype=int)
                             spikes2_ms = np.asarray(spikes2_ms, dtype=int)
 
-                            duration = int(max(spikes1_ms[-1], spikes2_ms[-1]))
+                            # Safe duration calculation using np.max
+                            max_t1 = np.max(spikes1_ms) if len(spikes1_ms) > 0 else 0
+                            max_t2 = np.max(spikes2_ms) if len(spikes2_ms) > 0 else 0
+                            duration = int(max(max_t1, max_t2))
+
                             if duration > 0:
                                 bin_width_ms = 1
-                                bins = np.arange(0, duration + bin_width_ms, bin_width_ms, dtype=int)
+                                bins = np.arange(
+                                    0, duration + bin_width_ms, bin_width_ms, dtype=int)
 
-                                binned1, _ = np.histogram(spikes1_ms, bins=bins)
-                                binned2, _ = np.histogram(spikes2_ms, bins=bins)
+                                binned1, _ = np.histogram(
+                                    spikes1_ms, bins=bins)
+                                binned2, _ = np.histogram(
+                                    spikes2_ms, bins=bins)
 
                                 if len(binned1) > 0 and len(binned2) > 0:
                                     centered1 = binned1 - np.mean(binned1)
                                     centered2 = binned2 - np.mean(binned2)
 
-                                    ccg_full = correlate(centered1, centered2, mode='full')
+                                    ccg_full = correlate(
+                                        centered1, centered2, mode='full')
                                     zero_lag_idx = len(ccg_full) // 2
                                     max_lag_ms = 100
                                     num_bins = int(max_lag_ms / bin_width_ms)
                                     lag_range = min(num_bins, zero_lag_idx)
 
                                     if lag_range > 0:
-                                        ccg_symmetric = ccg_full[
-                                            zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1
-                                        ]
-                                        time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+                                        ccg_symmetric = ccg_full[zero_lag_idx - \
+                                            lag_range: zero_lag_idx + lag_range + 1]
+                                        time_lags = np.arange(-lag_range,
+                                                              lag_range + 1) * bin_width_ms
 
-                                        variance = np.sqrt(np.var(binned1) * np.var(binned2))
+                                        variance = np.sqrt(
+                                            np.var(binned1) * np.var(binned2))
                                         if variance != 0:
-                                            ccg_norm = ccg_symmetric / variance / len(binned1)
+                                            ccg_norm = ccg_symmetric / \
+                                                variance / len(binned1)
                                         else:
-                                            ccg_norm = ccg_symmetric.astype(float)
+                                            ccg_norm = ccg_symmetric.astype(
+                                                float)
 
                                         bar_graph = pg.BarGraphItem(
                                             x=time_lags,
@@ -558,13 +599,12 @@ class StandardPlotsPanel(QWidget):
                                         self.acg_plot.addItem(bar_graph)
 
                                         zero_line = pg.InfiniteLine(
-                                            pos=0,
-                                            angle=90,
-                                            pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine),
-                                        )
+                                            pos=0, angle=90, pen=pg.mkPen(
+                                                '#ffffff', width=2, style=Qt.DashLine), )
                                         self.acg_plot.addItem(zero_line)
 
-                                        self.acg_plot.setTitle(f"CCG: {cluster_id} vs {similar_id}")
+                                        self.acg_plot.setTitle(
+                                            f"CCG: {cluster_id} vs {similar_id}")
                                         similar_id_valid = True
 
         # Fallback: ACG from cache (or recompute once)
@@ -575,11 +615,13 @@ class StandardPlotsPanel(QWidget):
                 acg_norm = data.get('acg_norm')
 
             # Safety: recompute if cache missing
-            if (time_lags is None or acg_norm is None) and spikes_ms is not None and len(spikes_ms) > 1:
+            if (time_lags is None or acg_norm is None) and spikes_ms is not None and len(
+                    spikes_ms) > 1:
                 duration = int(spikes_ms[-1])
                 if duration > 0:
                     bin_width_ms = 1
-                    bins = np.arange(0, duration + bin_width_ms, bin_width_ms, dtype=int)
+                    bins = np.arange(
+                        0, duration + bin_width_ms, bin_width_ms, dtype=int)
                     binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
 
                     if len(binned_spikes) > 0:
@@ -592,10 +634,10 @@ class StandardPlotsPanel(QWidget):
                         lag_range = min(num_bins, zero_lag_idx)
 
                         if lag_range > 0:
-                            acg_symmetric = acg_full[
-                                zero_lag_idx - lag_range : zero_lag_idx + lag_range + 1
-                            ]
-                            time_lags = np.arange(-lag_range, lag_range + 1) * bin_width_ms
+                            acg_symmetric = acg_full[zero_lag_idx - \
+                                lag_range: zero_lag_idx + lag_range + 1]
+                            time_lags = np.arange(-lag_range,
+                                                  lag_range + 1) * bin_width_ms
 
                             # Zero out central peak
                             zero_idx = np.where(time_lags == 0)[0]
@@ -604,11 +646,13 @@ class StandardPlotsPanel(QWidget):
 
                             spike_variance = np.var(binned_spikes)
                             if spike_variance != 0:
-                                acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
+                                acg_norm = acg_symmetric / \
+                                    spike_variance / len(binned_spikes)
                             else:
                                 acg_norm = acg_symmetric.astype(float)
 
-            if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
+            if time_lags is not None and acg_norm is not None and len(
+                    time_lags) > 1:
                 bar_graph = pg.BarGraphItem(
                     x=time_lags,
                     height=acg_norm,
@@ -642,8 +686,10 @@ class StandardPlotsPanel(QWidget):
             current_isi_view = self.isi_view_combo.currentText()
 
             if current_isi_view == 'ISI Histogram':
-                if (hist_x is None or hist_y is None) and isi_ms is not None and len(isi_ms) > 0:
-                    hist_y, hist_x = np.histogram(isi_ms, bins=np.linspace(0, 50, 101))
+                if (hist_x is None or hist_y is None) and isi_ms is not None and len(
+                        isi_ms) > 0:
+                    hist_y, hist_x = np.histogram(
+                        isi_ms, bins=np.linspace(0, 50, 101))
 
                 if hist_x is not None and hist_y is not None:
                     self.isi_plot.plot(
@@ -677,15 +723,18 @@ class StandardPlotsPanel(QWidget):
 
                 if valid_isi is None or valid_amplitudes is None:
                     try:
-                        valid_isi, valid_amplitudes = dm.get_isi_vs_amplitude_data(cluster_id)
+                        valid_isi, valid_amplitudes = dm.get_isi_vs_amplitude_data(
+                            cluster_id)
                     except AttributeError:
                         # Older DataManager without caching: compute locally
-                        all_amplitudes = dm.get_cluster_spike_amplitudes(cluster_id)
-                        if isi_ms is not None and len(isi_ms) > 0 and len(all_amplitudes) > 1:
+                        all_amplitudes = dm.get_cluster_spike_amplitudes(
+                            cluster_id)
+                        if isi_ms is not None and len(
+                                isi_ms) > 0 and len(all_amplitudes) > 1:
                             min_len = min(len(isi_ms), len(all_amplitudes) - 1)
                             if min_len > 0:
                                 valid_isi = isi_ms[:min_len]
-                                valid_amplitudes = all_amplitudes[1 : min_len + 1]
+                                valid_amplitudes = all_amplitudes[1: min_len + 1]
 
                 if (
                     valid_isi is not None
@@ -716,10 +765,12 @@ class StandardPlotsPanel(QWidget):
                         nbins_isi = 100
                         nbins_amp = 80
 
-                        isi_min, isi_max = float(valid_isi.min()), float(valid_isi.max())
-                        amp_min, amp_max = float(valid_amplitudes.min()), float(
-                            valid_amplitudes.max()
-                        )
+                        isi_min, isi_max = float(
+                            valid_isi.min()), float(
+                            valid_isi.max())
+                        amp_min, amp_max = float(
+                            valid_amplitudes.min()), float(
+                            valid_amplitudes.max())
 
                         if isi_max <= isi_min:
                             isi_max = isi_min + 1e-3
@@ -738,7 +789,8 @@ class StandardPlotsPanel(QWidget):
                         H = np.flipud(H)
 
                         img = pg.ImageItem(H)
-                        if hasattr(self, '_hot_lut') and self._hot_lut is not None:
+                        if hasattr(self,
+                                   '_hot_lut') and self._hot_lut is not None:
                             img.setLookupTable(self._hot_lut)
 
                         rect = pg.QtCore.QRectF(
@@ -757,7 +809,8 @@ class StandardPlotsPanel(QWidget):
                     self._apply_isi_range_preset(valid_isi)
                 else:
                     # Not enough data → empty scatter
-                    self.isi_plot.plot([], [], pen=None, symbol='o', symbolSize=5)
+                    self.isi_plot.plot(
+                        [], [], pen=None, symbol='o', symbolSize=5)
                     self.isi_plot.setLabel('bottom', 'ISI (ms)')
                     self.isi_plot.setLabel('left', 'Amplitude (µV)')
 
@@ -801,15 +854,19 @@ class StandardPlotsPanel(QWidget):
                     fr_bin_centers = bin_edges[:-1]
 
                     # Bin amplitudes by time (same binning as FR)
-                    all_amplitudes = dm.get_cluster_spike_amplitudes(cluster_id)
+                    all_amplitudes = dm.get_cluster_spike_amplitudes(
+                        cluster_id)
                     if len(all_amplitudes) > 0:
                         amplitude_binned = []
                         for i in range(len(bin_edges) - 1):
                             bin_start = bin_edges[i]
                             bin_end = bin_edges[i + 1]
-                            mask = (spikes_sec >= bin_start) & (spikes_sec < bin_end)
+                            mask = (
+                                spikes_sec >= bin_start) & (
+                                spikes_sec < bin_end)
                             if np.any(mask):
-                                amplitude_binned.append(np.mean(all_amplitudes[mask]))
+                                amplitude_binned.append(
+                                    np.mean(all_amplitudes[mask]))
                             else:
                                 amplitude_binned.append(np.nan)
                         amplitude_binned = np.asarray(amplitude_binned)
@@ -830,20 +887,23 @@ class StandardPlotsPanel(QWidget):
                                     amp_y = f_interp(amp_x)
                                 except Exception:
                                     pass
-                            amp_ymax = float(np.nanmax(amp_y)) if np.any(~np.isnan(amp_y)) else None
+                            amp_ymax = float(
+                                np.nanmax(amp_y)) if np.any(
+                                ~np.isnan(amp_y)) else None
 
                         # Overlay averaged amplitude (normalized) on FR axis
                         if np.max(all_amplitudes) > 0 and np.max(fr_rate) > 0:
-                            normalized_amplitudes = all_amplitudes / np.max(all_amplitudes)
+                            normalized_amplitudes = all_amplitudes / \
+                                np.max(all_amplitudes)
                             if len(normalized_amplitudes) > 10:
                                 avg_amp = np.convolve(
-                                    normalized_amplitudes, np.ones(10) / 10.0, mode='valid'
-                                )
+                                    normalized_amplitudes, np.ones(10) / 10.0, mode='valid')
                                 overlay_y = avg_amp * 0.8 * np.max(fr_rate)
                                 overlay_x = spikes_sec[: len(overlay_y)]
 
             # Left axis: firing rate
-            if fr_bin_centers is not None and fr_rate is not None and len(fr_bin_centers) > 0:
+            if fr_bin_centers is not None and fr_rate is not None and len(
+                    fr_bin_centers) > 0:
                 if self._fr_rate_curve is None:
                     self._fr_rate_curve = self.fr_plot.plot(
                         fr_bin_centers,
@@ -855,7 +915,8 @@ class StandardPlotsPanel(QWidget):
             elif self._fr_rate_curve is not None:
                 self._fr_rate_curve.setData([], [])
             # Overlay averaged amplitude (green) on FR axis
-            if overlay_x is not None and overlay_y is not None and len(overlay_x) > 0:
+            if overlay_x is not None and overlay_y is not None and len(
+                    overlay_x) > 0:
                 if self._fr_overlay_curve is None:
                     self._fr_overlay_curve = self.fr_plot.plot(
                         overlay_x,

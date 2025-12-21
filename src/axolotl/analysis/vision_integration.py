@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 import logging
 logger = logging.getLogger(__name__)
@@ -11,6 +10,7 @@ except Exception:
     vl = None
     VISION_LOADER_AVAILABLE = False
     logger.info("'visionloader' not available; vision integration disabled")
+
 
 def load_vision_data(vision_dir: Path, dataset_name: str):
     """
@@ -26,9 +26,11 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
     """
     logger.debug(f"Loading Vision files from: {vision_dir}")
 
-    # If visionloader isn't available, return safe empty values so callers can continue
+    # If visionloader isn't available, return safe empty values so callers can
+    # continue
     if not VISION_LOADER_AVAILABLE:
-        logger.warning(f"visionloader is not available; skipping vision load for {vision_dir}")
+        logger.warning(
+            f"visionloader is not available; skipping vision load for {vision_dir}")
         return {'ei': None, 'sta': None, 'params': None}
 
     ei_data = None
@@ -56,6 +58,7 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
         'params': params_data
     }
 
+
 def load_ei_data(vision_dir: Path, dataset_name: str):
     """
     Loads Electrical Image (EI) data from a .ei file.
@@ -80,7 +83,7 @@ def load_ei_data(vision_dir: Path, dataset_name: str):
     except FileNotFoundError:
         logger.error(f"EI file not found in {vision_dir}")
         return None
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error loading EI data")
         return None
 
@@ -107,9 +110,10 @@ def load_sta_data(vision_dir: Path, dataset_name: str):
     except FileNotFoundError:
         logger.error(f"STA file not found in {vision_dir}")
         return None
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error loading STA data")
         return None
+
 
 def load_params_data(vision_dir: Path, dataset_name: str):
     """
@@ -134,6 +138,6 @@ def load_params_data(vision_dir: Path, dataset_name: str):
     except FileNotFoundError:
         logger.error(f"Params file not found in {vision_dir}")
         return None
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error loading params data")
         return None

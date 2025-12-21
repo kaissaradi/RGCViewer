@@ -1,21 +1,100 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QSplitter
+import matplotlib.pyplot as plt
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSplitter
 from qtpy.QtCore import Qt, QTimer
 import numpy as np
-from gui.widgets import MplCanvas
-from qtpy.QtWidgets import QSizePolicy, QComboBox, QScrollArea, QStackedWidget
+from ..widgets.widgets import MplCanvas
+from qtpy.QtWidgets import QSizePolicy, QComboBox, QStackedWidget
 import pyqtgraph as pg
-import pyqtgraph.opengl as gl
-from analysis import analysis_core
 from scipy.interpolate import griddata
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from gui.main_window import MainWindow
+    from ..main_window import MainWindow
 import logging
 logger = logging.getLogger(__name__)
 
-import matplotlib.pyplot as plt
-from gui.plot_widgets import EIMountainPlotWidget
+
+class EIMountainPlotWidget(QWidget):
+    """
+    Matplotlib 3D static mountain plot for EI max-projection.
+    This provides a stable, non-OpenGL 3D surface that can be rotated
+    with the mouse and works across platforms.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Main Layout
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+
+        # Matplotlib canvas
+        self.canvas = MplCanvas(self, width=8, height=6, dpi=100)
+        self.layout.addWidget(self.canvas)
+
+        self.ei_data = None
+        self.channel_positions = None
+        # grid resolution for interpolation
+        self.grid_res = 60j
+
+    def plot_ei_3d(self, ei_data, channel_positions):
+        """
+        Plot the Max-Projection (min over time, inverted) as a 3D surface.
+        """
+        self.ei_data = ei_data
+        self.channel_positions = channel_positions
+
+        # Compute spatial footprint (deepest negative trough per channel)
+        spatial_footprint = np.min(self.ei_data, axis=1)
+        # Invert so mountains rise up
+        z_values = spatial_footprint * -1.0
+
+        # Interpolate to grid
+        min_x, max_x = self.channel_positions[:, 0].min(
+        ), self.channel_positions[:, 0].max()
+        min_y, max_y = self.channel_positions[:, 1].min(
+        ), self.channel_positions[:, 1].max()
+
+        grid_x, grid_y = np.mgrid[min_x:max_x:self.grid_res,
+                                  min_y:max_y:self.grid_res]
+
+        grid_z = griddata(
+            self.channel_positions,
+            z_values,
+            (grid_x, grid_y),
+            method='linear',
+            fill_value=0
+        )
+        grid_z = np.nan_to_num(grid_z, nan=0.0)
+
+        # Render using Matplotlib 3D
+        self.canvas.fig.clear()
+        ax = self.canvas.fig.add_subplot(111, projection='3d')
+        ax.set_facecolor('#1f1f1f')
+        self.canvas.fig.patch.set_facecolor('#1f1f1f')
+
+        surf = ax.plot_surface(
+            grid_x, grid_y, grid_z,
+            cmap='plasma',
+            linewidth=0,
+            antialiased=False,
+            rcount=grid_z.shape[0],
+            ccount=grid_z.shape[1]
+        )
+
+        # Styling: hide axes for cleaner view
+        ax.set_axis_off()
+        ax.set_title('EI Max Projection (Voltage)', color='white')
+
+        # Optional subtle floor grid
+        # Draw and finish
+        self.canvas.draw()
+
+    def clear_plot(self):
+        self.canvas.fig.clear()
+        self.canvas.draw()
+        self.ei_data = None
+        self.channel_positions = None
 
 
 def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
@@ -28,7 +107,8 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     ax = fig.add_subplot(111)
 
     # 1. Calculate Time to First Significant Deflection (Latency) for every channel
-    # Instead of just finding the minimum, find when the signal first crosses a threshold
+    # Instead of just finding the minimum, find when the signal first crosses
+    # a threshold
     baseline = ei_data[:, :10].mean(axis=1)  # Use first 10 samples as baseline
     baseline_corrected = ei_data - baseline[:, np.newaxis]
 
@@ -40,7 +120,8 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     peak_indices = np.zeros(ei_data.shape[0], dtype=int)
     for i in range(ei_data.shape[0]):
         # Look for first crossing of the threshold
-        crossing_samples = np.where(baseline_corrected[i, :] <= threshold[i])[0]
+        crossing_samples = np.where(
+            baseline_corrected[i, :] <= threshold[i])[0]
         if len(crossing_samples) > 0:
             peak_indices[i] = crossing_samples[0]  # First crossing
         else:
@@ -50,13 +131,16 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     peak_times_ms = (peak_indices / sampling_rate) * 1000.0
 
     # Calculate amplitudes for sizing the dots
-    amplitudes = np.abs(np.min(ei_data, axis=1))  # Use absolute value of minimum for sizing
+    # Use absolute value of minimum for sizing
+    amplitudes = np.abs(np.min(ei_data, axis=1))
     # Normalize amplitudes for display (min size 10, max size 150)
     min_amp, max_amp = amplitudes.min(), amplitudes.max()
     if max_amp > min_amp:  # Avoid division by zero
-        normalized_sizes = 10 + 140 * (amplitudes - min_amp) / (max_amp - min_amp)
+        normalized_sizes = 10 + 140 * \
+            (amplitudes - min_amp) / (max_amp - min_amp)
     else:
-        normalized_sizes = np.full_like(amplitudes, 80.0)  # Default size if all amplitudes are the same
+        # Default size if all amplitudes are the same
+        normalized_sizes = np.full_like(amplitudes, 80.0)
 
     # 2. Plot all electrode positions with latency (color) and amplitude (size)
     sc = ax.scatter(
@@ -86,8 +170,10 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
 
     # Create a second legend-like axis for amplitude sizes
     # This will show the relationship between dot size and amplitude
-    axins = ax.inset_axes([0.02, 0.02, 0.4, 0.1])  # [left, bottom, width, height] in axes fraction
-    axins.set_facecolor((0.12, 0.12, 0.12, 0.7))  # Semi-transparent dark background
+    # [left, bottom, width, height] in axes fraction
+    axins = ax.inset_axes([0.02, 0.02, 0.4, 0.1])
+    # Semi-transparent dark background
+    axins.set_facecolor((0.12, 0.12, 0.12, 0.7))
 
     # Show a few representative dot sizes
     example_sizes = [20, 80, 140]  # Representing small, medium, large
@@ -97,11 +183,36 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
         amp_val = ((size - 10) / 140.0) * (max_amp - min_amp) + min_amp
         example_amps.append(amp_val)
 
-    axins.scatter([0.2, 0.5, 0.8], [0.5, 0.5, 0.5], s=example_sizes, c='white', edgecolor='white', alpha=0.8)
-    axins.text(0.2, 0.7, f'{example_amps[0]:.1f} µV', color='white', fontsize=8, ha='center')
-    axins.text(0.5, 0.7, f'{example_amps[1]:.1f} µV', color='white', fontsize=8, ha='center')
-    axins.text(0.8, 0.7, f'{example_amps[2]:.1f} µV', color='white', fontsize=8, ha='center')
-    axins.text(0.5, 0.9, 'Amplitude Size Legend', color='white', fontsize=9, ha='center')
+    axins.scatter([0.2, 0.5, 0.8], [0.5, 0.5, 0.5],
+                  s=example_sizes, c='white', edgecolor='white', alpha=0.8)
+    axins.text(
+        0.2,
+        0.7,
+        f'{example_amps[0]:.1f} µV',
+        color='white',
+        fontsize=8,
+        ha='center')
+    axins.text(
+        0.5,
+        0.7,
+        f'{example_amps[1]:.1f} µV',
+        color='white',
+        fontsize=8,
+        ha='center')
+    axins.text(
+        0.8,
+        0.7,
+        f'{example_amps[2]:.1f} µV',
+        color='white',
+        fontsize=8,
+        ha='center')
+    axins.text(
+        0.5,
+        0.9,
+        'Amplitude Size Legend',
+        color='white',
+        fontsize=9,
+        ha='center')
     axins.set_xlim(0, 1)
     axins.set_ylim(0, 1)
     axins.axis('off')
@@ -109,25 +220,31 @@ def plot_latency_map(fig, ei_data, channel_positions, sampling_rate):
     fig.tight_layout()
     fig.canvas.draw()
 
+
 def compute_ei_map(
-    ei: np.ndarray,
-    channel_positions: np.ndarray) -> np.ndarray:
+        ei: np.ndarray,
+        channel_positions: np.ndarray) -> np.ndarray:
 
     if ei.shape[0] != channel_positions.shape[0]:
-        logger.error("EI channel count mismatch: ei=%d, positions=%d", ei.shape[0], channel_positions.shape[0])
+        logger.error(
+            "EI channel count mismatch: ei=%d, positions=%d",
+            ei.shape[0],
+            channel_positions.shape[0])
         return None
 
     if ei.shape[0] != 512:
         # This is normal for vision data which can have different number of channels
-        # Only print the warning if the number of channels differs significantly
+        # Only print the warning if the number of channels differs
+        # significantly
         if ei.shape[0] not in [512, 519]:  # Common sizes in vision data
             logger.warning('Unexpected EI shape: %s', ei.shape)
 
     xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
     yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
 
-    y_dim = 30 # Fixed y dimension for scaling
-    x_dim = int((xrange[1] - xrange[0])/(yrange[1] - yrange[0]) * y_dim) # x dim is proportional to y dim
+    y_dim = 30  # Fixed y dimension for scaling
+    # x dim is proportional to y dim
+    x_dim = int((xrange[1] - xrange[0]) / (yrange[1] - yrange[0]) * y_dim)
 
     x_e = np.linspace(xrange[0], xrange[1], x_dim)
     y_e = np.linspace(yrange[0], yrange[1], y_dim)
@@ -150,6 +267,7 @@ class EIPanel(QWidget):
     """
     Panel for spatial/EI analysis, including controls and matplotlib canvas.
     """
+
     def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window  # Needed for data access and callbacks
@@ -169,7 +287,8 @@ class EIPanel(QWidget):
         # --- 2D Spatial EI Canvas ---
         self.spatial_canvas = MplCanvas(self, width=10, height=8, dpi=120)
         self.spatial_2d_layout.addWidget(self.spatial_canvas)
-        self.spatial_canvas.fig.canvas.mpl_connect('motion_notify_event', self.on_canvas_hover)
+        self.spatial_canvas.fig.canvas.mpl_connect(
+            'motion_notify_event', self.on_canvas_hover)
 
         # Overlay controls for 2D view
         overlay_control_layout = QHBoxLayout()
@@ -183,7 +302,8 @@ class EIPanel(QWidget):
         self.spatial_2d_layout.addLayout(overlay_control_layout)
 
         self.overlay_index = 0
-        self.overlay_dropdown.currentIndexChanged.connect(self._on_overlay_dropdown_changed)
+        self.overlay_dropdown.currentIndexChanged.connect(
+            self._on_overlay_dropdown_changed)
         self.overlay_left_btn.clicked.connect(self._on_overlay_left)
         self.overlay_right_btn.clicked.connect(self._on_overlay_right)
 
@@ -207,7 +327,8 @@ class EIPanel(QWidget):
         view_selection_layout = QHBoxLayout()
         view_selection_layout.addWidget(QLabel("View:"))
         self.view_dropdown = QComboBox()
-        self.view_dropdown.addItems(["2D Heatmap", "3D Mountain Plot", "Latency Map"])
+        self.view_dropdown.addItems(
+            ["2D Heatmap", "3D Mountain Plot", "Latency Map"])
         self.view_dropdown.currentTextChanged.connect(self._on_view_changed)
         view_selection_layout.addWidget(self.view_dropdown)
         view_selection_layout.addStretch()  # Add stretch to push dropdown to the left
@@ -239,8 +360,10 @@ class EIPanel(QWidget):
         right_layout.addWidget(self.temporal_widget)
         splitter.addWidget(right_widget)
         splitter.setSizes([400, 400])
-        self.spatial_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.temporal_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.spatial_canvas.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.temporal_plot.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         QTimer.singleShot(0, self.spatial_canvas.draw)
         # QTimer.singleShot(0, self.temporal_plot.draw)
@@ -264,7 +387,8 @@ class EIPanel(QWidget):
             distances = np.linalg.norm(positions - mouse_pos, axis=1)
             if distances.min() < 20:
                 closest_idx = distances.argmin()
-                self.main_window.status_bar.showMessage(f"Channel ID {closest_idx}")
+                self.main_window.status_bar.showMessage(
+                    f"Channel ID {closest_idx}")
             else:
                 self.main_window.status_bar.clearMessage()
 
@@ -272,7 +396,8 @@ class EIPanel(QWidget):
         """
         Main entry point: update the EI panel for one or more clusters.
         """
-        if not self.isVisible(): return
+        if not self.isVisible():
+            return
         cluster_ids = np.array(cluster_ids, dtype=int)
         if cluster_ids.ndim == 0:
             cluster_ids = np.array([cluster_ids], dtype=int)
@@ -280,26 +405,35 @@ class EIPanel(QWidget):
 
         # Check for Vision EI
         has_vision_ei = self.main_window.data_manager.vision_eis and any(
-            cid in self.main_window.data_manager.vision_eis for cid in vision_cluster_ids
-        )
+            cid in self.main_window.data_manager.vision_eis for cid in vision_cluster_ids)
 
         if has_vision_ei:
             self._load_and_draw_vision_ei(cluster_ids)
         else:
             if self.main_window.data_manager.vision_eis is not None:
-                logger.debug("No Vision EI found for cluster(s) %s; falling back to Kilosort EI", cluster_ids)
+                logger.debug(
+                    "No Vision EI found for cluster(s) %s; falling back to Kilosort EI",
+                    cluster_ids)
             else:
-                logger.debug("Vision EIs not loaded; falling back to Kilosort EI")
+                logger.debug(
+                    "Vision EIs not loaded; falling back to Kilosort EI")
             self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
 
-        # If the current view is the latency map, refresh it with the new cluster data
+        # If the current view is the latency map, refresh it with the new
+        # cluster data
         if self.current_view == "Latency Map":
-            if self.current_ei_data is not None and len(self.current_ei_data) > 0:
-                ei_data = self.current_ei_data[0]  # Use the first cluster's data
+            if self.current_ei_data is not None and len(
+                    self.current_ei_data) > 0:
+                # Use the first cluster's data
+                ei_data = self.current_ei_data[0]
                 channel_positions = self.main_window.data_manager.channel_positions
                 if self.main_window.data_manager.vision_channel_positions is not None:
                     channel_positions = self.main_window.data_manager.vision_channel_positions
-                plot_latency_map(self.spatial_canvas.fig, ei_data, channel_positions, self.main_window.data_manager.sampling_rate)
+                plot_latency_map(
+                    self.spatial_canvas.fig,
+                    ei_data,
+                    channel_positions,
+                    self.main_window.data_manager.sampling_rate)
 
     def clear(self):
         self.spatial_canvas.fig.clear()
@@ -317,21 +451,33 @@ class EIPanel(QWidget):
         # Filter out invalid cluster IDs before accessing vision data
         for i, cid in enumerate(vision_cluster_ids):
             original_id = cluster_ids[i]
-            if isinstance(cid, (int, np.integer)) and 0 < cid < 100000:  # Increased reasonable limit
+            if isinstance(cid, (int, np.integer)
+                          ) and 0 < cid < 100000:  # Increased reasonable limit
                 if cid in self.main_window.data_manager.vision_eis:
                     ei_entry = self.main_window.data_manager.vision_eis[cid]
-                    if hasattr(ei_entry, 'ei') and ei_entry.ei is not None and ei_entry.ei.ndim == 2:
+                    if hasattr(
+                            ei_entry,
+                            'ei') and ei_entry.ei is not None and ei_entry.ei.ndim == 2:
                         valid_ei_data_list.append(ei_entry.ei)
                         valid_original_ids.append(original_id)
                     else:
-                        logger.debug("EI for Vision cluster ID %s is invalid or not a 2D array", cid)
+                        logger.debug(
+                            "EI for Vision cluster ID %s is invalid or not a 2D array", cid)
                 else:
-                    logger.debug("Vision cluster ID %s (from original %s) not found in vision_eis", cid, original_id)
+                    logger.debug(
+                        "Vision cluster ID %s (from original %s) not found in vision_eis",
+                        cid,
+                        original_id)
             else:
-                logger.debug("Invalid Vision cluster ID %s (from original %s); skipping", cid, original_id)
+                logger.debug(
+                    "Invalid Vision cluster ID %s (from original %s); skipping",
+                    cid,
+                    original_id)
 
         if not valid_ei_data_list:
-            logger.debug("No valid EI data found for cluster IDs %s", cluster_ids)
+            logger.debug(
+                "No valid EI data found for cluster IDs %s",
+                cluster_ids)
             self.clear()
             return
 
@@ -358,9 +504,13 @@ class EIPanel(QWidget):
                     final_valid_ids.append(original_id)
                     final_valid_ei_data.append(ei_data)
                 else:
-                    logger.warning("Skipped drawing EI for cluster %s due to data mismatch", original_id)
-            except Exception as e:
-                logger.exception("Failed to compute EI map for cluster %s", original_id)
+                    logger.warning(
+                        "Skipped drawing EI for cluster %s due to data mismatch",
+                        original_id)
+            except Exception:
+                logger.exception(
+                    "Failed to compute EI map for cluster %s",
+                    original_id)
 
         if not ei_map_list:
             logger.error("No valid EI maps generated")
@@ -387,8 +537,12 @@ class EIPanel(QWidget):
         self.overlay_index = 0
 
         # Draw spatial and temporal EI using only the valid data
-        self._draw_vision_ei_spatial_overlay_only(self.current_ei_map_list, self.current_cluster_ids, top_channels)
-        self._draw_vision_ei_temporal(self.current_ei_data, self.current_cluster_ids, top_channels)
+        self._draw_vision_ei_spatial_overlay_only(
+            self.current_ei_map_list, self.current_cluster_ids, top_channels)
+        self._draw_vision_ei_temporal(
+            self.current_ei_data,
+            self.current_cluster_ids,
+            top_channels)
 
         # Update the 3D plot if it's available and we have valid data
         if self.current_ei_data and len(self.current_ei_data) > 0:
@@ -407,58 +561,83 @@ class EIPanel(QWidget):
         else:
             super().keyPressEvent(event)
 
-    def _draw_vision_ei_spatial_overlay_only(self, ei_map_list, cluster_ids, channels=None):
-            """
-            Draw only the overlay axis, even for multiple clusters.
-            """
-            n_clusters = len(ei_map_list)
-            self.spatial_canvas.fig.clear()
+    def _draw_vision_ei_spatial_overlay_only(
+            self, ei_map_list, cluster_ids, channels=None):
+        """
+        Draw only the overlay axis, even for multiple clusters.
+        """
+        n_clusters = len(ei_map_list)
+        self.spatial_canvas.fig.clear()
 
-            # Always show overlay controls if multiple clusters
-            if n_clusters > 1:
-                self.overlay_left_btn.show()
-                self.overlay_right_btn.show()
-                self.overlay_dropdown.show()
-            else:
-                self.overlay_left_btn.hide()
-                self.overlay_right_btn.hide()
-                self.overlay_dropdown.hide()
+        # Always show overlay controls if multiple clusters
+        if n_clusters > 1:
+            self.overlay_left_btn.show()
+            self.overlay_right_btn.show()
+            self.overlay_dropdown.show()
+        else:
+            self.overlay_left_btn.hide()
+            self.overlay_right_btn.hide()
+            self.overlay_dropdown.hide()
 
-            # Draw only one axis: the overlay
-            ax = self.spatial_canvas.fig.add_subplot(111)
-            overlay_idx = getattr(self, "overlay_index", 0)
-            overlay_idx = np.clip(overlay_idx, 0, n_clusters - 1)
-            # ax.set_title(f"Overlay: Cluster {cluster_ids[overlay_idx]}")
+        # Draw only one axis: the overlay
+        ax = self.spatial_canvas.fig.add_subplot(111)
+        overlay_idx = getattr(self, "overlay_index", 0)
+        overlay_idx = np.clip(overlay_idx, 0, n_clusters - 1)
+        # ax.set_title(f"Overlay: Cluster {cluster_ids[overlay_idx]}")
 
-            channel_positions = self.main_window.data_manager.channel_positions
-            xrange = (np.min(channel_positions[:, 0]), np.max(channel_positions[:, 0]))
-            yrange = (np.min(channel_positions[:, 1]), np.max(channel_positions[:, 1]))
+        channel_positions = self.main_window.data_manager.channel_positions
+        xrange = (np.min(channel_positions[:, 0]), np.max(
+            channel_positions[:, 0]))
+        yrange = (np.min(channel_positions[:, 1]), np.max(
+            channel_positions[:, 1]))
 
-            im = ax.imshow(
-                ei_map_list[overlay_idx], cmap='hot', aspect='auto', origin='lower',
-                extent = (xrange[0], xrange[1], yrange[0], yrange[1])
-            )
-            # cbar
-            # self.spatial_canvas.fig.colorbar(im, ax=ax, label='log10(abs(EI amplitude))')
-            ax.axis('off')
+        im = ax.imshow(
+            ei_map_list[overlay_idx],
+            cmap='hot',
+            aspect='auto',
+            origin='lower',
+            extent=(
+                xrange[0],
+                xrange[1],
+                yrange[0],
+                yrange[1]))
+        # cbar
+        # self.spatial_canvas.fig.colorbar(im, ax=ax, label='log10(abs(EI amplitude))')
+        ax.axis('off')
 
-            if channels is not None:
-                for j, ch in enumerate(channels):
-                    x, y = channel_positions[ch]
-                    ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
-                    ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
+        if channels is not None:
+            for j, ch in enumerate(channels):
+                x, y = channel_positions[ch]
+                ax.plot(
+                    x,
+                    y,
+                    'go',
+                    markersize=3,
+                    markerfacecolor='none',
+                    markeredgewidth=2)
+                ax.text(
+                    x,
+                    y,
+                    str(j),
+                    color='cyan',
+                    fontsize=6,
+                    ha='center',
+                    va='center')
 
-            self.spatial_canvas.fig.suptitle(f"Spatial EI {cluster_ids[overlay_idx]}", color='white', fontsize=16)
-            self.spatial_canvas.fig.tight_layout()
-            self.spatial_canvas.draw()
+        self.spatial_canvas.fig.suptitle(
+            f"Spatial EI {cluster_ids[overlay_idx]}",
+            color='white',
+            fontsize=16)
+        self.spatial_canvas.fig.tight_layout()
+        self.spatial_canvas.draw()
 
-            # Update dropdown
-            self.overlay_dropdown.blockSignals(True)
-            self.overlay_dropdown.clear()
-            for cid in cluster_ids:
-                self.overlay_dropdown.addItem(str(cid))
-            self.overlay_dropdown.setCurrentIndex(overlay_idx)
-            self.overlay_dropdown.blockSignals(False)
+        # Update dropdown
+        self.overlay_dropdown.blockSignals(True)
+        self.overlay_dropdown.clear()
+        for cid in cluster_ids:
+            self.overlay_dropdown.addItem(str(cid))
+        self.overlay_dropdown.setCurrentIndex(overlay_idx)
+        self.overlay_dropdown.blockSignals(False)
 
     def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
         """
@@ -471,8 +650,10 @@ class EIPanel(QWidget):
             self.temporal_widget.addItem(plot_item, i, 0)  # Add to grid layout
 
             for j, ei_data in enumerate(ei_data_list):
-                time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
-                plot_item.plot(time, ei_data[ch, :], pen=pg.mkPen(color=pg.intColor(j, hues=len(cluster_ids)), width=2), name=f'Cluster {cluster_ids[j]}')
+                time = np.arange(
+                    ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
+                plot_item.plot(time, ei_data[ch, :], pen=pg.mkPen(color=pg.intColor(
+                    j, hues=len(cluster_ids)), width=2), name=f'Cluster {cluster_ids[j]}')
 
             plot_item.setLabel('left', f'{i}: {ch}')
             plot_item.setLabel('bottom', 'Time (ms)')
@@ -484,113 +665,18 @@ class EIPanel(QWidget):
         # self.temporal_plot.setAspectLocked(True)
         # self.temporal_plot.showGrid(x=True, y=True)
 
-    # def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
-    #     """
-    #     Example: Plot temporal EI traces for the given clusters.
-    #     """
-    #     self.temporal_canvas.fig.clear()
-    #     n_channels = len(channels)
-    #     n_rows = n_channels
-    #     n_cols = 1
-    #     axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols, sharex=True, sharey=True)
-    #     axes = axes.flatten() if n_channels > 1 else [axes]
 
-    #     for i, ch in enumerate(channels):
-    #         ax = axes[i]
-    #         for j, ei_data in enumerate(ei_data_list):
-    #             time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
-    #             ax.plot(time, ei_data[ch, :], alpha=0.7, label=f'Cluster {cluster_ids[j]}')
-    #         ax.set_title(f"{i} Chan {ch}")
-    #         ax.set_xlabel("Time (ms)")
-    #         # ax.set_ylabel("Amplitude (µV)")
-    #         # ax.legend()
-    #         ax.grid(True)
-    #         ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
 
-    #     # Turn off any unused axes
-    #     for k in range(i+1, len(axes)):
-    #         axes[k].axis('off')
 
-    #     # Legend over top of all subplots shared across top row
-    #     handles, labels = axes[0].get_legend_handles_labels()
-    #     if handles:
-    #         self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
-
-    #     self.temporal_canvas.fig.suptitle("Temporal EI", color='white', fontsize=16)
-    #     self.temporal_canvas.fig.tight_layout()
-    #     self.temporal_canvas.draw()
-
-    # def _draw_vision_ei_spatial(self, ei_map_list, cluster_ids, channels=None):
-    #     n_clusters = len(ei_map_list)
-    #     self.spatial_canvas.fig.clear()
-
-    #     # Show/hide overlay controls based on number of clusters
-    #     if n_clusters > 1:
-    #         self.overlay_left_btn.show()
-    #         self.overlay_right_btn.show()
-    #         self.overlay_dropdown.show()
-    #         n_cols = min(n_clusters, self.n_max_cols)
-    #         n_rows = (n_clusters + n_cols - 2) // n_cols + 1  # +1 for overlay axis
-    #         axes = self.spatial_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
-    #         axes = axes.flatten()
-
-    #         # --- Overlay axis ---
-    #         overlay_ax = axes[0]
-    #         overlay_idx = getattr(self, "overlay_index", 0)
-    #         overlay_idx = np.clip(overlay_idx, 0, n_clusters - 1)
-    #         overlay_ax.set_title(f"Overlay: Cluster {cluster_ids[overlay_idx]}")
-    #         im = overlay_ax.imshow(ei_map_list[overlay_idx], cmap='hot', aspect='equal', origin='lower')
-    #         if channels is not None:
-    #             for j, ch in enumerate(channels):
-    #                 y, x = np.unravel_index(ch, ei_map_list[overlay_idx].shape)
-    #                 overlay_ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
-    #                 overlay_ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
-
-    #         # --- Rest of the grid ---
-    #         for i, ei_map in enumerate(ei_map_list):
-    #             ax = axes[i+1]
-    #             ax.set_title(f"Cluster {cluster_ids[i]} EI")
-    #             im = ax.imshow(ei_map, cmap='hot', aspect='equal', origin='lower')
-    #             if channels is not None:
-    #                 for j, ch in enumerate(channels):
-    #                     y, x = np.unravel_index(ch, ei_map.shape)
-    #                     ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
-    #                     ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
-    #         # Turn off any unused axes
-    #         for k in range(i+2, len(axes)):
-    #             axes[k].axis('off')
-
-    #         # Update dropdown
-    #         self.overlay_dropdown.blockSignals(True)
-    #         self.overlay_dropdown.clear()
-    #         for cid in cluster_ids:
-    #             self.overlay_dropdown.addItem(str(cid))
-    #         self.overlay_dropdown.setCurrentIndex(overlay_idx)
-    #         self.overlay_dropdown.blockSignals(False)
-
-    #     else:
-    #         # Only one cluster: hide overlay controls, show only one axis
-    #         self.overlay_left_btn.hide()
-    #         self.overlay_right_btn.hide()
-    #         self.overlay_dropdown.hide()
-    #         ax = self.spatial_canvas.fig.add_subplot(111)i NO
-    #         ax.set_title(f"Cluster {cluster_ids[0]} EI")
-    #         im = ax.imshow(ei_map_list[0], cmap='hot', aspect='equal', origin='lower')
-    #         if channels is not None:
-    #             for j, ch in enumerate(channels):
-    #                 y, x = np.unravel_index(ch, ei_map_list[0].shape)
-    #                 ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
-    #                 ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
-
-        self.spatial_canvas.fig.suptitle("Spatial EI", color='white', fontsize=16)
-        self.spatial_canvas.fig.tight_layout()
-        self.spatial_canvas.draw()
 
     def _on_overlay_dropdown_changed(self, idx):
         self.overlay_index = idx
         # Redraw overlay axis only
         # self._draw_vision_ei_spatial(self.current_ei_map_list, self.current_cluster_ids, self.current_channels)
-        self._draw_vision_ei_spatial_overlay_only(self.current_ei_map_list, self.current_cluster_ids, self.current_channels)
+        self._draw_vision_ei_spatial_overlay_only(
+            self.current_ei_map_list,
+            self.current_cluster_ids,
+            self.current_channels)
 
     def _on_overlay_left(self):
         if self.overlay_index > 0:
@@ -619,7 +705,8 @@ class EIPanel(QWidget):
                 channel_positions = self.main_window.data_manager.channel_positions
                 if self.main_window.data_manager.vision_channel_positions is not None:
                     channel_positions = self.main_window.data_manager.vision_channel_positions
-                self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
+                self.mountain_plot_widget.plot_ei_3d(
+                    ei_data, channel_positions)
         elif text == "Latency Map":
             # Use the existing 2D canvas for the latency scatter
             self.spatial_stack_widget.setCurrentIndex(0)
@@ -628,10 +715,14 @@ class EIPanel(QWidget):
                 channel_positions = self.main_window.data_manager.channel_positions
                 if self.main_window.data_manager.vision_channel_positions is not None:
                     channel_positions = self.main_window.data_manager.vision_channel_positions
-                plot_latency_map(self.spatial_canvas.fig, ei_data, channel_positions, self.main_window.data_manager.sampling_rate)
+                plot_latency_map(
+                    self.spatial_canvas.fig,
+                    ei_data,
+                    channel_positions,
+                    self.main_window.data_manager.sampling_rate)
 
     def _get_top_electrodes(self, ei, n_interval=2, n_markers=5, b_sort=True):
-        ## Label top n_markers pixels spaced by n_interval in the heatmap
+        # Label top n_markers pixels spaced by n_interval in the heatmap
 
         # Compute simple EI map in channel space
         ei_map = np.max(np.abs(ei), axis=1)
@@ -654,27 +745,43 @@ class EIPanel(QWidget):
     def _load_and_draw_ks_ei(self, cluster_ids, is_fallback=False):
         if not hasattr(cluster_ids, '__len__') or len(cluster_ids) == 0:
             self.clear()
-            self.spatial_canvas.fig.text(0.5, 0.5, "No cluster ID provided.", ha='center', va='center', color='orange')
+            self.spatial_canvas.fig.text(
+                0.5,
+                0.5,
+                "No cluster ID provided.",
+                ha='center',
+                va='center',
+                color='orange')
             self.spatial_canvas.draw()
             return
 
         cluster_id = cluster_ids[0]  # Operate on the first cluster ID
 
-        lightweight_features = self.main_window.data_manager.get_lightweight_features(cluster_id)
-        heavyweight_features = self.main_window.data_manager.get_heavyweight_features(cluster_id)
+        lightweight_features = self.main_window.data_manager.get_lightweight_features(
+            cluster_id)
+        heavyweight_features = self.main_window.data_manager.get_heavyweight_features(
+            cluster_id)
         if lightweight_features is None or heavyweight_features is None:
             self.clear()
-            self.spatial_canvas.fig.text(0.5, 0.5, "Error generating features.", ha='center', va='center', color='red')
+            self.spatial_canvas.fig.text(
+                0.5,
+                0.5,
+                "Error generating features.",
+                ha='center',
+                va='center',
+                color='red')
             self.spatial_canvas.draw()
             return
 
         self.spatial_canvas.fig.clear()
-        from analysis import analysis_core
-        analysis_core.plot_rich_ei(
-            self.spatial_canvas.fig, lightweight_features['median_ei'],
+        from ..plotting import plotting
+        plotting.plot_rich_ei(
+            self.spatial_canvas.fig,
+            lightweight_features['median_ei'],
             self.main_window.data_manager.channel_positions,
-            heavyweight_features, self.main_window.data_manager.sampling_rate, pre_samples=20
-        )
+            heavyweight_features,
+            self.main_window.data_manager.sampling_rate,
+            pre_samples=20)
 
         title = f"Cluster {cluster_id} Spatial Analysis"
         if is_fallback:
@@ -687,19 +794,4 @@ class EIPanel(QWidget):
             ei_data = lightweight_features['median_ei']
             channel_positions = self.main_window.data_manager.channel_positions
             self.mountain_plot_widget.plot_ei_3d(ei_data, channel_positions)
-
-    def _reshape_ei(
-        self, ei: np.ndarray,
-        sorted_electrodes: np.ndarray, n_rows: int=16) -> np.ndarray:
-
-        if ei.shape[0] != 512:
-            print(f'Warning: Expected EI shape (512, 201), got {ei.shape}')
-        n_electrodes = ei.shape[0]
-        n_frames = ei.shape[1]
-        n_cols = n_electrodes // n_rows
-        if n_cols * n_rows != n_electrodes:
-            raise ValueError(f"Number of electrodes {n_electrodes} is not compatible with {n_rows} rows and {n_cols} columns.")
-        sorted_ei = ei[sorted_electrodes]
-        reshaped_ei = sorted_ei.reshape(n_rows, n_cols, n_frames)
-        return reshaped_ei
 

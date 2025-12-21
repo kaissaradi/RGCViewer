@@ -5,7 +5,7 @@ import logging
 from qtpy.QtCore import QCoreApplication, Qt
 from qtpy.QtGui import QSurfaceFormat
 from qtpy.QtWidgets import QApplication
-from gui.main_window import MainWindow
+from src.axolotl.gui.main_window import MainWindow
 
 def setup_logging(debug_mode):
     # If not in debug mode, set level to WARNING to hide INFO and DEBUG statements

@@ -5,28 +5,28 @@ from qtpy.QtWidgets import (
     QPushButton, QSplitter, QStatusBar,
     QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel,
-    QMenu, QInputDialog, QStackedWidget, QLineEdit,
-    QApplication, QTextEdit, QCheckBox
+    QMenu, QInputDialog, QStackedWidget, QApplication,
+    QTextEdit, QCheckBox
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
 import pyqtgraph as pg
-from analysis import analysis_core
-from analysis.data_manager import DataManager
+from ..analysis import analysis_core
+from ..analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
-from gui.widgets import MplCanvas, HighlightStatusPandasModel, CustomTableView
-import gui.callbacks as callbacks
-import gui.plotting as plotting
-from gui.panels.similarity_panel import SimilarityPanel
-from gui.panels.waveforms_panel import WaveformPanel
-from gui.panels.standard_plots_panel import StandardPlotsPanel
-from gui.panels.ei_panel import EIPanel
-from gui.panels.raw_panel import RawPanel
-from gui.workers import FeatureWorker
-from gui.shortcuts import KeyForwarder
+from .widgets.widgets import MplCanvas, HighlightStatusPandasModel, CustomTableView
+from . import callbacks
+from .plotting import plotting
+from .panels.similarity_panel import SimilarityPanel
+from .panels.waveforms_panel import WaveformPanel
+from .panels.standard_plots_panel import StandardPlotsPanel
+from .panels.ei_panel import EIPanel
+from .panels.raw_panel import RawPanel
+from .workers.workers import FeatureWorker
+from .shortcuts import KeyForwarder
 from PyQt5.QtGui import QColor
-from gui.panels.umap_panel import UMAPPanel
+from .panels.umap_panel import UMAPPanel
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
@@ -45,7 +45,6 @@ class MainWindow(QMainWindow):
         self.data_manager: Optional[DataManager] = None
         self.main_cluster_model = None
 
-
         self.tree_model = QStandardItemModel()
         self.refine_thread = None
         self.refinement_worker = None
@@ -59,8 +58,6 @@ class MainWindow(QMainWindow):
         self.standard_plots_worker = None
 
         self.spatial_plot_dirty = False
-
-
 
         self.current_spatial_features = None
         # --- Timer for EI Animation ---
@@ -84,7 +81,8 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
-        self.status_bar.showMessage("Welcome to axolotl. Please load a Kilosort directory to begin.")
+        self.status_bar.showMessage(
+            "Welcome to axolotl. Please load a Kilosort directory to begin.")
 
         # selection timer for debouncing rapid selections
         self.selection_timer = QTimer(self)
@@ -121,8 +119,11 @@ class MainWindow(QMainWindow):
             # Find the currently selected leaf
             selected = sel_model.selectedIndexes()
             if not selected or selected[0] not in leaf_indices:
-                # Select first leaf if nothing is selected or selection is not a leaf
-                sel_model.select(leaf_indices[0], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                # Select first leaf if nothing is selected or selection is not
+                # a leaf
+                sel_model.select(
+                    leaf_indices[0],
+                    QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 view.scrollTo(leaf_indices[0])
                 return
             current_idx = leaf_indices.index(selected[0])
@@ -130,7 +131,9 @@ class MainWindow(QMainWindow):
                 new_idx = max(0, current_idx - 1)
             else:
                 new_idx = min(len(leaf_indices) - 1, current_idx + 1)
-            sel_model.select(leaf_indices[new_idx], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            sel_model.select(
+                leaf_indices[new_idx],
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             view.scrollTo(leaf_indices[new_idx])
         else:
             # Table view logic
@@ -138,7 +141,8 @@ class MainWindow(QMainWindow):
             if not current.isValid():
                 # Select first row if nothing is selected
                 index = model.index(0, 0)
-                sel_model.setCurrentIndex(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                sel_model.setCurrentIndex(
+                    index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 view.scrollTo(index)
                 return
             current_row = current.row()
@@ -147,7 +151,8 @@ class MainWindow(QMainWindow):
             else:
                 new_row = min(model.rowCount() - 1, current_row + 1)
             index = model.index(new_row, 0)
-            sel_model.setCurrentIndex(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            sel_model.setCurrentIndex(
+                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             view.scrollTo(index)
 
     def _setup_style(self):
@@ -183,9 +188,11 @@ class MainWindow(QMainWindow):
         if cluster_id is None:
             return
 
-        self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
+        self.status_bar.showMessage(
+            f"Loading data for Cluster ID: {cluster_id}...")
 
-        cached_features = self.data_manager.get_lightweight_features(cluster_id)
+        cached_features = self.data_manager.get_lightweight_features(
+            cluster_id)
         if cached_features:
             self._draw_plots(cluster_id, cached_features)
             return
@@ -195,17 +202,20 @@ class MainWindow(QMainWindow):
             # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
             if self.feature_worker_thread and self.feature_worker_thread.isRunning():
                 self.feature_worker_thread.quit()
-                self.feature_worker_thread.wait() # ensure previous thread fully stops before starting a new one
+                # ensure previous thread fully stops before starting a new one
+                self.feature_worker_thread.wait()
 
             self.feature_worker_thread = QThread()
             self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
             self.feature_worker.moveToThread(self.feature_worker_thread)
             self.feature_worker.features_ready.connect(self.on_features_ready)
-            self.feature_worker.error.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
+            self.feature_worker.error.connect(
+                lambda msg: self.status_bar.showMessage(msg, 4000))
             self.feature_worker_thread.started.connect(self.feature_worker.run)
             self.feature_worker_thread.start()
         else:
-            self.status_bar.showMessage("Raw data file not loaded: waveform plot disabled.", 4000)
+            self.status_bar.showMessage(
+                "Raw data file not loaded: waveform plot disabled.", 4000)
             self._draw_plots(cluster_id, None)
 
     def on_features_ready(self, cluster_id, features):
@@ -258,7 +268,8 @@ class MainWindow(QMainWindow):
             if self.data_manager and self.data_manager.vision_stas:
                 self.select_sta_view(self.current_sta_view)
             else:
-                # Use the appropriate canvas based on current view - use RF canvas as default
+                # Use the appropriate canvas based on current view - use RF
+                # canvas as default
                 canvas_to_use = self.rf_canvas
                 canvas_to_use.fig.clear()
                 canvas_to_use.fig.text(
@@ -270,7 +281,6 @@ class MainWindow(QMainWindow):
                     color='gray',
                 )
                 canvas_to_use.draw()
-
 
     def _draw_plots(self, cluster_id, features):
         """Only update what's actually visible."""
@@ -299,7 +309,6 @@ class MainWindow(QMainWindow):
                 self.select_sta_view(self.current_sta_view)
 
         self.status_bar.showMessage("Ready.", 2000)
-
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
@@ -332,8 +341,10 @@ class MainWindow(QMainWindow):
         view_switch_layout = QHBoxLayout()
         self.tree_view_button = QPushButton("Tree View")
         self.table_view_button = QPushButton("Table View")
-        self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
-        self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
+        self.tree_view_button.clicked.connect(
+            lambda: self._switch_left_view(0))
+        self.table_view_button.clicked.connect(
+            lambda: self._switch_left_view(1))
         view_switch_layout.addWidget(self.tree_view_button)
         view_switch_layout.addWidget(self.table_view_button)
 
@@ -346,15 +357,19 @@ class MainWindow(QMainWindow):
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
-        self.tree_view.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
+        self.tree_view.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove)
+        self.tree_view.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(
+            self.open_tree_context_menu)
 
         # Table View
         self.table_view = CustomTableView()
         self.table_view.setSortingEnabled(True)
         self.table_view.setAlternatingRowColors(True)
-        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table_view.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive)
 
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
@@ -363,7 +378,8 @@ class MainWindow(QMainWindow):
 
         self.refine_button = QPushButton("Refine Selected Cluster")
         self.refine_button.setFixedHeight(40)
-        self.refine_button.setStyleSheet("font-size: 14px; font-weight: bold; color: #aeffe3; background-color: #005230;")
+        self.refine_button.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #aeffe3; background-color: #005230;")
 
         left_content_layout.addLayout(filter_box)
         left_content_layout.addLayout(view_switch_layout)
@@ -373,7 +389,8 @@ class MainWindow(QMainWindow):
         # --- Similarity Panel ---
         self.similarity_panel = SimilarityPanel(self)
         left_content_layout.addWidget(self.similarity_panel)
-        self.similarity_panel.selection_changed.connect(self.on_similarity_selection_changed)
+        self.similarity_panel.selection_changed.connect(
+            self.on_similarity_selection_changed)
 
         # Add the toggle button and content to the left pane
         left_layout.addWidget(self.sidebar_toggle_button)
@@ -389,37 +406,42 @@ class MainWindow(QMainWindow):
 
         # Create Tab Widget
         self.analysis_tabs = QTabWidget()
-        
+
         # New Checkbox for Population Split View (Moved to Top Right of Tabs)
         self.pop_view_checkbox = QCheckBox("Population Split View")
-        self.pop_view_checkbox.toggled.connect(self.toggle_population_split_view)
-        
+        self.pop_view_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.pop_view_checkbox.toggled.connect(
+            self.toggle_population_split_view)
+
         # Place checkbox in the top-right corner of the tab bar
-        self.analysis_tabs.setCornerWidget(self.pop_view_checkbox, Qt.TopRightCorner)
+        self.analysis_tabs.setCornerWidget(
+            self.pop_view_checkbox, Qt.TopRightCorner)
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
         # ---- inside _setup_ui(): build pop_context_widget contents ----
         pop_layout = QVBoxLayout(self.pop_context_widget)
-        pop_layout.setContentsMargins(4,4,4,4)
+        pop_layout.setContentsMargins(4, 4, 4, 4)
         pop_layout.setSpacing(6)
 
         # Top: Population RF (existing)
         self.pop_mosaic_canvas = MplCanvas(width=6, height=4, dpi=100)
         pop_layout.addWidget(self.pop_mosaic_canvas, stretch=3)
 
-        # Middle + Bottom: make a vertical splitter with two panels (middle=timecourse, bottom=placeholder)
+        # Middle + Bottom: make a vertical splitter with two panels
+        # (middle=timecourse, bottom=placeholder)
         self.pop_timecourse_splitter = QSplitter(Qt.Orientation.Vertical)
         # Middle panel widget
         self.pop_timecourse_widget = QWidget()
         mid_layout = QVBoxLayout(self.pop_timecourse_widget)
-        mid_layout.setContentsMargins(2,2,2,2)
+        mid_layout.setContentsMargins(2, 2, 2, 2)
 
         # Header row for middle panel: title + summary
         hdr = QHBoxLayout()
         hdr_label = QLabel("Population Average Timecourse")
         hdr_label.setStyleSheet("font-weight:bold;")
-        self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        self.pop_timecourse_summary = QLabel(
+            "n=0  mean_t2p: N/A  mean_fwhm: N/A")
         hdr.addWidget(hdr_label)
         hdr.addStretch()
         hdr.addWidget(self.pop_timecourse_summary)
@@ -434,7 +456,7 @@ class MainWindow(QMainWindow):
         # Bottom placeholder panel
         self.pop_bottom_widget = QWidget()
         bottom_layout = QVBoxLayout(self.pop_bottom_widget)
-        bottom_layout.setContentsMargins(2,2,2,2)
+        bottom_layout.setContentsMargins(2, 2, 2, 2)
         bottom_label = QLabel("Population - Reserved")
         bottom_layout.addWidget(bottom_label)
         self.pop_bottom_canvas = MplCanvas(width=6, height=2, dpi=100)
@@ -454,7 +476,8 @@ class MainWindow(QMainWindow):
 
         # Start hidden by default
         self.pop_context_widget.hide()
-        self.right_splitter.setSizes([1200, 0])  # initial ratio: all space to tabs
+        # initial ratio: all space to tabs
+        self.right_splitter.setSizes([1200, 0])
 
         right_layout.addWidget(self.right_splitter)
 
@@ -463,7 +486,7 @@ class MainWindow(QMainWindow):
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
-        
+
         self.umap_panel = UMAPPanel(self)
 
         # --- STA Analysis Panel (Re-parented) ---
@@ -475,16 +498,16 @@ class MainWindow(QMainWindow):
         self.sta_population_rfs_button = QPushButton("Population RFs")
         self.sta_animation_button = QPushButton("Play Animation")
         self.sta_animation_stop_button = QPushButton("Stop Animation")
-        
-        self.sta_population_rfs_button.clicked.connect(
-    lambda: self.select_sta_view("rf" if self.current_sta_view == "population_rfs" else "population_rfs"))
+
+        self.sta_population_rfs_button.clicked.connect(lambda: self.select_sta_view(
+            "rf" if self.current_sta_view == "population_rfs" else "population_rfs"))
         self.sta_animation_button.clicked.connect(self.toggle_animation)
         self.sta_animation_stop_button.clicked.connect(self.stop_animation)
         sta_control_layout.addWidget(self.sta_population_rfs_button)
         sta_control_layout.addWidget(self.sta_animation_button)
         sta_control_layout.addWidget(self.sta_animation_stop_button)
-        
-        sta_control_layout.addStretch() # Push buttons to left
+
+        sta_control_layout.addStretch()  # Push buttons to left
 
         # --- Add Frame Slider and Label for STA Animation ---
         self.sta_frame_controls_layout = QHBoxLayout()
@@ -500,7 +523,8 @@ class MainWindow(QMainWindow):
 
         self.sta_frame_prev_button.clicked.connect(self.prev_sta_frame)
         self.sta_frame_next_button.clicked.connect(self.next_sta_frame)
-        self.sta_frame_slider.valueChanged.connect(self.update_sta_frame_manual)
+        self.sta_frame_slider.valueChanged.connect(
+            self.update_sta_frame_manual)
 
         self.sta_frame_controls_layout.addWidget(self.sta_frame_prev_button)
         self.sta_frame_controls_layout.addWidget(self.sta_frame_slider)
@@ -512,13 +536,26 @@ class MainWindow(QMainWindow):
 
         # --- Create 4 Quadrants for STA Analysis ---
         self.rf_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.rf_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
+        self.rf_canvas.fig.text(
+            0.5,
+            0.5,
+            "No STA data selected",
+            ha='center',
+            va='center',
+            color='gray')
         self.rf_canvas.draw()
         self.rf_canvas.clicked.connect(self.on_rf_canvas_clicked)
-        self.rf_canvas.setToolTip("Click to toggle between RF view and animation")
+        self.rf_canvas.setToolTip(
+            "Click to toggle between RF view and animation")
 
         self.timecourse_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.timecourse_canvas.fig.text(0.5, 0.5, "No STA data selected", ha='center', va='center', color='gray')
+        self.timecourse_canvas.fig.text(
+            0.5,
+            0.5,
+            "No STA data selected",
+            ha='center',
+            va='center',
+            color='gray')
         self.timecourse_canvas.draw()
 
         self.sta_metrics_text = QTextEdit()
@@ -533,12 +570,20 @@ class MainWindow(QMainWindow):
                 padding: 10px;
             }
         """)
-        self.sta_metrics_text.setPlaceholderText("Select a cell to view STA metrics...")
+        self.sta_metrics_text.setPlaceholderText(
+            "Select a cell to view STA metrics...")
 
-        self.temporal_filter_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.temporal_filter_canvas.fig.text(0.5, 0.5, "Temporal Analysis", ha='center', va='center', color='gray')
+        self.temporal_filter_canvas = MplCanvas(
+            self, width=5, height=4, dpi=120)
+        self.temporal_filter_canvas.fig.text(
+            0.5,
+            0.5,
+            "Temporal Analysis",
+            ha='center',
+            va='center',
+            color='gray')
         self.temporal_filter_canvas.draw()
-        
+
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
         self.sta_canvas.hide()
 
@@ -557,7 +602,7 @@ class MainWindow(QMainWindow):
         self.sta_splitter.addWidget(self.top_splitter)
         self.sta_splitter.addWidget(self.bottom_splitter)
         self.sta_splitter.setSizes([400, 300])
-        
+
         sta_layout.addLayout(sta_control_layout, 0)
         sta_layout.addLayout(self.sta_frame_controls_layout, 0)
         sta_layout.addWidget(self.sta_splitter, 1)
@@ -574,7 +619,7 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([450, 1350]) # Adjusted initial size
+        self.main_splitter.setSizes([450, 1350])  # Adjusted initial size
         main_layout.addWidget(self.main_splitter)
 
         self.status_bar = QStatusBar()
@@ -586,7 +631,8 @@ class MainWindow(QMainWindow):
         load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
         self.load_vision_action = file_menu.addAction("&Load Vision Files...")
         self.load_vision_action.setEnabled(False)
-        self.load_classification_action = file_menu.addAction("&Load Classification File...")
+        self.load_classification_action = file_menu.addAction(
+            "&Load Classification File...")
         self.load_classification_action.setEnabled(False)
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
@@ -594,7 +640,8 @@ class MainWindow(QMainWindow):
         # Connect Signals to Callback Functions ---
         load_ks_action.triggered.connect(lambda: self.load_directory())
         self.load_vision_action.triggered.connect(self.load_vision_directory)
-        self.load_classification_action.triggered.connect(self.load_classification_file)
+        self.load_classification_action.triggered.connect(
+            self.load_classification_file)
         self.save_action.triggered.connect(self.on_save_action)
         self.filter_button.clicked.connect(self.apply_good_filter)
         self.reset_button.clicked.connect(self.reset_views)
@@ -602,8 +649,10 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
         # Connect the raw panel's status and error messages to the status bar
-        self.raw_panel.status_message.connect(lambda msg: self.status_bar.showMessage(msg, 3000))
-        self.raw_panel.error_message.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
+        self.raw_panel.status_message.connect(
+            lambda msg: self.status_bar.showMessage(msg, 3000))
+        self.raw_panel.error_message.connect(
+            lambda msg: self.status_bar.showMessage(msg, 4000))
 
     def toggle_population_split_view(self, checked: bool):
         """Toggles the global population context pane (right side)."""
@@ -613,13 +662,15 @@ class MainWindow(QMainWindow):
             # show the right-hand population widget
             self.pop_context_widget.show()
 
-            # Expand it to a sensible size (give about 20-30% to the right pane)
+            # Expand it to a sensible size (give about 20-30% to the right
+            # pane)
             total = sum(self.right_splitter.sizes()) or 1400
             left_size = max(int(total * 0.75), 400)
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
 
-            # If a cluster/cell is selected, draw its population mosaic immediately
+            # If a cluster/cell is selected, draw its population mosaic
+            # immediately
             selected = None
             try:
                 selected = self._get_selected_cluster_id()  # adapt to your selector fun
@@ -627,17 +678,16 @@ class MainWindow(QMainWindow):
                 selected = None
 
             # Call plotting routine with explicit canvas
-            import gui.plotting as plotting
-            import gui.callbacks as callbacks
-            plotting.draw_population_rfs_plot(main_window=self, selected_cell_id=selected,
-                                             canvas=self.pop_mosaic_canvas)
+            plotting.draw_population_rfs_plot(
+                main_window=self,
+                selected_cell_id=selected,
+                canvas=self.pop_mosaic_canvas)
             callbacks.redraw_population_panels(self)
         else:
             # hide it
             self.pop_context_widget.hide()
             # collapse the right column completely
             self.right_splitter.setSizes([sum(self.right_splitter.sizes()), 0])
-
 
     def _switch_left_view(self, index):
         """Switches between the tree and table views in the left pane."""
@@ -656,23 +706,28 @@ class MainWindow(QMainWindow):
             index = self.tree_view.selectionModel().selectedIndexes()[0]
             item = self.tree_model.itemFromIndex(index)
 
-            # Only leaf nodes (cells) have a cluster ID stored. Groups will return None.
+            # Only leaf nodes (cells) have a cluster ID stored. Groups will
+            # return None.
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
             return cluster_id
 
         # Case 2: Table View is active
         elif current_view_index == 1:
-            if not self.table_view.selectionModel().hasSelection() or self.main_cluster_model is None:
+            if not self.table_view.selectionModel(
+            ).hasSelection() or self.main_cluster_model is None:
                 return None
 
-            selected_row = self.table_view.selectionModel().selectedIndexes()[0].row()
+            selected_row = self.table_view.selectionModel().selectedIndexes()[
+                0].row()
 
             # Check if the model has mapToSource method (for proxy models)
             model = self.table_view.model()
             if hasattr(model, 'mapToSource'):
-                # The pandas model can be sorted, so we must map the view's row to the model's row
+                # The pandas model can be sorted, so we must map the view's row
+                # to the model's row
                 source_index = model.mapToSource(model.index(selected_row, 0))
-                cluster_id = model._dataframe.iloc[source_index.row()]['cluster_id']
+                cluster_id = model._dataframe.iloc[source_index.row(
+                )]['cluster_id']
             else:
                 # If no proxy model, use the row directly
                 cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
@@ -707,39 +762,46 @@ class MainWindow(QMainWindow):
                         row = df[df['cluster_id'] == cluster_id].iloc[0]
                         group_label = row.get('KSLabel')
                         if group_label:
-                            return df[df['KSLabel'] == group_label]['cluster_id'].tolist()
+                            return df[df['KSLabel'] ==
+                                      group_label]['cluster_id'].tolist()
                     except Exception as e:
-                        logger.warning(f"Could not determine group for cluster {cluster_id}: {e}")
-            return [cluster_id] # Fallback to just the selected cluster
+                        logger.warning(
+                            f"Could not determine group for cluster {cluster_id}: {e}")
+            return [cluster_id]  # Fallback to just the selected cluster
 
         # Case 2: A group/folder is selected in the Tree View
-        elif self.view_stack.currentIndex() == 0: # Tree View
+        elif self.view_stack.currentIndex() == 0:  # Tree View
             selection = self.tree_view.selectionModel().selectedIndexes()
             if selection:
                 index = selection[0]
                 item = self.tree_model.itemFromIndex(index)
-                if item and item.data(Qt.ItemDataRole.UserRole) is None: # It's a group
+                if item and item.data(
+                        Qt.ItemDataRole.UserRole) is None:  # It's a group
                     return self._get_group_cluster_ids(item)
 
-        return [] # Return empty list if no valid selection
+        return []  # Return empty list if no valid selection
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
         try:
-            self.tree_view.selectionModel().selectionChanged.disconnect(self.on_view_selection_changed)
+            self.tree_view.selectionModel().selectionChanged.disconnect(
+                self.on_view_selection_changed)
         except (TypeError, RuntimeError):
             pass
-        self.tree_view.selectionModel().selectionChanged.connect(self.on_view_selection_changed)
+        self.tree_view.selectionModel().selectionChanged.connect(
+            self.on_view_selection_changed)
 
     def setup_table_model(self, model):
         """Sets up the table view model and connects the selection changed signal."""
         self.table_view.setModel(model)
         try:
-            self.table_view.selectionModel().selectionChanged.disconnect(self.on_view_selection_changed)
+            self.table_view.selectionModel().selectionChanged.disconnect(
+                self.on_view_selection_changed)
         except (TypeError, RuntimeError):
             pass
-        self.table_view.selectionModel().selectionChanged.connect(self.on_view_selection_changed)
+        self.table_view.selectionModel().selectionChanged.connect(
+            self.on_view_selection_changed)
 
     # --- Methods to bridge UI signals to callback functions ---
     def load_directory(self, kilosort_dir=None, dat_file=None):
@@ -768,27 +830,36 @@ class MainWindow(QMainWindow):
                 if hasattr(model, '_data'):
                     df = model._data
                     if cluster_id in df['cluster_id'].values:
-                        row_indices = df.index[df['cluster_id'] == cluster_id].tolist()
+                        row_indices = df.index[df['cluster_id']
+                                               == cluster_id].tolist()
                         if row_indices:
                             model_row = df.index.get_loc(row_indices[0])
                             source_index = model.index(model_row, 0)
-                            # This assumes the model is a proxy model if sorting is enabled
-                            view_index = model.mapFromSource(source_index) if hasattr(model, 'mapFromSource') else source_index
+                            # This assumes the model is a proxy model if
+                            # sorting is enabled
+                            view_index = model.mapFromSource(source_index) if hasattr(
+                                model, 'mapFromSource') else source_index
                             if view_index.isValid():
-                                self.table_view.selectionModel().select(view_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-                                self.table_view.scrollTo(view_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                                self.table_view.selectionModel().select(
+                                    view_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                                self.table_view.scrollTo(
+                                    view_index, QAbstractItemView.ScrollHint.PositionAtCenter)
 
             # Sync from Table to Tree
             elif sender == self.table_view.selectionModel():
                 for row in range(self.tree_model.rowCount()):
                     group_item = self.tree_model.item(row)
-                    if not group_item: continue
+                    if not group_item:
+                        continue
                     for child_row in range(group_item.rowCount()):
                         child_item = group_item.child(child_row)
-                        if child_item and child_item.data(Qt.ItemDataRole.UserRole) == cluster_id:
+                        if child_item and child_item.data(
+                                Qt.ItemDataRole.UserRole) == cluster_id:
                             index = self.tree_model.indexFromItem(child_item)
-                            self.tree_view.selectionModel().select(index, QItemSelectionModel.ClearAndSelect)
-                            self.tree_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                            self.tree_view.selectionModel().select(
+                                index, QItemSelectionModel.ClearAndSelect)
+                            self.tree_view.scrollTo(
+                                index, QAbstractItemView.ScrollHint.PositionAtCenter)
                             break
                     else:
                         continue
@@ -809,14 +880,17 @@ class MainWindow(QMainWindow):
             # If no similar clusters are selected, just plot the main cluster
             clusters_to_plot = [main_cluster]
         else:
-            # If no main cluster is selected, just plot the selected similar clusters
+            # If no main cluster is selected, just plot the selected similar
+            # clusters
             clusters_to_plot = selected_cluster_ids
-        logger.debug(f'on_similarity_selection_changed: main_cluster = {main_cluster}')
-        logger.debug(f'on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
+        logger.debug(
+            f'on_similarity_selection_changed: main_cluster = {main_cluster}')
+        logger.debug(
+            f'on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
 
         self.ei_panel.update_ei(clusters_to_plot)
         self.waveforms_panel.update_all(main_cluster)
-        
+
         if main_cluster is not None:
             self.standard_plots_panel.update_all(main_cluster)
 
@@ -828,7 +902,8 @@ class MainWindow(QMainWindow):
     def _update_tree_view_duplicate_highlight(self):
         # Collect all duplicate IDs
         sdf = self.data_manager.status_df
-        duplicate_ids = sdf[sdf['status'] == 'Duplicate']['cluster_id'].tolist()
+        duplicate_ids = sdf[sdf['status'] ==
+                            'Duplicate']['cluster_id'].tolist()
         duplicate_ids = set(duplicate_ids)
         for row in range(self.tree_model.rowCount()):
             group_item = self.tree_model.item(row)
@@ -875,8 +950,20 @@ class MainWindow(QMainWindow):
             # Clear both canvases
             self.rf_canvas.fig.clear()
             self.timecourse_canvas.fig.clear()
-            self.rf_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
-            self.timecourse_canvas.fig.text(0.5, 0.5, "No Vision STA data available", ha='center', va='center', color='gray')
+            self.rf_canvas.fig.text(
+                0.5,
+                0.5,
+                "No Vision STA data available",
+                ha='center',
+                va='center',
+                color='gray')
+            self.timecourse_canvas.fig.text(
+                0.5,
+                0.5,
+                "No Vision STA data available",
+                ha='center',
+                va='center',
+                color='gray')
             self.rf_canvas.draw()
             self.timecourse_canvas.draw()
             self.sta_frame_slider.setEnabled(False)
@@ -899,14 +986,17 @@ class MainWindow(QMainWindow):
         if view_type == "population_rfs":
             # This button press should always draw the population plot in the MAIN STA view (rf_canvas),
             # overriding the single-cell RF plot drawn by draw_sta_plot above.
-            plotting.draw_population_rfs_plot(self, selected_cell_id=cluster_id, canvas=self.rf_canvas)
+            plotting.draw_population_rfs_plot(
+                self, selected_cell_id=cluster_id, canvas=self.rf_canvas)
         elif view_type == "animation" or force_animation:
             # Animation should only affect the RF plot
             plotting.draw_sta_animation_plot(self, cluster_id)
 
     def update_sta_frame_manual(self, frame_index):
         """Updates the STA visualization to a specific frame manually."""
-        if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
+        if hasattr(
+                self,
+                'current_sta_data') and self.current_sta_data is not None:
             # Stop any running animation
             plotting.stop_sta_animation(self)
 
@@ -914,10 +1004,12 @@ class MainWindow(QMainWindow):
             self.current_frame_index = frame_index
 
             # Update the label
-            self.sta_frame_label.setText(f"Frame: {frame_index+1}/{self.total_sta_frames}")
-            # Update the STA canvas with the new frame - use RF canvas for animation
+            self.sta_frame_label.setText(
+                f"Frame: {frame_index+1}/{self.total_sta_frames}")
+            # Update the STA canvas with the new frame - use RF canvas for
+            # animation
             self.rf_canvas.fig.clear()
-            analysis_core.animate_sta_movie(
+            plotting.animate_sta_movie(
                 self.rf_canvas.fig,
                 self.current_sta_data,
                 frame_index=frame_index,
@@ -925,14 +1017,20 @@ class MainWindow(QMainWindow):
                 sta_height=self.data_manager.vision_sta_height
             )
             cluster_id = self.current_sta_cluster_id - 1  # Convert back to 0-indexed
-            self.rf_canvas.fig.suptitle(f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}", color='white', fontsize=16) # this overlaps with self.sta_frame_label
+            self.rf_canvas.fig.suptitle(
+                f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}",
+                color='white',
+                fontsize=16)  # this overlaps with self.sta_frame_label
             self.rf_canvas.draw()
 
     def _advance_frame_internal(self):
         """Internal method for the timer to call without stopping itself."""
-        if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
+        if hasattr(
+                self,
+                'current_sta_data') and self.current_sta_data is not None:
             # Increment frame and loop back to 0 if at the end
-            self.current_frame_index = (self.current_frame_index + 1) % self.total_sta_frames
+            self.current_frame_index = (
+                self.current_frame_index + 1) % self.total_sta_frames
 
             # --- FIX: Block signals so we don't trigger update_sta_frame_manual ---
             self.sta_frame_slider.blockSignals(True)
@@ -940,11 +1038,12 @@ class MainWindow(QMainWindow):
             self.sta_frame_slider.blockSignals(False)
             # ---------------------------------------------------------------------
 
-            self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
+            self.sta_frame_label.setText(
+                f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
 
             # Redraw the RF canvas
             self.rf_canvas.fig.clear()
-            analysis_core.animate_sta_movie(
+            plotting.animate_sta_movie(
                 self.rf_canvas.fig,
                 self.current_sta_data,
                 stafit=self.current_stafit,
@@ -956,16 +1055,21 @@ class MainWindow(QMainWindow):
 
     def prev_sta_frame(self):
         """Go to the previous frame in the STA animation."""
-        if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
-            plotting.stop_sta_animation(self)  # Stop the animation when manually navigating
-            self.current_frame_index = (self.current_frame_index - 1) % self.total_sta_frames
+        if hasattr(
+                self,
+                'current_sta_data') and self.current_sta_data is not None:
+            # Stop the animation when manually navigating
+            plotting.stop_sta_animation(self)
+            self.current_frame_index = (
+                self.current_frame_index - 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
-            self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
+            self.sta_frame_label.setText(
+                f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
             self.rf_canvas.fig.clear()
-            analysis_core.animate_sta_movie(
+            plotting.animate_sta_movie(
                 self.rf_canvas.fig,
                 self.current_sta_data,
-                stafit=self.current_stafit, # <-- Pass the stored fit
+                stafit=self.current_stafit,  # <-- Pass the stored fit
                 frame_index=self.current_frame_index,
                 sta_width=self.data_manager.vision_sta_width,
                 sta_height=self.data_manager.vision_sta_height
@@ -974,16 +1078,21 @@ class MainWindow(QMainWindow):
 
     def next_sta_frame(self):
         """Go to the next frame in the STA animation."""
-        if hasattr(self, 'current_sta_data') and self.current_sta_data is not None:
-            plotting.stop_sta_animation(self)  # Stop the animation when manually navigating
-            self.current_frame_index = (self.current_frame_index + 1) % self.total_sta_frames
+        if hasattr(
+                self,
+                'current_sta_data') and self.current_sta_data is not None:
+            # Stop the animation when manually navigating
+            plotting.stop_sta_animation(self)
+            self.current_frame_index = (
+                self.current_frame_index + 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
-            self.sta_frame_label.setText(f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
+            self.sta_frame_label.setText(
+                f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
             self.rf_canvas.fig.clear()
-            analysis_core.animate_sta_movie(
+            plotting.animate_sta_movie(
                 self.rf_canvas.fig,
                 self.current_sta_data,
-                stafit=self.current_stafit, # <-- Pass the stored fit
+                stafit=self.current_stafit,  # <-- Pass the stored fit
                 frame_index=self.current_frame_index,
                 sta_width=self.data_manager.vision_sta_width,
                 sta_height=self.data_manager.vision_sta_height
@@ -999,13 +1108,14 @@ class MainWindow(QMainWindow):
         item = self.tree_model.itemFromIndex(index)
         add_group_action = menu.addAction("Add New Group")
 
-        if item.hasChildren(): # when clicking the group item
+        if item.hasChildren():  # when clicking the group item
             feature_extraction_action = menu.addAction("Feature Extraction")
 
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
         if action == add_group_action:
-            text, ok = QInputDialog.getText(self, 'New Group', 'Enter group name:')
+            text, ok = QInputDialog.getText(
+                self, 'New Group', 'Enter group name:')
             if ok and text:
                 callbacks.add_new_group(self, text)
         elif action == feature_extraction_action:
@@ -1023,7 +1133,9 @@ class MainWindow(QMainWindow):
             return
 
         # Update the animation button text based on current state
-        if hasattr(self, 'sta_animation_timer') and self.sta_animation_timer and self.sta_animation_timer.isActive():
+        if hasattr(
+                self,
+                'sta_animation_timer') and self.sta_animation_timer and self.sta_animation_timer.isActive():
             # Currently playing, so stop it
             plotting.stop_sta_animation(self)
             self.sta_animation_button.setText("Play Animation")
@@ -1046,7 +1158,8 @@ class MainWindow(QMainWindow):
             # Start animation
             self.current_sta_view = "animation"
             self.select_sta_view("animation", force_animation=True)
-            self.status_bar.showMessage("Started animation. Click again to stop.", 2000)
+            self.status_bar.showMessage(
+                "Started animation. Click again to stop.", 2000)
         elif self.current_sta_view == "animation":
             # Stop animation and go back to RF
             self.stop_animation()
@@ -1057,12 +1170,14 @@ class MainWindow(QMainWindow):
             # From population view, go to RF view
             self.current_sta_view = "rf"
             self.select_sta_view("rf")
-            self.status_bar.showMessage("Switched to single-cell RF view.", 2000)
+            self.status_bar.showMessage(
+                "Switched to single-cell RF view.", 2000)
 
     def stop_animation(self):
         """Stop the animation completely."""
         plotting.stop_sta_animation(self)
-        self.sta_animation_button.setText("Play Animation")  # Reset button to Play
+        self.sta_animation_button.setText(
+            "Play Animation")  # Reset button to Play
 
     def toggle_sidebar(self):
         """Collapses or expands the left sidebar by manipulating the main splitter."""
@@ -1071,7 +1186,8 @@ class MainWindow(QMainWindow):
             self.sidebar_toggle_button.setText("◀")
             widths = self.main_splitter.sizes()
             total_width = sum(widths)
-            self.main_splitter.setSizes([self.last_left_width, total_width - self.last_left_width])
+            self.main_splitter.setSizes(
+                [self.last_left_width, total_width - self.last_left_width])
             self.sidebar_collapsed = False
         else:
             # --- COLLAPSE ---
@@ -1087,7 +1203,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handles the window close event."""
         if self.data_manager and self.data_manager.is_dirty:
-            reply = QMessageBox.question(self, 'Unsaved Changes',
+            reply = QMessageBox.question(
+                self,
+                'Unsaved Changes',
                 "You have unsaved refinement changes. Do you want to save before exiting?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             if reply == QMessageBox.StandardButton.Save:
@@ -1097,7 +1215,9 @@ class MainWindow(QMainWindow):
                 return
         callbacks.stop_worker(self)
         # Stop any running raw trace worker
-        if hasattr(self, 'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
+        if hasattr(
+                self,
+                'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
             self.raw_panel.worker_thread.quit()
             self.raw_panel.worker_thread.wait()
         event.accept()

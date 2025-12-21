@@ -1,18 +1,18 @@
 from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox, QButtonGroup, QRadioButton
 from qtpy.QtCore import Signal, QItemSelectionModel
-from gui.widgets import HighlightStatusPandasModel, CustomTableView
-import numpy as np
+from ..widgets.widgets import HighlightStatusPandasModel, CustomTableView
 import pandas as pd
-from analysis.constants import EI_CORR_THRESHOLD
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from gui.main_window import MainWindow
+    from ..main_window import MainWindow
 import logging
 logger = logging.getLogger(__name__)
 
+
 class SimilarityPanel(QWidget):
-    # Signal emitted when the selection changes; sends list of selected cluster IDs
+    # Signal emitted when the selection changes; sends list of selected
+    # cluster IDs
     selection_changed = Signal(list)
 
     def __init__(self, main_window: MainWindow, parent=None):
@@ -87,7 +87,6 @@ class SimilarityPanel(QWidget):
         # self.unsure_button.clicked.connect(lambda: self._mark_status('Unsure'))
         self.mark_button.clicked.connect(self._mark_selected_status)
 
-
         self.similarity_model = None
 
         # Connect selection change after model is set (see set_data)
@@ -105,10 +104,12 @@ class SimilarityPanel(QWidget):
         """Emit the list of selected cluster IDs."""
         indexes = self.table.selectionModel().selectedRows()
         if self.similarity_model is not None:
-            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id']
+                            for idx in indexes]
             self.selection_changed.emit(selected_ids)
         else:
-            # If model is not set, emit empty list to handle deselection properly
+            # If model is not set, emit empty list to handle deselection
+            # properly
             self.selection_changed.emit([])
 
     def select_top_n_rows(self, n):
@@ -120,10 +121,11 @@ class SimilarityPanel(QWidget):
         selection_model.clearSelection()
         for row in range(min(n, model.rowCount())):
             index = model.index(row, 0)
-            selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            selection_model.select(
+                index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
         # Optionally scroll to the last selected row
         if n > 0:
-            self.table.scrollTo(model.index(n-1, 0))
+            self.table.scrollTo(model.index(n - 1, 0))
 
     def handle_spacebar(self):
         """Call this on each spacebar press."""
@@ -147,7 +149,8 @@ class SimilarityPanel(QWidget):
 
         selection_model.clearSelection()
         index = model.index(next_row, 0)
-        selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        selection_model.select(
+            index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
         self.table.scrollTo(index)
 
     def reset_spacebar_counter(self):
@@ -164,7 +167,8 @@ class SimilarityPanel(QWidget):
         if status == 'Clean':
             selected_ids = [self.main_cluster_id]
         else:
-            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id'] for idx in indexes]
+            selected_ids = [self.similarity_model._dataframe.iloc[idx.row()]['cluster_id']
+                            for idx in indexes]
             selected_ids.append(self.main_cluster_id)
 
         # Update data manager and export
@@ -175,7 +179,8 @@ class SimilarityPanel(QWidget):
         self.main_window.main_cluster_model.refresh_view()
         self.similarity_model.refresh_view()
 
-        self.main_window.status_bar.showMessage(f"Marked {len(selected_ids)} clusters as {status} and saved to file.", 3000)
+        self.main_window.status_bar.showMessage(
+            f"Marked {len(selected_ids)} clusters as {status} and saved to file.", 3000)
 
     def _mark_selected_status(self):
         status = self.status_combo.currentText()
@@ -224,47 +229,62 @@ class SimilarityPanel(QWidget):
         try:
             if self.current_source == "MEA":
                 # Get MEA-based similarity data
-                similarity_df = dm.get_similarity_table(cluster_id, source="MEA")
+                similarity_df = dm.get_similarity_table(
+                    cluster_id, source="MEA")
 
-                # Add any custom columns that are useful for display if not already present
+                # Add any custom columns that are useful for display if not
+                # already present
                 if similarity_df is not None and not similarity_df.empty:
-                    # Add n_spikes and status from main cluster_df for consistency
+                    # Add n_spikes and status from main cluster_df for
+                    # consistency
                     cluster_df = dm.cluster_df
                     if 'n_spikes' not in similarity_df.columns:
-                        n_spikes_map = dict(zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
-                        similarity_df['n_spikes'] = similarity_df['cluster_id'].map(n_spikes_map)
+                        n_spikes_map = dict(
+                            zip(cluster_df['cluster_id'], cluster_df['n_spikes']))
+                        similarity_df['n_spikes'] = similarity_df['cluster_id'].map(
+                            n_spikes_map)
 
                     if 'status' not in similarity_df.columns:
-                        status_map = dict(zip(cluster_df['cluster_id'], cluster_df['status']))
-                        similarity_df['status'] = similarity_df['cluster_id'].map(status_map)
+                        status_map = dict(
+                            zip(cluster_df['cluster_id'], cluster_df['status']))
+                        similarity_df['status'] = similarity_df['cluster_id'].map(
+                            status_map)
 
                     if 'set' not in similarity_df.columns:
-                        set_map = dict(zip(cluster_df['cluster_id'], cluster_df['set']))
-                        similarity_df['set'] = similarity_df['cluster_id'].map(set_map)
+                        set_map = dict(
+                            zip(cluster_df['cluster_id'], cluster_df['set']))
+                        similarity_df['set'] = similarity_df['cluster_id'].map(
+                            set_map)
 
             elif self.current_source == "vision":
                 # Check if vision data is available
                 if not dm.vision_available:
-                    logger.warning("Vision data not available for similarity table")
+                    logger.warning(
+                        "Vision data not available for similarity table")
                     # Show empty table or placeholder data
-                    similarity_df = pd.DataFrame(columns=['cluster_id', 'n_spikes', 'status'])
+                    similarity_df = pd.DataFrame(
+                        columns=['cluster_id', 'n_spikes', 'status'])
                 else:
                     # Get vision-based similarity data
-                    similarity_df = dm.get_similarity_table(cluster_id, source="vision")
+                    similarity_df = dm.get_similarity_table(
+                        cluster_id, source="vision")
             else:
                 logger.error(f"Unknown source: {self.current_source}")
                 self.clear()
                 return
 
         except Exception as e:
-            logger.error(f"Error getting similarity table for source {self.current_source}: {e}")
+            logger.error(
+                f"Error getting similarity table for source {self.current_source}: {e}")
             self.clear()
             return
 
         if similarity_df is not None and not similarity_df.empty:
-            # Add potential_dups based on relevant threshold if not already present
+            # Add potential_dups based on relevant threshold if not already
+            # present
             if 'potential_dups' not in similarity_df.columns:
-                # Default to no potential duplicates if not specifically computed
+                # Default to no potential duplicates if not specifically
+                # computed
                 similarity_df['potential_dups'] = ''
 
             self.set_data(similarity_df)
