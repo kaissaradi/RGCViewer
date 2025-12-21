@@ -2,9 +2,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread
+from qtpy.QtCore import QThread, Qt
 from qtpy.QtGui import QStandardItem, QStandardItemModel, QColor, QIcon
-from qtpy.QtCore import Qt
 
 from analysis.data_manager import DataManager
 from gui.workers import RefinementWorker, SpatialWorker, StandardPlotsWorker
@@ -13,6 +12,7 @@ import gui.plotting as plotting
 from gui.panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
 import logging
+
 logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
@@ -130,6 +130,7 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     if hasattr(main_window, 'similarity_panel') and main_window.data_manager.vision_available:
         main_window.similarity_panel.on_vision_loaded()
 
+
 def load_vision_directory(main_window: MainWindow):
     """Handles the logic for loading a Vision analysis directory."""
     if not main_window.data_manager:
@@ -175,6 +176,14 @@ def load_vision_directory(main_window: MainWindow):
             QMessageBox.critical(main_window, "Vision Loading Error", message)
             main_window.status_bar.showMessage("Vision loading failed.", 5000)
 
+
+def redraw_population_panels(main_window: MainWindow):
+    # draws the middle panel (and optionally clears bottom)
+    import gui.plotting as plotting
+    subset = main_window._get_pop_subset_ids()  # reuse helper in main_window
+    plotting.draw_population_timecourse_panel(main_window, subset_ids=subset)
+
+
 def on_cluster_selection_changed(main_window: MainWindow):
     """
     Handles a cluster selection by triggering the main window's selection timer
@@ -192,9 +201,10 @@ def on_cluster_selection_changed(main_window: MainWindow):
             plotting.draw_population_rfs_plot(main_window=main_window,
                                              selected_cell_id=cluster_id,
                                              canvas=main_window.pop_mosaic_canvas)
+            redraw_population_panels(main_window)
     else:
         # Potentially a Group Folder selected (Tree View)
-        if main_window.view_stack.currentIndex() == 0: # Tree View
+        if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
                 index = selection[0]
@@ -211,8 +221,8 @@ def on_cluster_selection_changed(main_window: MainWindow):
                         plotting.draw_population_rfs_plot(main_window=main_window,
                                                          subset_cell_ids=group_ids,
                                                          canvas=main_window.pop_mosaic_canvas)
+                        redraw_population_panels(main_window)
 
-# In gui/callbacks.py
 
 def on_tab_changed(main_window: MainWindow, index: int):
     """Handles logic when the user switches between analysis tabs."""
@@ -272,6 +282,7 @@ def on_spatial_data_ready(main_window: MainWindow, cluster_id: int, features: di
         plotting.draw_summary_EI_plot(main_window, cluster_id)
         main_window.status_bar.showMessage("Spatial analysis complete.", 2000)
 
+
 def on_refine_cluster(main_window: MainWindow):
     """Starts the cluster refinement process in a background thread."""
     cluster_id = main_window._get_selected_cluster_id()
@@ -291,6 +302,7 @@ def on_refine_cluster(main_window: MainWindow):
     main_window.refine_thread.started.connect(main_window.refinement_worker.run)
     main_window.refine_thread.start()
 
+
 def handle_refinement_results(main_window: MainWindow, parent_id: int, new_clusters: list[int]):
     """Handles the results from a successful refinement operation."""
     main_window.status_bar.showMessage(f"Refinement of C{parent_id} complete. Found {len(new_clusters)} sub-clusters.", 5000)
@@ -303,6 +315,7 @@ def handle_refinement_results(main_window: MainWindow, parent_id: int, new_clust
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
 
+
 def handle_refinement_error(main_window: MainWindow, error_message: str):
     """Handles an error from the refinement worker."""
     QMessageBox.critical(main_window, "Refinement Error", error_message)
@@ -310,6 +323,7 @@ def handle_refinement_error(main_window: MainWindow, error_message: str):
     main_window.refine_button.setEnabled(True)
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
+
 
 def on_save_action(main_window: MainWindow):
     """Handles the save action from the menu."""
@@ -325,6 +339,7 @@ def on_save_action(main_window: MainWindow):
 
         if save_path:
             save_results(main_window, save_path)
+
 
 def save_results(main_window: MainWindow, output_path: str):
     """Saves the refined cluster data to a TSV file."""
@@ -346,6 +361,7 @@ def save_results(main_window: MainWindow, output_path: str):
         QMessageBox.critical(main_window, "Save Error", f"Could not save the file: {e}")
         main_window.status_bar.showMessage("Save failed.", 5000)
 
+
 def apply_good_filter(main_window: MainWindow):
     """Filters the tree view to show only 'good' clusters."""
     if main_window.data_manager is None:
@@ -354,10 +370,6 @@ def apply_good_filter(main_window: MainWindow):
     # Create a filtered tree with only 'good' clusters
     model = main_window.tree_model
     model.clear()  # Clear any previous data
-
-    # df = main_window.data_manager.original_cluster_df[
-    #     main_window.data_manager.original_cluster_df['KSLabel'] == 'good'
-    # ].copy()
 
     df = main_window.data_manager.cluster_df[
         main_window.data_manager.cluster_df['KSLabel'] == 'good'
@@ -418,12 +430,14 @@ def apply_good_filter(main_window: MainWindow):
     main_window.setup_tree_model(model)
     main_window.tree_view.expandAll()
 
+
 def reset_views(main_window: MainWindow):
     """Resets the views to their original, unfiltered state."""
     if main_window.data_manager is None:
         return
     # Repopulate the tree with original data
     populate_tree_view(main_window)
+
 
 def start_worker(main_window: MainWindow):
     """Starts the background worker threads (spatial features + standard plots)."""
@@ -446,7 +460,7 @@ def start_worker(main_window: MainWindow):
     main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)
     main_window.standard_worker_thread.start()
 
-    # Kick off low‑priority background caching for all clusters
+    # Kick off low-priority background caching for all clusters
     dm = main_window.data_manager
     if dm is not None and not dm.cluster_df.empty:
         for cid in dm.cluster_df['cluster_id']:
@@ -541,11 +555,13 @@ def add_new_group(main_window: MainWindow, name: str):
 
     main_window.tree_model.appendRow(item)
 
+
 def feature_extraction(main_window: MainWindow, cluster_ids):
     """Feature extraction for selected clusters."""
     logger.info(f"feature extraction for clusters: {cluster_ids}")
     dlg = FeatureExtractionWindow(main_window, cluster_ids)
     dlg.show()
+
 
 def stop_worker(main_window: MainWindow):
     """Stops the background worker threads (spatial + standard plots)."""

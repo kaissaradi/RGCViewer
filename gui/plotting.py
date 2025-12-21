@@ -11,7 +11,7 @@ matplotlib_logger = logging.getLogger('matplotlib.font_manager')
 matplotlib_logger.setLevel(logging.WARNING)
 import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
-
+import math 
 
 # Note: The update_raw_trace_plot function has been replaced by background loading
 # The functionality is now handled by MainWindow.load_raw_trace_data and related worker
@@ -25,9 +25,132 @@ def update_raw_trace_plot(main_window, cluster_id):
     # This stub is maintained for compatibility but does nothing
     pass
 
-# In gui/plotting.py
 
-# In plotting.py, update the draw_sta_metrics function:
+
+def draw_population_timecourse_panel(main_window, subset_ids=None):
+    """
+    Draw population average timecourse and update summary label.
+    Expects: main_window.pop_timecourse_canvas, main_window.pop_timecourse_summary
+    """
+    # determine subset
+    if subset_ids is None:
+        try:
+            subset_ids = main_window._get_pop_subset_ids()
+        except Exception:
+            subset_ids = []
+
+    # early exit: nothing selected -> clear canvas + summary
+    if not subset_ids:
+        fig = main_window.pop_timecourse_canvas.fig
+        fig.clear()
+        fig.text(0.5, 0.5, "No cells selected", ha='center', color='gray', fontsize=10)
+        main_window.pop_timecourse_canvas.draw()
+        main_window.pop_timecourse_summary.setText("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        return
+
+    traces = []
+    metrics_t2p = []
+    metrics_fwhm = []
+
+    for cid in subset_ids:
+        # adapt to your data layout: convert cluster id -> vision id if needed
+        vision_id = cid  # change if you use offset e.g., cid+1
+
+        # Attempt to get precomputed timecourse or a simple trace
+        tc = None
+        try:
+            # Example: prefer a matrix TimeCourse stored somewhere (adapt names)
+            vision_id = cid + 1
+
+            sta = main_window.data_manager.vision_stas.get(vision_id)
+            stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_id)
+
+            t_axis, tc_matrix, src = analysis_core.get_sta_timecourse_data(
+                sta, stafit, main_window.data_manager.vision_params, vision_id
+            )
+
+            if tc_matrix is not None:
+                # choose dominant channel
+                energies = np.sum(tc_matrix**2, axis=0)
+                dom = int(np.argmax(energies))
+                tc = tc_matrix[:, dom]
+
+        except Exception:
+            tc = None
+
+        if tc is None:
+            # fallback: try to extract a small vector from STA or skip
+            try:
+                sta = main_window.data_manager.vision_stas.get(vision_id)
+                if sta is not None:
+                    # collapse spatial STA to a single timecourse (simple mean)
+                    tc = np.nanmean(sta, axis=(0,1))  # adjust dims to match your sta shape
+            except Exception:
+                tc = None
+
+        if tc is None:
+            continue
+
+        # ensure 1D
+        tc = np.asarray(tc).flatten()
+        traces.append(tc)
+
+        # compute metrics for this cell using your analysis_core helper
+        try:
+            m = analysis_core.compute_sta_metrics(
+                sta, stafit, main_window.data_manager.vision_params, vision_id
+            )
+
+            # expect m dict with keys like "Time to Peak (ms)" and "FWHM (ms)" or similar
+            # adapt keys as needed
+            if m is not None:
+                if "Time to Peak (ms)" in m:
+                    metrics_t2p.append(float(m["Time to Peak (ms)"]))
+                elif "time_to_peak" in m:
+                    metrics_t2p.append(float(m["time_to_peak"]))
+                if "FWHM (ms)" in m:
+                    metrics_fwhm.append(float(m["FWHM (ms)"]))
+                elif "fwhm_ms" in m:
+                    metrics_fwhm.append(float(m["fwhm_ms"]))
+        except Exception:
+            pass
+
+    if not traces:
+        fig = main_window.pop_timecourse_canvas.fig
+        fig.clear()
+        fig.text(0.5, 0.5, "No valid timecourses", ha='center', color='gray', fontsize=10)
+        main_window.pop_timecourse_canvas.draw()
+        main_window.pop_timecourse_summary.setText("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        return
+
+    # align traces length: pad or trim to shortest
+    minlen = min(len(t) for t in traces)
+    arr = np.vstack([t[:minlen] for t in traces])  # n_cells x n_timepoints
+    mean_tc = np.nanmean(arr, axis=0)
+    sem = np.nanstd(arr, axis=0) / math.sqrt(arr.shape[0])
+
+    # time axis: assume sample indices; if you have ms per frame, multiply accordingly
+    t_axis = np.arange(minlen)
+
+    # plot to canvas
+    fig = main_window.pop_timecourse_canvas.fig
+    fig.clear()
+    ax = fig.add_subplot(111)
+    ax.plot(t_axis, mean_tc, linewidth=1.6)
+    ax.fill_between(t_axis, mean_tc - sem, mean_tc + sem, alpha=0.25)
+    ax.set_title("Population mean ± SEM")
+    ax.set_xlabel("Time (frames)")
+    ax.set_ylabel("Response (a.u.)")
+    ax.grid(True, linewidth=0.2)
+    main_window.pop_timecourse_canvas.draw()
+
+    # update summary label (n, mean t2p, mean fwhm)
+    n = arr.shape[0]
+    mean_t2p = np.nanmean(metrics_t2p) if metrics_t2p else float("nan")
+    mean_fwhm = np.nanmean(metrics_fwhm) if metrics_fwhm else float("nan")
+    summary_text = f"n={n}  mean_t2p={mean_t2p:.1f}  mean_fwhm={mean_fwhm:.1f}"
+    main_window.pop_timecourse_summary.setText(summary_text)
+
 
 def draw_sta_metrics(main_window, cluster_id):
     """

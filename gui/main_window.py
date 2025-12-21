@@ -399,13 +399,53 @@ class MainWindow(QMainWindow):
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
+        # ---- inside _setup_ui(): build pop_context_widget contents ----
         pop_layout = QVBoxLayout(self.pop_context_widget)
-        pop_layout.setContentsMargins(4, 4, 4, 4)
-        pop_layout.setSpacing(4)
+        pop_layout.setContentsMargins(4,4,4,4)
+        pop_layout.setSpacing(6)
 
-        # Make a plotting canvas for population mosaic
-        self.pop_mosaic_canvas = MplCanvas(width=6, height=6, dpi=100)
-        pop_layout.addWidget(self.pop_mosaic_canvas)
+        # Top: Population RF (existing)
+        self.pop_mosaic_canvas = MplCanvas(width=6, height=4, dpi=100)
+        pop_layout.addWidget(self.pop_mosaic_canvas, stretch=3)
+
+        # Middle + Bottom: make a vertical splitter with two panels (middle=timecourse, bottom=placeholder)
+        self.pop_timecourse_splitter = QSplitter(Qt.Orientation.Vertical)
+        # Middle panel widget
+        self.pop_timecourse_widget = QWidget()
+        mid_layout = QVBoxLayout(self.pop_timecourse_widget)
+        mid_layout.setContentsMargins(2,2,2,2)
+
+        # Header row for middle panel: title + summary
+        hdr = QHBoxLayout()
+        hdr_label = QLabel("Population Average Timecourse")
+        hdr_label.setStyleSheet("font-weight:bold;")
+        self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        hdr.addWidget(hdr_label)
+        hdr.addStretch()
+        hdr.addWidget(self.pop_timecourse_summary)
+        mid_layout.addLayout(hdr)
+
+        # Middle canvas (timecourse)
+        self.pop_timecourse_canvas = MplCanvas(width=6, height=2, dpi=100)
+        mid_layout.addWidget(self.pop_timecourse_canvas)
+
+        self.pop_timecourse_splitter.addWidget(self.pop_timecourse_widget)
+
+        # Bottom placeholder panel
+        self.pop_bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(self.pop_bottom_widget)
+        bottom_layout.setContentsMargins(2,2,2,2)
+        bottom_label = QLabel("Population - Reserved")
+        bottom_layout.addWidget(bottom_label)
+        self.pop_bottom_canvas = MplCanvas(width=6, height=2, dpi=100)
+        bottom_layout.addWidget(self.pop_bottom_canvas)
+        self.pop_timecourse_splitter.addWidget(self.pop_bottom_widget)
+
+        # add the splitter into the pop_layout
+        pop_layout.addWidget(self.pop_timecourse_splitter, stretch=2)
+
+        # initial sizes (you can tweak)
+        self.pop_timecourse_splitter.setSizes([200, 120])
 
         # --- NEW: right-side splitter containing tabs and pop widget ---
         self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -588,8 +628,10 @@ class MainWindow(QMainWindow):
 
             # Call plotting routine with explicit canvas
             import gui.plotting as plotting
+            import gui.callbacks as callbacks
             plotting.draw_population_rfs_plot(main_window=self, selected_cell_id=selected,
                                              canvas=self.pop_mosaic_canvas)
+            callbacks.redraw_population_panels(self)
         else:
             # hide it
             self.pop_context_widget.hide()
@@ -647,6 +689,39 @@ class MainWindow(QMainWindow):
                 cluster_ids.append(cid)
 
         return cluster_ids
+
+    def _get_pop_subset_ids(self):
+        """
+        Gets the list of cluster IDs for the currently selected population subset.
+        If a single cell is selected, it finds its group and returns all cells in that group.
+        If a group is selected, it returns all cells in that group.
+        """
+        cluster_id = self._get_selected_cluster_id()
+
+        # Case 1: A single cluster is selected. Find its group.
+        if cluster_id is not None:
+            df = self.data_manager.cluster_df
+            if not df.empty and 'cluster_id' in df.columns and 'KSLabel' in df.columns:
+                if cluster_id in df['cluster_id'].values:
+                    try:
+                        row = df[df['cluster_id'] == cluster_id].iloc[0]
+                        group_label = row.get('KSLabel')
+                        if group_label:
+                            return df[df['KSLabel'] == group_label]['cluster_id'].tolist()
+                    except Exception as e:
+                        logger.warning(f"Could not determine group for cluster {cluster_id}: {e}")
+            return [cluster_id] # Fallback to just the selected cluster
+
+        # Case 2: A group/folder is selected in the Tree View
+        elif self.view_stack.currentIndex() == 0: # Tree View
+            selection = self.tree_view.selectionModel().selectedIndexes()
+            if selection:
+                index = selection[0]
+                item = self.tree_model.itemFromIndex(index)
+                if item and item.data(Qt.ItemDataRole.UserRole) is None: # It's a group
+                    return self._get_group_cluster_ids(item)
+
+        return [] # Return empty list if no valid selection
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
