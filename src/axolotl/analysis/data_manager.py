@@ -2068,65 +2068,62 @@ class DataManager(QObject):
         return df
 
     def _precompute_mea_similarity(self):
-        """
-        Precompute the complete MEA similarity matrix and sorted indices.
-        Called once during data loading.
-        """
-        if self.similar_templates is None:
-            return
+            """
+            Precompute the complete MEA similarity matrix and sorted indices.
+            Vectorized implementation for maximum efficiency.
+            """
+            if self.similar_templates is None:
+                return
 
-        n_clusters = len(self.cluster_df)
+            # 1. Prepare Data
+            cluster_ids = self.cluster_df['cluster_id'].values
+            n_clusters = len(cluster_ids)
+            
+            # Map cluster IDs to template indices using vectorized lookup
+            cluster_to_template = self._build_cluster_to_template_map()
+            # Fast map: efficiently handle potential missing keys by defaulting to -1
+            template_indices = np.array([cluster_to_template.get(cid, -1) for cid in cluster_ids])
 
-        # Create mapping from cluster_id to index
-        self.cluster_id_to_idx = {
-            cid: idx for idx, cid in enumerate(self.cluster_df['cluster_id'])
-        }
+            # 2. Vectorized Template Similarity Construction
+            # Use fancy indexing to project the full template matrix down to our current clusters
+            # We clamp indices to 0 for safety, then mask invalid ones later
+            valid_mask = (template_indices >= 0) & (template_indices < self.similar_templates.shape[0])
+            safe_indices = np.where(valid_mask, template_indices, 0)
+            
+            # Extract submatrix: O(1) compared to nested loops
+            template_matrix = self.similar_templates[safe_indices][:, safe_indices]
+            
+            # Zero out rows/cols where template index was invalid
+            if not np.all(valid_mask):
+                mask_2d = valid_mask[:, None] & valid_mask[None, :]
+                template_matrix[~mask_2d] = 0.0
 
-        # Get positions
-        x_pos = self.cluster_df['x_um'].values
-        y_pos = self.cluster_df['y_um'].values
+            # 3. Vectorized Distance Matrix Construction
+            # Use broadcasting (N,1,2) - (1,N,2) to compute pairwise differences
+            coords = np.column_stack((self.cluster_df['x_um'].values, self.cluster_df['y_um'].values))
+            diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+            # Einsum is generally faster than linalg.norm for this specific shape
+            distance_matrix = np.sqrt(np.einsum('ijk,ijk->ij', diff, diff))
 
-        # Build template similarity matrix
-        template_matrix = np.zeros((n_clusters, n_clusters))
-        distance_matrix = np.zeros((n_clusters, n_clusters))
+            # 4. Compute Weighted Score Matrix
+            max_dist = distance_matrix.max()
+            max_dist = max_dist if max_dist > 0 else 1.0
+            distance_weight = 0.7
 
-        # Precompute template indices
-        cluster_to_template = self._build_cluster_to_template_map()
+            # Element-wise operation for the final matrix
+            self.mea_similarity_matrix = template_matrix - (distance_matrix / max_dist) * distance_weight
 
-        # Fill matrices
-        for i, cid_i in enumerate(self.cluster_df['cluster_id']):
-            template_i = cluster_to_template[cid_i]
+            # 5. Sort Indices (Removing Self-References)
+            # Set diagonal to -inf so 'self' is always sorted to the very end
+            np.fill_diagonal(self.mea_similarity_matrix, -np.inf)
+            
+            # Argsort descending (-matrix) along rows
+            sorted_indices_matrix = np.argsort(-self.mea_similarity_matrix, axis=1)
+            
+            # Slice off the last column (which contains the self-index due to -inf)
+            # Convert to list of arrays to match original data structure
+            self.mea_sorted_indices = list(sorted_indices_matrix[:, :-1])
 
-            for j, cid_j in enumerate(self.cluster_df['cluster_id']):
-                if i == j:
-                    continue
-
-                template_j = cluster_to_template[cid_j]
-
-                # Template similarity
-                template_matrix[i,
-                                j] = self.similar_templates[template_i,
-                                                            template_j]
-
-                # Euclidean distance
-                dx = x_pos[i] - x_pos[j]
-                dy = y_pos[i] - y_pos[j]
-                distance_matrix[i, j] = np.sqrt(dx * dx + dy * dy)
-
-        # Combine into single similarity score (weight distance more)
-        # Formula: similarity = template_sim - (distance / max_distance) * distance_weight
-        max_dist = distance_matrix.max() if distance_matrix.max() > 0 else 1
-        distance_weight = 0.7  # Weight distance vs template similarity
-
-        self.mea_similarity_matrix = template_matrix - \
-            (distance_matrix / max_dist) * distance_weight
-
-        # Pre-sort indices for each cluster
-        self.mea_sorted_indices = []
-        for i in range(n_clusters):
-            # Get indices sorted by similarity (descending)
-            sorted_idx = np.argsort(-self.mea_similarity_matrix[i])
-            # Remove self
-            sorted_idx = sorted_idx[sorted_idx != i]
-            self.mea_sorted_indices.append(sorted_idx)
+            # 6. Update Lookup Map
+            self.cluster_id_to_idx = {cid: idx for idx, cid in enumerate(cluster_ids)}
 
