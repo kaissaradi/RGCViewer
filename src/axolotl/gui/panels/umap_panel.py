@@ -7,9 +7,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.widgets import LassoSelector
 from matplotlib.path import Path as MplPath
-from scipy.ndimage import gaussian_filter1d
-from sklearn.preprocessing import StandardScaler
-import umap
 import logging
 
 from ...analysis import analysis_core
@@ -29,9 +26,12 @@ class UMAPWorker(QObject):
     def __init__(self, data_manager):
         super().__init__()
         self.dm = data_manager
-
+        
     def run(self):
         try:
+            from scipy.ndimage import gaussian_filter1d
+            from sklearn.preprocessing import StandardScaler
+            import umap
             if not self.dm.vision_available:
                 self.error.emit(
                     "Vision data (STA/Params) is required for these metrics.")

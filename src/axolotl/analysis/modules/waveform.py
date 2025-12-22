@@ -1,6 +1,5 @@
 """Waveform processing utilities."""
 import numpy as np
-import torch
 from pathlib import Path
 
 
@@ -65,6 +64,7 @@ def baseline_correct(snips, pre_samples=20):
 
 
 def compute_ei(snips, pre_samples=20):
+    import torch
     """Computes the Electrical Image (median waveform) from snippets for robustness."""
     snips = baseline_correct(snips, pre_samples=pre_samples)
     snips_torch = torch.from_numpy(snips)
