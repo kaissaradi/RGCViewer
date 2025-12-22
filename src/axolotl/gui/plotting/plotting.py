@@ -1,12 +1,10 @@
 import math
 import logging
-from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 from matplotlib.patches import Ellipse
-from scipy.signal import find_peaks, peak_widths
+from scipy.signal import peak_widths
 from qtpy.QtCore import QTimer
 
 from ...analysis import analysis_core
@@ -577,9 +575,7 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
     selected_cell_has_rf_data = False
     if vision_cell_id_selected is not None and vision_cell_id_selected in all_cell_ids:
         try:
-            # Test if selected cell has RF data by attempting to get its STAFit
-            test_stafit = vision_params.get_stafit_for_cell(
-                vision_cell_id_selected)
+            vision_params.get_stafit_for_cell(vision_cell_id_selected)
             selected_cell_has_rf_data = True
         except Exception:
             selected_cell_has_rf_data = False
@@ -747,7 +743,7 @@ def plot_sta_timecourse(
         stafit,
         vision_params,
         cell_id,
-        sampling_rate=20):
+        _sampling_rate=20):
     """
     Visualizes the timecourse of the STA response for a specific cell.
     The x-axis shows time from -500ms to 0ms before the spike.
@@ -1061,7 +1057,7 @@ def plot_temporal_filter_properties(fig, sta_data, stafit, vision_params, cell_i
     ax.grid(True, alpha=0.2)
     ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
 
-def plot_rich_ei(fig, median_ei, channel_positions, features, sampling_rate, pre_samples=20):
+def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _pre_samples=20):
     """
     Plots the electrical image (EI) on the electrode array.
     """

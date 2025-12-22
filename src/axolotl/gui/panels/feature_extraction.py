@@ -1,11 +1,9 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QDialog, QVBoxLayout, QMenu, QStyle
-from qtpy.QtGui import QCursor, QStandardItem, QColor
-from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QDialog, QVBoxLayout, QMenu
+from qtpy.QtGui import QCursor
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..main_window import MainWindow
-from ..widgets.widgets import HighlightStatusPandasModel
 import matplotlib.pyplot as plt
 from matplotlib.widgets import RectangleSelector
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas

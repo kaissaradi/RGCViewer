@@ -248,7 +248,7 @@ class UMAPPanel(QWidget):
         self.main_window.status_bar.showMessage(
             "UMAP Complete. Use Lasso (Mouse Drag) to select groups.")
 
-    def update_plot(self, color_mode=None):
+    def update_plot(self, _color_mode=None):
         if self.embedding is None:
             return
 

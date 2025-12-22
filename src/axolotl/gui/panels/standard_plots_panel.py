@@ -510,7 +510,7 @@ class StandardPlotsPanel(QWidget):
                         sim_model._dataframe.iloc[row]['cluster_id'])
 
                     templates = getattr(dm, 'templates', None)
-                    templates_n = templates.shape[0] if templates is not None else 0
+                    templates.shape[0] if templates is not None else 0
                     if (
                         similar_id != cluster_id
                         and hasattr(sim_panel, 'main_cluster_id')

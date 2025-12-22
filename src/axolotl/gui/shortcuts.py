@@ -11,7 +11,7 @@ class KeyForwarder(QObject):
         super().__init__()
         self.main_window = main_window
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, _obj, event):
         if event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Space:
                 self.main_window.similarity_panel.handle_spacebar()

@@ -389,13 +389,13 @@ class DataManager(QObject):
             # Nothing to save
             return
 
-            try:
-                self.status_df.to_csv(self.status_csv, index=False)
-                logger.debug(
-                    "Exported %d status entries to %s", len(
-                        self.status_df), self.status_csv)
-            except Exception:
-                logger.exception("Failed to export status entries")
+        try:
+            self.status_df.to_csv(self.status_csv, index=False)
+            logger.debug(
+                "Exported %d status entries to %s", len(
+                    self.status_df), self.status_csv)
+        except Exception:
+            logger.exception("Failed to export status entries")
 
     def load_status(self):
         """
@@ -1932,7 +1932,7 @@ class DataManager(QObject):
 
         # Build DataFrame
         rows = []
-        for j, other_idx in enumerate(sorted_indices[:50]):  # Limit to top 50
+        for _, other_idx in enumerate(sorted_indices[:50]):  # Limit to top 50
             other_id = all_cluster_ids[other_idx]
 
             # Get values from cluster_df

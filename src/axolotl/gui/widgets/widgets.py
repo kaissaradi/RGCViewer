@@ -95,7 +95,7 @@ class MplCanvas(FigureCanvas):
         # Connect matplotlib mouse press event
         self.mpl_connect('button_press_event', self._on_click)
 
-    def _on_click(self, event):
+    def _on_click(self, _event):
         """Handle matplotlib mouse click events."""
         self.clicked.emit()
 

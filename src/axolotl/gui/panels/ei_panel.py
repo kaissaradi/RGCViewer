@@ -73,7 +73,7 @@ class EIMountainPlotWidget(QWidget):
         ax.set_facecolor('#1f1f1f')
         self.canvas.fig.patch.set_facecolor('#1f1f1f')
 
-        surf = ax.plot_surface(
+        _ = ax.plot_surface(
             grid_x, grid_y, grid_z,
             cmap='plasma',
             linewidth=0,
@@ -591,7 +591,7 @@ class EIPanel(QWidget):
         yrange = (np.min(channel_positions[:, 1]), np.max(
             channel_positions[:, 1]))
 
-        im = ax.imshow(
+        ax.imshow(
             ei_map_list[overlay_idx],
             cmap='hot',
             aspect='auto',

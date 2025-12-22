@@ -1,10 +1,8 @@
 """Spatial/EI analysis."""
 import numpy as np
-from scipy.signal import correlate
-import torch
 
 
-def compute_spatial_features(ei, channel_positions, sampling_rate):
+def compute_spatial_features(ei, channel_positions, _sampling_rate):
     """
     Computes spatial features for an electrical image.
 

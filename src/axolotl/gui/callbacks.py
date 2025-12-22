@@ -262,7 +262,7 @@ def on_cluster_selection_changed(main_window: MainWindow):
 def on_spatial_data_ready(
         main_window: MainWindow,
         cluster_id: int,
-        features: dict):
+        _features: dict):
     """Callback for when heavyweight spatial features are ready from the worker."""
     current_id = main_window._get_selected_cluster_id()
     current_tab_widget = main_window.analysis_tabs.currentWidget()
@@ -633,7 +633,7 @@ def load_classification_file(main_window: MainWindow):
 
             # Navigate/create the hierarchical structure
             current_parent = main_window.tree_model
-            for i, part in enumerate(path_parts):
+            for _, part in enumerate(path_parts):
                 # Look for existing item with this name in current parent
                 found_item = None
                 for row in range(current_parent.rowCount()):

@@ -1,8 +1,5 @@
 """STA analysis functions."""
 import numpy as np
-from scipy.signal import find_peaks, peak_widths
-from scipy.ndimage import gaussian_filter1d
-from scipy.stats import skew
 import logging
 logger = logging.getLogger(__name__)
 
@@ -76,7 +73,7 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
 def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
     """Compute scalar metrics from STA for RGC classification."""
     from scipy.ndimage import gaussian_filter1d
-    from scipy.signal import find_peaks, peak_widths
+    from scipy.signal import peak_widths
     from scipy.stats import skew
 
     metrics = {}
@@ -102,14 +99,11 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
         abs_max = np.max(np.abs(dom_trace))
         if abs_max > 0:
             norm_trace = dom_trace / abs_max
-            red_norm = red_trace / abs_max if abs_max > 0 else red_trace
-            green_norm = green_trace / abs_max if abs_max > 0 else green_trace
-            blue_norm = blue_trace / abs_max if abs_max > 0 else blue_trace
+            red_trace / abs_max if abs_max > 0 else red_trace
+            green_trace / abs_max if abs_max > 0 else green_trace
+            blue_trace / abs_max if abs_max > 0 else blue_trace
         else:
             norm_trace = dom_trace
-            red_norm = red_trace
-            green_norm = green_trace
-            blue_norm = blue_trace
 
         # Apply Gaussian smoothing for cleaner analysis
         sigma_samples = max(1, int(0.02 * len(norm_trace)))  # 2% of trace length
@@ -120,14 +114,12 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
         trough_val = np.min(smoothed_trace)
 
         # Determine polarity based on which has larger absolute value
-        if abs_trough_val := abs(trough_val) > abs(peak_val):
+        if abs(trough_val) > abs(trough_val) > abs(peak_val):
             is_off = True
             polarity = "OFF"
-            response_polarity = -1
         else:
             is_off = False
             polarity = "ON"
-            response_polarity = 1
 
         # Find primary peak/trough in the appropriate direction
         if is_off:
@@ -227,7 +219,7 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
             peak_idx_for_width = primary_idx
 
             # Use peak_widths with proper parameters
-            widths, width_heights, left_ips, right_ips = peak_widths(
+            widths, *_ = peak_widths(
                 trace_for_width,
                 peaks=[peak_idx_for_width],
                 rel_height=0.5

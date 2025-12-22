@@ -11,7 +11,6 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
 import pyqtgraph as pg
-from ..analysis import analysis_core
 from ..analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
@@ -810,7 +809,7 @@ class MainWindow(QMainWindow):
     def load_vision_directory(self):
         callbacks.load_vision_directory(self)
 
-    def on_view_selection_changed(self, selected, deselected):
+    def on_view_selection_changed(self, _selected, _deselected):
         """
         Handles a selection change in either view, synchronizes the other view,
         and then triggers the main plot update callback.
