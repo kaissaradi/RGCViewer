@@ -85,14 +85,6 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
         logger.debug(f"Found EI file with base name: '{dataset_name}'")
         break  # Use the first EI file found
 
-        # Check if the corresponding .sta and .params files exist
-        # if (vision_dir / f'{base_name}.sta').exists() and \
-        #    (vision_dir / f'{base_name}.params').exists():
-
-        #     dataset_name = base_name
-        #     print(f"[DEBUG] Found complete Vision file set with base name: '{dataset_name}'")
-        #     break  # Found a set, no need to check further
-
     if dataset_name:
         main_window.status_bar.showMessage(
             f"Found Vision EI file ('{dataset_name}') in directory - loading automatically...")
@@ -132,8 +124,14 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
 
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
+    
+    # --- Enable Actions ---
     main_window.load_vision_action.setEnabled(True)
     main_window.load_classification_action.setEnabled(True)
+    main_window.save_action.setEnabled(True)                 # Enable main Save
+    main_window.save_classification_action.setEnabled(True)  # Enable Text Export
+    # ----------------------
+
     main_window.status_bar.showMessage(
         f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.",
         5000)
@@ -327,50 +325,63 @@ def handle_refinement_error(main_window: MainWindow, error_message: str):
     main_window.refine_thread.wait()
 
 
+# In callbacks.py
 def on_save_action(main_window: MainWindow):
-    """Handles the save action from the menu."""
-    if main_window.data_manager:
-        if main_window.data_manager.info_path:
-            original_path = main_window.data_manager.info_path
-            suggested_path = str(
-                original_path.parent /
-                f"{original_path.stem}_refined.tsv")
-        else:
-            suggested_path = str(
-                main_window.data_manager.kilosort_dir /
-                "cluster_group_refined.tsv")
+    """Handles the save action from the menu or UMAP button."""
+    if not main_window.data_manager:
+        QMessageBox.warning(main_window, "No Data", "No DataManager found. Load data first.")
+        return
 
-        save_path, _ = QFileDialog.getSaveFileName(
-            main_window, "Save Refined Cluster Info", suggested_path, "TSV Files (*.tsv)")
+    # Create a safe default path regardless of whether info_path exists
+    if main_window.data_manager.info_path:
+        original_path = main_window.data_manager.info_path
+        suggested_path = str(original_path.parent / f"{original_path.stem}_refined.tsv")
+    else:
+        # Fallback to the Kilosort directory if info_path is missing
+        suggested_path = str(main_window.data_manager.kilosort_dir / "classification_export.tsv")
 
-        if save_path:
-            save_results(main_window, save_path)
+    # This dialog MUST appear if the function is reached
+    save_path, _ = QFileDialog.getSaveFileName(
+        main_window, "Save Classification Results", suggested_path, "TSV Files (*.tsv)"
+    )
+
+    if save_path:
+        # This calls the actual file-writing logic
+        save_results(main_window, save_path)
 
 
-def save_results(main_window: MainWindow, output_path: str):
-    """Saves the refined cluster data to a TSV file."""
+def save_results(main_window, output_path):
+    """Saves internal data AND the Vision-compatible text file."""
     try:
-        col = 'KSLabel' if 'KSLabel' in main_window.data_manager.cluster_info.columns else 'group'
-        final_df = main_window.data_manager.cluster_df[[
-            'cluster_id', 'KSLabel']].copy()
-        final_df.rename(columns={'KSLabel': col}, inplace=True)
+        # 1. Save your internal TSV and JSON tree as before
+        final_df = main_window.data_manager.cluster_df[['cluster_id', 'KSLabel']].copy()
         final_df.to_csv(output_path, sep='\t', index=False)
-
-        # Also save the tree structure to a separate JSON file
         tree_save_path = output_path.replace('.tsv', '_tree.json')
         main_window.data_manager.save_tree_structure(tree_save_path)
 
-        main_window.data_manager.is_dirty = False
-        main_window.setWindowTitle("axolotl")
-        main_window.save_action.setEnabled(False)
-        main_window.status_bar.showMessage(
-            f"Results saved to {output_path} and tree structure to {tree_save_path}", 5000)
+        # 2. NEW: Export the Vision-compatible .txt classification
+        txt_output_path = output_path.replace('.tsv', '.txt')
+        lines_to_write = []
+        
+        def recurse_extract(item, current_path):
+            for i in range(item.rowCount()):
+                child = item.child(i)
+                cluster_id = child.data(Qt.ItemDataRole.UserRole)
+                if cluster_id is not None:
+                    # Format: "VisionID Path/" (Note: VisionID is cluster_id + 1)
+                    lines_to_write.append(f"{cluster_id + 1} {current_path}")
+                else:
+                    if child.text() != "Unclassified":
+                        recurse_extract(child, f"{current_path}{child.text()}/")
+
+        recurse_extract(main_window.tree_model.invisibleRootItem(), "")
+        
+        with open(txt_output_path, 'w') as f:
+            f.write("\n".join(lines_to_write))
+
+        main_window.status_bar.showMessage(f"Saved: .tsv, .json, and Vision .txt", 5000)
     except Exception as e:
-        QMessageBox.critical(
-            main_window,
-            "Save Error",
-            f"Could not save the file: {e}")
-        main_window.status_bar.showMessage("Save failed.", 5000)
+        QMessageBox.critical(main_window, "Save Error", f"Could not save files: {e}")
 
 
 def apply_good_filter(main_window: MainWindow):
@@ -757,4 +768,67 @@ def load_classification_file(main_window: MainWindow):
         main_window.status_bar.showMessage(
             "Classification file loading failed.", 5000)
 
+def save_classification_to_file(main_window: MainWindow):
+    """
+    Saves the current Tree View structure to a text file in the Vision format.
+    Format: [VisionID] [Path/To/Group/]
+    Excludes the 'Unclassified' group.
+    """
+    if not main_window.data_manager:
+        return
+
+    # 1. Dialog for user to choose location and name
+    suggested_name = "classification.txt"
+    if main_window.data_manager.kilosort_dir:
+        suggested_name = str(main_window.data_manager.kilosort_dir / "classification.txt")
+
+    file_path, _ = QFileDialog.getSaveFileName(
+        main_window,
+        "Save Classification Text File",
+        suggested_name,
+        "Text Files (*.txt)"
+    )
+
+    if not file_path:
+        return  # User cancelled
+
+    lines_to_write = []
+    
+    # Recursive helper to walk the tree
+    def recurse_tree(item, current_path):
+        for i in range(item.rowCount()):
+            child = item.child(i)
+            cluster_id = child.data(Qt.ItemDataRole.UserRole)
+
+            if cluster_id is not None:
+                # Leaf Node (Cluster) -> Write ID and Path
+                # Vision ID is cluster_id + 1
+                vision_id = cluster_id + 1
+                
+                # Format: "123 All/ON/"
+                lines_to_write.append(f"{vision_id} {current_path}")
+            
+            else:
+                # Group Node -> Recurse deeper
+                group_name = child.text()
+                
+                # Skip 'Unclassified'
+                if group_name == "Unclassified":
+                    continue
+                
+                # Build path (e.g., "All/" + "ON" -> "All/ON/")
+                new_path = f"{current_path}{group_name}/"
+                recurse_tree(child, new_path)
+
+    # Start recursion from root
+    recurse_tree(main_window.tree_model.invisibleRootItem(), "")
+
+    # Write to file
+    try:
+        with open(file_path, 'w') as f:
+            f.write("\n".join(lines_to_write))
+        
+        main_window.status_bar.showMessage(f"Classification saved to {file_path}", 5000)
+    except Exception as e:
+        QMessageBox.critical(main_window, "Save Error", f"Could not save file:\n{e}")
 

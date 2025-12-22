@@ -636,6 +636,24 @@ class MainWindow(QMainWindow):
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
 
+        self.save_classification_action = file_menu.addAction("Save Classification Text File...")
+        self.save_classification_action.setEnabled(False)  # Disabled until data loads
+        # -----------------------
+
+        self.save_action = file_menu.addAction("&Save Results...")
+        self.save_action.setEnabled(False)
+
+        # Connect Signals
+        load_ks_action.triggered.connect(lambda: self.load_directory())
+        self.load_vision_action.triggered.connect(self.load_vision_directory)
+        self.load_classification_action.triggered.connect(self.load_classification_file)
+        
+        # --- NEW CONNECTION ---
+        self.save_classification_action.triggered.connect(self.on_save_classification_action)
+        # ----------------------
+        
+        self.save_action.triggered.connect(self.on_save_action)
+
         # Connect Signals to Callback Functions ---
         load_ks_action.triggered.connect(lambda: self.load_directory())
         self.load_vision_action.triggered.connect(self.load_vision_directory)
@@ -733,6 +751,10 @@ class MainWindow(QMainWindow):
             return cluster_id
 
         return None
+    
+    def on_save_classification_action(self):
+        """Wrapper to call the callback function."""
+        callbacks.save_classification_to_file(self)
 
     def _get_group_cluster_ids(self, item):
         cluster_ids = []
