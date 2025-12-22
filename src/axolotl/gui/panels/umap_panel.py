@@ -10,14 +10,7 @@ from matplotlib.widgets import LassoSelector
 from matplotlib.path import Path as MplPath
 import logging
 import sklearn.cluster
-from scipy.ndimage import gaussian_filter1d
-from sklearn.preprocessing import StandardScaler
 
-# Import UMAP at top level to avoid threading/fork issues
-try:
-    import umap
-except ImportError:
-    umap = None
 
 from ...analysis import analysis_core
 
@@ -60,6 +53,9 @@ class UMAPWorker(QObject):
         
     def run(self):
         try:
+            import umap
+            from scipy.ndimage import gaussian_filter1d
+            from sklearn.preprocessing import StandardScaler
             if umap is None:
                 self.error.emit("umap-learn library is not installed.")
                 return
