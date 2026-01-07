@@ -212,6 +212,7 @@ class DataManager(QObject):
 
         self.dat_path = None
 
+        self.new_class_id = 0
         self.cluster_df = pd.DataFrame()
         self.original_cluster_df = pd.DataFrame()
         self.info_path = None
