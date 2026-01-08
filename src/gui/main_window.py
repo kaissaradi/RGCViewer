@@ -927,6 +927,7 @@ class MainWindow(QMainWindow):
         add_group_action = menu.addAction("Add New Group")
 
         if item.hasChildren():  # when clicking the group item
+            rename_action = menu.addAction("Rename")
             feature_extraction_action = menu.addAction("Feature Extraction")
 
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
@@ -936,6 +937,12 @@ class MainWindow(QMainWindow):
                 self, 'New Group', 'Enter group name:')
             if ok and text:
                 callbacks.add_new_group(self, text)
+        elif action == rename_action:
+            new_group_name, ok = QInputDialog.getText(
+                self, 'Rename Group', 'Enter group name:')
+            if ok and new_group_name:
+                original_group_name = item.text()
+                callbacks.rename_class(self, original_group_name, new_group_name)
         elif action == feature_extraction_action:
             cluster_ids = self._get_group_cluster_ids(item)
             callbacks.feature_extraction(self, cluster_ids)

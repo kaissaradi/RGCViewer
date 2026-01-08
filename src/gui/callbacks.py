@@ -538,6 +538,14 @@ def add_new_group(main_window: MainWindow, name: str):
     main_window.tree_model.appendRow(item)
 
 
+def rename_class(main_window: MainWindow, original_group_name: str, new_group_name: str):
+    df = main_window.data_manager.cluster_df.copy()
+    df.loc[df["KSLabel"] == original_group_name, 'KSLabel'] = new_group_name
+    main_window.data_manager.cluster_df = df
+
+    populate_tree_view(main_window, df)
+
+
 def feature_extraction(main_window: MainWindow, cluster_ids):
     """Feature extraction for selected clusters."""
     logger.info(f"feature extraction for clusters: {cluster_ids}")
