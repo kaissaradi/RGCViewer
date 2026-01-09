@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                             QComboBox, QLabel, QProgressBar, QMessageBox,
-                            QSpinBox, QDialog, QTextEdit)
+                            QSpinBox, QDialog, QTextEdit, QCheckBox)
 from qtpy.QtCore import QThread, Signal, QObject
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -323,6 +323,9 @@ class UMAPPanel(QWidget):
         self.kmeans_btn = QPushButton("Run K-Means")
         self.kmeans_btn.clicked.connect(self.run_kmeans)
 
+        self.auto_cluster_checkbox = QCheckBox("Auto-cluster to new groups")
+        self.auto_cluster_checkbox.setToolTip("Automatically save each K-Means cluster as a new group in the tree view")
+
         self.show_ids_btn = QPushButton("Show Cluster IDs")
         self.show_ids_btn.clicked.connect(self.show_group_ids)
         self.show_ids_btn.setEnabled(False)  # Enable only when data exists
@@ -330,6 +333,7 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(QLabel("Clustering:"))
         cluster_layout.addWidget(self.k_spin)
         cluster_layout.addWidget(self.kmeans_btn)
+        cluster_layout.addWidget(self.auto_cluster_checkbox)
         cluster_layout.addWidget(self.show_ids_btn)
         cluster_layout.addStretch()
 
@@ -437,6 +441,39 @@ class UMAPPanel(QWidget):
         self.update_plot()
         self.main_window.status_bar.showMessage(
             "K-Means clustering complete.")
+
+        # Auto-cluster to new groups if checkbox is checked
+        if self.auto_cluster_checkbox.isChecked():
+            self.save_kmeans_clusters_as_groups(labels)
+
+    def save_kmeans_clusters_as_groups(self, labels):
+        """Save each K-Means cluster as a new group in the tree view."""
+        try:
+            # Group cluster IDs by their K-Means label
+            unique_labels = np.unique(labels)
+
+            for label in unique_labels:
+                # Get cluster IDs belonging to this K-Means cluster
+                cluster_mask = labels == label
+                cluster_ids = self.cluster_ids[cluster_mask]
+
+                # Create a new group name based on the cluster number
+                group_name = f"KMeans_Cluster_{label}"
+
+                # Update the cluster_df with the new group name
+                df = self.main_window.data_manager.cluster_df
+                df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = group_name
+
+            # Refresh Tree View to show the new groups
+            from ..callbacks import populate_tree_view
+            populate_tree_view(self.main_window)
+
+            self.main_window.status_bar.showMessage(
+                f"Auto-clustering complete: {len(unique_labels)} new groups created from K-Means clusters.")
+
+        except Exception as e:
+            logger.exception("Error in auto-clustering")
+            QMessageBox.critical(self, "Auto-cluster Error", str(e))
 
     def clean_umap_thread(self):
         if self.umap_worker_thread:
