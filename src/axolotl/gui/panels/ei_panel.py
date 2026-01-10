@@ -401,6 +401,9 @@ class EIPanel(QWidget):
         cluster_ids = np.array(cluster_ids, dtype=int)
         if cluster_ids.ndim == 0:
             cluster_ids = np.array([cluster_ids], dtype=int)
+        
+        # We focus on the first cluster for the main check, though we might support multi-cluster later
+        primary_cluster_id = cluster_ids[0]
         vision_cluster_ids = cluster_ids + 1
 
         # Check for Vision EI
@@ -417,6 +420,27 @@ class EIPanel(QWidget):
             else:
                 logger.debug(
                     "Vision EIs not loaded; falling back to Kilosort EI")
+            
+            # --- ASYNC LOADING LOGIC FOR KILOSORT EI ---
+            # Check if we have the data cached in DataManager
+            lightweight = self.main_window.data_manager.get_lightweight_features(primary_cluster_id)
+            heavyweight = self.main_window.data_manager.get_heavyweight_features(primary_cluster_id)
+
+            if lightweight is None or heavyweight is None:
+                # Data not ready. Show loading screen and request it.
+                self.clear()
+                self.spatial_canvas.fig.text(
+                    0.5, 0.5, "Loading spatial features...",
+                    ha='center', va='center', color='cyan', fontsize=14
+                )
+                self.spatial_canvas.draw()
+                
+                # Request background computation
+                if self.main_window.spatial_worker:
+                    self.main_window.spatial_worker.add_to_queue(primary_cluster_id, high_priority=True)
+                return
+
+            # If data is present, draw immediately
             self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
 
         # If the current view is the latency map, refresh it with the new
