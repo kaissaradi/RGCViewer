@@ -5,7 +5,7 @@ import logging
 from qtpy.QtCore import QCoreApplication, Qt
 from qtpy.QtGui import QSurfaceFormat
 from qtpy.QtWidgets import QApplication
-from src.axolotl.gui.main_window import MainWindow
+from src.gui.main_window import MainWindow
 
 def setup_logging(debug_mode):
     # If not in debug mode, set level to WARNING to hide INFO and DEBUG statements
@@ -23,7 +23,7 @@ def setup_logging(debug_mode):
         logging.getLogger('OpenGL').setLevel(logging.CRITICAL)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="axolotl - RGC Viewer")
+    parser = argparse.ArgumentParser(description="RGC Viewer - Retinal Ganglion Cell Analysis Tool")
     parser.add_argument('--debug', action='store_true', help="Enable debug logging to console")
     args = parser.parse_args()
 

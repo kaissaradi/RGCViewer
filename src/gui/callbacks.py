@@ -305,7 +305,7 @@ def handle_refinement_results(
     populate_tree_view(main_window)
     main_window.refine_button.setEnabled(True)
     main_window.save_action.setEnabled(True)
-    main_window.setWindowTitle("*axolotl (unsaved changes)")
+    main_window.setWindowTitle("*RGC Viewer (unsaved changes)")
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
 
