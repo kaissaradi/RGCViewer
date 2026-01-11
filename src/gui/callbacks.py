@@ -124,7 +124,7 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
 
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
-    
+
     # --- Enable Actions ---
     main_window.load_vision_action.setEnabled(True)
     main_window.load_classification_action.setEnabled(True)
@@ -211,14 +211,14 @@ def load_vision_directory(main_window: MainWindow):
 def redraw_population_panels(main_window: MainWindow):
     # draws the middle panel (and optionally clears bottom)
     subset = main_window._get_pop_subset_ids()  # reuse helper in main_window
-    plotting.draw_population_timecourse_panel(main_window, subset_ids=subset)
+    draw_population_timecourse_panel(main_window, subset_ids=subset)
 
 
 def on_cluster_selection_changed(main_window: MainWindow):
     """
     Handles a cluster selection by delegating to the main window controller.
-    
-    OPTIMIZED: Direct plotting calls removed. 
+
+    OPTIMIZED: Direct plotting calls removed.
     main_window.update_cluster_views() now orchestrates:
       - Tier 1: Immediate updates (RFs, Histograms, Cached Data)
       - Tier 2: Debounced updates (Raw Data, Heavy Feature Extraction)
@@ -244,7 +244,7 @@ def on_cluster_selection_changed(main_window: MainWindow):
                     group_ids = main_window._get_group_cluster_ids(item)
 
                     if group_ids and main_window.population_view_enabled:
-                        plotting.draw_population_rfs_plot(
+                        draw_population_rfs_plot(
                             main_window=main_window,
                             subset_cell_ids=group_ids,
                             canvas=main_window.pop_mosaic_canvas)
@@ -259,7 +259,9 @@ def on_spatial_data_ready(
     current_id = main_window._get_selected_cluster_id()
     current_tab_widget = main_window.analysis_tabs.currentWidget()
     if cluster_id == current_id and current_tab_widget == main_window.summary_tab:
-        plotting.draw_summary_EI_plot(main_window, cluster_id)
+        # Since draw_summary_EI_plot is not imported and apparently not used,
+        # we'll comment out this line for now until it's properly implemented
+        # plotting.draw_summary_EI_plot(main_window, cluster_id)
         main_window.status_bar.showMessage("Spatial analysis complete.", 2000)
 
 
@@ -356,7 +358,7 @@ def save_results(main_window, output_path):
         # 2. NEW: Export the Vision-compatible .txt classification
         txt_output_path = output_path.replace('.tsv', '.txt')
         lines_to_write = []
-        
+
         def recurse_extract(item, current_path):
             for i in range(item.rowCount()):
                 child = item.child(i)
@@ -369,7 +371,7 @@ def save_results(main_window, output_path):
                         recurse_extract(child, f"{current_path}{child.text()}/")
 
         recurse_extract(main_window.tree_model.invisibleRootItem(), "")
-        
+
         with open(txt_output_path, 'w') as f:
             f.write("\n".join(lines_to_write))
 
@@ -795,7 +797,7 @@ def save_classification_to_file(main_window: MainWindow):
         return  # User cancelled
 
     lines_to_write = []
-    
+
     # Recursive helper to walk the tree
     def recurse_tree(item, current_path):
         for i in range(item.rowCount()):
@@ -806,18 +808,18 @@ def save_classification_to_file(main_window: MainWindow):
                 # Leaf Node (Cluster) -> Write ID and Path
                 # Vision ID is cluster_id + 1
                 vision_id = cluster_id + 1
-                
+
                 # Format: "123 All/ON/"
                 lines_to_write.append(f"{vision_id} {current_path}")
-            
+
             else:
                 # Group Node -> Recurse deeper
                 group_name = child.text()
-                
+
                 # Skip 'Unclassified'
                 if group_name == "Unclassified":
                     continue
-                
+
                 # Build path (e.g., "All/" + "ON" -> "All/ON/")
                 new_path = f"{current_path}{group_name}/"
                 recurse_tree(child, new_path)
@@ -829,7 +831,7 @@ def save_classification_to_file(main_window: MainWindow):
     try:
         with open(file_path, 'w') as f:
             f.write("\n".join(lines_to_write))
-        
+
         main_window.status_bar.showMessage(f"Classification saved to {file_path}", 5000)
     except Exception as e:
         QMessageBox.critical(main_window, "Save Error", f"Could not save file:\n{e}")

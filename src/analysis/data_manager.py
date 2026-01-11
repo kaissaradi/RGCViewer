@@ -329,8 +329,11 @@ class DataManager(QObject):
             self.d_timing = dju.get_epochblock_timing(
                 self.exp_name, self.block_id)
             logger.debug("Loaded stimulus timing data successfully")
+        except ImportError:
+            logger.warning("retinanalysis module not available, skipping stimulus timing data loading")
+            return
         except Exception:
-            logger.exception("Failed to load stimulus timing data")
+            logger.warning("Failed to load stimulus timing data (optional module)")
             return
 
     def update_and_export_status(self, selected_ids, status):

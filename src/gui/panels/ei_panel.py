@@ -798,8 +798,8 @@ class EIPanel(QWidget):
             return
 
         self.spatial_canvas.fig.clear()
-        from ..plotting import plotting
-        plotting.plot_rich_ei(
+        from .population_panel import plot_rich_ei
+        plot_rich_ei(
             self.spatial_canvas.fig,
             lightweight_features['median_ei'],
             self.main_window.data_manager.channel_positions,

@@ -307,12 +307,15 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
             trace_for_width = -smoothed_trace if is_off else smoothed_trace
             peak_idx_for_width = primary_idx
 
-            # Use peak_widths with proper parameters
+            # Use peak_widths with proper parameters and suppress warnings
+            import warnings
             if np.isclose(trace_for_width[peak_idx_for_width], 0.0):
                 widths = [0.0]
             else:
-                widths, *_ = peak_widths(trace_for_width, peaks=[peak_idx_for_width],
-                                        rel_height=0.5, prominence_data=None)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=UserWarning)  # Suppress peak property warnings
+                    widths, *_ = peak_widths(trace_for_width, peaks=[peak_idx_for_width],
+                                            rel_height=0.5, prominence_data=None)
 
             if len(widths) > 0:
                 sample_interval = abs(time_axis[1] - time_axis[0])

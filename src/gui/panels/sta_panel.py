@@ -184,8 +184,8 @@ class STAPanel(QWidget):
                 if self.main_window.current_sta_view == "population_rfs":
                     # This button press should always draw the population plot in the MAIN STA view (rf_canvas),
                     # overriding the single-cell RF plot drawn by draw_sta_plot above.
-                    from ..plotting import plotting
-                    plotting.draw_population_rfs_plot(
+                    from .population_panel import draw_population_rfs_plot
+                    draw_population_rfs_plot(
                         main_window=self.main_window, selected_cell_id=cluster_id, canvas=self.rf_canvas)
                 elif self.main_window.current_sta_view == "animation":
                     # Animation should only affect the RF plot

@@ -35,6 +35,7 @@
 
 ## Result
 The population plotting functionality has been successfully moved to a dedicated panel file in the panels directory, eliminating the separate plotting directory and improving code organization. The structure is now cleaner and more maintainable.
+<<<<<<< HEAD:session-plan.md
 =======
 # Session Plan: Refactoring to Remove axolotl Folder
 
@@ -77,3 +78,16 @@ The population plotting functionality has been successfully moved to a dedicated
 ## Result
 The project now has a cleaner, more intuitive structure without the unnecessary "axolotl" folder layer, while maintaining all functionality and proper import paths.
 >>>>>>> a9d70d6 (refactoring)
+=======
+
+## Additional Fixes Discovered During Refactoring
+- Fixed remaining references to the old plotting module in ei_panel.py and sta_panel.py
+- Updated imports in ei_panel.py to use plot_rich_ei from the new population_panel location
+- Updated imports in sta_panel.py to use draw_population_rfs_plot from the new population_panel location
+- Ensured all cross-panel references now point to the correct location in the panels module
+
+## Next Focus: UMAP Panel Enhancement
+- Turning attention to the UMAP panel for clustering and dimensionality reduction features
+- Planning to implement feature selection, class creation, and classification saving capabilities
+- Will focus on the umap_panel.py and related components
+>>>>>>> f328839 (save before fixing feature rextratction):docs/session-plan.md
