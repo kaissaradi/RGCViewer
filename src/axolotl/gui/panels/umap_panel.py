@@ -18,17 +18,17 @@ from ...analysis import analysis_core
 IAN_AVAILABLE = False
 IAN_IMPORT_ERROR = ""
 
-try:
-    # Try importing the installed package
-    from ian.ian import *
-    from ian.utils import *
-    from ian.dset_utils import *
-    from ian.embed_utils import *
-    IAN_AVAILABLE = True
-    # Check if the function we need exists
-except ImportError:
-    # Fallback: Try importing local ian.py file in this directory
-    IAN_IMPORT_ERROR = str(e)
+# try:
+#     # Try importing the installed package
+#     from ian.ian import *
+#     from ian.utils import *
+#     from ian.dset_utils import *
+#     from ian.embed_utils import *
+#     IAN_AVAILABLE = True
+#     # Check if the function we need exists
+# except ImportError:
+#     # Fallback: Try importing local ian.py file in this directory
+#     IAN_IMPORT_ERROR = str(e)
 
 logger = logging.getLogger(__name__)
 

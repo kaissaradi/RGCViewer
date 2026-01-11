@@ -172,10 +172,65 @@ class MainWindow(QMainWindow):
 
     def update_cluster_views(self, cluster_id):
         """
-        Receives a selection event, stores the cluster_id, and restarts the
-        selection timer. This 'debounces' rapid selections.
+        Receives a selection event.
+        
+        TIER 1 (Immediate): Updates lightweight plots (RF, Standard Plots, Cached EI).
+        TIER 2 (Debounced): Starts timer for heavy tasks.
         """
         self._pending_cluster_id = cluster_id
+
+        # --- TIER 1: IMMEDIATE UPDATES (Hot-Swap / Cached Data) ---
+        
+        # 1. Population RF Updates
+        # We must be specific about WHICH canvas we update to avoid overwriting the Single-Cell STA view.
+        
+        # A. Split View (Right Side Pane) - Always update if enabled
+        if self.population_view_enabled:
+            try:
+                plotting.draw_population_rfs_plot(
+                    main_window=self, 
+                    selected_cell_id=cluster_id,
+                    canvas=self.pop_mosaic_canvas  # <--- Explicitly target the right-side canvas
+                )
+            except Exception as e:
+                logger.error(f"Tier 1 Pop Split update failed: {e}")
+
+        # B. STA Tab (Main Center Pane) - Only update if explicitly in 'Population' mode
+        if self.analysis_tabs.currentWidget() == self.sta_panel:
+            if self.current_sta_view == 'population_rfs':
+                try:
+                    plotting.draw_population_rfs_plot(
+                        main_window=self, 
+                        selected_cell_id=cluster_id,
+                        canvas=self.rf_canvas  # <--- Only target main canvas if in Pop mode
+                    )
+                except Exception: pass
+            # If self.current_sta_view == 'rf', we DO NOTHING here. 
+            # We wait for Tier 2 to draw the correct single-cell STA.
+
+        # 2. Standard Plots Panel (ACG, ISI, Firing Rate)
+        if self.standard_plots_panel.isVisible():
+            try:
+                self.standard_plots_panel.update_all(cluster_id)
+            except Exception as e:
+                logger.error(f"Tier 1 Standard Plots update failed: {e}")
+
+        # 3. Electrical Image (EI) - Only if cached
+        has_cached_ei = False
+        if self.data_manager:
+            if hasattr(self.data_manager, 'has_cached_ei'):
+                has_cached_ei = self.data_manager.has_cached_ei(cluster_id)
+            elif hasattr(self.data_manager, 'ei_cache'):
+                has_cached_ei = cluster_id in self.data_manager.ei_cache
+
+        if self.ei_panel.isVisible() and has_cached_ei:
+            try:
+                self.ei_panel.update_ei([cluster_id])
+            except Exception as e:
+                logger.error(f"Tier 1 EI update failed: {e}")
+
+        # --- TIER 2: HEAVY LIFTING (Queued) ---
+        # Start/Restart the timer. 
         self.selection_timer.start()
 
     def _process_selection(self):

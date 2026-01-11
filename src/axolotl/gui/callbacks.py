@@ -216,26 +216,23 @@ def redraw_population_panels(main_window: MainWindow):
 
 def on_cluster_selection_changed(main_window: MainWindow):
     """
-    Handles a cluster selection by triggering the main window's selection timer
-    and updating the global population view if it is enabled.
+    Handles a cluster selection by delegating to the main window controller.
+    
+    OPTIMIZED: Direct plotting calls removed. 
+    main_window.update_cluster_views() now orchestrates:
+      - Tier 1: Immediate updates (RFs, Histograms, Cached Data)
+      - Tier 2: Debounced updates (Raw Data, Heavy Feature Extraction)
     """
     cluster_id = main_window._get_selected_cluster_id()
 
     if cluster_id is not None:
-        # Single unit selected - Debounced update for main tabs
+        # Single unit selected
+        # Delegate to the controller to handle immediate vs delayed updates
         main_window.update_cluster_views(cluster_id)
 
-        # --- NEW: Immediately update population pane if it's enabled ---
-        if main_window.population_view_enabled:
-            # This call is not debounced, for responsive feedback in the pop
-            # view.
-            plotting.draw_population_rfs_plot(
-                main_window=main_window,
-                selected_cell_id=cluster_id,
-                canvas=main_window.pop_mosaic_canvas)
-            redraw_population_panels(main_window)
     else:
-        # Potentially a Group Folder selected (Tree View)
+        # Group Folder selected (Tree View)
+        # Groups are not subject to rapid scrolling lag, so immediate update is fine here.
         if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
@@ -244,12 +241,9 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
                 # Check if it is a group (groups store None in UserRole)
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:
-                    # It's a group!
                     group_ids = main_window._get_group_cluster_ids(item)
 
                     if group_ids and main_window.population_view_enabled:
-                        # Update the population view immediately for the group
-                        # A specific cell is not selected, so no highlight.
                         plotting.draw_population_rfs_plot(
                             main_window=main_window,
                             subset_cell_ids=group_ids,

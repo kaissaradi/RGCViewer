@@ -350,75 +350,174 @@ def draw_population_rfs_plot(
         selected_cell_id=None,
         subset_cell_ids=None,
         canvas=None):
-    """Draws the population receptive field plot showing all cell RFs."""
-    logger.debug(
-        "Received selected_cell_id=%s, subset_cell_ids=%s for population RF plot",
-        selected_cell_id,
-        subset_cell_ids)
-
+    """
+    Draws the population receptive field plot.
+    OPTIMIZATION: Uses "Hot-Swap" rendering. It draws the background ghosts once
+    and updates only the highlight ellipse geometry on subsequent calls.
+    """
     # 1. Determine target canvas
     if canvas is None:
-        # If population view is enabled, prefer the dedicated mosaic canvas
-        # unless specifically overridden or if we are in a mode that implies
-        # the main view
-        if hasattr(
-                main_window,
-                'population_view_enabled') and main_window.population_view_enabled:
-            canvas = getattr(
-                main_window,
-                'pop_mosaic_canvas',
-                main_window.rf_canvas)
+        if hasattr(main_window, 'population_view_enabled') and main_window.population_view_enabled:
+            canvas = getattr(main_window, 'pop_mosaic_canvas', main_window.rf_canvas)
         else:
             canvas = main_window.rf_canvas
 
-    # 2. Smart Group Detection (if single unit selected but no subset provided)
-    # This ensures that when we click a unit in Split View, the Context pane
-    # shows its group.
+    # 2. Smart Group Detection
     if selected_cell_id is not None and subset_cell_ids is None:
-        # Only do auto-group detection if we are targeting the population canvas
-        # (If we are in "Population RFs" main view mode, maybe we want to see ALL cells?)
-        # Let's assume for Split View we want the group context.
-        if hasattr(
-                main_window,
-                'population_view_enabled') and main_window.population_view_enabled:
+        if hasattr(main_window, 'population_view_enabled') and main_window.population_view_enabled:
             df = main_window.data_manager.cluster_df
             if not df.empty and 'cluster_id' in df.columns:
                 if selected_cell_id in df['cluster_id'].values:
-                    # Find the group/label
                     try:
                         row = df[df['cluster_id'] == selected_cell_id].iloc[0]
-                        # Try 'KSLabel' first, then 'group' if available
-                        # (custom groups)
                         group_label = row.get('KSLabel')
-
                         if group_label:
-                            subset_cell_ids = df[df['KSLabel'] ==
-                                                 group_label]['cluster_id'].tolist()
-                    except Exception as e:
-                        logger.warning(
-                            f"Error determining group for cluster {selected_cell_id}: {e}")
+                            subset_cell_ids = df[df['KSLabel'] == group_label]['cluster_id'].tolist()
+                    except Exception:
+                        pass
 
-    has_vision_params = main_window.data_manager.vision_params
-
-    if has_vision_params:
+    vision_params = main_window.data_manager.vision_params
+    if not vision_params:
         canvas.fig.clear()
+        canvas.fig.text(0.5, 0.5, "No Vision parameters available", ha='center', va='center', color='gray')
+        canvas.draw_idle()
+        return
 
-        plot_population_rfs(
-            canvas.fig,
-            main_window.data_manager.vision_params,
+    # --- STATE MANAGEMENT ---
+    # We use a custom attribute on the canvas to track the current state of the plot.
+    # State structure: {'subset_hash': hash(tuple(subset_ids)), 'highlight_artist': Patch, 'ax': Axes}
+    
+    current_subset_tuple = tuple(sorted(subset_cell_ids)) if subset_cell_ids is not None else "ALL"
+    current_subset_hash = hash(current_subset_tuple)
+    
+    # Check if we can perform a Fast Update (Hot-Swap)
+    # We need: existing state, matching subset, and a valid axes object
+    can_hot_swap = (
+        hasattr(canvas, '_pop_plot_state') and 
+        canvas._pop_plot_state['subset_hash'] == current_subset_hash and
+        canvas._pop_plot_state['ax'] in canvas.fig.axes
+    )
+
+    if can_hot_swap:
+        # --- TIER 1: FAST UPDATE ---
+        # Update the existing ellipse without clearing the figure
+        ax = canvas._pop_plot_state['ax']
+        highlight_patch = canvas._pop_plot_state['highlight_artist']
+        
+        _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
+        
+        # Non-blocking draw
+        canvas.draw_idle()
+        
+    else:
+        # --- TIER 2: FULL REBUILD ---
+        # Either first run or the group (subset) changed. Rebuild background.
+        canvas.fig.clear()
+        ax = canvas.fig.add_subplot(111)
+        
+        # 1. Draw Background (Ghosts)
+        plot_population_rfs_background(
+            ax, 
+            vision_params, 
             sta_width=main_window.data_manager.vision_sta_width,
             sta_height=main_window.data_manager.vision_sta_height,
-            selected_cell_id=selected_cell_id,
-            # Pass the ID along to the core plotting function
             subset_cell_ids=subset_cell_ids
         )
-        canvas.draw()
-    else:
-        canvas.fig.clear()
-        canvas.fig.text(0.5, 0.5, "No Vision parameters available",
-                        ha='center', va='center', color='gray')
-        canvas.draw()
 
+        # 2. Create Highlight Artist (Initially hidden or generic)
+        # We create it once here so we can update it forever after
+        highlight_patch = Ellipse(
+            xy=(0, 0), width=1, height=1, angle=0,
+            edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
+            lw=2.0, zorder=10, visible=False 
+        )
+        ax.add_patch(highlight_patch)
+        
+        # 3. Apply initial highlight position
+        _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
+
+        # 4. Save State
+        canvas._pop_plot_state = {
+            'subset_hash': current_subset_hash,
+            'highlight_artist': highlight_patch,
+            'ax': ax
+        }
+        
+        canvas.draw_idle()
+
+
+def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
+    """Helper to update the geometry of the persistent highlight ellipse."""
+    if cell_id is None:
+        patch.set_visible(False)
+        return
+
+    vision_id = cell_id + 1
+    try:
+        stafit = vision_params.get_stafit_for_cell(vision_id)
+        adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+        
+        patch.center = (stafit.center_x, adjusted_y)
+        patch.width = 2 * stafit.std_x
+        patch.height = 2 * stafit.std_y
+        patch.angle = np.rad2deg(stafit.rot)
+        patch.set_visible(True)
+    except Exception:
+        # Cell has no RF fit data
+        patch.set_visible(False)
+
+
+def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height=None, subset_cell_ids=None):
+    """
+    Draws only the static 'ghost' ellipses for the population. 
+    This is called only when the group changes.
+    """
+    all_cell_ids = vision_params.get_cell_ids()
+    vision_subset_ids = [cid + 1 for cid in subset_cell_ids] if subset_cell_ids is not None else None
+
+    # Auto-scale variables
+    x_coords, y_coords = [], []
+    target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
+
+    # --- Draw Ghost Population (Excluded cells) ---
+    if vision_subset_ids is not None:
+        for cell_id in all_cell_ids:
+            if cell_id in vision_subset_ids: continue
+            try:
+                stafit = vision_params.get_stafit_for_cell(cell_id)
+                adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+                e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y, 
+                            angle=np.rad2deg(stafit.rot), edgecolor='gray', facecolor='none', lw=0.5, alpha=0.05)
+                ax.add_patch(e)
+            except: continue
+
+    # --- Draw Target Population (Included cells) ---
+    for cell_id in target_ids:
+        try:
+            stafit = vision_params.get_stafit_for_cell(cell_id)
+            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+            
+            # Draw standard white ellipse
+            e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y, 
+                        angle=np.rad2deg(stafit.rot), edgecolor='white', facecolor='none', lw=0.5, alpha=0.3)
+            ax.add_patch(e)
+            
+            x_coords.append(stafit.center_x)
+            y_coords.append(stafit.center_y)
+        except: continue
+
+    # --- Styling ---
+    if x_coords:
+        ax.set_xlim(min(x_coords)-20, max(x_coords)+20)
+        ax.set_ylim(max(y_coords)+20, min(y_coords)-20) # Inverted Y
+    else:
+        ax.set_xlim(0, 100); ax.set_ylim(100, 0)
+
+    ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color='white')
+    ax.set_facecolor('#1f1f1f')
+    ax.set_aspect('equal', adjustable='box')
+    ax.tick_params(colors='gray')
+    for spine in ax.spines.values(): spine.set_edgecolor('gray')
 
 def draw_sta_timecourse_plot(main_window, cluster_id):
     # Draws the STA timecourse plot for a specific cell.
