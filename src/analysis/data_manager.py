@@ -202,6 +202,7 @@ class DataManager(QObject):
 
         self.ei_cache = {}
         self.heavyweight_cache = {}
+        self.feature_cache = {} # Cache for feature extraction panel (PCA, ACG, etc.)
         # Lock to protect accesses to heavyweight_cache from multiple threads
         self._heavyweight_lock = threading.Lock()
         self.isi_cache = {}  # Cache for ISI violation calculations

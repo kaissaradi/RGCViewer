@@ -552,7 +552,7 @@ def feature_extraction(main_window: MainWindow, cluster_ids):
     """Feature extraction for selected clusters."""
     logger.info(f"feature extraction for clusters: {cluster_ids}")
     dlg = FeatureExtractionWindow(main_window, cluster_ids)
-    dlg.show()
+    dlg.exec()
 
 
 def stop_worker(main_window: MainWindow):

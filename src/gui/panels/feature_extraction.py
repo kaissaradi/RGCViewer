@@ -1,401 +1,414 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QDialog, QVBoxLayout, QMenu
-from qtpy.QtGui import QCursor
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from ..main_window import MainWindow
+import logging
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import RectangleSelector
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-import numpy as np
 from sklearn.decomposition import PCA
-import logging
+from scipy.signal import correlate
+from qtpy.QtWidgets import QDialog, QVBoxLayout, QMenu, QLabel, QApplication, QProgressBar
+from qtpy.QtGui import QCursor
+from qtpy.QtCore import QThread, Signal, Qt
+from typing import TYPE_CHECKING, Optional, List
+
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
+
 logger = logging.getLogger(__name__)
+
+
+class FeatureAnalysisWorker(QThread):
+    """
+    Background worker to compute features and PCA scores.
+    Now utilizes caching in DataManager to avoid re-computation.
+    """
+    finished = Signal(dict)
+    progress = Signal(str, int)
+
+    def __init__(self, data_manager, cluster_ids):
+        super().__init__()
+        self.data_manager = data_manager
+        self.cluster_ids = cluster_ids
+        self.is_running = True
+
+    def run(self):
+        try:
+            # Check cache first
+            # We need to see which cluster_ids are NOT in cache
+            uncached_ids = [cid for cid in self.cluster_ids if cid not in self.data_manager.feature_cache]
+            
+            # Only compute for uncached
+            if uncached_ids:
+                total_steps = len(uncached_ids) * 3
+                current_step = 0
+
+                # 1. Temporal Traces
+                temporal_traces = {} # Map cid -> trace
+                
+                if (self.data_manager.vision_params and 
+                    hasattr(self.data_manager.vision_params, 'main_datatable') and
+                    self.data_manager.vision_params.main_datatable is not None):
+                    
+                    for i, cluster_index in enumerate(uncached_ids):
+                        if not self.is_running: return
+                        current_step += 1
+                        if i % 10 == 0:
+                            self.progress.emit(f"Loading Traces ({i+1}/{len(uncached_ids)})...", 
+                                             int(current_step / total_steps * 100))
+                        
+                        vision_cluster_index = cluster_index + 1
+                        if vision_cluster_index in self.data_manager.vision_params.main_datatable:
+                            red_tc = self.data_manager.vision_params.get_data_for_cell(
+                                vision_cluster_index, 'RedTimeCourse')
+                            if red_tc is not None:
+                                temporal_traces[cluster_index] = red_tc
+
+                # 2. ACG
+                ACG = {} # Map cid -> acg
+                
+                for i, cluster_index in enumerate(uncached_ids):
+                    if not self.is_running: return
+                    current_step += 1
+                    if i % 10 == 0:
+                        self.progress.emit(f"Loading ACG ({i+1}/{len(uncached_ids)})...", 
+                                         int(current_step / total_steps * 100))
+
+                    # Try local compute first
+                    acg_computed = False
+                    try:
+                        spikes = self.data_manager.get_cluster_spikes(cluster_index)
+                        sr = self.data_manager.sampling_rate
+                        if len(spikes) > 1:
+                            limit_samples = int(300 * sr) 
+                            if spikes[-1] > limit_samples:
+                                spikes = spikes[spikes < limit_samples]
+                            
+                            if len(spikes) > 1:
+                                spikes_ms = (spikes / sr * 1000.0).astype(int)
+                                duration = int(spikes_ms[-1])
+                                bin_width_ms = 1
+                                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
+                                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
+                                
+                                if binned_spikes.size > 0:
+                                    centered = binned_spikes - np.mean(binned_spikes)
+                                    acg_full = correlate(centered, centered, mode='full')
+                                    zero_lag_idx = len(acg_full) // 2
+                                    max_lag_ms = 100
+                                    lag_range = min(int(max_lag_ms / bin_width_ms), zero_lag_idx)
+                                    
+                                    if lag_range > 0:
+                                        acg_symmetric = acg_full[zero_lag_idx - lag_range: zero_lag_idx + lag_range + 1]
+                                        acg_symmetric[lag_range] = 0 
+                                        
+                                        spike_variance = np.var(binned_spikes)
+                                        if spike_variance != 0:
+                                            acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
+                                        else:
+                                            acg_norm = acg_symmetric.astype(float)
+                                        
+                                        ACG[cluster_index] = acg_norm
+                                        acg_computed = True
+                    except Exception:
+                        pass
+
+                    if not acg_computed:
+                        ACG_current = self.data_manager.get_acg_data(cluster_index)
+                        if ACG_current is not None and len(ACG_current) > 1 and ACG_current[1] is not None:
+                            ACG[cluster_index] = ACG_current[1]
+
+                # 3. STA Fit (RF Diameter)
+                stafit = {}
+                
+                if (self.data_manager.vision_params and 
+                    hasattr(self.data_manager.vision_params, 'main_datatable') and
+                    self.data_manager.vision_params.main_datatable is not None):
+                    
+                    for i, cluster_index in enumerate(uncached_ids):
+                        if not self.is_running: return
+                        current_step += 1
+                        if i % 10 == 0:
+                            self.progress.emit(f"Loading STA Fits ({i+1}/{len(uncached_ids)})...", 
+                                             int(current_step / total_steps * 100))
+                        
+                        vision_cluster_index = cluster_index + 1
+                        if vision_cluster_index in self.data_manager.vision_params.main_datatable:
+                            stafit_current = self.data_manager.vision_params.get_stafit_for_cell(vision_cluster_index)
+                            if stafit_current is not None:
+                                stafit[cluster_index] = [stafit_current.std_x, stafit_current.std_y]
+                
+                # Update Cache
+                for cid in uncached_ids:
+                    self.data_manager.feature_cache[cid] = {
+                        'temporal_trace': temporal_traces.get(cid),
+                        'acg': ACG.get(cid),
+                        'stafit': stafit.get(cid)
+                    }
+
+            # --- Consolidate Data for Analysis ---
+            # Now all requested IDs should be in cache (or have None if data missing)
+            
+            valid_ids = []
+            final_traces = []
+            final_acg = []
+            final_rf_diam = []
+            final_time_to_peak = []
+
+            for cid in self.cluster_ids:
+                cached = self.data_manager.feature_cache.get(cid)
+                if cached:
+                    trace = cached.get('temporal_trace')
+                    acg = cached.get('acg')
+                    stafit_val = cached.get('stafit')
+                    
+                    if trace is not None and acg is not None and stafit_val is not None:
+                        valid_ids.append(cid)
+                        final_traces.append(trace)
+                        final_acg.append(acg)
+                        final_rf_diam.append(np.sqrt(stafit_val[0] * stafit_val[1]))
+                        # Time to Peak (index of max absolute value) * sampling interval
+                        # Assuming Vision trace 
+                        final_time_to_peak.append(np.argmax(np.abs(trace))) 
+
+            final_traces = np.array(final_traces)
+            final_acg = np.array(final_acg)
+            final_rf_diam = np.array(final_rf_diam)
+            final_time_to_peak = np.array(final_time_to_peak) # Units: samples/frames
+
+            # PCA
+            if len(valid_ids) > 0:
+                pca_traces = PCA(n_components=3).fit_transform(final_traces) if final_traces.size > 0 else np.empty((0,3))
+                pca_acg = PCA(n_components=3).fit_transform(final_acg) if final_acg.size > 0 else np.empty((0,3))
+            else:
+                pca_traces = np.empty((0,3))
+                pca_acg = np.empty((0,3))
+
+            results = {
+                'cluster_ids': valid_ids,
+                'temporal_pca': pca_traces,
+                'acg_pca': pca_acg,
+                'rf_diameter': final_rf_diam,
+                'time_to_peak': final_time_to_peak
+            }
+            
+            self.progress.emit("Finalizing...", 100)
+            self.finished.emit(results)
+            
+        except Exception as e:
+            logger.error(f"Error in FeatureAnalysisWorker: {e}", exc_info=True)
+            self.finished.emit({}) 
+
+    def stop(self):
+        self.is_running = False
 
 
 class FeatureExtractionWindow(QDialog):
     """
-    Pop up window for feature extraction.
+    Pop up window for feature extraction with linked brushing and lazy loading.
     """
 
     def __init__(self, main_window: MainWindow, cluster_ids, parent=None):
+        logger.debug(f"Initializing FeatureExtractionWindow with {len(cluster_ids)} clusters")
         super().__init__(parent)
-        self.main_window = main_window  # for data access
-        self.cluster_ids = cluster_ids
+        self.main_window = main_window
+        self.initial_cluster_ids = cluster_ids
+        self.cluster_ids = [] # Will be updated with valid ones
+        
         self.setWindowTitle('Feature Extraction')
-        self.setGeometry(200, 200, 900, 600)
+        self.resize(1100, 700) 
 
+        # Layout
         self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+
+        # Status/Loading Bar
+        self.status_label = QLabel("Initializing...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.main_layout.addWidget(self.status_label)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.main_layout.addWidget(self.progress_bar)
+
+        # Canvas
         self.fig = plt.figure()
         self.canvas = FigureCanvas(self.fig)
         self.axes = self.fig.subplots(2, 3)
-        self.fig.subplots_adjust(wspace=0.45, hspace=0.3)  # increase gaps
-        
+        self.fig.subplots_adjust(wspace=0.3, hspace=0.3, left=0.08, right=0.95, bottom=0.08, top=0.95)
         self.main_layout.addWidget(self.canvas)
-        self.setLayout(self.main_layout)
+        self.canvas.hide() 
 
-        # temporal features
-        self.temporal_traces = self.get_temporal_traces()
-        self.ACG = self.get_autocorrelogram()
-        # pca analysis
-        self.temporal_traces_pca_scores = self.temporal_traces_pca_analysis()
-        self.ACG_pca_scores = self.ACG_pca_analysis()
-        # spatial features
-        self.stafit = self.get_stafit()
-        self.RF_diameter = np.sqrt(self.stafit[:, 0] * self.stafit[:, 1])
+        self.scatter_artists: List[Optional[any]] = [None] * 6
+        self.selectors = []
 
-        logger.debug(
-            'PCA scores computed for temporal traces; shape=%s',
-            getattr(
-                self.temporal_traces_pca_scores,
-                'shape',
-                None))
-        logger.debug(
-            'PCA scores computed for ACG; shape=%s',
-            getattr(
-                self.ACG_pca_scores,
-                'shape',
-                None))
+        # Start Worker
+        self.worker = FeatureAnalysisWorker(self.main_window.data_manager, self.initial_cluster_ids)
+        self.worker.progress.connect(self.on_progress)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.worker.start()
 
-        self.draw_subplots(0)  # draw the first subplot
-        self.draw_subplots(1)  # draw the second subplot
-        self.draw_subplots(2)  # draw the third subplot
-        self.draw_subplots(3)  # draw the forth subplot
-        self.draw_subplots(4)  # draw the third subplot
-        self.draw_subplots(5)  # draw the forth subplot
+    def on_progress(self, msg, value):
+        self.status_label.setText(msg)
+        self.progress_bar.setValue(value)
 
-    def get_temporal_traces(self):
-        temporal_traces = []
-        for cluster_index in self.cluster_ids:
-            vision_cluster_index = cluster_index + 1
-            if vision_cluster_index in self.main_window.data_manager.vision_params.main_datatable:
-                red_tc = self.main_window.data_manager.vision_params.get_data_for_cell(
-                    vision_cluster_index, 'RedTimeCourse')
-                temporal_traces.append(red_tc)
-            else:
-                logger.warning(
-                    'Cluster ID %s (Vision ID %s) not found in Vision data; skipping',
-                    cluster_index,
-                    vision_cluster_index)
-        if len(temporal_traces) == 0:
-            return np.empty((0,))
-
-        temporal_traces = np.array(temporal_traces)
-        return temporal_traces
-
-    def get_autocorrelogram(self):
-        ACG = []
-        for cluster_index in self.cluster_ids:
-            vision_cluster_index = cluster_index + 1
-            if vision_cluster_index in self.main_window.data_manager.vision_params.main_datatable:
-                ACG_current = self.main_window.data_manager.get_acg_data(cluster_index)
-                ACG.append(ACG_current[1])
-            else:
-                logger.warning(
-                    'Cluster ID %s (Vision ID %s) not found in Vision data; skipping',
-                    cluster_index,
-                    vision_cluster_index)
-        if len(ACG) == 0:
-            return np.empty((0,))
-
-        ACG = np.array(ACG)
-        return ACG
-    
-    def get_stafit(self):
-        stafit = []
-        for cluster_index in self.cluster_ids:
-            vision_cluster_index = cluster_index + 1
-            if vision_cluster_index in self.main_window.data_manager.vision_params.main_datatable:
-                stafit_current = self.main_window.data_manager.vision_params.get_stafit_for_cell(vision_cluster_index)
-                stafit.append([stafit_current.std_x, stafit_current.std_y])
-            else:
-                logger.warning(
-                    'Cluster ID %s (Vision ID %s) not found in Vision data; skipping',
-                    cluster_index,
-                    vision_cluster_index)
-        if len(stafit) == 0:
-            return np.empty((0,))
-
-        stafit = np.array(stafit)
-        return stafit
-
-    def temporal_traces_pca_analysis(self):
-        pca = PCA(n_components=3)
-        pca_scores = pca.fit_transform(self.temporal_traces)
-        return pca_scores
-    
-    def ACG_pca_analysis(self):
-        pca = PCA(n_components=3)
-        pca_scores = pca.fit_transform(self.ACG)
-        return pca_scores
-
-    def draw_subplots(self, subplot_idx):
-        subplots_lw = 0.6
-        subplots_marker_size = 15
-        if subplot_idx == 0:
-            ax = self.axes[0][0]
-            ax.scatter(self.temporal_traces_pca_scores[:, 0], self.temporal_traces_pca_scores[:, 1],
-                       marker='o', facecolors='none', edgecolors='k',
-                       linewidths=subplots_lw, s = subplots_marker_size)
-            ax.set_xlabel('TF 1')
-            ax.set_ylabel('TF 2')
-            self.canvas.draw()
-
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
-
-                flag_ROI = ((self.temporal_traces_pca_scores[:, 0] >= xmin) &
-                            (self.temporal_traces_pca_scores[:, 0] <= xmax) &
-                            (self.temporal_traces_pca_scores[:, 1] >= ymin) &
-                            (self.temporal_traces_pca_scores[:, 1] <= ymax))
-
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
-
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
-
-                logger.debug('Selected cluster IDs: %s', selected_ids)
-
-            self.selector = RectangleSelector(ax, onselect,
-                                              useblit=False,
-                                              minspanx=0.01,
-                                              minspany=0.01,
-                                              spancoords='data',
-                                              button=[1],
-                                              interactive=True)
-
-        elif subplot_idx == 1:
-            ax = self.axes[0][1]
-            ax.scatter(self.RF_diameter, self.temporal_traces_pca_scores[:, 0],
-                       marker='o', facecolors='none', edgecolors='k',
-                       linewidths=subplots_lw, s = subplots_marker_size)
-            ax.set_xlabel('RF Diameter')
-            ax.set_ylabel('TF 1')
-            self.canvas.draw()
-
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
-
-                flag_ROI = ((self.RF_diameter >= xmin) &
-                            (self.RF_diameter <= xmax) &
-                            (self.temporal_traces_pca_scores[:, 0] >= ymin) &
-                            (self.temporal_traces_pca_scores[:, 0] <= ymax))
-
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
-
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
-
-                logger.debug('Selected cluster IDs: %s', selected_ids)
-
-            self.selector2 = RectangleSelector(ax, onselect,
-                                               useblit=False,
-                                               minspanx=0.01,
-                                               minspany=0.01,
-                                               spancoords='data',
-                                               button=[1],
-                                               interactive=True)
-        elif subplot_idx == 2:
-            ax = self.axes[0][2]
-            markerline, stemlines, baseline = ax.stem(self.RF_diameter, np.ones(self.RF_diameter.shape))
-            markerline.set_marker('None')
-            stemlines.set_color('k')
-            stemlines.set_linewidth(0.6)
-            baseline.set_visible(False)
-            ax.set_xlabel("RF Diameter")
-            self.canvas.draw()
-
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
-
-                flag_ROI = ((self.RF_diameter >= xmin) &
-                            (self.RF_diameter <= xmax))
-
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
-
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
-
-                logger.debug('Selected cluster IDs: %s', selected_ids)
-
-            self.selector3 = RectangleSelector(ax, onselect,
-                                               useblit=False,
-                                               minspanx=0.01,
-                                               minspany=0.01,
-                                               spancoords='data',
-                                               button=[1],
-                                               interactive=True)
-
-        elif subplot_idx == 3:
-            ax = self.axes[1][0]
-            ax.scatter(self.ACG_pca_scores[:, 0], self.ACG_pca_scores[:, 1],
-                       marker='o', facecolors='none', edgecolors='k',
-                       linewidths=subplots_lw, s = subplots_marker_size)
-            ax.set_xlabel("Autocorrelation 1")
-            ax.set_ylabel("Autocorrelation 2")
-            self.canvas.draw()
-
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
-
-                flag_ROI = ((self.ACG_pca_scores[:, 0] >= xmin) &
-                            (self.ACG_pca_scores[:, 0] <= xmax) &
-                            (self.ACG_pca_scores[:, 1] >= ymin) &
-                            (self.ACG_pca_scores[:, 1] <= ymax))
-
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
-
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
-
-                logger.debug('Selected cluster IDs: %s', selected_ids)
-
-            self.selector4 = RectangleSelector(ax, onselect,
-                                               useblit=False,
-                                               minspanx=0.01,
-                                               minspany=0.01,
-                                               spancoords='data',
-                                               button=[1],
-                                               interactive=True)
-        elif subplot_idx == 4:
-            ax = self.axes[1][1]
-            ax.scatter(self.RF_diameter, self.ACG_pca_scores[:, 0],
-                       marker='o', facecolors='none', edgecolors='k',
-                       linewidths=subplots_lw, s = subplots_marker_size)
-            ax.set_xlabel("RF Diameter")
-            ax.set_ylabel("Autocorrelation 1")
-            self.canvas.draw()
-
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
-
-                flag_ROI = ((self.RF_diameter >= xmin) &
-                            (self.RF_diameter <= xmax) &
-                            (self.ACG_pca_scores[:, 0] >= ymin) &
-                            (self.ACG_pca_scores[:, 0] <= ymax))
-
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
-
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
-
-                logger.debug('Selected cluster IDs: %s', selected_ids)
-
-            self.selector5 = RectangleSelector(ax, onselect,
-                                               useblit=False,
-                                               minspanx=0.01,
-                                               minspany=0.01,
-                                               spancoords='data',
-                                               button=[1],
-                                               interactive=True)
+    def on_worker_finished(self, results):
+        self.progress_bar.hide()
+        self.status_label.hide()
+        self.canvas.show()
         
-        elif subplot_idx == 5:
-            ax = self.axes[1][2]
-            ax.scatter(self.temporal_traces_pca_scores[:, 0], self.ACG_pca_scores[:, 0],
-                       marker='o', facecolors='none', edgecolors='k',
-                       linewidths=subplots_lw, s = subplots_marker_size)
-            ax.set_xlabel("TF 1")
-            ax.set_ylabel("Autocorrelation 1")
-            self.canvas.draw()
+        if not results:
+            self.status_label.setText("Analysis failed or no data found.")
+            self.status_label.show()
+            return
 
-            def onselect(eclick, erelease):
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
+        self.cluster_ids = results.get('cluster_ids', [])
+        self.temporal_pca = results.get('temporal_pca', np.empty((0,3)))
+        self.acg_pca = results.get('acg_pca', np.empty((0,3)))
+        self.rf_diameter = results.get('rf_diameter', np.empty((0,)))
+        self.time_to_peak = results.get('time_to_peak', np.empty((0,)))
+        
+        if len(self.cluster_ids) == 0:
+            self.status_label.setText("No valid data found for selected clusters.")
+            self.status_label.show()
+            return
+            
+        self.draw_plots()
 
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
+    def draw_plots(self):
+        # Common aesthetics
+        scatter_kwargs = {
+            'marker': 'o',
+            'facecolors': 'none',
+            'edgecolors': 'k', 
+            'linewidths': 0.5,
+            's': 20,
+            'alpha': 0.7,
+            'picker': 5
+        }
+        
+        # Clear axes
+        for ax_row in self.axes:
+            for ax in ax_row:
+                ax.clear()
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
 
-                flag_ROI = ((self.temporal_traces_pca_scores[:, 0] >= xmin) &
-                            (self.temporal_traces_pca_scores[:, 0] <= xmax) &
-                            (self.ACG_pca_scores[:, 0] >= ymin) &
-                            (self.ACG_pca_scores[:, 0] <= ymax))
+        # --- Plot 0: Temporal PC 1 vs 2 ---
+        ax = self.axes[0, 0]
+        if len(self.temporal_pca) > 0:
+            self.scatter_artists[0] = ax.scatter(self.temporal_pca[:, 0], self.temporal_pca[:, 1], **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel('Temporal PC 1')
+        ax.set_ylabel('Temporal PC 2')
+        self.setup_selector(ax, 0, self.temporal_pca[:, 0], self.temporal_pca[:, 1])
 
-                selected_ids = [
-                    cid for cid, flag in zip(
-                        self.cluster_ids, flag_ROI) if flag]
+        # --- Plot 1: RF Diameter vs Temporal PC 1 ---
+        ax = self.axes[0, 1]
+        if len(self.rf_diameter) > 0 and len(self.temporal_pca) > 0:
+            self.scatter_artists[1] = ax.scatter(self.rf_diameter, self.temporal_pca[:, 0], **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel('RF Diameter (µm)')
+        ax.set_ylabel('Temporal PC 1')
+        self.setup_selector(ax, 1, self.rf_diameter, self.temporal_pca[:, 0])
 
-                # Trigger menu immediately when selection is made
-                if selected_ids:
-                    menu = QMenu(self)
-                    create_action = menu.addAction(
-                        f"Create Group from {len(selected_ids)} clusters")
-                    action = menu.exec_(QCursor.pos())
-                    if action == create_action:
-                        self.create_new_class(selected_ids)
+        # --- Plot 2: Time to Peak vs RF Diameter (REPLACES HISTOGRAM) ---
+        ax = self.axes[0, 2]
+        if len(self.rf_diameter) > 0 and len(self.time_to_peak) > 0:
+            # Note: time_to_peak is in frames/samples. 
+            self.scatter_artists[2] = ax.scatter(self.rf_diameter, self.time_to_peak, **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel("RF Diameter (µm)")
+        ax.set_ylabel("Time to Peak (frames)")
+        self.setup_selector(ax, 2, self.rf_diameter, self.time_to_peak)
 
-                logger.debug('Selected cluster IDs: %s', selected_ids)
+        # --- Plot 3: ACG PC 1 vs 2 ---
+        ax = self.axes[1, 0]
+        if len(self.acg_pca) > 0:
+            self.scatter_artists[3] = ax.scatter(self.acg_pca[:, 0], self.acg_pca[:, 1], **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel("ACG PC 1")
+        ax.set_ylabel("ACG PC 2")
+        self.setup_selector(ax, 3, self.acg_pca[:, 0], self.acg_pca[:, 1])
 
-            self.selector6 = RectangleSelector(ax, onselect,
-                                               useblit=False,
-                                               minspanx=0.01,
-                                               minspany=0.01,
-                                               spancoords='data',
-                                               button=[1],
-                                               interactive=True)
+        # --- Plot 4: RF vs ACG PC 1 ---
+        ax = self.axes[1, 1]
+        if len(self.rf_diameter) > 0 and len(self.acg_pca) > 0:
+            self.scatter_artists[4] = ax.scatter(self.rf_diameter, self.acg_pca[:, 0], **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel("RF Diameter (µm)")
+        ax.set_ylabel("ACG PC 1")
+        self.setup_selector(ax, 4, self.rf_diameter, self.acg_pca[:, 0])
+
+        # --- Plot 5: Temporal PC 1 vs ACG PC 1 ---
+        ax = self.axes[1, 2]
+        if len(self.temporal_pca) > 0 and len(self.acg_pca) > 0:
+            self.scatter_artists[5] = ax.scatter(self.temporal_pca[:, 0], self.acg_pca[:, 0], **scatter_kwargs)
+            ax.autoscale(tight=True)
+        ax.set_xlabel("Temporal PC 1")
+        ax.set_ylabel("ACG PC 1")
+        self.setup_selector(ax, 5, self.temporal_pca[:, 0], self.acg_pca[:, 0])
+
+        self.canvas.draw()
+
+    def setup_selector(self, ax, index, x_data, y_data):
+        """
+        Sets up a RectangleSelector for a given axes.
+        """
+        def onselect(eclick, erelease):
+            if len(self.cluster_ids) == 0: return
+
+            x1, y1 = eclick.xdata, eclick.ydata
+            x2, y2 = erelease.xdata, erelease.ydata
+            xmin, xmax = sorted([x1, x2])
+            ymin, ymax = sorted([y1, y2])
+
+            mask = (x_data >= xmin) & (x_data <= xmax) & (y_data >= ymin) & (y_data <= ymax)
+            selected_indices = np.where(mask)[0]
+            
+            self.highlight_selection(selected_indices)
+            self.show_context_menu(selected_indices)
+
+        rect = RectangleSelector(ax, onselect,
+                                useblit=False, 
+                                button=[1],
+                                interactive=True,
+                                minspanx=5, minspany=5,
+                                spancoords='pixels')
+        self.selectors.append(rect)
+
+    def highlight_selection(self, indices):
+        """
+        Highlights the selected indices in ALL plots.
+        """
+        default_color = 'black'
+        selected_color = 'red'
+        
+        n_points = len(self.cluster_ids)
+        colors = np.array([default_color] * n_points)
+        if len(indices) > 0:
+            colors[indices] = selected_color
+            
+        for i, scatter in enumerate(self.scatter_artists):
+            if scatter is not None:
+                scatter.set_edgecolors(colors)
+        
+        self.canvas.draw()
+
+    def show_context_menu(self, selected_indices):
+        if len(selected_indices) == 0: return
+        
+        selected_ids = [self.cluster_ids[i] for i in selected_indices]
+        
+        menu = QMenu(self)
+        create_action = menu.addAction(f"Create Group from {len(selected_ids)} clusters")
+        
+        action = menu.exec(QCursor.pos())
+        
+        if action == create_action:
+            self.create_new_class(selected_ids)
 
     def create_new_class(self, selected_ids):
-        if self.main_window.data_manager is None:
-            return
+        if self.main_window.data_manager is None: return
 
         from ..callbacks import populate_tree_view
 
@@ -405,8 +418,17 @@ class FeatureExtractionWindow(QDialog):
 
         current_new_class_id = self.main_window.data_manager.new_class_id
         group_name = f"Nc{current_new_class_id}"
+        
         df.loc[df['cluster_id'].isin(selected_ids), 'KSLabel'] = group_name
         self.main_window.data_manager.new_class_id += 1
         self.main_window.data_manager.cluster_df = df
 
         populate_tree_view(self.main_window, df)
+        logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
+        self.close()
+
+    def closeEvent(self, event):
+        if self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait()
+        super().closeEvent(event)

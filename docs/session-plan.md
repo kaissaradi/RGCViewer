@@ -87,7 +87,114 @@ The project now has a cleaner, more intuitive structure without the unnecessary 
 - Ensured all cross-panel references now point to the correct location in the panels module
 
 ## Next Focus: UMAP Panel Enhancement
+
 - Turning attention to the UMAP panel for clustering and dimensionality reduction features
+
 - Planning to implement feature selection, class creation, and classification saving capabilities
+<<<<<<< HEAD
 - Will focus on the umap_panel.py and related components
 >>>>>>> f328839 (save before fixing feature rextratction):docs/session-plan.md
+=======
+
+- Will focus on the umap_panel.py and related components
+
+
+
+## Feature Extraction Panel 2.0 (Completed)
+
+
+
+**Goal:** "10x" the Feature Extraction window with lazy loading, modern UX, and better plotting.
+
+
+
+
+
+
+
+### 1. Performance & Lazy Loading
+
+
+
+- **Implemented:** `FeatureAnalysisWorker` (QThread) handles all heavy computation.
+
+
+
+- **Implemented:** **Caching** in `DataManager`. Computed features (PCA, Traces, ACG) are stored by `cluster_id`. 
+
+
+
+    - *Result:* Re-opening the window or creating groups is now near-instantaneous after the first load.
+
+
+
+
+
+
+
+### 2. Plotting Improvements
+
+
+
+- **Top Right Plot (Subplot 2):** 
+
+
+
+    - *Old:* Histogram of RF Diameters.
+
+
+
+    - *New:* **Time to Peak vs RF Diameter**.
+
+
+
+    - *Why:* This provides excellent separation between **Parasol** (Fast + Large RF) and **Midget** (Slow + Small RF) cells.
+
+
+
+- **Aesthetics:**
+
+
+
+    - Despined plots, alpha blending, improved labels ("Time to Peak (frames)", "RF Diameter (µm)").
+
+
+
+
+
+
+
+### 3. UX: Linked Brushing & Selection
+
+
+
+- **Implemented:** Selecting points in one plot highlights the corresponding cells in **all 6 plots** instantly.
+
+
+
+- **Implemented:** "Create Group" context menu works seamlessly with the selection.
+
+
+
+
+
+
+
+## Next Focus: UMAP Panel Enhancement
+
+
+
+- Turning attention to the UMAP panel for clustering and dimensionality reduction features
+
+
+
+- Planning to implement feature selection, class creation, and classification saving capabilities
+
+
+
+- Will focus on the umap_panel.py and related components
+
+
+
+
+>>>>>>> b42ffbe (fixing feature rextratction)
