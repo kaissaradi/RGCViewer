@@ -1,5 +1,4 @@
 """
-<<<<<<< HEAD
 Analysis Core Functions
 
 This module contains all analysis functions for RGC data processing.
@@ -539,28 +538,6 @@ def compute_spatial_features(ei, channel_positions, _sampling_rate):
         "spatial_spread": spatial_spread
     }
 
-=======
-Analysis Core Facade
-
-This module provides a single import point for all analysis functions.
-It aggregates functionality from submodules to simplify imports elsewhere.
-"""
-
-# Re-export functions from submodules for convenient access
-from .modules.waveform import (
-    extract_snippets,
-    baseline_correct,
-    compute_ei,
-    select_channels
-)
-
-from .modules.sta import (
-    get_sta_timecourse_data,
-    compute_sta_metrics
-)
-
-from .modules.spatial import compute_spatial_features
->>>>>>> a9d70d6 (refactoring)
 
 __all__ = [
     'extract_snippets',
@@ -570,8 +547,4 @@ __all__ = [
     'get_sta_timecourse_data',
     'compute_sta_metrics',
     'compute_spatial_features'
-<<<<<<< HEAD
 ]
-=======
-]
->>>>>>> a9d70d6 (refactoring)
