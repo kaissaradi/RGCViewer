@@ -213,13 +213,17 @@ class MainWindow(QMainWindow):
             # If self.current_sta_view == 'rf', we DO NOTHING here.
 =======
                     plotting.draw_population_rfs_plot(
-                        main_window=self, 
+                        main_window=self,
                         selected_cell_id=cluster_id,
-                        canvas=self.rf_canvas  # <--- Only target main canvas if in Pop mode
+                        canvas=self.sta_panel.rf_canvas  # <--- Only target main canvas if in Pop mode
                     )
                 except Exception: pass
+<<<<<<< HEAD
             # If self.current_sta_view == 'rf', we DO NOTHING here. 
 >>>>>>> 84f740b (speed improvemnts, saving):src/axolotl/gui/main_window.py
+=======
+            # If self.current_sta_view == 'rf', we DO NOTHING here.
+>>>>>>> a9d70d6 (refactoring)
             # We wait for Tier 2 to draw the correct single-cell STA.
 
         # 2. Standard Plots Panel (ACG, ISI, Firing Rate)
