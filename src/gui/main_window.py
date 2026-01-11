@@ -186,8 +186,13 @@ class MainWindow(QMainWindow):
         # A. Split View (Right Side Pane) - Always update if enabled
         if self.population_view_enabled:
             try:
+<<<<<<< HEAD:src/gui/main_window.py
                 draw_population_rfs_plot(
                     main_window=self,
+=======
+                plotting.draw_population_rfs_plot(
+                    main_window=self, 
+>>>>>>> 84f740b (speed improvemnts, saving):src/axolotl/gui/main_window.py
                     selected_cell_id=cluster_id,
                     canvas=self.pop_mosaic_canvas  # <--- Explicitly target the right-side canvas
                 )
@@ -198,6 +203,7 @@ class MainWindow(QMainWindow):
         if self.analysis_tabs.currentWidget() == self.sta_panel:
             if self.current_sta_view == 'population_rfs':
                 try:
+<<<<<<< HEAD:src/gui/main_window.py
                     draw_population_rfs_plot(
                         main_window=self,
                         selected_cell_id=cluster_id,
@@ -205,6 +211,15 @@ class MainWindow(QMainWindow):
                     )
                 except Exception: pass
             # If self.current_sta_view == 'rf', we DO NOTHING here.
+=======
+                    plotting.draw_population_rfs_plot(
+                        main_window=self, 
+                        selected_cell_id=cluster_id,
+                        canvas=self.rf_canvas  # <--- Only target main canvas if in Pop mode
+                    )
+                except Exception: pass
+            # If self.current_sta_view == 'rf', we DO NOTHING here. 
+>>>>>>> 84f740b (speed improvemnts, saving):src/axolotl/gui/main_window.py
             # We wait for Tier 2 to draw the correct single-cell STA.
 
         # 2. Standard Plots Panel (ACG, ISI, Firing Rate)
