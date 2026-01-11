@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Session Plan: Refactoring GUI Structure - Move plotting functions to panels
 
 ## Original Problem Identified
@@ -35,49 +34,6 @@
 
 ## Result
 The population plotting functionality has been successfully moved to a dedicated panel file in the panels directory, eliminating the separate plotting directory and improving code organization. The structure is now cleaner and more maintainable.
-<<<<<<< HEAD:session-plan.md
-=======
-# Session Plan: Refactoring to Remove axolotl Folder
-
-## Original Problem
-- The project had an unnecessary "axolotl" folder layer that needed to be removed
-- The analysis_core.py file was considered a placeholder that needed attention
-
-## Actions Taken
-
-### 1. Structural Changes
-- Removed the `src/axolotl/` directory layer
-- Moved `src/axolotl/analysis/` contents to `src/analysis/`
-- Moved `src/axolotl/gui/` contents to `src/gui/`
-- Removed the now-empty `src/axolotl/` directory
-
-### 2. Updated Import Statements
-- Changed `from src.axolotl.gui.main_window import MainWindow` to `from src.gui.main_window import MainWindow` in main.py
-- Verified all relative imports in GUI modules were correct
-
-### 3. Updated String References
-- Changed window title from "axolotl" to "RGC Viewer"
-- Updated welcome message from "Welcome to axolotl" to "Welcome to RGC Viewer"
-- Changed unsaved changes indicator from "*axolotl (unsaved changes)" to "*RGC Viewer (unsaved changes)"
-- Updated argument parser description
-
-### 4. Documentation Updates
-- Changed README.md title from "Axolotl - Neural Spike Sorting Cluster Refinement GUI" to "RGC Viewer - Neural Spike Sorting Cluster Refinement GUI"
-- Updated directory name in installation instructions from "axolotl-wrapper" to "RGCViewer"
-
-### 5. Package Initialization
-- Updated `src/__init__.py` to properly expose analysis and gui packages
-- Verified that `src/analysis/__init__.py` and `src/gui/__init__.py` correctly expose their modules
-
-## Verification
-- Confirmed no remaining references to "axolotl" exist in the codebase
-- Verified directory structure is clean and logical
-- Confirmed all import paths are correct after restructuring
-- Ensured all functionality remains intact after refactoring
-
-## Result
-The project now has a cleaner, more intuitive structure without the unnecessary "axolotl" folder layer, while maintaining all functionality and proper import paths.
->>>>>>> a9d70d6 (refactoring)
 =======
 
 ## Additional Fixes Discovered During Refactoring
@@ -120,7 +76,7 @@ The project now has a cleaner, more intuitive structure without the unnecessary 
 
 
 
-- **Implemented:** **Caching** in `DataManager`. Computed features (PCA, Traces, ACG) are stored by `cluster_id`. 
+- **Implemented:** **Caching** in `DataManager`. Computed features (PCA, Traces, ACG) are stored by `cluster_id`.
 
 
 
@@ -136,7 +92,7 @@ The project now has a cleaner, more intuitive structure without the unnecessary 
 
 
 
-- **Top Right Plot (Subplot 2):** 
+- **Top Right Plot (Subplot 2):**
 
 
 
@@ -196,5 +152,167 @@ The project now has a cleaner, more intuitive structure without the unnecessary 
 
 
 
+## UMAP Panel Enhancement Plan
+
+### Goal
+Enhance the UMAP panel with the following features:
+1. Remove all IAN-related code
+2. Add 3D UMAP visualization option
+3. Implement HDBSCAN clustering instead of K-Means
+4. Prioritize specific important features for RGC classification
+5. Add iterative clustering capability based on selected groups
+
+### Phase 1: Clean Up and Removal
+#### 1.1 Remove All IAN-Related Code
+- Completely remove the IAN import section and related code
+- Remove the IANWorker class and its associated functionality
+- Remove the IAN button from the UI
+- Clean up any IAN-related variables and methods
+- Remove unused imports related to 3D projections that are not needed
+
+#### 1.2 Update Dependencies
+- Ensure only umap-learn, hdbscan, and necessary scikit-learn packages are imported
+- Update requirements.txt if necessary with HDBSCAN
+
+### Phase 2: Core Feature Enhancement
+#### 2.1 Feature Prioritization Implementation
+Implement feature extraction focusing on the most important RGC features:
+- Timecourse PCA 1 and 2 (extracted from dominant channel traces)
+- ACG PCA 1 and 2 (auto-correlation function principal components)
+- Time course statistics:
+  - Time to peak
+  - FWHM (Full Width Half Maximum)
+  - Biphasic index
+  - Energy
+  - Zero crossing
+- RF (Receptive Field) properties:
+  - RF diameter
+  - RF size
+  - RF angle
+  - X vs Y sigma (spatial properties)
+
+#### 2.2 Improved Feature Extraction Function
+Modify extract_features_from_datamanager to prioritize the specified features:
+- Add ACG PCA features extraction
+- Add enhanced time course statistics
+- Add comprehensive RF property metrics
+- Maintain backward compatibility with existing features
+
+### Phase 3: Visualization Enhancement
+#### 3.1 3D UMAP Integration
+- Add a 3D UMAP button and functionality
+- Modify the UMAPWorker to support both 2D and 3D embeddings
+- Implement proper 3D axes initialization
+- Add 3D rotation and interaction capabilities
+- Add toggle between 2D/3D views
+
+#### 3.2 Enhanced Visualization Features
+- Improve plot aesthetics and interactivity
+- Add better labeling and tooltips
+- Implement proper 3D projection handling for lasso selection
+
+### Phase 4: Clustering Enhancement
+#### 4.1 HDBSCAN Integration
+- Replace K-means with HDBSCAN clustering
+- Add HDBSCAN controls (min_cluster_size, min_samples)
+- Implement HDBSCANWorker class similar to KMeansWorker
+- Update UI to reflect HDBSCAN parameters
+- Add option to show noise points differently
+
+#### 4.2 Improved Clustering UI
+- Update clustering interface with HDBSCAN parameters
+- Add slider controls for min_cluster_size and min_samples
+- Allow dynamic adjustment of clustering parameters
+- Add option to show cluster probabilities
+
+### Phase 5: Iterative Selection and Re-embedding
+#### 5.1 Selection-Based Re-embedding
+- Implement functionality to select a cluster/group in the current view
+- Add option to re-embed only selected subset of points
+- Add "Generate" button to trigger re-embedding on selected clusters
+- Support iterative refinement of clusters based on selection
+
+#### 5.2 Group Management
+- Allow users to save current selections as named groups
+- Integrate with the main application's group management system
+- Enable round-trip between UMAP selection and main GUI
+- Add buttons for "Save Selection" and "Re-embed Selected"
+
+### Phase 6: UI/UX Improvements
+#### 6.1 Enhanced Control Layout
+- Restructure the control layout to accommodate new features
+- Add tabs or collapsible sections for different functionalities
+- Organize controls logically for better user experience
+- Add progress indicators for long-running operations
+
+#### 6.2 Performance Optimizations
+- Implement caching for computed embeddings
+- Add lazy loading for large datasets
+- Optimize feature computation pipeline
+- Add cancellation support for long-running tasks
+
+### Implementation Steps
+
+#### Step 1: Code Cleanup
+1. Remove all IAN-related code from umap_panel.py
+2. Update import statements
+3. Remove IAN button and related UI elements
+4. Update requirements.txt to reflect new dependencies
+
+#### Step 2: Feature Extraction Enhancement
+1. Modify extract_features_from_datamanager() function
+2. Add ACG PCA and time course statistics computation
+3. Add RF property extraction
+4. Ensure feature prioritization is reflected in feature weights
+
+#### Step 3: 3D Visualization
+1. Add 3D UMAP functionality to UMAPWorker
+2. Implement toggle for 2D/3D visualization
+3. Handle 3D lasso selection properly
+4. Add 3D rotation controls
+
+#### Step 4: HDBSCAN Integration
+1. Create HDBSCANWorker class
+2. Add HDBSCAN controls to UI
+3. Update clustering workflow to use HDBSCAN
+4. Add parameter tuning options
+
+#### Step 5: Iterative Functionality
+1. Implement selection-based re-embedding
+2. Add "Generate" button for re-embedding
+3. Connect selection to group management system
+4. Test iterative workflow thoroughly
+
+#### Step 6: Testing and Validation
+1. Validate all new features work as expected
+2. Ensure backward compatibility
+3. Test with various dataset sizes
+4. Optimize performance for large datasets
+
+### Technical Implementation Notes
+
+#### Feature Extraction
+- Timecourse PCA: Compute PCA on dominant channel traces
+- ACG PCA: Extract auto-correlation functions and compute PCA
+- Time course stats: Compute statistics from normalized traces
+- RF properties: Extract from STA fitting parameters
+
+#### 3D Visualization
+- Use Axes3D for 3D plotting
+- Implement proper mouse interaction in 3D space
+- Consider performance implications of 3D rendering
+
+#### HDBSCAN Configuration
+- Default min_cluster_size: 15
+- Default min_samples: 10
+- Add option to adjust these parameters
+- Handle noise points appropriately
+
+#### Iterative Approach
+- Use cluster_ids to determine which points to re-embed
+- Temporarily mask other data points during re-embedding
+- Provide option to return to full dataset view
+
+This plan addresses all the requirements specified: removing IAN, adding 3D visualization, implementing HDBSCAN clustering, prioritizing important features for RGC classification, and creating an iterative selection/re-embedding capability.
 
 >>>>>>> b42ffbe (fixing feature rextratction)

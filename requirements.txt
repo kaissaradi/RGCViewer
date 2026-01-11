@@ -15,3 +15,6 @@ torch>=2.0.0
 
 # UMAP
 umap-learn>=0.5.0
+
+# Clustering
+hdbscan>=0.8.0
