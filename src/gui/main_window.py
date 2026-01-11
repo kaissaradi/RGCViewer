@@ -16,7 +16,12 @@ from typing import Optional
 # Custom GUI Modules
 from .widgets.widgets import MplCanvas, HighlightStatusPandasModel, CustomTableView
 from . import callbacks
-from .plotting import plotting
+from .panels.population_panel import (
+    draw_population_timecourse_panel,
+    draw_population_rfs_plot,
+    plot_population_rfs,
+    plot_rich_ei
+)
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
@@ -181,8 +186,8 @@ class MainWindow(QMainWindow):
         # A. Split View (Right Side Pane) - Always update if enabled
         if self.population_view_enabled:
             try:
-                plotting.draw_population_rfs_plot(
-                    main_window=self, 
+                draw_population_rfs_plot(
+                    main_window=self,
                     selected_cell_id=cluster_id,
                     canvas=self.pop_mosaic_canvas  # <--- Explicitly target the right-side canvas
                 )
@@ -193,7 +198,7 @@ class MainWindow(QMainWindow):
         if self.analysis_tabs.currentWidget() == self.sta_panel:
             if self.current_sta_view == 'population_rfs':
                 try:
-                    plotting.draw_population_rfs_plot(
+                    draw_population_rfs_plot(
                         main_window=self,
                         selected_cell_id=cluster_id,
                         canvas=self.sta_panel.rf_canvas  # <--- Only target main canvas if in Pop mode
@@ -610,7 +615,7 @@ class MainWindow(QMainWindow):
                 selected = None
 
             # Call plotting routine with explicit canvas
-            plotting.draw_population_rfs_plot(
+            draw_population_rfs_plot(
                 main_window=self,
                 selected_cell_id=selected,
                 canvas=self.pop_mosaic_canvas)

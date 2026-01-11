@@ -8,7 +8,7 @@ from qtpy.QtGui import QStandardItem, QColor
 from ..analysis.data_manager import DataManager
 from .workers.workers import RefinementWorker, SpatialWorker, StandardPlotsWorker
 from .widgets.widgets import HighlightStatusPandasModel
-from .plotting import plotting
+from .panels.population_panel import draw_population_timecourse_panel, draw_population_rfs_plot
 from .panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
 import logging

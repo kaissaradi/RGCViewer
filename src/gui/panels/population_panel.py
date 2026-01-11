@@ -1,3 +1,9 @@
+"""
+Population Panel for RGC Viewer
+
+This module contains population plotting functions that were previously in the plotting module.
+"""
+
 import math
 import logging
 
@@ -205,14 +211,14 @@ def draw_population_rfs_plot(
     # --- STATE MANAGEMENT ---
     # We use a custom attribute on the canvas to track the current state of the plot.
     # State structure: {'subset_hash': hash(tuple(subset_ids)), 'highlight_artist': Patch, 'ax': Axes}
-    
+
     current_subset_tuple = tuple(sorted(subset_cell_ids)) if subset_cell_ids is not None else "ALL"
     current_subset_hash = hash(current_subset_tuple)
-    
+
     # Check if we can perform a Fast Update (Hot-Swap)
     # We need: existing state, matching subset, and a valid axes object
     can_hot_swap = (
-        hasattr(canvas, '_pop_plot_state') and 
+        hasattr(canvas, '_pop_plot_state') and
         canvas._pop_plot_state['subset_hash'] == current_subset_hash and
         canvas._pop_plot_state['ax'] in canvas.fig.axes
     )
@@ -222,22 +228,22 @@ def draw_population_rfs_plot(
         # Update the existing ellipse without clearing the figure
         ax = canvas._pop_plot_state['ax']
         highlight_patch = canvas._pop_plot_state['highlight_artist']
-        
+
         _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
-        
+
         # Non-blocking draw
         canvas.draw_idle()
-        
+
     else:
         # --- TIER 2: FULL REBUILD ---
         # Either first run or the group (subset) changed. Rebuild background.
         canvas.fig.clear()
         ax = canvas.fig.add_subplot(111)
-        
+
         # 1. Draw Background (Ghosts)
         plot_population_rfs_background(
-            ax, 
-            vision_params, 
+            ax,
+            vision_params,
             sta_width=main_window.data_manager.vision_sta_width,
             sta_height=main_window.data_manager.vision_sta_height,
             subset_cell_ids=subset_cell_ids
@@ -248,10 +254,10 @@ def draw_population_rfs_plot(
         highlight_patch = Ellipse(
             xy=(0, 0), width=1, height=1, angle=0,
             edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
-            lw=2.0, zorder=10, visible=False 
+            lw=2.0, zorder=10, visible=False
         )
         ax.add_patch(highlight_patch)
-        
+
         # 3. Apply initial highlight position
         _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
 
@@ -261,7 +267,7 @@ def draw_population_rfs_plot(
             'highlight_artist': highlight_patch,
             'ax': ax
         }
-        
+
         canvas.draw_idle()
 
 
@@ -275,7 +281,7 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
     try:
         stafit = vision_params.get_stafit_for_cell(vision_id)
         adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-        
+
         patch.center = (stafit.center_x, adjusted_y)
         patch.width = 2 * stafit.std_x
         patch.height = 2 * stafit.std_y
@@ -288,7 +294,7 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
 
 def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height=None, subset_cell_ids=None):
     """
-    Draws only the static 'ghost' ellipses for the population. 
+    Draws only the static 'ghost' ellipses for the population.
     This is called only when the group changes.
     """
     all_cell_ids = vision_params.get_cell_ids()
@@ -305,7 +311,7 @@ def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height
             try:
                 stafit = vision_params.get_stafit_for_cell(cell_id)
                 adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-                e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y, 
+                e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
                             angle=np.rad2deg(stafit.rot), edgecolor='gray', facecolor='none', lw=0.5, alpha=0.05)
                 ax.add_patch(e)
             except: continue
@@ -315,12 +321,12 @@ def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-            
+
             # Draw standard white ellipse
-            e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y, 
+            e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
                         angle=np.rad2deg(stafit.rot), edgecolor='white', facecolor='none', lw=0.5, alpha=0.3)
             ax.add_patch(e)
-            
+
             x_coords.append(stafit.center_x)
             y_coords.append(stafit.center_y)
         except: continue
@@ -584,12 +590,12 @@ def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _p
 
                 if com_x is not None and not np.isnan(com_x) and com_y is not None and not np.isnan(com_y):
                     ax.plot(com_x, com_y, 'rx', markersize=10, markeredgewidth=2, label='COM')
-                    
+
                     if spread is not None and spread > 0:
                         from matplotlib.patches import Circle
                         circle = Circle((com_x, com_y), spread, color='red', fill=False, linestyle='--', linewidth=1, alpha=0.6)
                         ax.add_patch(circle)
-                    
+
                     ax.legend(loc='upper right', facecolor='#1f1f1f', labelcolor='white')
 
         else:
