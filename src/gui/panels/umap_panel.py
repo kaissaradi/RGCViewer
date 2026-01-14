@@ -14,29 +14,13 @@ import sklearn.cluster
 
 from ...analysis import analysis_core
 
-# --- IMPORT IAN & EMBED_UTILS ---
-IAN_AVAILABLE = False
-IAN_IMPORT_ERROR = ""
-
-# try:
-#     # Try importing the installed package
-#     from ian.ian import *
-#     from ian.utils import *
-#     from ian.dset_utils import *
-#     from ian.embed_utils import *
-#     IAN_AVAILABLE = True
-#     # Check if the function we need exists
-# except ImportError:
-#     # Fallback: Try importing local ian.py file in this directory
-#     IAN_IMPORT_ERROR = str(e)
-
 logger = logging.getLogger(__name__)
 
 
-def extract_features_from_datamanager(dm, progress_signal=None):
+def extract_features_from_datamanager(dm, selected_cluster_ids=None, progress_signal=None):
     """
-    Helper function to extract feature vectors from the DataManager.
-    Used by both UMAPWorker and IANWorker to ensure consistent input data.
+    Simplified and fast feature extraction based on old version.
+    Returns features, cluster_ids, and metadata for SELECTED cells only.
     """
     if dm is None:
         raise ValueError("DataManager is not available (None).")
@@ -48,13 +32,13 @@ def extract_features_from_datamanager(dm, progress_signal=None):
         raise ValueError("Vision data (STA/Params) is required for these metrics.")
 
     if progress_signal:
-        progress_signal.emit("Gathering metrics for all clusters...")
+        progress_signal.emit("Gathering metrics for selected clusters...")
 
     features = []
     cluster_ids = []
     metadata = []
 
-    # STA metrics we want to use as features (if available)
+    # STA metrics we want to use as features (if available) - Fixed set like old version
     sta_feature_keys = [
         "Time to Peak (ms)",
         "Response Duration (ms)",
@@ -68,84 +52,31 @@ def extract_features_from_datamanager(dm, progress_signal=None):
         "RF Ellipticity (σy/σx)",
     ]
 
-    from scipy.ndimage import gaussian_filter1d
+    # If no selection provided, use all clusters
+    if selected_cluster_ids is None:
+        selected_cluster_ids = dm.cluster_df['cluster_id'].values
+    
+    total = len(selected_cluster_ids)
 
-    # Get list of clusters
-    all_ids = dm.cluster_df['cluster_id'].values
-    total = len(all_ids)
-
-    for i, cid in enumerate(all_ids):
-        # Yield progress every 10 items to keep UI responsive
+    for i, cid in enumerate(selected_cluster_ids):
+        # Yield progress every 10 items
         if progress_signal and i % 10 == 0:
             progress_signal.emit(f"Processing cluster {i}/{total}...")
 
         vid = int(cid) + 1  # Vision ID
 
+        # Skip if no STA data
         if not dm.vision_stas or vid not in dm.vision_stas:
             continue
 
-        # Grab STA + STAFit
+        # Get STA data - simplified like old version
         sta_data = dm.vision_stas[vid]
         try:
             stafit = dm.vision_params.get_stafit_for_cell(vid)
         except Exception:
             stafit = None
 
-        # Timecourse metrics from analysis_core
-        try:
-            time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                sta_data, stafit, dm.vision_params, vid
-            )
-        except Exception:
-            time_axis, tc_matrix = None, None
-
-        if tc_matrix is None:
-            continue
-
-        # Dominant channel trace
-        energies = np.sum(tc_matrix**2, axis=0)
-        dom_idx = int(np.argmax(energies))
-        dom_trace = tc_matrix[:, dom_idx]
-
-        # Normalize & Smooth
-        abs_max = float(np.max(np.abs(dom_trace))) if dom_trace.size > 0 else 0.0
-        if abs_max == 0:
-            continue
-        norm_trace = dom_trace / abs_max
-        smooth_trace = gaussian_filter1d(norm_trace, sigma=1)
-
-        # Fallback temporal features from timecourse
-        peak_val = float(np.max(smooth_trace))
-        trough_val = float(np.min(smooth_trace))
-        is_off = abs(trough_val) > abs(peak_val)
-
-        if is_off:
-            primary_idx = int(np.argmin(smooth_trace))
-        else:
-            primary_idx = int(np.argmax(smooth_trace))
-
-        if time_axis is not None and len(time_axis) > primary_idx:
-            time_to_peak_fallback = float(time_axis[primary_idx])
-        else:
-            time_to_peak_fallback = float(primary_idx)
-
-        # Biphasic index fallback
-        secondary_val = 0.0
-        if primary_idx < len(smooth_trace) - 1:
-            post = smooth_trace[primary_idx:]
-            if post.size > 0:
-                secondary_val = float(np.max(post) if is_off else np.min(post))
-
-        denom = (trough_val if is_off else peak_val)
-        if denom != 0:
-            biphasic_idx_fallback = float(abs(secondary_val / denom))
-        else:
-            biphasic_idx_fallback = 0.0
-
-        # Log energy from dominant channel
-        log_energy = float(np.log1p(np.sum(energies)))
-
-        # ---- STA metrics via compute_sta_metrics ----
+        # ---- Get STA metrics via compute_sta_metrics - SIMPLIFIED ----
         metrics = None
         try:
             metrics = analysis_core.compute_sta_metrics(
@@ -154,34 +85,18 @@ def extract_features_from_datamanager(dm, progress_signal=None):
         except Exception:
             metrics = None
 
-        # Build STA feature vector from metrics
+        # Build STA feature vector from metrics - fill NaNs with 0
         sta_vals = []
         for key in sta_feature_keys:
-            val = np.nan
+            val = 0.0  # Default to 0 instead of NaN
             if metrics is not None and key in metrics:
                 try:
                     val = float(metrics[key])
+                    if np.isnan(val) or np.isinf(val):
+                        val = 0.0
                 except Exception:
-                    val = np.nan
+                    val = 0.0
             sta_vals.append(val)
-
-        # Derive metadata time_to_peak & biphasic_index from metrics if present
-        if metrics is not None:
-            ttp_meta = metrics.get("Time to Peak (ms)", time_to_peak_fallback)
-            bi_meta = metrics.get("Biphasic Index", biphasic_idx_fallback)
-        else:
-            ttp_meta = time_to_peak_fallback
-            bi_meta = biphasic_idx_fallback
-
-        try:
-            ttp_meta = float(ttp_meta)
-        except Exception:
-            ttp_meta = float(time_to_peak_fallback)
-
-        try:
-            bi_meta = float(bi_meta)
-        except Exception:
-            bi_meta = float(biphasic_idx_fallback)
 
         # ---- Kilosort / cluster_df extras ----
         try:
@@ -196,26 +111,41 @@ def extract_features_from_datamanager(dm, progress_signal=None):
         firing_rate = float(row.get('firing_rate_hz', 0.0) or 0.0)
         log_n_spikes = float(np.log1p(max(n_spikes, 0)))
 
-        # ---- Final feature vector ----
+        # Simple log energy estimation from STA if available
+        log_energy = 0.0
+        try:
+            # Quick energy calculation from STA
+            if sta_data is not None:
+                energy = np.sum(sta_data**2)
+                log_energy = float(np.log1p(energy))
+        except Exception:
+            log_energy = 0.0
+
+        # ---- Final feature vector - like old version ----
         feat_vec = sta_vals + [log_energy, log_n_spikes, firing_rate, isi_viol]
         features.append(feat_vec)
         cluster_ids.append(cid)
 
-        # ---- Metadata ----
+        # ---- Simplified metadata ----
         kslabel = row.get('KSLabel', row.get('group', 'unsorted'))
+        
+        # Simple time_to_peak from metrics or fallback
+        time_to_peak = sta_vals[0] if len(sta_vals) > 0 else 0.0
+        biphasic_index = sta_vals[4] if len(sta_vals) > 4 else 0.0
 
         metadata.append({
             'KSLabel': kslabel,
             'isi_violations': isi_viol,
             'n_spikes': n_spikes,
             'firing_rate': firing_rate,
-            'time_to_peak': ttp_meta,
-            'biphasic_index': bi_meta
+            'time_to_peak': time_to_peak,
+            'biphasic_index': biphasic_index
         })
 
     if len(features) < 5:
-        raise ValueError("Not enough valid clusters (need > 5).")
+        raise ValueError(f"Not enough valid clusters (only {len(features)} found, need > 5).")
 
+    logger.info(f"Extracted features for {len(features)} clusters")
     return features, cluster_ids, metadata
 
 
@@ -247,9 +177,11 @@ class UMAPWorker(QObject):
     error = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, data_manager):
+    def __init__(self, data_manager, selected_cluster_ids=None, n_components=2):
         super().__init__()
         self.dm = data_manager
+        self.selected_cluster_ids = selected_cluster_ids
+        self.n_components = n_components
 
     def run(self):
         try:
@@ -261,118 +193,42 @@ class UMAPWorker(QObject):
 
             from sklearn.preprocessing import StandardScaler
 
-            # Extract features using shared helper
+            # Extract features using simplified helper (fast version) - FOR SELECTED CELLS
+            self.progress.emit("Extracting features for selected cells...")
             features, cluster_ids, metadata = extract_features_from_datamanager(
-                self.dm, self.progress)
+                self.dm, self.selected_cluster_ids, self.progress)
 
-            self.progress.emit(f"Running UMAP on {len(features)} cells...")
+            self.progress.emit(f"Running UMAP on {len(features)} selected cells...")
 
-            # Standardization & UMAP
+            # Standardization & UMAP - with optimized parameters
             X = np.array(features, dtype=float)
-            X = np.nan_to_num(X)  # Replace NaNs/infs with 0
+            X = np.nan_to_num(X)  # Replace any remaining NaNs/infs with 0
 
+            # UMAP parameters optimized for speed
             reducer = umap.UMAP(
-                n_neighbors=15,
+                n_neighbors=min(15, len(features) - 1),  # Adjust based on sample size
                 min_dist=0.1,
                 metric='euclidean',
                 low_memory=True,
-                n_jobs=1
+                n_jobs=-1,  # Use all cores for parallel processing
+                n_components=self.n_components,
+                verbose=False  # Disable verbose output for speed
             )
 
+            # Scale data
             scaled_data = StandardScaler().fit_transform(X)
+            
+            # Fit UMAP
             embedding = reducer.fit_transform(scaled_data)
 
             meta_df = pd.DataFrame(metadata)
+            meta_df['cluster_id'] = cluster_ids
+            
+            self.progress.emit(f"UMAP complete for {len(cluster_ids)} cells")
             self.finished.emit(embedding, cluster_ids, meta_df)
 
         except Exception as e:
             logger.exception("UMAP Worker failed")
-            self.error.emit(str(e))
-
-
-class IANWorker(QObject):
-    """Background worker to run IAN and generate a 3D Diffusion Map."""
-    finished = Signal(object, object, object)  # embedding (3D), cluster_ids, metadata_df
-    error = Signal(str)
-    progress = Signal(str)
-
-    def __init__(self, data_manager):
-        super().__init__()
-        self.dm = data_manager
-
-    def run(self):
-        try:
-            # Check availability
-            if not globals().get('IAN_AVAILABLE', False):
-                self.error.emit(f"IAN libraries missing/error: {IAN_IMPORT_ERROR}")
-                return
-
-            import matplotlib.pyplot as plt
-            from sklearn.preprocessing import StandardScaler
-
-            # 1. Extract features
-            features, cluster_ids, metadata = extract_features_from_datamanager(
-                self.dm, self.progress)
-
-            X = np.array(features, dtype=float)
-            X = np.nan_to_num(X)
-            X_scaled = StandardScaler().fit_transform(X)
-
-            self.progress.emit(f"Running IAN (Adaptive Pruning) on {len(X)} cells...")
-
-            # --- FIX: Monkeypatch plt.show to prevent thread crash ---
-            original_show = plt.show
-            plt.show = lambda *args, **kwargs: None 
-            
-            try:
-                # 2. Run IAN
-                # G: unweighted graph, wG: weighted kernel, sigmas: local scales
-                # disc_pts: indices of disconnected points (outliers)
-                G, wG, sigmas, disc_pts = IAN(
-                    method="exact",
-                    X=X_scaled,
-                    metric="correlation",
-                    verbose=1
-                )
-            finally:
-                plt.show = original_show
-            # ---------------------------------------------------------
-
-            # 2b. Remove Outliers (Disconnected Points)
-            # This cleans up the "floating points" the user saw
-            if len(disc_pts) > 0:
-                self.progress.emit(f"Removing {len(disc_pts)} outlier(s)...")
-                
-                # Create a mask of valid points
-                n_samples = wG.shape[0]
-                valid_mask = np.ones(n_samples, dtype=bool)
-                valid_mask[list(disc_pts)] = False
-                
-                # Filter the Kernel Matrix (wG)
-                # Slice rows and columns
-                wG_clean = wG[valid_mask, :][:, valid_mask]
-                
-                # Filter metadata arrays
-                cluster_ids = [cid for i, cid in enumerate(cluster_ids) if valid_mask[i]]
-                metadata = [m for i, m in enumerate(metadata) if valid_mask[i]]
-            else:
-                wG_clean = wG
-
-            self.progress.emit("Generating 3D Diffusion Map...")
-
-            # 3. Diffusion Map Embedding
-            embedding, eigenvals = diffusionMapFromK(
-                wG_clean, 
-                n_components=3, 
-                alpha=1.0, 
-                t=1
-            )
-
-            meta_df = pd.DataFrame(metadata)
-            self.finished.emit(embedding, cluster_ids, meta_df)
-
-        except Exception as e:
-            logger.exception("IAN Worker failed")
             self.error.emit(str(e))
 
 
@@ -395,14 +251,10 @@ class UMAPPanel(QWidget):
         self.run_btn.setStyleSheet(
             "background-color: #4282DA; font-weight: bold;")
 
-        # IAN Button
-        self.ian_btn = QPushButton("Run IAN (3D)")
-        self.ian_btn.clicked.connect(self.run_ian)
-        self.ian_btn.setStyleSheet(
+        self.run_3d_btn = QPushButton("Run UMAP (3D)")
+        self.run_3d_btn.clicked.connect(self.run_umap_3d)
+        self.run_3d_btn.setStyleSheet(
             "background-color: #2D6A4F; font-weight: bold;")
-        if not IAN_AVAILABLE:
-            self.ian_btn.setEnabled(False)
-            self.ian_btn.setToolTip("IAN dependencies missing")
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
@@ -414,7 +266,7 @@ class UMAPPanel(QWidget):
         self.progress.hide()
 
         ctrl_layout.addWidget(self.run_btn)
-        ctrl_layout.addWidget(self.ian_btn)
+        ctrl_layout.addWidget(self.run_3d_btn)
         ctrl_layout.addWidget(QLabel("Color:"))
         ctrl_layout.addWidget(self.color_combo)
         ctrl_layout.addWidget(self.progress)
@@ -422,6 +274,8 @@ class UMAPPanel(QWidget):
 
         # --- Controls Row 2 (Clustering & Options) ---
         cluster_layout = QHBoxLayout()
+
+        # K-Means controls
         self.k_spin = QSpinBox()
         self.k_spin.setRange(2, 20)
         self.k_spin.setValue(5)
@@ -434,10 +288,10 @@ class UMAPPanel(QWidget):
         # Auto-Group Checkbox
         self.auto_group_chk = QCheckBox("Auto-Group Tree")
         self.auto_group_chk.setToolTip(
-            "If checked, finishing K-Means will automatically create/overwrite "
+            "If checked, finishing clustering will automatically create/overwrite "
             "groups in the main Tree View (e.g., 'Type_1', 'Type_2')."
         )
-        self.auto_group_chk.setChecked(False) # Safer to let user opt-in
+        self.auto_group_chk.setChecked(False)  # Safer to let user opt-in
 
         self.show_ids_btn = QPushButton("Show IDs")
         self.show_ids_btn.clicked.connect(self.show_group_ids)
@@ -450,7 +304,7 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(QLabel("Clustering:"))
         cluster_layout.addWidget(self.k_spin)
         cluster_layout.addWidget(self.kmeans_btn)
-        cluster_layout.addWidget(self.auto_group_chk) # Added Checkbox
+        cluster_layout.addWidget(self.auto_group_chk)  # Added Checkbox
         cluster_layout.addWidget(self.show_ids_btn)
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
@@ -485,15 +339,67 @@ class UMAPPanel(QWidget):
             self.worker_thread = None
             self.worker = None
 
+    def get_selected_cluster_ids(self):
+        """Get currently selected cluster IDs from the main window tree view."""
+        try:
+            # Get selected items from tree view
+            tree_view = self.main_window.tree_view
+            if not tree_view:
+                return None
+            
+            selected_items = tree_view.selectedItems()
+            if not selected_items:
+                # If nothing is selected, use all clusters
+                logger.info("No cells selected, using all clusters")
+                return None
+            
+            selected_ids = []
+            for item in selected_items:
+                # Check if item has cluster_id data
+                data = item.data(0, 32)  # Qt.UserRole + 1 typically
+                if data and 'cluster_id' in data:
+                    selected_ids.append(data['cluster_id'])
+                else:
+                    # If it's a group item, get all children
+                    for i in range(item.childCount()):
+                        child = item.child(i)
+                        child_data = child.data(0, 32)
+                        if child_data and 'cluster_id' in child_data:
+                            selected_ids.append(child_data['cluster_id'])
+            
+            if not selected_ids:
+                logger.info("No valid cluster IDs found in selection, using all clusters")
+                return None
+            
+            logger.info(f"Found {len(selected_ids)} selected cluster IDs")
+            return selected_ids
+            
+        except Exception as e:
+            logger.error(f"Error getting selected cluster IDs: {e}")
+            return None
+
     def run_umap(self):
         self._reset_workers()
         self.run_btn.setEnabled(False)
-        self.ian_btn.setEnabled(False)
+        self.run_3d_btn.setEnabled(False)
         self.progress.show()
         self.progress.setRange(0, 0)
 
+        # Get selected cluster IDs
+        selected_cluster_ids = self.get_selected_cluster_ids()
+        
+        if selected_cluster_ids is not None and len(selected_cluster_ids) < 5:
+            self.run_btn.setEnabled(True)
+            self.run_3d_btn.setEnabled(True)
+            self.progress.hide()
+            QMessageBox.warning(self, "Insufficient Selection", 
+                              f"Need at least 5 selected cells for UMAP. Only {len(selected_cluster_ids)} selected.")
+            return
+
         self.worker_thread = QThread()
-        self.worker = UMAPWorker(self.main_window.data_manager)
+        self.worker = UMAPWorker(self.main_window.data_manager, 
+                                selected_cluster_ids=selected_cluster_ids,
+                                n_components=2)
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
@@ -503,15 +409,28 @@ class UMAPPanel(QWidget):
 
         self.worker_thread.start()
 
-    def run_ian(self):
+    def run_umap_3d(self):
         self._reset_workers()
         self.run_btn.setEnabled(False)
-        self.ian_btn.setEnabled(False)
+        self.run_3d_btn.setEnabled(False)
         self.progress.show()
         self.progress.setRange(0, 0)
 
+        # Get selected cluster IDs
+        selected_cluster_ids = self.get_selected_cluster_ids()
+        
+        if selected_cluster_ids is not None and len(selected_cluster_ids) < 5:
+            self.run_btn.setEnabled(True)
+            self.run_3d_btn.setEnabled(True)
+            self.progress.hide()
+            QMessageBox.warning(self, "Insufficient Selection", 
+                              f"Need at least 5 selected cells for UMAP. Only {len(selected_cluster_ids)} selected.")
+            return
+
         self.worker_thread = QThread()
-        self.worker = IANWorker(self.main_window.data_manager)
+        self.worker = UMAPWorker(self.main_window.data_manager, 
+                                selected_cluster_ids=selected_cluster_ids,
+                                n_components=3)
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
@@ -523,7 +442,7 @@ class UMAPPanel(QWidget):
 
     def run_kmeans(self):
         if self.embedding is None:
-            QMessageBox.warning(self, "No Data", "Please run UMAP or IAN first.")
+            QMessageBox.warning(self, "No Data", "Please run UMAP first.")
             return
 
         self.kmeans_btn.setEnabled(False)
@@ -547,8 +466,7 @@ class UMAPPanel(QWidget):
 
     def on_error(self, msg):
         self.run_btn.setEnabled(True)
-        if IAN_AVAILABLE:
-            self.ian_btn.setEnabled(True)
+        self.run_3d_btn.setEnabled(True)
         self.progress.hide()
         QMessageBox.critical(self, "Processing Error", msg)
         self._reset_workers()
@@ -570,14 +488,11 @@ class UMAPPanel(QWidget):
         # Determine if result is 3D
         self.is_3d = (self.embedding.shape[1] == 3)
 
-        # Add cluster IDs to metadata for easier grouping later
-        self.metadata_df['cluster_id'] = self.cluster_ids
-
         self.run_btn.setEnabled(True)
-        if IAN_AVAILABLE:
-            self.ian_btn.setEnabled(True)
+        self.run_3d_btn.setEnabled(True)
         self.progress.hide()
         self.show_ids_btn.setEnabled(True)
+        self.kmeans_btn.setEnabled(True)
 
         self._reset_workers()
 
@@ -589,9 +504,10 @@ class UMAPPanel(QWidget):
         self.selector = LassoSelector(self.ax, self.on_select)
         self.selector.set_active(True)
 
-        mode_str = "3D IAN Manifold" if self.is_3d else "2D UMAP"
+        mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
+        selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
         self.main_window.status_bar.showMessage(
-            f"{mode_str} Complete. {len(self.cluster_ids)} cells.")
+            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells.")
 
     def on_kmeans_finished(self, labels):
         self.metadata_df['K-Means'] = labels
@@ -609,38 +525,27 @@ class UMAPPanel(QWidget):
         # --- AUTO-GROUP LOGIC ---
         if self.auto_group_chk.isChecked():
             self.apply_kmeans_grouping(labels)
-        else:
-            # Optional: Ask user if they didn't check the box but might want to?
-            pass
 
     def apply_kmeans_grouping(self, labels):
         """
         Takes the K-Means labels and creates groups in the main data manager.
+        Only affects the cells that were included in the UMAP (selected cells).
         """
         try:
             df = self.main_window.data_manager.cluster_df
-            
-            # Reset groups to 'unsorted' or keep existing?
-            # Strategy: Overwrite only cells present in this analysis.
             
             unique_labels = np.unique(labels)
             count = 0
             
             for lbl in unique_labels:
-                # Find cluster IDs for this label
-                # We need to map back from the subset used in IAN to the global DF
-                # self.cluster_ids corresponds to labels indices
-                
-                # Get indices in the analysis subset
+                # Find cluster IDs for this label (from the subset used in UMAP)
                 subset_indices = np.where(labels == lbl)[0]
-                
-                # Get actual cluster IDs
                 group_cluster_ids = self.cluster_ids[subset_indices]
                 
                 # Create a group name
                 group_name = f"Type_{lbl+1}"
                 
-                # Update DataFrame
+                # Update DataFrame - ONLY for these specific cluster IDs
                 df.loc[df['cluster_id'].isin(group_cluster_ids), 'KSLabel'] = group_name
                 count += 1
             
@@ -650,7 +555,7 @@ class UMAPPanel(QWidget):
             QMessageBox.information(
                 self, 
                 "Auto-Group", 
-                f"Successfully created {count} groups (Type_1...Type_{count}) in the Tree View."
+                f"Successfully created {count} groups (Type_1...Type_{count}) for the selected cells."
             )
             
         except Exception as e:
@@ -694,18 +599,21 @@ class UMAPPanel(QWidget):
         is_discrete = False
 
         if mode == "KSLabel":
-            labels = self.metadata_df['KSLabel'].values
-            unique_labels = np.unique(labels)
-            label_map = {l: i for i, l in enumerate(unique_labels)}
-            c = [label_map[l] for l in labels]
-            cmap = 'tab10'
-            is_discrete = True
+            if 'KSLabel' in self.metadata_df:
+                labels = self.metadata_df['KSLabel'].values
+                unique_labels = np.unique(labels)
+                label_map = {l: i for i, l in enumerate(unique_labels)}
+                c = [label_map.get(l, 0) for l in labels]
+                cmap = 'tab10'
+                is_discrete = True
         elif mode == "Firing Rate":
-            c = self.metadata_df['firing_rate'].values
-            cmap = 'plasma'
+            if 'firing_rate' in self.metadata_df:
+                c = self.metadata_df['firing_rate'].values
+                cmap = 'plasma'
         elif mode == "ISI Violations":
-            c = self.metadata_df['isi_violations'].values
-            cmap = 'magma_r'
+            if 'isi_violations' in self.metadata_df:
+                c = self.metadata_df['isi_violations'].values
+                cmap = 'magma_r'
         elif mode == "Time to Peak":
             if 'time_to_peak' in self.metadata_df:
                 c = self.metadata_df['time_to_peak'].values
@@ -751,9 +659,11 @@ class UMAPPanel(QWidget):
         if mode != "KSLabel" and not (mode == "K-Means" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
         
-        title_prefix = "IAN Diffusion Manifold (3D)" if self.is_3d else "UMAP Projection (2D)"
+        # Add selection info to title
+        selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
+        title_prefix = "UMAP (3D)" if self.is_3d else "UMAP (2D)"
         self.ax.set_title(
-            f"{title_prefix} (n={len(self.cluster_ids)}) - Color: {mode}",
+            f"{title_prefix} - {len(self.cluster_ids)} {selection_info} cells - Color: {mode}",
             color='white')
         self.ax.tick_params(colors='gray')
         self.canvas.draw()
