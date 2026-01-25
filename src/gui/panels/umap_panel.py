@@ -341,39 +341,45 @@ class UMAPPanel(QWidget):
 
     def get_selected_cluster_ids(self):
         """Get currently selected cluster IDs from the main window tree view."""
+        from qtpy.QtCore import Qt
+
         try:
-            # Get selected items from tree view
+            # Get selected indexes from tree view (QTreeView with QStandardItemModel)
             tree_view = self.main_window.tree_view
-            if not tree_view:
+            model = self.main_window.tree_model
+            if not tree_view or not model or not tree_view.selectionModel():
                 return None
-            
-            selected_items = tree_view.selectedItems()
-            if not selected_items:
+
+            selected_indexes = tree_view.selectionModel().selectedIndexes()
+            if not selected_indexes:
                 # If nothing is selected, use all clusters
                 logger.info("No cells selected, using all clusters")
                 return None
-            
+
             selected_ids = []
-            for item in selected_items:
-                # Check if item has cluster_id data
-                data = item.data(0, 32)  # Qt.UserRole + 1 typically
-                if data and 'cluster_id' in data:
-                    selected_ids.append(data['cluster_id'])
-                else:
-                    # If it's a group item, get all children
-                    for i in range(item.childCount()):
-                        child = item.child(i)
-                        child_data = child.data(0, 32)
-                        if child_data and 'cluster_id' in child_data:
-                            selected_ids.append(child_data['cluster_id'])
-            
+            for index in selected_indexes:
+                item = model.itemFromIndex(index)
+                if item:
+                    # Check if item has cluster_id data stored in UserRole
+                    cid = item.data(Qt.UserRole)
+                    if cid is not None:
+                        selected_ids.append(cid)
+                    elif item.hasChildren():
+                        # If it's a group item, get all children
+                        for i in range(item.rowCount()):
+                            child = item.child(i)
+                            if child:
+                                child_cid = child.data(Qt.UserRole)
+                                if child_cid is not None:
+                                    selected_ids.append(child_cid)
+
             if not selected_ids:
                 logger.info("No valid cluster IDs found in selection, using all clusters")
                 return None
-            
+
             logger.info(f"Found {len(selected_ids)} selected cluster IDs")
             return selected_ids
-            
+
         except Exception as e:
             logger.error(f"Error getting selected cluster IDs: {e}")
             return None

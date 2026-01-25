@@ -202,7 +202,7 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
         trough_val = np.min(smoothed_trace)
 
         # Determine polarity based on which has larger absolute value
-        if abs(trough_val) > abs(trough_val) > abs(peak_val):
+        if abs(trough_val) > abs(peak_val):
             is_off = True
             polarity = "OFF"
         else:

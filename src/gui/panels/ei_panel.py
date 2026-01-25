@@ -805,7 +805,7 @@ class EIPanel(QWidget):
             self.main_window.data_manager.channel_positions,
             heavyweight_features,
             self.main_window.data_manager.sampling_rate,
-            pre_samples=20)
+            _pre_samples=20)
 
         title = f"Cluster {cluster_id} Spatial Analysis"
         if is_fallback:

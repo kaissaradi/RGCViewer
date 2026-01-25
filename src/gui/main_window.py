@@ -207,12 +207,8 @@ class MainWindow(QMainWindow):
             # If self.current_sta_view == 'rf', we DO NOTHING here.
             # We wait for Tier 2 to draw the correct single-cell STA.
 
-        # 2. Standard Plots Panel (ACG, ISI, Firing Rate)
-        if self.standard_plots_panel.isVisible():
-            try:
-                self.standard_plots_panel.update_all(cluster_id)
-            except Exception as e:
-                logger.error(f"Tier 1 Standard Plots update failed: {e}")
+        # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
+        # Standard plots are updated only in _draw_plots to prevent redundant redraws
 
         # 3. Electrical Image (EI) - Only if cached
         has_cached_ei = False
@@ -309,7 +305,10 @@ class MainWindow(QMainWindow):
             self.standard_plots_panel.update_all(cluster_id)
 
         elif current_panel == self.ei_panel:
-            self.ei_panel.update_ei([cluster_id])
+            try:
+                self.ei_panel.update_ei([cluster_id])
+            except Exception as e:
+                logger.error(f"Tab change EI update failed: {e}")
 
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
@@ -332,7 +331,10 @@ class MainWindow(QMainWindow):
 
         # --- UPDATE ONLY THE ACTIVE TAB ---
         if current_tab == self.ei_panel:
-            self.ei_panel.update_ei([cluster_id])
+            try:
+                self.ei_panel.update_ei([cluster_id])
+            except Exception as e:
+                logger.error(f"Draw plots EI update failed: {e}")
             self.similarity_panel.update_main_cluster_id(cluster_id)
 
         elif current_tab == self.waveforms_panel:
