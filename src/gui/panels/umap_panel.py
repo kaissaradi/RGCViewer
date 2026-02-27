@@ -12,141 +12,235 @@ from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
 import sklearn.cluster
 
+# --- Scientific Computing Imports ---
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from scipy.ndimage import gaussian_filter1d
+
 from ...analysis import analysis_core
 
 logger = logging.getLogger(__name__)
 
+# --- WEIGHTING CONSTANTS ---
+# Tuned for RGC Classification: 
+# Shape (Polarity/Kinetics) > Pattern (Burstiness) > Geometry (Area)
+W_SHAPE = 2.0       
+W_PATTERN = 1.5     
+W_GEOMETRY = 1.0    
+
+
+def robust_polarity(trace):
+    """
+    Robust check for ON vs OFF based on absolute magnitude of peaks/troughs.
+    """
+    if trace is None or len(trace) == 0:
+        return "Unknown"
+    peak = np.max(trace)
+    trough = np.min(trace)
+    return "OFF" if abs(trough) > abs(peak) else "ON"
+
 
 def extract_features_from_datamanager(dm, selected_cluster_ids=None, progress_signal=None):
     """
-    Simplified and fast feature extraction based on old version.
-    Returns features, cluster_ids, and metadata for SELECTED cells only.
+    Advanced Feature Extraction Strategy (Hybrid):
+    1. Collect Raw Timecourses -> Run PCA -> Top 3 Components (Shape/Polarity/Kinetics)
+    2. Collect Raw ACGs -> Run PCA -> Top 2 Components (Burstiness/Pattern)
+    3. Collect Scalars -> Area, Ellipticity, Color, Energy.
+    4. Weight and Concatenate.
     """
     if dm is None:
         raise ValueError("DataManager is not available (None).")
 
-    if not hasattr(dm, "cluster_df") or dm.cluster_df is None:
-        raise ValueError("cluster_df is not available on DataManager.")
+    # Check for Vision Data availability
+    if not getattr(dm, "vision_stas", None):
+        raise ValueError(
+            "Vision STA data is not loaded. \n\n"
+            "This panel requires STA shapes to classify RGCs. "
+            "Please ensure 'Vision Integration' succeeded."
+        )
 
-    if not getattr(dm, "vision_available", False):
-        raise ValueError("Vision data (STA/Params) is required for these metrics.")
+    if selected_cluster_ids is None:
+        if hasattr(dm, "cluster_df") and dm.cluster_df is not None:
+            selected_cluster_ids = dm.cluster_df['cluster_id'].values
+        else:
+            raise ValueError("No clusters available in DataManager.")
 
     if progress_signal:
-        progress_signal.emit("Gathering metrics for selected clusters...")
+        progress_signal.emit("Gathering hybrid features (Shape + Pattern + Geometry)...")
 
-    features = []
-    cluster_ids = []
-    metadata = []
-
-    # STA metrics we want to use as features (if available) - Fixed set like old version
-    sta_feature_keys = [
-        "Time to Peak (ms)",
-        "Response Duration (ms)",
-        "Zero Crossing (ms)",
-        "FWHM (Duration)",
-        "Biphasic Index",
-        "SNR (std ratio)",
-        "Response Integral",
-        "Total Energy",
-        "RF Area (sq stix)",
-        "RF Ellipticity (σy/σx)",
-    ]
-
-    # If no selection provided, use all clusters
-    if selected_cluster_ids is None:
-        selected_cluster_ids = dm.cluster_df['cluster_id'].values
+    # Containers for raw arrays (for PCA)
+    raw_timecourses = []
+    raw_acgs = []
     
+    # Containers for scalars
+    scalar_features = []  # [Area, Ellipticity, ColorOpponency, LogEnergy]
+    
+    # Metadata for plotting
+    metadata = []
+    valid_cluster_ids = []
+
     total = len(selected_cluster_ids)
 
+    # --- 1. GATHER DATA ---
     for i, cid in enumerate(selected_cluster_ids):
         # Yield progress every 10 items
         if progress_signal and i % 10 == 0:
             progress_signal.emit(f"Processing cluster {i}/{total}...")
 
-        vid = int(cid) + 1  # Vision ID
+        vid = int(cid) + 1  # Vision ID (1-based)
 
-        # Skip if no STA data
-        if not dm.vision_stas or vid not in dm.vision_stas:
+        # SKIP cells with no Vision data
+        if vid not in dm.vision_stas:
             continue
 
-        # Get STA data - simplified like old version
+        # A. GET TIMECOURSE (Shape)
         sta_data = dm.vision_stas[vid]
         try:
             stafit = dm.vision_params.get_stafit_for_cell(vid)
         except Exception:
             stafit = None
 
-        # ---- Get STA metrics via compute_sta_metrics - SIMPLIFIED ----
-        metrics = None
-        try:
-            metrics = analysis_core.compute_sta_metrics(
-                sta_data, stafit, dm.vision_params, vid
-            )
-        except Exception:
-            metrics = None
+        _, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+            sta_data, stafit, dm.vision_params, vid
+        )
 
-        # Build STA feature vector from metrics - fill NaNs with 0
-        sta_vals = []
-        for key in sta_feature_keys:
-            val = 0.0  # Default to 0 instead of NaN
-            if metrics is not None and key in metrics:
-                try:
-                    val = float(metrics[key])
-                    if np.isnan(val) or np.isinf(val):
-                        val = 0.0
-                except Exception:
-                    val = 0.0
-            sta_vals.append(val)
-
-        # ---- Kilosort / cluster_df extras ----
-        try:
-            row = dm.cluster_df[
-                dm.cluster_df['cluster_id'] == cid
-            ].iloc[0]
-        except Exception:
+        if tc_matrix is None:
             continue
 
-        isi_viol = float(row.get('isi_violations_pct', 0.0) or 0.0)
-        n_spikes = int(row.get('n_spikes', 0) or 0)
-        firing_rate = float(row.get('firing_rate_hz', 0.0) or 0.0)
-        log_n_spikes = float(np.log1p(max(n_spikes, 0)))
-
-        # Simple log energy estimation from STA if available
-        log_energy = 0.0
-        try:
-            # Quick energy calculation from STA
-            if sta_data is not None:
-                energy = np.sum(sta_data**2)
-                log_energy = float(np.log1p(energy))
-        except Exception:
-            log_energy = 0.0
-
-        # ---- Final feature vector - like old version ----
-        feat_vec = sta_vals + [log_energy, log_n_spikes, firing_rate, isi_viol]
-        features.append(feat_vec)
-        cluster_ids.append(cid)
-
-        # ---- Simplified metadata ----
-        kslabel = row.get('KSLabel', row.get('group', 'unsorted'))
+        # Normalize dominant channel
+        energies = np.sum(tc_matrix**2, axis=0)
+        dom_idx = np.argmax(energies)
+        dom_trace = tc_matrix[:, dom_idx]
         
-        # Simple time_to_peak from metrics or fallback
-        time_to_peak = sta_vals[0] if len(sta_vals) > 0 else 0.0
-        biphasic_index = sta_vals[4] if len(sta_vals) > 4 else 0.0
+        abs_max = np.max(np.abs(dom_trace))
+        if abs_max == 0: continue
+        norm_trace = dom_trace / abs_max
+        
+        # Apply slight smoothing for PCA robustness
+        smooth_trace = gaussian_filter1d(norm_trace, sigma=1)
+        
+        # Resample/Pad trace to fixed length (e.g. 30 points)
+        target_len = 30
+        if len(smooth_trace) > target_len:
+            trace_feat = smooth_trace[:target_len]
+        else:
+            trace_feat = np.pad(smooth_trace, (0, target_len - len(smooth_trace)))
+            
+        raw_timecourses.append(trace_feat)
+
+        # B. GET ACG (Pattern)
+        try:
+            lags, acg_norm = dm.get_acg_data(cid)
+            if acg_norm is not None and len(acg_norm) > 0:
+                # Normalize length to fixed bins (e.g. center +/- 25 points)
+                center = len(acg_norm) // 2
+                half_width = 25
+                if center > half_width:
+                    acg_feat = acg_norm[center-half_width : center+half_width]
+                else:
+                    acg_feat = np.pad(acg_norm, (0, 50-len(acg_norm)))
+            else:
+                acg_feat = np.zeros(50)
+        except Exception:
+            acg_feat = np.zeros(50)
+            
+        raw_acgs.append(acg_feat)
+
+        # C. GET SCALARS (Geometry)
+        area = np.pi * stafit.std_x * stafit.std_y if stafit else 0
+        
+        # Safer Ellipticity Calculation
+        ellipticity = 0.0
+        if stafit and stafit.std_x > 0:
+            ellipticity = stafit.std_y / stafit.std_x
+        
+        # Safer Color Opponency Proxy
+        color_opp = 0.0
+        if tc_matrix.shape[1] == 3:
+             sorted_e = np.sort(energies)[::-1]
+             if sorted_e[0] > 0:
+                 color_opp = sorted_e[1] / sorted_e[0]
+
+        log_energy = np.log1p(np.sum(energies))
+
+        scalar_features.append([area, ellipticity, color_opp, log_energy])
+        
+        # D. METADATA (For Coloring)
+        polarity = robust_polarity(smooth_trace)
+        
+        # Estimate Time to Peak for display
+        is_off = polarity == "OFF"
+        primary_idx = np.argmin(smooth_trace) if is_off else np.argmax(smooth_trace)
+        time_to_peak_display = primary_idx * (1000/60) / 30 * 30 # Approx ms
+        
+        try:
+            row = dm.cluster_df[dm.cluster_df['cluster_id'] == cid].iloc[0]
+            kslabel = row.get('KSLabel', row.get('group', 'unsorted'))
+            fr = float(row.get('firing_rate_hz', 0.0))
+            isi = float(row.get('isi_violations_pct', 0.0))
+        except Exception:
+            kslabel = 'unsorted'
+            fr = 0.0
+            isi = 0.0
 
         metadata.append({
             'KSLabel': kslabel,
-            'isi_violations': isi_viol,
-            'n_spikes': n_spikes,
-            'firing_rate': firing_rate,
-            'time_to_peak': time_to_peak,
-            'biphasic_index': biphasic_index
+            'Polarity': polarity,
+            'Time to Peak': time_to_peak_display,
+            'Firing Rate': fr,
+            'isi_violations': isi,
+            'Color Opponency': color_opp,
+            'RF Area': area
         })
+        
+        valid_cluster_ids.append(cid)
 
-    if len(features) < 5:
-        raise ValueError(f"Not enough valid clusters (only {len(features)} found, need > 5).")
+    # Check sufficiency
+    if len(valid_cluster_ids) < 5:
+        raise ValueError(f"Not enough valid Vision clusters (found {len(valid_cluster_ids)}). Need at least 5.")
 
-    logger.info(f"Extracted features for {len(features)} clusters")
-    return features, cluster_ids, metadata
+    # --- 2. PCA TRANSFORMATIONS ---
+    if progress_signal: progress_signal.emit("Running PCA on Timecourses and ACGs...")
+    
+    # A. Timecourse PCA (Shape)
+    X_tc = np.array(raw_timecourses)
+    X_tc = np.nan_to_num(X_tc) # Safety 1
+    
+    pca_tc = PCA(n_components=min(3, X_tc.shape[0], X_tc.shape[1]))
+    X_tc_pca = pca_tc.fit_transform(X_tc)
+    
+    # B. ACG PCA (Pattern)
+    X_acg = np.array(raw_acgs)
+    X_acg = np.nan_to_num(X_acg) # Safety 2
+    
+    norms = np.linalg.norm(X_acg, axis=1, keepdims=True)
+    norms[norms==0] = 1
+    X_acg = X_acg / norms
+    
+    pca_acg = PCA(n_components=min(2, X_acg.shape[0], X_acg.shape[1]))
+    X_acg_pca = pca_acg.fit_transform(X_acg)
+
+    # C. Prepare Scalars - THIS WAS THE LIKELY CULPRIT
+    X_scalars = np.array(scalar_features)
+    X_scalars = np.nan_to_num(X_scalars) # <--- ADDED CRITICAL NAN FIX HERE
+    
+    scaler_geo = RobustScaler()
+    X_scalars_scaled = scaler_geo.fit_transform(X_scalars)
+
+    # --- 3. APPLY WEIGHTS & CONCATENATE ---
+    if progress_signal: progress_signal.emit("Applying feature weights...")
+
+    X_tc_weighted = X_tc_pca * W_SHAPE
+    X_acg_weighted = X_acg_pca * W_PATTERN
+    X_scalars_weighted = X_scalars_scaled * W_GEOMETRY
+    
+    X_final = np.hstack([X_tc_weighted, X_acg_weighted, X_scalars_weighted])
+    
+    # Final safety check before UMAP
+    X_final = np.nan_to_num(X_final) 
+    
+    logger.info(f"Extracted features for {len(X_final)} clusters")
+    return X_final, valid_cluster_ids, metadata
 
 
 class KMeansWorker(QObject):
@@ -156,7 +250,8 @@ class KMeansWorker(QObject):
 
     def __init__(self, embedding, k):
         super().__init__()
-        self.embedding = embedding
+        # Ensure contiguous array for thread safety
+        self.embedding = np.array(embedding, copy=True)
         self.k = k
 
     def run(self):
@@ -191,20 +286,15 @@ class UMAPWorker(QObject):
                 self.error.emit("umap-learn library is not installed.")
                 return
 
-            from sklearn.preprocessing import StandardScaler
-
-            # Extract features using simplified helper (fast version) - FOR SELECTED CELLS
+            # Extract features using HYBRID helper
             self.progress.emit("Extracting features for selected cells...")
             features, cluster_ids, metadata = extract_features_from_datamanager(
                 self.dm, self.selected_cluster_ids, self.progress)
 
             self.progress.emit(f"Running UMAP on {len(features)} selected cells...")
 
-            # Standardization & UMAP - with optimized parameters
-            X = np.array(features, dtype=float)
-            X = np.nan_to_num(X)  # Replace any remaining NaNs/infs with 0
-
-            # UMAP parameters optimized for speed
+            # UMAP parameters optimized for speed and structure preservation
+            # Note: We do NOT use StandardScaler here because features are already scaled/weighted
             reducer = umap.UMAP(
                 n_neighbors=min(15, len(features) - 1),  # Adjust based on sample size
                 min_dist=0.1,
@@ -212,14 +302,11 @@ class UMAPWorker(QObject):
                 low_memory=True,
                 n_jobs=-1,  # Use all cores for parallel processing
                 n_components=self.n_components,
-                verbose=False  # Disable verbose output for speed
+                verbose=False
             )
 
-            # Scale data
-            scaled_data = StandardScaler().fit_transform(X)
-            
-            # Fit UMAP
-            embedding = reducer.fit_transform(scaled_data)
+            # Fit UMAP directly on weighted feature matrix
+            embedding = reducer.fit_transform(features)
 
             meta_df = pd.DataFrame(metadata)
             meta_df['cluster_id'] = cluster_ids
@@ -257,8 +344,9 @@ class UMAPPanel(QWidget):
             "background-color: #2D6A4F; font-weight: bold;")
 
         self.color_combo = QComboBox()
+        # Updated list of color options including new metrics
         self.color_combo.addItems(
-            ["KSLabel", "Firing Rate", "ISI Violations", "Time to Peak", "K-Means"])
+            ["KSLabel", "Polarity", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
         self.color_combo.currentTextChanged.connect(
             lambda: self.update_plot())
 
@@ -513,7 +601,7 @@ class UMAPPanel(QWidget):
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
         self.main_window.status_bar.showMessage(
-            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells.")
+            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells. (Shape={W_SHAPE}, Pattern={W_PATTERN}, Geo={W_GEOMETRY})")
 
     def on_kmeans_finished(self, labels):
         self.metadata_df['K-Means'] = labels
@@ -612,18 +700,34 @@ class UMAPPanel(QWidget):
                 c = [label_map.get(l, 0) for l in labels]
                 cmap = 'tab10'
                 is_discrete = True
+        elif mode == "Polarity":
+            if 'Polarity' in self.metadata_df:
+                labels = self.metadata_df['Polarity'].values
+                unique_labels = np.unique(labels)
+                label_map = {l: i for i, l in enumerate(unique_labels)}
+                c = [label_map.get(l, 0) for l in labels]
+                cmap = 'coolwarm' 
+                is_discrete = True
         elif mode == "Firing Rate":
-            if 'firing_rate' in self.metadata_df:
-                c = self.metadata_df['firing_rate'].values
+            if 'Firing Rate' in self.metadata_df:
+                c = self.metadata_df['Firing Rate'].values
                 cmap = 'plasma'
         elif mode == "ISI Violations":
             if 'isi_violations' in self.metadata_df:
                 c = self.metadata_df['isi_violations'].values
                 cmap = 'magma_r'
         elif mode == "Time to Peak":
-            if 'time_to_peak' in self.metadata_df:
-                c = self.metadata_df['time_to_peak'].values
+            if 'Time to Peak' in self.metadata_df:
+                c = self.metadata_df['Time to Peak'].values
                 cmap = 'viridis'
+        elif mode == "RF Area":
+            if 'RF Area' in self.metadata_df:
+                c = self.metadata_df['RF Area'].values
+                cmap = 'viridis'
+        elif mode == "Color Opponency":
+            if 'Color Opponency' in self.metadata_df:
+                c = self.metadata_df['Color Opponency'].values
+                cmap = 'cool'
         elif mode == "K-Means":
             if 'K-Means' in self.metadata_df:
                 c = self.metadata_df['K-Means'].values
@@ -662,7 +766,7 @@ class UMAPPanel(QWidget):
                 edgecolors='none'
             )
 
-        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete):
+        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
         
         # Add selection info to title
@@ -679,11 +783,11 @@ class UMAPPanel(QWidget):
             return
 
         mode = self.color_combo.currentText()
-        if mode not in ["KSLabel", "K-Means"]:
+        if mode not in ["KSLabel", "K-Means", "Polarity"]:
             QMessageBox.information(
                 self,
                 "Info",
-                "Group IDs only available for discrete categories (KSLabel, K-Means).")
+                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity).")
             return
 
         if mode not in self.metadata_df:
