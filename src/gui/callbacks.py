@@ -775,8 +775,8 @@ def load_classification_file(main_window: MainWindow):
 def save_classification_to_file(main_window: MainWindow):
     """
     Saves the current Tree View structure to a text file in the Vision format.
-    Format: [VisionID] [Path/To/Group/]
-    Excludes the 'Unclassified' group.
+    Format: [VisionID]  [Path/To/Group/]
+    Excludes the root 'Unclassified' group.
     """
     if not main_window.data_manager:
         return
@@ -809,18 +809,26 @@ def save_classification_to_file(main_window: MainWindow):
                 # Vision ID is cluster_id + 1
                 vision_id = cluster_id + 1
 
-                # Format: "123 All/ON/"
-                lines_to_write.append(f"{vision_id} {current_path}")
+                # Ensure path starts with "All/"
+                final_path = current_path
+                if not final_path.startswith("All/"):
+                    if final_path:  # if there's already a path, prepend All/
+                        final_path = f"All/{final_path}"
+                    else:           # if path is completely empty, just make it All/
+                        final_path = "All/"
+
+                # Format requires TWO spaces between ID and the path
+                lines_to_write.append(f"{vision_id}  {final_path}")
 
             else:
                 # Group Node -> Recurse deeper
                 group_name = child.text()
 
-                # Skip 'Unclassified'
+                # Skip root 'Unclassified' group if desired
                 if group_name == "Unclassified":
                     continue
 
-                # Build path (e.g., "All/" + "ON" -> "All/ON/")
+                # Build path (e.g., "ON" -> "ON/")
                 new_path = f"{current_path}{group_name}/"
                 recurse_tree(child, new_path)
 
@@ -830,9 +838,8 @@ def save_classification_to_file(main_window: MainWindow):
     # Write to file
     try:
         with open(file_path, 'w') as f:
-            f.write("\n".join(lines_to_write))
+            f.write("\n".join(lines_to_write) + "\n")
 
         main_window.status_bar.showMessage(f"Classification saved to {file_path}", 5000)
     except Exception as e:
         QMessageBox.critical(main_window, "Save Error", f"Could not save file:\n{e}")
-
