@@ -1129,6 +1129,83 @@ class DataManager(QObject):
         with self._standard_plot_lock:
             self.standard_plot_cache[cluster_id] = data
         return data
+    
+    def get_cell_physics(self, cluster_id):
+        """
+        Single Source of Truth for a cell's physical metrics.
+        Assembles pre-calculated Vision data and caches it into a flat, 
+        instantly accessible dictionary to prevent redundant UI processing loops.
+        """
+        # Ensure thread safety for background loading
+        if not hasattr(self, '_feature_lock'):
+            self._feature_lock = threading.Lock()
+            self.feature_cache = {}
+
+        # 1. Fast path: check cache under lock
+        with self._feature_lock:
+            if cluster_id in self.feature_cache:
+                return self.feature_cache[cluster_id]
+
+        # 2. Grab ACG (pulls from standard cache if already calculated from raw spikes)
+        acg_norm = None
+        std_data = self.get_standard_plot_data(cluster_id)
+        if std_data:
+            acg_norm = std_data.get('acg_norm')
+
+        # 3. Assemble Pre-Calculated Vision/STA Features
+        timecourse = None
+        rf_area = 0.0
+        ellipticity = 0.0
+        time_to_peak = 0
+
+        vid = cluster_id + 1  # Vision IDs are 1-indexed
+        if self.vision_stas and vid in self.vision_stas:
+            sta_data = self.vision_stas[vid]
+            
+            # Geometry (Extracting from Vision's pre-computed Gaussian fits)
+            try:
+                stafit = self.vision_params.get_stafit_for_cell(vid)
+                if stafit:
+                    rf_area = np.pi * stafit.std_x * stafit.std_y
+                    if stafit.std_x > 0:
+                        ellipticity = stafit.std_y / stafit.std_x
+            except Exception:
+                stafit = None
+
+            # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+            time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                sta_data, stafit, self.vision_params, vid
+            )
+
+            if tc_matrix is not None and tc_matrix.size > 0:
+                # Stack, find dominant channel by energy, and normalize just once
+                energies = np.sum(tc_matrix**2, axis=0)
+                dom_idx = np.argmax(energies)
+                dom_trace = tc_matrix[:, dom_idx]
+                
+                # Normalize the trace to -1 to 1 bounds for UI rendering
+                abs_max = np.max(np.abs(dom_trace))
+                if abs_max > 0:
+                    timecourse = dom_trace / abs_max
+                else:
+                    timecourse = dom_trace
+                
+                time_to_peak = int(np.argmax(np.abs(timecourse)))
+
+        # 4. Package into our immutable physics dictionary
+        metrics = {
+            'acg': acg_norm,
+            'timecourse': timecourse,
+            'rf_area': rf_area,
+            'ellipticity': ellipticity,
+            'time_to_peak': time_to_peak
+        }
+
+        # 5. Store in global cache safely
+        with self._feature_lock:
+            self.feature_cache[cluster_id] = metrics
+
+        return metrics
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""

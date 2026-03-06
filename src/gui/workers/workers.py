@@ -2,7 +2,100 @@ from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
 from ...analysis import analysis_core
 import numpy as np
+import os
+import logging
+from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+
+class KilosortLoadWorker(QObject):
+    """Background worker to handle heavy Kilosort and auto-Vision I/O."""
+    finished = Signal(bool, str)
+    progress = Signal(str)
+
+    def __init__(self, data_manager, ks_dir_name, dat_file):
+        super().__init__()
+        self.dm = data_manager
+        self.ks_dir_name = ks_dir_name
+        self.dat_file = dat_file
+
+    def run(self):
+        try:
+            self.progress.emit("Loading Kilosort files...")
+            success, message = self.dm.load_kilosort_data()
+            if not success:
+                self.finished.emit(False, message)
+                return
+
+            if self.dat_file is not None:
+                self.dm.set_dat_path(Path(self.dat_file))
+
+            self.progress.emit("Building cluster dataframe (this may take a moment)...")
+            self.dm.build_cluster_dataframe()
+
+            # Auto-load Vision Data
+            vision_dir = Path(self.ks_dir_name)
+            dataset_name = None
+            for ei_file in vision_dir.glob('*.ei'):
+                dataset_name = ei_file.stem
+                break 
+
+            if dataset_name:
+                self.progress.emit(f"Found Vision EI file ('{dataset_name}') - loading automatically...")
+                self.dm.load_vision_data(vision_dir, dataset_name)
+            else:
+                logger.debug("No complete set of Vision files found; skipping automatic loading")
+
+            # Load cell type file
+            ls_txt = list(vision_dir.glob('*.txt'))
+            txt_file = ls_txt[0] if ls_txt else None
+            self.dm.load_cell_type_file(txt_file)
+
+            self.finished.emit(True, "Kilosort data loaded successfully.")
+        except Exception as e:
+            logger.exception("Error in KilosortLoadWorker")
+            self.finished.emit(False, str(e))
+
+
+class VisionLoadWorker(QObject):
+    """Background worker to handle explicit Vision directory loading."""
+    finished = Signal(bool, str, bool) # success, message, is_partial
+    progress = Signal(str)
+
+    def __init__(self, data_manager, vision_dir_name):
+        super().__init__()
+        self.dm = data_manager
+        self.vision_dir_name = vision_dir_name
+
+    def run(self):
+        try:
+            vision_dir = Path(self.vision_dir_name)
+            self.progress.emit(f"Loading Vision files from {vision_dir.name}...")
+            
+            # Find dataset name dynamically
+            dataset_name = None
+            for ei_file in vision_dir.glob('*.ei'):
+                dataset_name = ei_file.stem
+                break
+                
+            success, message = self.dm.load_vision_data(vision_dir, dataset_name)
+            
+            is_partial = False
+            if not success:
+                params_path = vision_dir / 'sta_params.params'
+                sta_path = vision_dir / 'sta_container.sta'
+                if params_path.exists() or sta_path.exists():
+                    success_partial, message_partial = self.dm.load_vision_data(vision_dir, dataset_name)
+                    if success_partial:
+                        success = True
+                        is_partial = True
+                        message = message_partial
+            
+            self.finished.emit(success, message, is_partial)
+        except Exception as e:
+            logger.exception("Error in VisionLoadWorker")
+            self.finished.emit(False, str(e), False)
 
 class SpatialWorker(QObject):
     """
@@ -217,19 +310,23 @@ class StandardPlotsWorker(QObject):
     def run(self):
         """
         Main worker loop. Pulls cluster IDs off a queue and asks the DataManager
-        to compute standard-plot data for each one.
+        to compute standard-plot data and assemble core physics for each one.
         """
         while self.is_running:
             if self.queue:
                 cluster_id = self.queue.popleft()
                 try:
-                    # This call does all the heavy lifting and fills the cache.
+                    # 1. Pre-calculate and cache standard plots
                     self.data_manager.get_standard_plot_data(cluster_id)
+                    
+                    # 2. Pre-assemble and cache physical properties
+                    if hasattr(self.data_manager, 'get_cell_physics'):
+                        self.data_manager.get_cell_physics(cluster_id)
+                        
                     self.finished_cluster.emit(int(cluster_id))
                 except Exception as e:
-                    # Don't crash the worker on a single failure.
                     self.error.emit(
-                        f"Standard plot precompute failed for cluster {cluster_id}: {e}")
+                        f"Background precompute failed for cluster {cluster_id}: {e}")
             else:
                 QThread.msleep(100)
 

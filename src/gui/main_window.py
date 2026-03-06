@@ -6,7 +6,7 @@ from qtpy.QtWidgets import (
     QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
-    QTextEdit, QCheckBox
+    QTextEdit, QCheckBox, QProgressBar
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
@@ -545,6 +545,13 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        self.cache_progress = QProgressBar()
+        self.cache_progress.setMaximumWidth(250)
+        self.cache_progress.setFormat("Pre-computing Physics Cache: %p%")
+        self.cache_progress.hide()
+        self.status_bar.addPermanentWidget(self.cache_progress)
+        self.cache_progress_count = 0
 
         # --- Menu Bar ---
         menu = self.menuBar()

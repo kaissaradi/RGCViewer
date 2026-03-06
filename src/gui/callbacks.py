@@ -4,9 +4,13 @@ from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
 from qtpy.QtCore import QThread, Qt
 from qtpy.QtGui import QStandardItem, QColor
+from src.gui import main_window
 
 from ..analysis.data_manager import DataManager
-from .workers.workers import RefinementWorker, SpatialWorker, StandardPlotsWorker
+from .workers.workers import (
+    RefinementWorker, SpatialWorker, StandardPlotsWorker, 
+    KilosortLoadWorker, VisionLoadWorker
+)
 from .widgets.widgets import HighlightStatusPandasModel
 from .panels.population_panel import draw_population_timecourse_panel, draw_population_rfs_plot
 from .panels.feature_extraction import FeatureExtractionWindow
@@ -17,199 +21,196 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
+def update_cache_progress(main_window):
+    """Updates the main window progress bar with safety checks."""
+    if not hasattr(main_window, 'cache_progress_count'):
+        main_window.cache_progress_count = 0
+        
+    main_window.cache_progress_count += 1
+    
+    # Safety check: ensure data_manager and cluster_df exist
+    if not main_window.data_manager or main_window.data_manager.cluster_df.empty:
+        return
 
-def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
-    """Handles the logic for loading a Kilosort directory."""
-    # Set default directory: use
-    # /home/localadmin/Documents/Development/data/sorted if it exists,
-    # otherwise home
+    total_clusters = len(main_window.data_manager.cluster_df)
+    
+    # Calculate percentage
+    val = int((main_window.cache_progress_count / total_clusters) * 100)
+    main_window.cache_progress.setValue(min(val, 100)) # Cap at 100
+    
+    # UI Notify when complete
+    if main_window.cache_progress_count >= total_clusters:
+        main_window.cache_progress.hide()
+        main_window.status_bar.showMessage("Physics Cache Ready: UMAP and Population panels optimized.", 8000)
+
+def load_directory(main_window, kilosort_dir=None, dat_file=None):
+    """Triggers the background loading of a Kilosort directory."""
     default_dir = Path("/home/localadmin/Documents/Development/data/sorted")
     if not default_dir.exists():
         default_dir = Path.home()
+        
     if kilosort_dir is None:
         ks_dir_name = QFileDialog.getExistingDirectory(
             main_window, "Select Kilosort Output Directory", str(default_dir))
     else:
         ks_dir_name = kilosort_dir
+        
     if not ks_dir_name:
         return
 
-    main_window.status_bar.showMessage("Loading Kilosort files...")
-    QApplication.processEvents()
-
+    # 1. Lock UI and Prep DataManager
+    main_window.central_widget.setEnabled(False)
+    main_window.status_bar.showMessage("Initializing loader...")
     main_window.data_manager = DataManager(ks_dir_name, main_window)
-    success, message = main_window.data_manager.load_kilosort_data()
+    main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
+
+    # 2. Setup Thread and Worker
+    main_window.ks_load_thread = QThread()
+    main_window.ks_load_worker = KilosortLoadWorker(main_window.data_manager, ks_dir_name, dat_file)
+    main_window.ks_load_worker.moveToThread(main_window.ks_load_thread)
+
+    # 3. Connect Signals
+    main_window.ks_load_thread.started.connect(main_window.ks_load_worker.run)
+    main_window.ks_load_worker.progress.connect(lambda msg: main_window.status_bar.showMessage(msg))
+    
+    # Connect the finished signal to our new UI-thread cleanup function
+    main_window.ks_load_worker.finished.connect(
+        lambda success, msg: _on_kilosort_loaded(main_window, success, msg, ks_dir_name, dat_file)
+    )
+
+    # 4. Fire!
+    main_window.ks_load_thread.start()
+
+
+def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
+    """Callback triggered on the UI thread when KilosortLoadWorker finishes."""
+    # Clean up thread
+    main_window.ks_load_thread.quit()
+    main_window.ks_load_thread.wait()
 
     if not success:
         QMessageBox.critical(main_window, "Loading Error", message)
         main_window.status_bar.showMessage("Loading failed.", 5000)
+        main_window.central_widget.setEnabled(True)
         return
 
-    main_window.status_bar.showMessage("Kilosort files loaded.")
-    QApplication.processEvents()
-    main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
+    # --- GUI UPDATES (Safe because we are back on the main thread) ---
     
+    # 1. Raw Tab Management
     if dat_file is not None:
-        # Use the DataManager's set_dat_path method to create the memory map
-        main_window.data_manager.set_dat_path(Path(dat_file))
         main_window.analysis_tabs.setTabEnabled(
             main_window.analysis_tabs.indexOf(main_window.raw_panel), True)
     else:
-        # Just quietly disable the tab until the user loads it manually
         main_window.analysis_tabs.setTabEnabled(
             main_window.analysis_tabs.indexOf(main_window.raw_panel), False)
 
-    main_window.status_bar.showMessage("Building cluster dataframe...")
-    QApplication.processEvents()
-
-    main_window.data_manager.build_cluster_dataframe()
-
-    # Automatically check for and load vision files in the same directory.
-    # We will search for any set of matching files (.ei, .sta, .params).
-    vision_dir = Path(ks_dir_name)
-    dataset_name = None
-
-    logger.debug(f"Scanning for Vision files in {vision_dir}")
-
-    # Find any .ei file and check if its siblings (.sta, .params) exist.
-    for ei_file in vision_dir.glob('*.ei'):
-        base_name = ei_file.stem  # Gets the filename without the extension
-        dataset_name = base_name
-        logger.debug(f"Found EI file with base name: '{dataset_name}'")
-        break  # Use the first EI file found
-
-    if dataset_name:
-        main_window.status_bar.showMessage(
-            f"Found Vision EI file ('{dataset_name}') in directory - loading automatically...")
-        QApplication.processEvents()
-
-        # Call the updated method with the discovered dataset name
-        success, message = main_window.data_manager.load_vision_data(
-            vision_dir, dataset_name)
-
-        logger.debug(
-            f"Vision data load completed. success={success}, message={message}")
-    else:
-        logger.debug(
-            "No complete set of .ei, .sta, and .params files found; skipping automatic loading")
-
-    # Load cell type file
-    ls_txt = list(vision_dir.glob('*.txt'))
-    if len(ls_txt) > 0:
-        txt_file = ls_txt[0]
-    else:
-        txt_file = None
-    main_window.data_manager.load_cell_type_file(txt_file)
-
-    # Check if a tree structure file exists and load it, otherwise populate
-    # with default structure
-    tree_file_path = os.path.join(
-        ks_dir_name, 'cluster_group_refined_tree.json')
+    # 2. Tree/Table Population
+    tree_file_path = os.path.join(ks_dir_name, 'cluster_group_refined_tree.json')
     if os.path.exists(tree_file_path):
         main_window.data_manager.load_tree_structure(tree_file_path)
     else:
-        # Use the new tree view instead of table view
         populate_tree_view(main_window)
 
-    # Update with highlights. Need to improve and merge with above.
     main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
 
+    # 3. Enable UI & Workers
+    main_window.cache_progress.show()
+
+    # Start the worker
     start_worker(main_window)
+    
+    # Connect the worker's signal to our new progress bar update function
+    if hasattr(main_window, 'standard_plots_worker'):
+        main_window.standard_plots_worker.finished_cluster.connect(
+            lambda cid: update_cache_progress(main_window)
+        )
+        for cid in main_window.data_manager.cluster_df['cluster_id'].values:
+                main_window.standard_plots_worker.add_to_queue(cid)
     main_window.central_widget.setEnabled(True)
 
-    # --- Enable Actions ---
-    main_window.load_raw_action.setEnabled(True)             # NEW: Enable Raw Loader
+    main_window.load_raw_action.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
     main_window.load_classification_action.setEnabled(True)
-    main_window.save_action.setEnabled(True)                 # Enable main Save
-    main_window.save_classification_action.setEnabled(True)  # Enable Text Export
-    main_window.calibrate_array_action.setEnabled(True)      # NEW
-    # ----------------------
+    main_window.save_action.setEnabled(True)
+    main_window.save_classification_action.setEnabled(True)
+    main_window.calibrate_array_action.setEnabled(True)
 
-    # Auto-load array transform if it was previously calibrated
-    transform_path = main_window.data_manager.kilosort_dir.parent / 'transforms' / 'array_transform.json'
-    if transform_path.exists() and hasattr(main_window, 'standard_plots_panel'):
-        main_window.standard_plots_panel.refresh_array_image(str(transform_path))
-        # if a cluster is already selected, redraw so image shows immediately
-        cid = main_window._get_selected_cluster_id()
-        if cid is not None:
-            main_window.standard_plots_panel.update_all(cid)
-
-    main_window.status_bar.showMessage(
-        f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.",
-        5000)
-
-    # Show or hide sta_panel based on whether vision STAs are loaded
+    # 4. Handle Vision specific UI updates
     if main_window.data_manager.vision_stas:
         main_window.sta_panel.show()
     else:
         main_window.sta_panel.hide()
 
-    # Notify the similarity panel that vision data has been loaded if available
-    if hasattr(
-            main_window,
-            'similarity_panel') and main_window.data_manager.vision_available:
+    if hasattr(main_window, 'similarity_panel') and main_window.data_manager.vision_available:
         main_window.similarity_panel.on_vision_loaded()
 
+    # 5. Array Transform check
+    transform_path = main_window.data_manager.kilosort_dir.parent / 'transforms' / 'array_transform.json'
+    if transform_path.exists() and hasattr(main_window, 'standard_plots_panel'):
+        main_window.standard_plots_panel.refresh_array_image(str(transform_path))
+        cid = main_window._get_selected_cluster_id()
+        if cid is not None:
+            main_window.standard_plots_panel.update_all(cid)
 
-def load_vision_directory(main_window: MainWindow):
-    """Handles the logic for loading a Vision analysis directory."""
+    main_window.status_bar.showMessage(
+        f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.", 5000)
+
+
+def load_vision_directory(main_window):
+    """Triggers the background loading of an explicit Vision directory."""
     if not main_window.data_manager:
-        QMessageBox.warning(
-            main_window,
-            "No Kilosort Data",
-            "Please load a Kilosort directory first.")
+        QMessageBox.warning(main_window, "No Kilosort Data", "Please load a Kilosort directory first.")
         return
 
-    vision_dir_name = QFileDialog.getExistingDirectory(
-        main_window, "Select Vision Analysis Directory")
+    vision_dir_name = QFileDialog.getExistingDirectory(main_window, "Select Vision Analysis Directory")
     if not vision_dir_name:
         return
 
-    main_window.status_bar.showMessage(
-        f"Loading Vision files from {Path(vision_dir_name).name}...")
-    QApplication.processEvents()
+    # 1. Lock UI
+    main_window.central_widget.setEnabled(False)
+    
+    # 2. Setup Thread and Worker
+    main_window.vision_load_thread = QThread()
+    main_window.vision_load_worker = VisionLoadWorker(main_window.data_manager, vision_dir_name)
+    main_window.vision_load_worker.moveToThread(main_window.vision_load_thread)
 
-    success, message = main_window.data_manager.load_vision_data(
-        vision_dir_name)
+    # 3. Connect Signals
+    main_window.vision_load_thread.started.connect(main_window.vision_load_worker.run)
+    main_window.vision_load_worker.progress.connect(lambda msg: main_window.status_bar.showMessage(msg))
+    
+    main_window.vision_load_worker.finished.connect(
+        lambda success, msg, is_partial: _on_vision_loaded(main_window, success, msg, is_partial)
+    )
 
-    if success:
+    # 4. Fire!
+    main_window.vision_load_thread.start()
+
+
+def _on_vision_loaded(main_window, success, message, is_partial):
+    """Callback triggered on the UI thread when VisionLoadWorker finishes."""
+    main_window.vision_load_thread.quit()
+    main_window.vision_load_thread.wait()
+    
+    main_window.central_widget.setEnabled(True)
+
+    if success and not is_partial:
         main_window.status_bar.showMessage(message, 5000)
-        # Trigger a refresh of the currently selected cluster to show new data
-        if main_window._get_selected_cluster_id() is not None:
-            on_cluster_selection_changed(main_window)
+    elif is_partial:
+        main_window.status_bar.showMessage(f"Loaded partial Vision data: {message}", 5000)
+        QMessageBox.warning(main_window, "Vision Loading Warning", 
+                            f"Could not load all Vision data, but some files were found.\n{message}")
     else:
-        # If Vision loading fails but params/sta exist, we can still proceed
-        # with available data
-        vision_path = Path(vision_dir_name)
+        QMessageBox.critical(main_window, "Vision Loading Error", message)
+        main_window.status_bar.showMessage("Vision loading failed.", 5000)
 
-        # Check if params or sta files exist - if so, we can still display them
-        # without EI
-        params_path = vision_path / 'sta_params.params'
-        sta_path = vision_path / 'sta_container.sta'
+    # Show STA panel if data is now available
+    if main_window.data_manager.vision_stas:
+        main_window.sta_panel.show()
 
-        if params_path.exists() or sta_path.exists():
-            # Still try to load what we can
-            success_partial, message_partial = main_window.data_manager.load_vision_data(
-                vision_dir_name)
-            if success_partial:
-                main_window.status_bar.showMessage(
-                    f"Loaded partial Vision data: {message_partial}", 5000)
-            else:
-                # Show a warning instead of a critical error, since partial
-                # data can still be useful
-                QMessageBox.warning(
-                    main_window,
-                    "Vision Loading Warning",
-                    f"Could not load all Vision data, but some files were found. {message}")
-            # Still trigger refresh so that any available data is shown
-            if main_window._get_selected_cluster_id() is not None:
-                on_cluster_selection_changed(main_window)
-        else:
-            # If no params/sta files exist, show the original error
-            QMessageBox.critical(main_window, "Vision Loading Error", message)
-            main_window.status_bar.showMessage("Vision loading failed.", 5000)
+    # Trigger a refresh of the currently selected cluster to show new data
+    if main_window._get_selected_cluster_id() is not None:
+        on_cluster_selection_changed(main_window)
 
 
 def redraw_population_panels(main_window: MainWindow):
@@ -410,9 +411,7 @@ def reset_views(main_window: MainWindow):
 
 def start_worker(main_window: MainWindow):
     """Starts the background worker threads (spatial features + standard plots)."""
-    # Stop anything that might already be running
-    if main_window.worker_thread is not None or getattr(
-            main_window, "standard_worker_thread", None) is not None:
+    if main_window.worker_thread is not None or getattr(main_window, "standard_worker_thread", None) is not None:
         stop_worker(main_window)
 
     # --- Spatial features worker (existing behaviour) ---
@@ -420,23 +419,27 @@ def start_worker(main_window: MainWindow):
     main_window.spatial_worker = SpatialWorker(main_window.data_manager)
     main_window.spatial_worker.moveToThread(main_window.worker_thread)
     main_window.worker_thread.started.connect(main_window.spatial_worker.run)
-    main_window.spatial_worker.result_ready.connect(
-        main_window.on_spatial_data_ready)
+    main_window.spatial_worker.result_ready.connect(main_window.on_spatial_data_ready)
     main_window.worker_thread.start()
 
     # --- NEW: Standard plots worker for ISI/ACG/FR caching ---
     main_window.standard_worker_thread = QThread()
-    main_window.standard_plots_worker = StandardPlotsWorker(
-        main_window.data_manager)
-    main_window.standard_plots_worker.moveToThread(
-        main_window.standard_worker_thread)
-    main_window.standard_worker_thread.started.connect(
-        main_window.standard_plots_worker.run)
+    main_window.standard_plots_worker = StandardPlotsWorker(main_window.data_manager)
+    main_window.standard_plots_worker.moveToThread(main_window.standard_worker_thread)
+    
+    # NEW: Connect the progress bar signal BEFORE starting or queueing
+    main_window.standard_plots_worker.finished_cluster.connect(
+        lambda cid: update_cache_progress(main_window)
+    )
+    
+    main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)
     main_window.standard_worker_thread.start()
 
     # Kick off low-priority background caching for all clusters
     dm = main_window.data_manager
     if dm is not None and not dm.cluster_df.empty:
+        # Reset safety count before queueing
+        main_window.cache_progress_count = 0
         for cid in dm.cluster_df['cluster_id']:
             main_window.standard_plots_worker.add_to_queue(int(cid))
 

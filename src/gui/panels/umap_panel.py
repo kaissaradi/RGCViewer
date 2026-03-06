@@ -6,7 +6,7 @@ from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from qtpy.QtCore import QThread, Signal, QObject
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.widgets import LassoSelector
+from matplotlib.widgets import LassoSelector, RectangleSelector
 from matplotlib.path import Path as MplPath
 from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
@@ -39,209 +39,75 @@ def robust_polarity(trace):
     trough = np.min(trace)
     return "OFF" if abs(trough) > abs(peak) else "ON"
 
-
-def extract_features_from_datamanager(dm, selected_cluster_ids=None, progress_signal=None):
+def extract_features_from_datamanager(dm, cluster_ids):
     """
-    Advanced Feature Extraction Strategy (Hybrid):
-    1. Collect Raw Timecourses -> Run PCA -> Top 3 Components (Shape/Polarity/Kinetics)
-    2. Collect Raw ACGs -> Run PCA -> Top 2 Components (Burstiness/Pattern)
-    3. Collect Scalars -> Area, Ellipticity, Color, Energy.
-    4. Weight and Concatenate.
+    O(1) Feature Extraction.
+    Pulls pre-calculated physics directly from DataManager cache, applies 
+    RobustScaler to geometry, and PCA-compresses high-dimensional arrays.
     """
-    if dm is None:
-        raise ValueError("DataManager is not available (None).")
-
-    # Check for Vision Data availability
-    if not getattr(dm, "vision_stas", None):
-        raise ValueError(
-            "Vision STA data is not loaded. \n\n"
-            "This panel requires STA shapes to classify RGCs. "
-            "Please ensure 'Vision Integration' succeeded."
-        )
-
-    if selected_cluster_ids is None:
-        if hasattr(dm, "cluster_df") and dm.cluster_df is not None:
-            selected_cluster_ids = dm.cluster_df['cluster_id'].values
-        else:
-            raise ValueError("No clusters available in DataManager.")
-
-    if progress_signal:
-        progress_signal.emit("Gathering hybrid features (Shape + Pattern + Geometry)...")
-
-    # Containers for raw arrays (for PCA)
-    raw_timecourses = []
-    raw_acgs = []
+    valid_ids = []
+    tc_list = []
+    acg_list = []
+    scalars_list = []
     
-    # Containers for scalars
-    scalar_features = []  # [Area, Ellipticity, ColorOpponency, LogEnergy]
-    
-    # Metadata for plotting
-    metadata = []
-    valid_cluster_ids = []
+    # We must build a metadata dictionary so the UI can color the UMAP dots
+    metadata = {
+        'Time to Peak': [],
+        'RF Area': [],
+        'Ellipticity': []
+    }
 
-    total = len(selected_cluster_ids)
-
-    # --- 1. GATHER DATA ---
-    for i, cid in enumerate(selected_cluster_ids):
-        # Yield progress every 10 items
-        if progress_signal and i % 10 == 0:
-            progress_signal.emit(f"Processing cluster {i}/{total}...")
-
-        vid = int(cid) + 1  # Vision ID (1-based)
-
-        # SKIP cells with no Vision data
-        if vid not in dm.vision_stas:
-            continue
-
-        # A. GET TIMECOURSE (Shape)
-        sta_data = dm.vision_stas[vid]
-        try:
-            stafit = dm.vision_params.get_stafit_for_cell(vid)
-        except Exception:
-            stafit = None
-
-        _, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-            sta_data, stafit, dm.vision_params, vid
-        )
-
-        if tc_matrix is None or tc_matrix.size == 0:
-            continue
-
-        # Normalize dominant channel
-        energies = np.sum(tc_matrix**2, axis=0)
-        dom_idx = np.argmax(energies)
-        dom_trace = tc_matrix[:, dom_idx]
+    for cid in cluster_ids:
+        # 1. INSTANT O(1) CACHE LOOKUP
+        metrics = dm.get_cell_physics(cid)
         
-        abs_max = np.max(np.abs(dom_trace))
-        if abs_max == 0: continue
-        norm_trace = dom_trace / abs_max
+        tc = metrics.get('timecourse')
+        acg = metrics.get('acg')
         
-        # Apply slight smoothing for PCA robustness
-        smooth_trace = gaussian_filter1d(norm_trace, sigma=1)
-        
-        # Resample/Pad trace to fixed length (e.g. 30 points)
-        target_len = 30
-        if len(smooth_trace) > target_len:
-            trace_feat = smooth_trace[:target_len]
-        else:
-            trace_feat = np.pad(smooth_trace, (0, target_len - len(smooth_trace)))
+        if tc is not None and acg is not None:
+            valid_ids.append(cid)
+            tc_list.append(tc)
+            acg_list.append(acg)
             
-        raw_timecourses.append(trace_feat)
-
-        # B. GET ACG (Pattern)
-        try:
-            lags, acg_norm = dm.get_acg_data(cid)
-            if acg_norm is not None and len(acg_norm) > 0:
-                # Normalize length to fixed bins (e.g. center +/- 25 points)
-                center = len(acg_norm) // 2
-                half_width = 25
-                if center > half_width:
-                    acg_feat = acg_norm[center-half_width : center+half_width]
-                else:
-                    acg_feat = np.pad(acg_norm, (0, 50-len(acg_norm)))
-            else:
-                acg_feat = np.zeros(50)
-        except Exception:
-            acg_feat = np.zeros(50)
+            area = metrics.get('rf_area') or 0.0
+            ellip = metrics.get('ellipticity') or 0.0
+            t2p = metrics.get('time_to_peak') or 0
             
-        raw_acgs.append(acg_feat)
+            scalars_list.append([area, ellip])
+            
+            metadata['Time to Peak'].append(t2p)
+            metadata['RF Area'].append(area)
+            metadata['Ellipticity'].append(ellip)
 
-        # C. GET SCALARS (Geometry)
-        area = np.pi * stafit.std_x * stafit.std_y if stafit else 0
-        
-        # Safer Ellipticity Calculation
-        ellipticity = 0.0
-        if stafit and stafit.std_x > 0:
-            ellipticity = stafit.std_y / stafit.std_x
-        
-        # Safer Color Opponency Proxy
-        color_opp = 0.0
-        if tc_matrix.shape[1] == 3:
-             sorted_e = np.sort(energies)[::-1]
-             if sorted_e[0] > 0:
-                 color_opp = sorted_e[1] / sorted_e[0]
+    if not valid_ids:
+        return np.array([]), [], {}
 
-        log_energy = np.log1p(np.sum(energies))
+    # 2. Standardize Array Lengths
+    max_tc_len = max(len(t) for t in tc_list)
+    tc_mat = np.array([np.pad(t, (0, max_tc_len - len(t))) if len(t) < max_tc_len else t[:max_tc_len] for t in tc_list])
 
-        scalar_features.append([area, ellipticity, color_opp, log_energy])
-        
-        # D. METADATA (For Coloring)
-        polarity = robust_polarity(smooth_trace)
-        
-        # Estimate Time to Peak for display
-        is_off = polarity == "OFF"
-        primary_idx = np.argmin(smooth_trace) if is_off else np.argmax(smooth_trace)
-        time_to_peak_display = primary_idx * (1000/60) / 30 * 30 # Approx ms
-        
-        try:
-            row = dm.cluster_df[dm.cluster_df['cluster_id'] == cid].iloc[0]
-            kslabel = row.get('KSLabel', row.get('group', 'unsorted'))
-            fr = float(row.get('firing_rate_hz', 0.0))
-            isi = float(row.get('isi_violations_pct', 0.0))
-        except Exception:
-            kslabel = 'unsorted'
-            fr = 0.0
-            isi = 0.0
+    max_acg_len = max(len(a) for a in acg_list)
+    acg_mat = np.array([np.pad(a, (0, max_acg_len - len(a))) if len(a) < max_acg_len else a[:max_acg_len] for a in acg_list])
 
-        metadata.append({
-            'KSLabel': kslabel,
-            'Polarity': polarity,
-            'Time to Peak': time_to_peak_display,
-            'Firing Rate': fr,
-            'isi_violations': isi,
-            'Color Opponency': color_opp,
-            'RF Area': area
-        })
-        
-        valid_cluster_ids.append(cid)
+    scalars_mat = np.array(scalars_list)
 
-    # Check sufficiency
-    if len(valid_cluster_ids) < 5:
-        raise ValueError(f"Not enough valid Vision clusters (found {len(valid_cluster_ids)}). Need at least 5.")
+    # 3. Robust Normalization 
+    if scalars_mat.shape[0] > 0 and scalars_mat.shape[1] > 0:
+        scalars_mat = RobustScaler().fit_transform(scalars_mat)
 
-    # --- 2. PCA TRANSFORMATIONS ---
-    if progress_signal: progress_signal.emit("Running PCA on Timecourses and ACGs...")
-    
-    # A. Timecourse PCA (Shape)
-    X_tc = np.array(raw_timecourses)
-    X_tc = np.nan_to_num(X_tc) # Safety 1
-    
-    pca_tc = PCA(n_components=min(3, X_tc.shape[0], X_tc.shape[1]))
-    X_tc_pca = pca_tc.fit_transform(X_tc)
-    
-    # B. ACG PCA (Pattern)
-    X_acg = np.array(raw_acgs)
-    X_acg = np.nan_to_num(X_acg) # Safety 2
-    
-    norms = np.linalg.norm(X_acg, axis=1, keepdims=True)
-    norms[norms==0] = 1
-    X_acg = X_acg / norms
-    
-    pca_acg = PCA(n_components=min(2, X_acg.shape[0], X_acg.shape[1]))
-    X_acg_pca = pca_acg.fit_transform(X_acg)
+    # 4. Pre-PCA Compression 
+    n_comp = min(3, len(valid_ids))
+    tc_pca = PCA(n_components=n_comp).fit_transform(tc_mat) if n_comp > 0 else np.zeros((len(valid_ids), 0))
+    acg_pca = PCA(n_components=n_comp).fit_transform(acg_mat) if n_comp > 0 else np.zeros((len(valid_ids), 0))
 
-    # C. Prepare Scalars - THIS WAS THE LIKELY CULPRIT
-    X_scalars = np.array(scalar_features)
-    X_scalars = np.nan_to_num(X_scalars) # <--- ADDED CRITICAL NAN FIX HERE
-    
-    scaler_geo = RobustScaler()
-    X_scalars_scaled = scaler_geo.fit_transform(X_scalars)
+    # 5. Final Weighted Concatenation
+    final_features = np.hstack([
+        tc_pca * W_SHAPE,
+        acg_pca * W_PATTERN,
+        scalars_mat * W_GEOMETRY
+    ])
 
-    # --- 3. APPLY WEIGHTS & CONCATENATE ---
-    if progress_signal: progress_signal.emit("Applying feature weights...")
-
-    X_tc_weighted = X_tc_pca * W_SHAPE
-    X_acg_weighted = X_acg_pca * W_PATTERN
-    X_scalars_weighted = X_scalars_scaled * W_GEOMETRY
-    
-    X_final = np.hstack([X_tc_weighted, X_acg_weighted, X_scalars_weighted])
-    
-    # Final safety check before UMAP
-    X_final = np.nan_to_num(X_final) 
-    
-    logger.info(f"Extracted features for {len(X_final)} clusters")
-    return X_final, valid_cluster_ids, metadata
-
+    return final_features, valid_ids, metadata
 
 class KMeansWorker(QObject):
     """Background worker for K-Means clustering."""
@@ -286,28 +152,36 @@ class UMAPWorker(QObject):
                 self.error.emit("umap-learn library is not installed.")
                 return
 
-            # Extract features using HYBRID helper
-            self.progress.emit("Extracting features for selected cells...")
+            self.progress.emit("Extracting features...")
+            
+            # --- THE FIX: Intercept 'None' and swap it for ALL cluster IDs ---
+            target_ids = self.selected_cluster_ids
+            if target_ids is None:
+                # If no specific cells are selected, run on the entire dataset
+                target_ids = self.dm.cluster_df['cluster_id'].values
+
             features, cluster_ids, metadata = extract_features_from_datamanager(
-                self.dm, self.selected_cluster_ids, self.progress)
+                self.dm, target_ids)
 
-            self.progress.emit(f"Running UMAP on {len(features)} selected cells...")
+            if len(features) == 0:
+                self.error.emit("No valid features could be extracted for the selected cells.")
+                return
 
-            # UMAP parameters optimized for speed and structure preservation
-            # Note: We do NOT use StandardScaler here because features are already scaled/weighted
+            self.progress.emit(f"Running UMAP on {len(features)} cells...")
+
             reducer = umap.UMAP(
-                n_neighbors=min(15, len(features) - 1),  # Adjust based on sample size
+                n_neighbors=min(15, len(features) - 1),
                 min_dist=0.1,
                 metric='euclidean',
                 low_memory=True,
-                n_jobs=-1,  # Use all cores for parallel processing
+                n_jobs=-1,
                 n_components=self.n_components,
                 verbose=False
             )
 
-            # Fit UMAP directly on weighted feature matrix
             embedding = reducer.fit_transform(features)
 
+            # Reconstruct the metadata DataFrame
             meta_df = pd.DataFrame(metadata)
             meta_df['cluster_id'] = cluster_ids
             
@@ -315,7 +189,8 @@ class UMAPWorker(QObject):
             self.finished.emit(embedding, cluster_ids, meta_df)
 
         except Exception as e:
-            logger.exception("UMAP Worker failed")
+            import logging
+            logging.getLogger(__name__).exception("UMAP Worker failed")
             self.error.emit(str(e))
 
 
@@ -328,6 +203,7 @@ class UMAPPanel(QWidget):
         self.metadata_df = None
         self.cbar = None
         self.is_3d = False
+        self.selector = None
 
         self.layout = QVBoxLayout(self)
 
@@ -344,11 +220,15 @@ class UMAPPanel(QWidget):
             "background-color: #2D6A4F; font-weight: bold;")
 
         self.color_combo = QComboBox()
-        # Updated list of color options including new metrics
         self.color_combo.addItems(
             ["KSLabel", "Polarity", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
         self.color_combo.currentTextChanged.connect(
             lambda: self.update_plot())
+
+        # NEW: Selection Tool Toggle
+        self.selector_combo = QComboBox()
+        self.selector_combo.addItems(["Lasso Tool", "Rectangle Tool"])
+        self.selector_combo.currentIndexChanged.connect(self.update_selector)
 
         self.progress = QProgressBar()
         self.progress.hide()
@@ -357,6 +237,8 @@ class UMAPPanel(QWidget):
         ctrl_layout.addWidget(self.run_3d_btn)
         ctrl_layout.addWidget(QLabel("Color:"))
         ctrl_layout.addWidget(self.color_combo)
+        ctrl_layout.addWidget(QLabel("Tool:"))
+        ctrl_layout.addWidget(self.selector_combo)
         ctrl_layout.addWidget(self.progress)
         ctrl_layout.addStretch()
 
@@ -379,7 +261,7 @@ class UMAPPanel(QWidget):
             "If checked, finishing clustering will automatically create/overwrite "
             "groups in the main Tree View (e.g., 'Type_1', 'Type_2')."
         )
-        self.auto_group_chk.setChecked(False)  # Safer to let user opt-in
+        self.auto_group_chk.setChecked(False)
 
         self.show_ids_btn = QPushButton("Show IDs")
         self.show_ids_btn.clicked.connect(self.show_group_ids)
@@ -392,7 +274,7 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(QLabel("Clustering:"))
         cluster_layout.addWidget(self.k_spin)
         cluster_layout.addWidget(self.kmeans_btn)
-        cluster_layout.addWidget(self.auto_group_chk)  # Added Checkbox
+        cluster_layout.addWidget(self.auto_group_chk)
         cluster_layout.addWidget(self.show_ids_btn)
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
@@ -409,9 +291,8 @@ class UMAPPanel(QWidget):
         self.ax = self.fig.add_subplot(111)
         self.ax.set_facecolor('#1f1f1f')
 
-        # Interaction state
-        self.selector = LassoSelector(self.ax, self.on_select)
-        self.selector.set_active(False)  # Enable only after plot
+        # NEW: Initialize empty selector state
+        self.current_selector = None
 
         # Worker refs
         self.worker_thread = None
@@ -475,6 +356,12 @@ class UMAPPanel(QWidget):
             logger.error(f"Error getting selected cluster IDs: {e}")
             return None
     def run_umap(self):
+        total_clusters = len(self.main_window.data_manager.cluster_df)
+        cached = len(getattr(self.main_window.data_manager, 'feature_cache', {}))
+        if cached < total_clusters:
+            QMessageBox.warning(self, "Cache Warming Up", 
+                                f"Please wait for background caching to finish.\n\nCached: {cached} / {total_clusters} cells.\nCheck the progress bar in the bottom right.")
+            return
         self._reset_workers()
         self.run_btn.setEnabled(False)
         self.run_3d_btn.setEnabled(False)
@@ -506,6 +393,12 @@ class UMAPPanel(QWidget):
         self.worker_thread.start()
 
     def run_umap_3d(self):
+        total_clusters = len(self.main_window.data_manager.cluster_df)
+        cached = len(getattr(self.main_window.data_manager, 'feature_cache', {}))
+        if cached < total_clusters:
+            QMessageBox.warning(self, "Cache Warming Up", 
+                                f"Please wait for background caching to finish.\n\nCached: {cached} / {total_clusters} cells.\nCheck the progress bar in the bottom right.")
+            return
         self._reset_workers()
         self.run_btn.setEnabled(False)
         self.run_3d_btn.setEnabled(False)
@@ -644,6 +537,10 @@ class UMAPPanel(QWidget):
                 f"Successfully created {count} groups (Type_1...Type_{count}) for the selected cells."
             )
             
+            # Force the main tree view to collapse all groups after K-Means auto-grouping
+            if hasattr(self.main_window, 'tree_view'):
+                self.main_window.tree_view.collapseAll()
+            
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -673,11 +570,6 @@ class UMAPPanel(QWidget):
             else:
                 self.ax = self.fig.add_subplot(111)
             self.ax.set_facecolor('#1f1f1f')
-            
-            if self.selector:
-                self.selector.disconnect_events()
-            self.selector = LassoSelector(self.ax, self.on_select)
-            self.selector.set_active(True)
         else:
             self.ax.clear()
 
@@ -771,6 +663,10 @@ class UMAPPanel(QWidget):
             f"{title_prefix} - {len(self.cluster_ids)} {selection_info} cells - Color: {mode}",
             color='white')
         self.ax.tick_params(colors='gray')
+
+        # NEW: Re-attach the active selection tool to the fresh plot
+        self.update_selector()
+
         self.canvas.draw()
 
     def show_group_ids(self):
@@ -853,3 +749,34 @@ class UMAPPanel(QWidget):
         if ok and name:
             from ..callbacks import group_clusters_in_tree
             group_clusters_in_tree(self.main_window, ids, name)
+
+    def update_selector(self):
+        """Hot-swaps between Lasso and Rectangle selection tools."""
+        if not hasattr(self, 'ax'): 
+            return
+            
+        # Clear existing selector safely
+        if hasattr(self, 'current_selector') and self.current_selector is not None:
+            self.current_selector.set_active(False)
+            self.current_selector = None
+            
+        if self.selector_combo.currentText() == "Lasso Tool":
+            self.current_selector = LassoSelector(self.ax, onselect=self.on_select)
+        else:
+            self.current_selector = RectangleSelector(
+                self.ax, onselect=self.on_select_rect,
+                useblit=True, button=[1], minspanx=5, minspany=5,
+                spancoords='pixels', interactive=True
+            )
+
+    def on_select_rect(self, eclick, erelease):
+        """Bridges RectangleSelector output into existing Lasso selection pipeline."""
+        x1, y1 = eclick.xdata, eclick.ydata
+        x2, y2 = erelease.xdata, erelease.ydata
+        
+        # Convert bounding box coordinates to a vertex path
+        verts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
+        
+        # Pass directly into your existing lasso logic
+        if hasattr(self, 'on_select'):
+            self.on_select(verts)
