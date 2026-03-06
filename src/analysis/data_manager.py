@@ -438,6 +438,14 @@ class DataManager(QObject):
                 self.kilosort_dir / 'spike_clusters.npy').flatten()
             self.channel_positions = np.load(
                 self.kilosort_dir / 'channel_positions.npy')
+            # Load channel map to map electrode numbers to positions
+            channel_map_path = self.kilosort_dir / 'channel_map.npy'
+            if channel_map_path.exists():
+                self.channel_map = np.load(channel_map_path).flatten()
+            else:
+                # fallback to sequential numbering based on loaded channel_positions
+                self.channel_map = np.arange(self.channel_positions.shape[0])
+
             self.sorted_channels = sort_electrode_map(self.channel_positions)
 
             # Load whitening matrix inverse to unwhiten templates (templates

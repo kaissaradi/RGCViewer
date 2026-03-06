@@ -32,6 +32,8 @@ from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
 from PyQt5.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
+# Array calibration dialog
+from .panels.array_calibration_panel import ArrayCalibrationDialog
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
@@ -566,7 +568,13 @@ class MainWindow(QMainWindow):
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
 
-        # Connect Signals (Cleaned up to prevent double-firing!)
+        # --- Array Menu ---
+        array_menu = menu.addMenu("&Array")
+        self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
+        self.calibrate_array_action.setEnabled(False)  # Enabled after data loads
+        self.calibrate_array_action.triggered.connect(self._open_array_calibration)
+
+        # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
         self.load_raw_action.triggered.connect(self.load_raw_data_file)
         self.load_vision_action.triggered.connect(self.load_vision_directory)
@@ -584,6 +592,22 @@ class MainWindow(QMainWindow):
             lambda msg: self.status_bar.showMessage(msg, 3000))
         self.raw_panel.error_message.connect(
             lambda msg: self.status_bar.showMessage(msg, 4000))
+
+    def _open_array_calibration(self):
+        """Open the Map Image to Array calibration dialog."""
+        dlg = ArrayCalibrationDialog(self, data_manager=self.data_manager)
+        dlg.transformSaved.connect(self._on_transform_saved)
+        dlg.show()
+
+    def _on_transform_saved(self, transform_path: str):
+        """Called after user saves a new transform — refresh image overlay."""
+        if hasattr(self, 'standard_plots_panel'):
+            self.standard_plots_panel.refresh_array_image(transform_path=transform_path)
+            # re-draw the grid for the currently selected cluster (if any)
+            cid = self._get_selected_cluster_id()
+            if cid is not None:
+                self.standard_plots_panel.update_all(cid)
+        self.status_bar.showMessage(f"Array transform saved: {transform_path}", 4000)
 
     def toggle_population_split_view(self, checked: bool):
         """Toggles the global population context pane (right side)."""

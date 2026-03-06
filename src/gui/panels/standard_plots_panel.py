@@ -6,6 +6,9 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
 from scipy.interpolate import interp1d
 from ...analysis.constants import ISI_REFRACTORY_PERIOD_MS
+import logging
+
+logger = logging.getLogger(__name__)
 ISI_DENSITY_THRESHOLD = 5000  # switch to density view when > this many ISIs
 
 
@@ -26,6 +29,12 @@ class StandardPlotsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Background image from array calibration
+        self._array_bg_image = None
+        self._array_transform_data = None
+        self._array_image_path = None
+        self._has_valid_array_transform = False
+
         # Controls: top control bar
         ctrl_bar = QHBoxLayout()
         ctrl_bar_widget = QWidget()
@@ -36,7 +45,7 @@ class StandardPlotsPanel(QWidget):
         ctrl_bar.addWidget(QLabel('Channel Display:'))
         self.channel_mode_combo = QComboBox()
         self.channel_mode_combo.addItems(
-            ['Main Channel', 'Top Channels', 'Whole Array'])
+            ['Main Channel', 'Top Channels', 'Whole Array', 'Array Image'])
         ctrl_bar.addWidget(self.channel_mode_combo)
 
         ctrl_bar.addStretch()
@@ -231,7 +240,7 @@ class StandardPlotsPanel(QWidget):
             self.isi_plot.setXRange(x_min, current_max * 1.05, padding=0)
             
         self.isi_plot.plotItem.disableAutoRange(pg.ViewBox.XAxis)
-
+    
     def _on_control_changed(self):
         try:
             cluster_id = self.main_window._get_selected_cluster_id()
@@ -239,6 +248,66 @@ class StandardPlotsPanel(QWidget):
                 self.update_all(cluster_id)
         except Exception:
             pass
+
+    def refresh_array_image(self, transform_path: str):
+        """Loads and aligns the microscope image behind the template grid."""
+        import json
+        from pathlib import Path
+        from PIL import Image
+        import numpy as np
+        from qtpy.QtGui import QTransform
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            with open(transform_path, 'r') as f:
+                data = json.load(f)
+
+            img_name = data.get('image_file')
+            if not img_name: 
+                return
+
+            img_path = Path(transform_path).parent / img_name
+            if not img_path.exists():
+                return
+
+            img = Image.open(img_path).convert('RGB')
+            img_array = np.array(img, dtype=np.uint8)
+            # Transpose to match pyqtgraph's (Width, Height, Color) expectation
+            img_pg = img_array.transpose(1, 0, 2)
+
+            if self._array_bg_image is None:
+                self._array_bg_image = pg.ImageItem()
+                self._array_bg_image.setZValue(-20)  # Push firmly to background
+                self.grid_plot.addItem(self._array_bg_image)
+
+            self._array_bg_image.setImage(img_pg)
+
+            # Store transform data
+            self._array_transform_data = data
+            self._array_image_path = img_path
+            self._has_valid_array_transform = True
+
+            # --- Proper QTransform Mapping ---
+            # Math: pixels = scale * microns + offset
+            # Ergo: microns = (pixels - offset) / scale
+            sx = float(data.get('scale_x', 1.0))
+            sy = float(data.get('scale_y', 1.0))
+            ox = float(data.get('offset_x', 0.0))
+            oy = float(data.get('offset_y', 0.0))
+
+            # Since the grid distortion (x_scale) turns off when the image is active,
+            # we do a pure 1:1 physical translation matrix.
+            tr = QTransform()
+            tr.setMatrix(1/sx, 0, 0,
+                         0, 1/sy, 0,
+                         -ox/sx, -oy/sy, 1)
+            self._array_bg_image.setTransform(tr)
+
+        except Exception as e:
+            logger.warning(f"Failed to load array image: {e}")
+            self._has_valid_array_transform = False
+
 
     def update_all(self, cluster_id):
         """
@@ -252,19 +321,43 @@ class StandardPlotsPanel(QWidget):
         if dm is None:
             return
 
+        # If user requests array image but none is loaded, prompt for calibration
+        current_mode = self.channel_mode_combo.currentText()
+        if current_mode == 'Array Image' and not self._has_valid_array_transform:
+            from qtpy.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "No Array Image",
+                "No calibrated array image is available. "
+                "Please map an image to the array using File → Array → Map Image to Array...",
+            )
+            try:
+                self.main_window._open_array_calibration()
+            except Exception:
+                pass
+            return
+
         # ------------------------------------------------------------------
         # 1. TEMPLATE GRID
         # ------------------------------------------------------------------
-        self.grid_plot.clear() # Grid plot is complex, clearing is safer
+        self.grid_plot.clear() 
+        
+        # Only show background when in Array Image mode
+        if self._array_bg_image is not None and current_mode == 'Array Image':
+            self.grid_plot.addItem(self._array_bg_image)
+        
         try:
             if hasattr(dm, 'templates') and dm.templates is not None and cluster_id < dm.templates.shape[0]:
                 template = dm.templates[cluster_id]
-                pos = dm.channel_positions
-                x_scale, y_scale = 1.5, 1.0
+                pos = np.array(dm.channel_positions)
+                
+                # --- Dynamic Stretch: 1.0 (true physical) for Image, 1.5 (distorted) for traces ---
+                x_scale = 1.0 if current_mode == 'Array Image' else 1.5
+                y_scale = 1.0
+                
                 ptp = template.max(axis=0) - template.min(axis=0)
                 max_ptp = ptp.max() if ptp.size > 0 else 1.0
                 main_channel_idx = int(np.argmax(ptp)) if ptp.size > 0 else 0
-                current_mode = self.channel_mode_combo.currentText()
                 
                 if current_mode == 'Main Channel':
                     relevant_channels = [main_channel_idx]
@@ -273,6 +366,10 @@ class StandardPlotsPanel(QWidget):
                     top_channel_indices = np.argsort(ptp)[::-1][:3]
                     relevant_channels = top_channel_indices
                     show_waveforms = True; show_dots = True; waveform_channels = top_channel_indices
+                elif current_mode in ('Whole Array', 'Array Image'):
+                    relevant_channels = np.arange(len(ptp))
+                    waveform_channels = np.argsort(ptp)[::-1][:6]
+                    show_waveforms = True; show_dots = True
                 else:
                     relevant_channels = np.arange(len(ptp))
                     waveform_channels = np.argsort(ptp)[::-1][:6]
@@ -286,13 +383,20 @@ class StandardPlotsPanel(QWidget):
                     spots = []
                     vmin, vmax = channel_values.min(), channel_values.max()
                     vrange = max(vmax - vmin, 1e-6)
+                    
+                    # --- Lower opacity for Array Image mode so tissue shows through ---
+                    alpha = 80 if current_mode == 'Array Image' else 180
+                    
                     for ch in relevant_channels:
                         if ch >= len(channel_values) or ch >= len(pos): continue
                         x, y = pos[ch]
                         val = (channel_values[ch] - vmin) / vrange
                         size = 6 + val * 20
                         r = int(255 * val); g = int(120 * (1 - val)); b = int(255 * (1 - val))
-                        spots.append({'pos': (x * x_scale, y * y_scale), 'size': size, 'brush': pg.mkBrush(r, g, b, 180), 'pen': pg.mkPen(None)})
+                        
+                        spots.append({'pos': (x * x_scale, y * y_scale), 'size': size, 
+                                      'brush': pg.mkBrush(r, g, b, alpha), 'pen': pg.mkPen(None)})
+                        
                     if spots:
                         scatter = pg.ScatterPlotItem(size=8)
                         scatter.addPoints(spots)
@@ -337,7 +441,28 @@ class StandardPlotsPanel(QWidget):
                                     trace_scaled = (trace / max_ptp) * 20 if max_ptp > 0 else trace
                                     t_offset = np.linspace(-10, 10, len(trace))
                                     self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen('#ff9800', width=1.5))
-        except Exception: pass
+
+                # --- Lock the zoom to perfectly frame the electrodes ---
+                if current_mode in ('Whole Array', 'Array Image'):
+                    min_x, min_y = np.min(pos, axis=0)
+                    max_x, max_y = np.max(pos, axis=0)
+                    
+                    # Account for the scale stretch
+                    min_x *= x_scale; max_x *= x_scale
+                    min_y *= y_scale; max_y *= y_scale
+                    
+                    span_x = max_x - min_x
+                    span_y = max_y - min_y
+                    
+                    pad_x = span_x * 0.9
+                    pad_y = span_y * 0.2
+                    
+                    self.grid_plot.setXRange(min_x - pad_x, max_x + pad_x, padding=0)
+                    self.grid_plot.setYRange(min_y - pad_y, max_y + pad_y, padding=0)
+
+        except Exception as e: 
+            import logging
+            logging.getLogger(__name__).warning(f"Error drawing template grid: {e}")
 
         # ------------------------------------------------------------------
         # 2. FETCH DATA
@@ -358,7 +483,6 @@ class StandardPlotsPanel(QWidget):
         # ------------------------------------------------------------------
         # 3. ACG / CCG
         # ------------------------------------------------------------------
-        # Check if a similar cluster is selected for CCG
         sim_panel = getattr(self.main_window, 'similarity_panel', None)
         selected_similar_rows = []
         try:
@@ -377,9 +501,7 @@ class StandardPlotsPanel(QWidget):
                     similar_id = int(sim_model._dataframe.iloc[row_idx]['cluster_id'])
                     
                     if similar_id != cluster_id:
-                        # Try to compute CCG
                         try:
-                            # We need spikes for the similar cluster
                             spikes2 = None
                             data2 = dm.get_standard_plot_data(similar_id)
                             if data2: spikes2 = data2.get('spikes')
@@ -392,6 +514,7 @@ class StandardPlotsPanel(QWidget):
                                 duration = int(max(np.max(s1), np.max(s2)))
                                 
                                 if duration > 0:
+                                    from scipy.signal import correlate
                                     bins = np.arange(0, duration + 1, 1, dtype=int)
                                     b1, _ = np.histogram(s1, bins=bins)
                                     b2, _ = np.histogram(s2, bins=bins)
@@ -409,7 +532,6 @@ class StandardPlotsPanel(QWidget):
                                         var = np.sqrt(np.var(b1) * np.var(b2))
                                         norm = ccg_sym / var / len(b1) if var != 0 else ccg_sym.astype(float)
                                         
-                                        # Show CCG Bar
                                         self._ccg_bar.setOpts(x=lags, height=norm)
                                         self._ccg_bar.setVisible(True)
                                         self._acg_bar.setVisible(False)
@@ -418,7 +540,6 @@ class StandardPlotsPanel(QWidget):
                         except Exception: pass
 
         if not showing_ccg:
-            # Show Standard ACG
             time_lags = data.get('acg_time_lags')
             acg_norm = data.get('acg_norm')
 
@@ -468,7 +589,7 @@ class StandardPlotsPanel(QWidget):
             valid_amp = data.get('isi_vs_amp_valid_amplitudes')
             
             if valid_isi is not None and len(valid_isi) > 0:
-                if len(valid_isi) > ISI_DENSITY_THRESHOLD and self.isi_display_combo.currentText() == 'Scatter':
+                if len(valid_isi) > 5000 and self.isi_display_combo.currentText() == 'Scatter':
                     self.isi_display_combo.setCurrentText('Density')
 
                 if self.isi_display_combo.currentText() == 'Scatter':
