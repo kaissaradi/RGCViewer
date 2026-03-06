@@ -103,51 +103,37 @@ class MainWindow(QMainWindow):
         if not sel_model or not model:
             return
 
+        current = view.currentIndex()
+        
+        # If nothing is selected, select the first visible row
+        if not current.isValid():
+            index = model.index(0, 0)
+            sel_model.setCurrentIndex(
+                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            view.scrollTo(index)
+            return
+
+        # Tree View Logic (Respects nested/collapsed visual states)
         if view is self.tree_view:
-            # Build a flat list of all leaf indices (clusters)
-            leaf_indices = []
-            for group_row in range(model.rowCount()):
-                group_item = model.item(group_row)
-                for child_row in range(group_item.rowCount()):
-                    child_item = group_item.child(child_row)
-                    index = model.indexFromItem(child_item)
-                    leaf_indices.append(index)
-            if not leaf_indices:
-                return
-            # Find the currently selected leaf
-            selected = sel_model.selectedIndexes()
-            if not selected or selected[0] not in leaf_indices:
-                # Select first leaf if nothing is selected or selection is not
-                # a leaf
-                sel_model.select(
-                    leaf_indices[0],
-                    QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-                view.scrollTo(leaf_indices[0])
-                return
-            current_idx = leaf_indices.index(selected[0])
             if key == Qt.Key_Up:
-                new_idx = max(0, current_idx - 1)
+                new_idx = view.indexAbove(current)
             else:
-                new_idx = min(len(leaf_indices) - 1, current_idx + 1)
-            sel_model.select(
-                leaf_indices[new_idx],
-                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-            view.scrollTo(leaf_indices[new_idx])
-        else:
-            # Table view logic
-            current = view.currentIndex()
-            if not current.isValid():
-                # Select first row if nothing is selected
-                index = model.index(0, 0)
+                new_idx = view.indexBelow(current)
+                
+            # Only move if the new index is valid (prevents scrolling off the edge)
+            if new_idx.isValid():
                 sel_model.setCurrentIndex(
-                    index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-                view.scrollTo(index)
-                return
+                    new_idx, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                view.scrollTo(new_idx)
+
+        # Table View Logic (Flat list)
+        else:
             current_row = current.row()
             if key == Qt.Key_Up:
                 new_row = max(0, current_row - 1)
             else:
                 new_row = min(model.rowCount() - 1, current_row + 1)
+                
             index = model.index(new_row, 0)
             sel_model.setCurrentIndex(
                 index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
@@ -458,55 +444,67 @@ class MainWindow(QMainWindow):
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
-        # ---- inside _setup_ui(): build pop_context_widget contents ----
         pop_layout = QVBoxLayout(self.pop_context_widget)
         pop_layout.setContentsMargins(4, 4, 4, 4)
         pop_layout.setSpacing(6)
 
-        # Top: Population RF (existing)
+        # Top Control Bar (with Expand Button)
+        pop_ctrl_layout = QHBoxLayout()
+        self.pop_expand_btn = QPushButton("⛶ Full Screen")
+        self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
+        self.pop_expand_btn.setCheckable(True)
+        self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
+        self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #4282DA; padding: 4px 10px;")
+        pop_ctrl_layout.addStretch()
+        pop_ctrl_layout.addWidget(self.pop_expand_btn)
+        pop_layout.addLayout(pop_ctrl_layout)
+
+        # Master Vertical Splitter for all 3 canvases (makes them height-adjustable)
+        self.pop_master_splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # 1. RF Mosaic Panel
+        self.pop_mosaic_widget = QWidget()
+        mosaic_layout = QVBoxLayout(self.pop_mosaic_widget)
+        mosaic_layout.setContentsMargins(0, 0, 0, 0)
         self.pop_mosaic_canvas = MplCanvas(width=6, height=4, dpi=100)
-        pop_layout.addWidget(self.pop_mosaic_canvas, stretch=3)
+        mosaic_layout.addWidget(self.pop_mosaic_canvas)
+        self.pop_master_splitter.addWidget(self.pop_mosaic_widget)
 
-        # Middle + Bottom: make a vertical splitter with two panels
-        # (middle=timecourse, bottom=placeholder)
-        self.pop_timecourse_splitter = QSplitter(Qt.Orientation.Vertical)
-        # Middle panel widget
+        # 2. Timecourse Panel
         self.pop_timecourse_widget = QWidget()
-        mid_layout = QVBoxLayout(self.pop_timecourse_widget)
-        mid_layout.setContentsMargins(2, 2, 2, 2)
-
-        # Header row for middle panel: title + summary
-        hdr = QHBoxLayout()
-        hdr_label = QLabel("Population Average Timecourse")
-        hdr_label.setStyleSheet("font-weight:bold;")
-        self.pop_timecourse_summary = QLabel(
-            "n=0  mean_t2p: N/A  mean_fwhm: N/A")
-        hdr.addWidget(hdr_label)
-        hdr.addStretch()
-        hdr.addWidget(self.pop_timecourse_summary)
-        mid_layout.addLayout(hdr)
-
-        # Middle canvas (timecourse)
+        tc_layout = QVBoxLayout(self.pop_timecourse_widget)
+        tc_layout.setContentsMargins(0, 0, 0, 0)
+        tc_hdr = QHBoxLayout()
+        tc_label = QLabel("Population Dynamics")
+        tc_label.setStyleSheet("font-weight:bold; color: white;")
+        self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        tc_hdr.addWidget(tc_label)
+        tc_hdr.addStretch()
+        tc_hdr.addWidget(self.pop_timecourse_summary)
+        tc_layout.addLayout(tc_hdr)
         self.pop_timecourse_canvas = MplCanvas(width=6, height=2, dpi=100)
-        mid_layout.addWidget(self.pop_timecourse_canvas)
+        tc_layout.addWidget(self.pop_timecourse_canvas)
+        self.pop_master_splitter.addWidget(self.pop_timecourse_widget)
 
-        self.pop_timecourse_splitter.addWidget(self.pop_timecourse_widget)
+        # 3. ACG Panel
+        self.pop_acg_widget = QWidget()
+        acg_layout = QVBoxLayout(self.pop_acg_widget)
+        acg_layout.setContentsMargins(0, 0, 0, 0)
+        acg_hdr = QHBoxLayout()
+        acg_label = QLabel("Population Autocorrelation")
+        acg_label.setStyleSheet("font-weight:bold; color: white;")
+        self.pop_acg_summary = QLabel("n=0")
+        acg_hdr.addWidget(acg_label)
+        acg_hdr.addStretch()
+        acg_hdr.addWidget(self.pop_acg_summary)
+        acg_layout.addLayout(acg_hdr)
+        self.pop_acg_canvas = MplCanvas(width=6, height=2, dpi=100)
+        acg_layout.addWidget(self.pop_acg_canvas)
+        self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
-        # Bottom placeholder panel
-        self.pop_bottom_widget = QWidget()
-        bottom_layout = QVBoxLayout(self.pop_bottom_widget)
-        bottom_layout.setContentsMargins(2, 2, 2, 2)
-        bottom_label = QLabel("Population - Reserved")
-        bottom_layout.addWidget(bottom_label)
-        self.pop_bottom_canvas = MplCanvas(width=6, height=2, dpi=100)
-        bottom_layout.addWidget(self.pop_bottom_canvas)
-        self.pop_timecourse_splitter.addWidget(self.pop_bottom_widget)
-
-        # add the splitter into the pop_layout
-        pop_layout.addWidget(self.pop_timecourse_splitter, stretch=2)
-
-        # initial sizes (you can tweak)
-        self.pop_timecourse_splitter.setSizes([200, 120])
+        # Add master splitter to layout
+        pop_layout.addWidget(self.pop_master_splitter, stretch=1)
+        self.pop_master_splitter.setSizes([400, 200, 200])
 
         # --- NEW: right-side splitter containing tabs and pop widget ---
         self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -549,39 +547,33 @@ class MainWindow(QMainWindow):
         # --- Menu Bar ---
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
+        
         load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
+        
+        # NEW: Separate Raw Data Loader
+        self.load_raw_action = file_menu.addAction("Load &Raw Data File...")
+        self.load_raw_action.setEnabled(False) # Disabled until KS is loaded
+        
         self.load_vision_action = file_menu.addAction("&Load Vision Files...")
         self.load_vision_action.setEnabled(False)
-        self.load_classification_action = file_menu.addAction(
-            "&Load Classification File...")
+        
+        self.load_classification_action = file_menu.addAction("&Load Classification File...")
         self.load_classification_action.setEnabled(False)
-        self.save_action = file_menu.addAction("&Save Results...")
-        self.save_action.setEnabled(False)
-
+        
         self.save_classification_action = file_menu.addAction("Save Classification Text File...")
-        self.save_classification_action.setEnabled(False)  # Disabled until data loads
-        # -----------------------
+        self.save_classification_action.setEnabled(False)
 
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
 
-        # Connect Signals
+        # Connect Signals (Cleaned up to prevent double-firing!)
         load_ks_action.triggered.connect(lambda: self.load_directory())
+        self.load_raw_action.triggered.connect(self.load_raw_data_file)
         self.load_vision_action.triggered.connect(self.load_vision_directory)
         self.load_classification_action.triggered.connect(self.load_classification_file)
-
-        # --- NEW CONNECTION ---
         self.save_classification_action.triggered.connect(self.on_save_classification_action)
-        # ----------------------
-
         self.save_action.triggered.connect(self.on_save_action)
 
-        # Connect Signals to Callback Functions ---
-        load_ks_action.triggered.connect(lambda: self.load_directory())
-        self.load_vision_action.triggered.connect(self.load_vision_directory)
-        self.load_classification_action.triggered.connect(
-            self.load_classification_file)
-        self.save_action.triggered.connect(self.on_save_action)
         self.filter_button.clicked.connect(self.apply_good_filter)
         self.reset_button.clicked.connect(self.reset_views)
         self.refine_button.clicked.connect(self.on_refine_cluster)
@@ -679,61 +671,54 @@ class MainWindow(QMainWindow):
         callbacks.save_classification_to_file(self)
 
     def _get_group_cluster_ids(self, item):
+        """Recursively gets all cluster IDs from a folder and all its sub-folders."""
         cluster_ids = []
-        for i in range(item.rowCount()):
-            child = item.child(i)
-            cid = child.data(Qt.ItemDataRole.UserRole)
-            if cid is not None:
-                cluster_ids.append(cid)
-
+        def recurse(node):
+            for i in range(node.rowCount()):
+                child = node.child(i)
+                if not child:
+                    continue
+                cid = child.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    cluster_ids.append(cid)
+                # Keep digging if it's a sub-folder
+                if child.hasChildren():
+                    recurse(child)
+        recurse(item)
         return cluster_ids
 
     def _get_pop_subset_ids(self):
         """
         Gets the list of cluster IDs for the currently selected population subset.
-        If a single cell is selected, it finds its group and returns all cells in that group.
-        If a group is selected, it returns all cells in that group.
+        Uses the visual Tree Model to ensure perfect matching with the GUI state.
         """
         cluster_id = self._get_selected_cluster_id()
 
-        # Case 1: A single cluster is selected. Find its group.
-        if cluster_id is not None:
-            df = self.data_manager.cluster_df
-            if not df.empty and 'cluster_id' in df.columns and 'KSLabel' in df.columns:
-                if cluster_id in df['cluster_id'].values:
-                    try:
-                        row = df[df['cluster_id'] == cluster_id].iloc[0]
-                        group_label = row.get('KSLabel')
-                        if group_label:
-                            return df[df['KSLabel'] ==
-                                      group_label]['cluster_id'].tolist()
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not determine group for cluster {cluster_id}: {e}")
-            return [cluster_id]  # Fallback to just the selected cluster
-
-        # Case 2: A group/folder is selected in the Tree View
-        elif self.view_stack.currentIndex() == 0:  # Tree View
+        # Case 1: A group/folder is selected in the Tree View
+        if cluster_id is None and self.view_stack.currentIndex() == 0:
             selection = self.tree_view.selectionModel().selectedIndexes()
             if selection:
                 index = selection[0]
                 item = self.tree_model.itemFromIndex(index)
-                if item and item.data(
-                        Qt.ItemDataRole.UserRole) is None:  # It's a group
+                if item and item.data(Qt.ItemDataRole.UserRole) is None:  # It's a group
                     return self._get_group_cluster_ids(item)
 
-        return []  # Return empty list if no valid selection
+        # Case 2: A single cell is selected. Find its immediate parent folder.
+        if cluster_id is not None:
+            # Always trust the Tree Model first, as it perfectly reflects nested folders
+            model = self.tree_model
+            matches = model.match(model.index(0, 0), Qt.ItemDataRole.UserRole, cluster_id, 1, Qt.MatchExactly | Qt.MatchRecursive)
+            
+            if matches:
+                item = model.itemFromIndex(matches[0])
+                parent_item = item.parent()
+                if parent_item is None:
+                    parent_item = model.invisibleRootItem()
+                return self._get_group_cluster_ids(parent_item)
+                
+            return [cluster_id]  # Fallback
 
-    def setup_tree_model(self, model):
-        """Sets up the tree view model and connects the selection changed signal."""
-        self.tree_view.setModel(model)
-        try:
-            self.tree_view.selectionModel().selectionChanged.disconnect(
-                self.on_view_selection_changed)
-        except (TypeError, RuntimeError):
-            pass
-        self.tree_view.selectionModel().selectionChanged.connect(
-            self.on_view_selection_changed)
+        return []
 
     def setup_table_model(self, model):
         """Sets up the table view model and connects the selection changed signal."""
@@ -745,6 +730,17 @@ class MainWindow(QMainWindow):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed)
+        
+    def setup_tree_model(self, model):
+        """Sets up the tree view model and connects the selection changed signal."""
+        self.tree_view.setModel(model)
+        try:
+            self.tree_view.selectionModel().selectionChanged.disconnect(
+                self.on_view_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self.tree_view.selectionModel().selectionChanged.connect(
+            self.on_view_selection_changed)
 
     # --- Methods to bridge UI signals to callback functions ---
     def load_directory(self, kilosort_dir=None, dat_file=None):
@@ -752,6 +748,9 @@ class MainWindow(QMainWindow):
 
     def load_vision_directory(self):
         callbacks.load_vision_directory(self)
+
+    def load_raw_data_file(self):
+        callbacks.load_raw_data(self)
 
     def on_view_selection_changed(self, _selected, _deselected):
         """
@@ -790,23 +789,22 @@ class MainWindow(QMainWindow):
 
             # Sync from Table to Tree
             elif sender == self.table_view.selectionModel():
-                for row in range(self.tree_model.rowCount()):
-                    group_item = self.tree_model.item(row)
-                    if not group_item:
-                        continue
-                    for child_row in range(group_item.rowCount()):
-                        child_item = group_item.child(child_row)
-                        if child_item and child_item.data(
-                                Qt.ItemDataRole.UserRole) == cluster_id:
-                            index = self.tree_model.indexFromItem(child_item)
-                            self.tree_view.selectionModel().select(
-                                index, QItemSelectionModel.ClearAndSelect)
-                            self.tree_view.scrollTo(
-                                index, QAbstractItemView.ScrollHint.PositionAtCenter)
-                            break
-                    else:
-                        continue
-                    break
+                # Use Qt's highly optimized, built-in recursive match
+                start_index = self.tree_model.index(0, 0)
+                matches = self.tree_model.match(
+                    start_index,
+                    Qt.ItemDataRole.UserRole,           # What role to search (Cluster ID)
+                    cluster_id,                         # What value to look for
+                    1,                                  # Stop after 1 match is found
+                    Qt.MatchExactly | Qt.MatchRecursive # Tell it to search sub-folders
+                )
+                
+                if matches:
+                    index = matches[0]
+                    self.tree_view.selectionModel().select(
+                        index, QItemSelectionModel.ClearAndSelect)
+                    self.tree_view.scrollTo(
+                        index, QAbstractItemView.ScrollHint.PositionAtCenter)
 
         # Now that views are synced, trigger the update callbacks
         callbacks.on_cluster_selection_changed(self)
@@ -926,11 +924,17 @@ class MainWindow(QMainWindow):
         menu = QMenu()
         index = self.tree_view.indexAt(position)
         item = self.tree_model.itemFromIndex(index)
+        if not item: return
+
         add_group_action = menu.addAction("Add New Group")
 
-        if item.hasChildren():  # when clicking the group item
+        # Only show folder options if clicking a folder (hasChildren or no UserRole)
+        if item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:  
             rename_action = menu.addAction("Rename")
             feature_extraction_action = menu.addAction("Feature Extraction")
+            menu.addSeparator()
+            flatten_action = menu.addAction("Flatten Group (Remove Sub-folders)")
+            delete_action = menu.addAction("Delete Group (Keep Units)")
 
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
@@ -938,17 +942,22 @@ class MainWindow(QMainWindow):
             text, ok = QInputDialog.getText(
                 self, 'New Group', 'Enter group name:')
             if ok and text:
-                callbacks.add_new_group(self, text)
-        elif item.hasChildren():  # when clicking the group item
+                callbacks.add_new_group(self, text, parent_item=item)
+                
+        elif item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:  
             if action == rename_action:
                 new_group_name, ok = QInputDialog.getText(
-                    self, 'Rename Group', 'Enter group name:')
+                    self, 'Rename Group', 'Enter group name:', text=item.text())
                 if ok and new_group_name:
                     original_group_name = item.text()
                     callbacks.rename_class(self, original_group_name, new_group_name)
             elif action == feature_extraction_action:
                 cluster_ids = self._get_group_cluster_ids(item)
                 callbacks.feature_extraction(self, cluster_ids)
+            elif action == flatten_action:
+                callbacks.flatten_group(self, item)
+            elif action == delete_action:
+                callbacks.delete_group(self, item)
 
     def toggle_animation(self):
         """Toggle the animation between play and pause."""
@@ -985,6 +994,22 @@ class MainWindow(QMainWindow):
             total_width = sum(widths)
             self.main_splitter.setSizes([35, total_width - 35])
             self.sidebar_collapsed = True
+
+    def toggle_population_fullscreen(self, checked):
+        """Toggles the Population panel to take up 100% of the right pane."""
+        if checked:
+            # Full screen mode: Collapse the main tabs completely
+            self.right_splitter.setSizes([0, 1000])
+            self.pop_expand_btn.setText("🗗 Restore")
+            self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #2D6A4F; padding: 4px 10px;")
+        else:
+            # Restore mode: 75/25 split
+            total = sum(self.right_splitter.sizes()) or 1400
+            left_size = max(int(total * 0.75), 400)
+            right_size = total - left_size
+            self.right_splitter.setSizes([left_size, right_size])
+            self.pop_expand_btn.setText("⛶ Full Screen")
+            self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #4282DA; padding: 4px 10px;")
 
     def closeEvent(self, event):
         """Handles the window close event."""

@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from scipy.signal import peak_widths
 from qtpy.QtCore import QTimer
+from matplotlib.collections import LineCollection
 
 from ...analysis import analysis_core
 
@@ -23,152 +24,178 @@ logger = logging.getLogger(__name__)
 
 def draw_population_timecourse_panel(main_window, subset_ids=None):
     """
-    Draw population average timecourse and update summary label.
-    Expects: main_window.pop_timecourse_canvas, main_window.pop_timecourse_summary
+    Draw population average timecourse with futuristic "shadow traces".
+    OPTIMIZATION: Uses Hot-Swap rendering, explicit scaling, Trace Caching, 
+    and computes metrics on the mean trace to guarantee instant scrolling.
     """
-    # determine subset
     if subset_ids is None:
         try:
             subset_ids = main_window._get_pop_subset_ids()
         except Exception:
             subset_ids = []
 
-    # early exit: nothing selected -> clear canvas + summary
+    canvas = main_window.pop_timecourse_canvas
+    
+    # Early exit: nothing selected
     if not subset_ids:
-        fig = main_window.pop_timecourse_canvas.fig
-        fig.clear()
-        fig.text(
-            0.5,
-            0.5,
-            "No cells selected",
-            ha='center',
-            color='gray',
-            fontsize=10)
-        main_window.pop_timecourse_canvas.draw()
-        main_window.pop_timecourse_summary.setText(
-            "n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        canvas.fig.text(0.5, 0.5, "No cells selected", ha='center', color='gray', fontsize=10)
+        canvas.draw_idle()
+        main_window.pop_timecourse_summary.setText("n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        if hasattr(canvas, '_timecourse_state'):
+            del canvas._timecourse_state
         return
 
+    # --- 1. Fast Data Extraction with Caching ---
+    # Initialize a lightweight cache on the datamanager if it doesn't exist
+    if not hasattr(main_window.data_manager, 'pop_trace_cache'):
+        main_window.data_manager.pop_trace_cache = {}
+    
+    trace_cache = main_window.data_manager.pop_trace_cache
     traces = []
-    metrics_t2p = []
-    metrics_fwhm = []
 
     for cid in subset_ids:
-        # adapt to your data layout: convert cluster id -> vision id if needed
-        vision_id = cid  # change if you use offset e.g., cid+1
-
-        # Attempt to get precomputed timecourse or a simple trace
-        tc = None
-        try:
-            # Example: prefer a matrix TimeCourse stored somewhere (adapt
-            # names)
-            vision_id = cid + 1
-
-            sta = main_window.data_manager.vision_stas.get(vision_id)
-            stafit = main_window.data_manager.vision_params.get_stafit_for_cell(
-                vision_id)
-
-            t_axis, tc_matrix, src = analysis_core.get_sta_timecourse_data(
-                sta, stafit, main_window.data_manager.vision_params, vision_id
-            )
-
-            if tc_matrix is not None:
-                # choose dominant channel
-                energies = np.sum(tc_matrix**2, axis=0)
-                dom = int(np.argmax(energies))
-                tc = tc_matrix[:, dom]
-
-        except Exception:
-            tc = None
-
-        if tc is None:
-            # fallback: try to extract a small vector from STA or skip
-            try:
-                sta = main_window.data_manager.vision_stas.get(vision_id)
-                if sta is not None:
-                    # collapse spatial STA to a single timecourse (simple mean)
-                    # adjust dims to match your sta shape
-                    tc = np.nanmean(sta, axis=(0, 1))
-            except Exception:
-                tc = None
-
-        if tc is None:
+        if cid in trace_cache:
+            traces.append(trace_cache[cid])
             continue
+            
+        vision_id = cid + 1
+        tc = None
+        
+        sta = main_window.data_manager.vision_stas.get(vision_id)
+        if not sta:
+            continue
+            
+        stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_id)
+        t_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+            sta, stafit, main_window.data_manager.vision_params, vision_id
+        )
 
-        # ensure 1D
-        tc = np.asarray(tc).flatten()
-        traces.append(tc)
+        if tc_matrix is not None:
+            energies = np.sum(tc_matrix**2, axis=0)
+            dom = int(np.argmax(energies))
+            tc = tc_matrix[:, dom]
+        else:
+            try:
+                tc = np.nanmean(sta, axis=(0, 1))
+            except Exception:
+                continue
 
-        # compute metrics for this cell using your analysis_core helper
-        try:
-            m = analysis_core.compute_sta_metrics(
-                sta, stafit, main_window.data_manager.vision_params, vision_id
-            )
-
-            # expect m dict with keys like "Time to Peak (ms)" and "FWHM (ms)" or similar
-            # adapt keys as needed
-            if m is not None:
-                if "Time to Peak (ms)" in m:
-                    metrics_t2p.append(float(m["Time to Peak (ms)"]))
-                elif "time_to_peak" in m:
-                    metrics_t2p.append(float(m["time_to_peak"]))
-                if "FWHM (ms)" in m:
-                    metrics_fwhm.append(float(m["FWHM (ms)"]))
-                elif "fwhm_ms" in m:
-                    metrics_fwhm.append(float(m["fwhm_ms"]))
-        except Exception:
-            pass
+        if tc is not None:
+            flat_tc = np.asarray(tc).flatten()
+            trace_cache[cid] = flat_tc
+            traces.append(flat_tc)
 
     if not traces:
-        fig = main_window.pop_timecourse_canvas.fig
-        fig.clear()
-        fig.text(
-            0.5,
-            0.5,
-            "No valid timecourses",
-            ha='center',
-            color='gray',
-            fontsize=10)
-        main_window.pop_timecourse_canvas.draw()
-        main_window.pop_timecourse_summary.setText(
-            "n=0  mean_t2p: N/A  mean_fwhm: N/A")
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        canvas.fig.text(0.5, 0.5, "No valid timecourses", ha='center', color='gray', fontsize=10)
+        canvas.draw_idle()
         return
 
-    # align traces length: pad or trim to shortest
     minlen = min(len(t) for t in traces)
-    arr = np.vstack([t[:minlen] for t in traces])  # n_cells x n_timepoints
+    arr = np.vstack([t[:minlen] for t in traces])
     mean_tc = np.nanmean(arr, axis=0)
-    sem = np.nanstd(arr, axis=0) / math.sqrt(arr.shape[0])
-
-    # time axis: assume sample indices; if you have ms per frame, multiply
-    # accordingly
     t_axis = np.arange(minlen)
+    
+    # Feature Extraction (Peak of the mean trace)
+    peak_idx = int(np.argmax(np.abs(mean_tc)))
+    peak_time = t_axis[peak_idx]
+    peak_val = mean_tc[peak_idx]
+    
+    # Calculate FWHM directly on the mean trace (Instantaneous)
+    mean_fwhm = float("nan")
+    try:
+        # Use abs so it works for ON and OFF cells
+        widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
+        if len(widths) > 0:
+            mean_fwhm = widths[0]
+    except Exception:
+        pass
 
-    # plot to canvas
-    fig = main_window.pop_timecourse_canvas.fig
-    fig.clear()
-    ax = fig.add_subplot(111)
-    ax.plot(t_axis, mean_tc, linewidth=1.6)
-    ax.fill_between(t_axis, mean_tc - sem, mean_tc + sem, alpha=0.25)
-    ax.set_title("Population mean ± SEM")
-    ax.set_xlabel("Time (frames)")
-    ax.set_ylabel("Response (a.u.)")
-    ax.grid(True, linewidth=0.2)
-    main_window.pop_timecourse_canvas.draw()
+    # Prepare shadow traces for LineCollection
+    segments = [np.column_stack([t_axis, row]) for row in arr]
 
-    # update summary label (n, mean t2p, mean fwhm)
+    # Explicit Scale Calculation
+    y_min, y_max = np.min(arr), np.max(arr)
+    y_range = y_max - y_min
+    if y_range == 0:
+        y_range = 1.0
+    
+    y_bottom = y_min - (0.1 * y_range)
+    y_top = y_max + (0.25 * y_range) # Extra padding at the top for the text marker
+
+    # --- 2. Hot-Swap Rendering ---
+    if hasattr(canvas, '_timecourse_state') and canvas._timecourse_state['ax'] in canvas.fig.axes:
+        # Fast update
+        state = canvas._timecourse_state
+        ax = state['ax']
+        
+        state['mean_line'].set_data(t_axis, mean_tc)
+        state['shadow_lines'].set_segments(segments)
+        state['peak_marker'].set_data([peak_time], [peak_val])
+        
+        # Adjust text marker position
+        state['peak_text'].set_position((peak_time, peak_val + (np.max(mean_tc)*0.1)))
+        state['peak_text'].set_text(f" Peak\n Frame {peak_time}")
+        
+        # Explicitly set the limits to fix the scale bug
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+        
+    else:
+        # Full Rebuild (Runs once)
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        ax = canvas.fig.add_subplot(111)
+        ax.set_facecolor('#1f1f1f')
+        
+        # 1. Zero Line (Reference)
+        ax.axhline(0, color='#ffffff', linestyle='--', linewidth=1.0, alpha=0.2, zorder=1)
+
+        # 2. Shadow Traces (LineCollection for massive performance)
+        shadow_lines = LineCollection(segments, color='#4282DA', linewidth=0.8, alpha=0.15, zorder=2)
+        ax.add_collection(shadow_lines)
+
+        # 3. Solid Mean Trace
+        mean_line, = ax.plot(t_axis, mean_tc, color='#00e6a0', linewidth=2.5, zorder=4)
+
+        # 4. Highlight the Peak Feature
+        peak_marker, = ax.plot([peak_time], [peak_val], 'o', color='#ffeb3b', markersize=6, zorder=5)
+        peak_text = ax.text(peak_time, peak_val + (np.max(mean_tc)*0.1), 
+                            f" Peak\n Frame {peak_time}", color='#ffeb3b', 
+                            fontsize=8, ha='center', va='bottom')
+
+        # Aesthetics
+        #ax.set_title("Population Dynamics", color='white', fontsize=11, pad=10)
+        ax.set_xlabel("Time (frames)", color='gray', fontsize=9)
+        ax.set_ylabel("Response (a.u.)", color='gray', fontsize=9)
+        
+        # Apply Explicit Scales
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+        
+        ax.tick_params(colors='gray', labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#444444')
+            
+        ax.grid(True, color='#ffffff', alpha=0.05, linestyle='-', linewidth=0.5)
+
+        # Save to state
+        canvas._timecourse_state = {
+            'ax': ax, 
+            'mean_line': mean_line, 
+            'shadow_lines': shadow_lines,
+            'peak_marker': peak_marker,
+            'peak_text': peak_text
+        }
+
+    canvas.draw_idle()
+
+    # Update summary label
     n = arr.shape[0]
-    mean_t2p = np.nanmean(metrics_t2p) if metrics_t2p else float("nan")
-    mean_fwhm = np.nanmean(metrics_fwhm) if metrics_fwhm else float("nan")
-    summary_text = f"n={n}  mean_t2p={mean_t2p:.1f}  mean_fwhm={mean_fwhm:.1f}"
-    main_window.pop_timecourse_summary.setText(summary_text)
-
-
-
-
-
-
-
+    main_window.pop_timecourse_summary.setText(f"n={n}  mean_t2p={peak_time:.1f}  mean_fwhm={mean_fwhm:.1f}")
 
 def draw_population_rfs_plot(
         main_window,
@@ -189,17 +216,11 @@ def draw_population_rfs_plot(
 
     # 2. Smart Group Detection
     if selected_cell_id is not None and subset_cell_ids is None:
-        if hasattr(main_window, 'population_view_enabled') and main_window.population_view_enabled:
-            df = main_window.data_manager.cluster_df
-            if not df.empty and 'cluster_id' in df.columns:
-                if selected_cell_id in df['cluster_id'].values:
-                    try:
-                        row = df[df['cluster_id'] == selected_cell_id].iloc[0]
-                        group_label = row.get('KSLabel')
-                        if group_label:
-                            subset_cell_ids = df[df['KSLabel'] == group_label]['cluster_id'].tolist()
-                    except Exception:
-                        pass
+        try:
+            # Use the exact visual state of the tree to guarantee accurate subsets!
+            subset_cell_ids = main_window._get_pop_subset_ids()
+        except Exception:
+            pass
 
     vision_params = main_window.data_manager.vision_params
     if not vision_params:
@@ -614,3 +635,115 @@ def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _p
     ax.set_aspect('equal')
 
     fig.tight_layout()
+
+def draw_population_acg_panel(main_window, subset_ids=None):
+    """
+    Draw population average ACG with shadow traces.
+    OPTIMIZATION: Uses Hot-Swap rendering and LineCollections for instantaneous updates.
+    """
+    if subset_ids is None:
+        try:
+            subset_ids = main_window._get_pop_subset_ids()
+        except Exception:
+            subset_ids = []
+
+    canvas = getattr(main_window, 'pop_acg_canvas', None)
+    if canvas is None: return
+    
+    # Early exit: nothing selected
+    if not subset_ids:
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        canvas.fig.text(0.5, 0.5, "No cells selected", ha='center', color='gray', fontsize=10)
+        canvas.draw_idle()
+        main_window.pop_acg_summary.setText("n=0")
+        if hasattr(canvas, '_acg_state'):
+            del canvas._acg_state
+        return
+
+    from matplotlib.collections import LineCollection
+    import numpy as np
+
+    traces = []
+    t_axis = None
+
+    for cid in subset_ids:
+        try:
+            time_lags, acg_norm = main_window.data_manager.get_acg_data(cid)
+            if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
+                if t_axis is None:
+                    t_axis = time_lags
+                
+                # Make sure length matches to avoid broadcast errors
+                if len(acg_norm) == len(t_axis):
+                    traces.append(acg_norm)
+        except Exception:
+            continue
+
+    if not traces:
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        canvas.fig.text(0.5, 0.5, "No valid ACG data", ha='center', color='gray', fontsize=10)
+        canvas.draw_idle()
+        return
+
+    arr = np.vstack(traces)
+    mean_acg = np.nanmean(arr, axis=0)
+    
+    # Segments for shadow traces
+    segments = [np.column_stack([t_axis, row]) for row in arr]
+
+    # Explicit Scale Calculation
+    y_min, y_max = np.min(arr), np.max(arr)
+    y_range = y_max - y_min
+    if y_range == 0: y_range = 1.0
+    y_bottom = y_min - (0.05 * y_range)
+    y_top = y_max + (0.05 * y_range)
+
+    # --- Hot-Swap Rendering ---
+    if hasattr(canvas, '_acg_state') and canvas._acg_state['ax'] in canvas.fig.axes:
+        state = canvas._acg_state
+        ax = state['ax']
+        
+        state['mean_line'].set_data(t_axis, mean_acg)
+        state['shadow_lines'].set_segments(segments)
+        
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+    else:
+        # Full Rebuild
+        canvas.fig.clear()
+        canvas.fig.set_facecolor('#1f1f1f')
+        ax = canvas.fig.add_subplot(111)
+        ax.set_facecolor('#1f1f1f')
+        
+        # Zero Lines (Vertical at lag=0, Horizontal at y=0)
+        ax.axhline(0, color='#ffffff', linestyle='--', linewidth=1.0, alpha=0.2, zorder=1)
+        ax.axvline(0, color='#ffffff', linestyle='--', linewidth=1.0, alpha=0.3, zorder=1)
+
+        # Shadow Traces (Purple)
+        shadow_lines = LineCollection(segments, color='#9b59b6', linewidth=0.8, alpha=0.15, zorder=2)
+        ax.add_collection(shadow_lines)
+
+        # Solid Mean Trace (Neon Orange)
+        mean_line, = ax.plot(t_axis, mean_acg, color='#ff9800', linewidth=2.5, zorder=4)
+
+        # Aesthetics
+        ax.set_xlabel("Time lag (ms)", color='gray', fontsize=9)
+        ax.set_ylabel("Autocorrelation", color='gray', fontsize=9)
+        
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+        
+        ax.tick_params(colors='gray', labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#444444')
+            
+        canvas._acg_state = {
+            'ax': ax, 
+            'mean_line': mean_line, 
+            'shadow_lines': shadow_lines,
+        }
+
+    canvas.draw_idle()
+    main_window.pop_acg_summary.setText(f"n={arr.shape[0]}")

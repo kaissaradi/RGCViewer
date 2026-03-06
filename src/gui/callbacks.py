@@ -45,26 +45,19 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
         main_window.status_bar.showMessage("Loading failed.", 5000)
         return
 
-    main_window.status_bar.showMessage(
-        "Kilosort files loaded. Please select the raw data file.")
+    main_window.status_bar.showMessage("Kilosort files loaded.")
     QApplication.processEvents()
-
-    if dat_file is None:
-        dat_file, _ = QFileDialog.getOpenFileName(
-            main_window, "Select Raw Data File (.dat or .bin)", str(
-                main_window.data_manager.dat_path_suggestion.parent), "Binary Files (*.dat *.bin)")
-    if not dat_file:
-        main_window.status_bar.showMessage(
-            "Data loading cancelled by user.", 5000)
-        main_window.analysis_tabs.setTabEnabled(
-            main_window.analysis_tabs.indexOf(
-                main_window.raw_panel), False)
-    else:
+    main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
+    
+    if dat_file is not None:
         # Use the DataManager's set_dat_path method to create the memory map
         main_window.data_manager.set_dat_path(Path(dat_file))
         main_window.analysis_tabs.setTabEnabled(
-            main_window.analysis_tabs.indexOf(
-                main_window.raw_panel), True)
+            main_window.analysis_tabs.indexOf(main_window.raw_panel), True)
+    else:
+        # Just quietly disable the tab until the user loads it manually
+        main_window.analysis_tabs.setTabEnabled(
+            main_window.analysis_tabs.indexOf(main_window.raw_panel), False)
 
     main_window.status_bar.showMessage("Building cluster dataframe...")
     QApplication.processEvents()
@@ -126,11 +119,22 @@ def load_directory(main_window: MainWindow, kilosort_dir=None, dat_file=None):
     main_window.central_widget.setEnabled(True)
 
     # --- Enable Actions ---
+    main_window.load_raw_action.setEnabled(True)             # NEW: Enable Raw Loader
     main_window.load_vision_action.setEnabled(True)
     main_window.load_classification_action.setEnabled(True)
     main_window.save_action.setEnabled(True)                 # Enable main Save
     main_window.save_classification_action.setEnabled(True)  # Enable Text Export
+    main_window.calibrate_array_action.setEnabled(True)      # NEW
     # ----------------------
+
+    # Auto-load array transform if it was previously calibrated
+    transform_path = main_window.data_manager.kilosort_dir.parent / 'transforms' / 'array_transform.json'
+    if transform_path.exists() and hasattr(main_window, 'standard_plots_panel'):
+        main_window.standard_plots_panel.refresh_array_image(str(transform_path))
+        # if a cluster is already selected, redraw so image shows immediately
+        cid = main_window._get_selected_cluster_id()
+        if cid is not None:
+            main_window.standard_plots_panel.update_all(cid)
 
     main_window.status_bar.showMessage(
         f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.",
@@ -211,7 +215,11 @@ def load_vision_directory(main_window: MainWindow):
 def redraw_population_panels(main_window: MainWindow):
     # draws the middle panel (and optionally clears bottom)
     subset = main_window._get_pop_subset_ids()  # reuse helper in main_window
+    
+    # Import and call both population plots
+    from .panels.population_panel import draw_population_timecourse_panel, draw_population_acg_panel
     draw_population_timecourse_panel(main_window, subset_ids=subset)
+    draw_population_acg_panel(main_window, subset_ids=subset)
 
 
 def on_cluster_selection_changed(main_window: MainWindow):
@@ -515,37 +523,209 @@ def populate_tree_view(main_window: MainWindow, df=None):
             groups[str(label)].appendRow(cell_item)
 
     main_window.setup_tree_model(model)
-    main_window.tree_view.expandAll()
+    main_window.tree_view.collapseAll() 
 
 
-def add_new_group(main_window: MainWindow, name: str):
-    """Adds a new top-level group to the tree view."""
+def add_new_group(main_window, name: str, parent_item=None):
+    """Adds a new group, safely nesting it at the top of the selected folder or root."""
+    from qtpy.QtWidgets import QApplication, QStyle
+    from qtpy.QtGui import QStandardItem, QColor
+    from qtpy.QtCore import Qt
+    
     item = QStandardItem(name)
     item.setEditable(False)
     item.setDropEnabled(True)
 
-    # Apply the same styling as other groups
     font = item.font()
     font.setBold(True)
     item.setFont(font)
+    item.setBackground(QColor('#3C3C3C'))
+    
+    app = QApplication.instance()
+    if app:
+        item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
 
-    # Set different background color for groups
-    item.setBackground(QColor('#3C3C3C'))  # Dark gray background for groups
+    # If a valid folder was clicked, insert inside it at the top
+    if parent_item is not None and parent_item.data(Qt.ItemDataRole.UserRole) is None:
+        parent_item.insertRow(0, item)
+        main_window.tree_view.expand(parent_item.index())
+    else:
+        # Safe insertion at the absolute root of the tree
+        main_window.tree_model.invisibleRootItem().insertRow(0, item)
 
-    # Add folder icon for groups
-    item.setIcon(
-        main_window.style().standardIcon(
-            QStyle.StandardPixmap.SP_DirIcon))
 
-    main_window.tree_model.appendRow(item)
+def delete_group(main_window, item):
+    """Deletes a group folder, moving all its children up one level to its parent."""
+    from qtpy.QtCore import Qt
+    if item is None or item.data(Qt.ItemDataRole.UserRole) is not None:
+        return  # Safety check: not a group
+        
+    model = main_window.tree_model
+    parent_item = item.parent()
+    if parent_item is None:
+        parent_item = model.invisibleRootItem()
+    
+    parent_name = parent_item.text() if hasattr(parent_item, 'text') else "Unclassified"
 
+    # Track clusters for DataFrame update
+    cluster_ids = []
+    def extract_cids(node):
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if child:
+                cid = child.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    cluster_ids.append(cid)
+                if child.hasChildren():
+                    extract_cids(child)
+    extract_cids(item)
+
+    # Move children up to the parent layer safely
+    target_row = item.row()
+    while item.rowCount() > 0:
+        row_items = item.takeRow(0)
+        parent_item.insertRow(target_row + 1, row_items)
+        target_row += 1
+        
+    # Remove the empty folder
+    parent_item.removeRow(item.row())
+
+    # Sync DataFrame in the background
+    if cluster_ids:
+        df = main_window.data_manager.cluster_df
+        df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = parent_name
+
+
+def flatten_group(main_window, item):
+    """Removes all sub-folders within a group, pulling all units directly into this group."""
+    from qtpy.QtCore import Qt
+    if item is None or item.data(Qt.ItemDataRole.UserRole) is not None:
+        return
+        
+    cluster_items = []
+    folders_to_remove = []
+
+    def gather_children(node, is_root=False):
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if not child: continue
+            
+            if child.data(Qt.ItemDataRole.UserRole) is not None:
+                if not is_root:
+                    cluster_items.append(child)
+            else:
+                folders_to_remove.append(child)
+                gather_children(child)
+
+    gather_children(item, is_root=True)
+
+    # Extract all deeply nested cells and pull them up to this folder
+    for cell in cluster_items:
+        parent = cell.parent()
+        if parent:
+            row_items = parent.takeRow(cell.row())
+            item.appendRow(row_items)
+
+    # Delete all the now-empty sub-folders
+    for folder in folders_to_remove:
+        parent = folder.parent()
+        if parent:
+            parent.removeRow(folder.row())
+    
+    # Sync DataFrame in the background
+    cluster_ids = [c.data(Qt.ItemDataRole.UserRole) for c in cluster_items if c.data(Qt.ItemDataRole.UserRole) is not None]
+    if cluster_ids:
+        df = main_window.data_manager.cluster_df
+        df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = item.text()
+
+def group_clusters_in_tree(main_window, cluster_ids, group_name):
+    """
+    Dynamically groups selected clusters into a new folder exactly where they are,
+    without destroying the rest of the tree. Safe against numpy/Qt type issues.
+    """
+    model = main_window.tree_model
+    
+    # Safely cast all incoming IDs (especially from NumPy) to Python ints
+    target_ids = set(int(c) for c in cluster_ids)
+    
+    # 1. Manually and safely find the actual cell items in the tree
+    items_to_move = []
+    def find_cells(parent_item):
+        for i in range(parent_item.rowCount()):
+            child = parent_item.child(i)
+            if child is None: continue
+            
+            # Only check items that have actual cluster IDs
+            cid_data = child.data(Qt.ItemDataRole.UserRole if hasattr(Qt, 'ItemDataRole') else Qt.UserRole)
+            if cid_data is not None:
+                try:
+                    if int(cid_data) in target_ids:
+                        items_to_move.append(child)
+                except (ValueError, TypeError):
+                    pass
+                    
+            # Recurse into folders
+            if child.hasChildren():
+                find_cells(child)
+                
+    find_cells(model.invisibleRootItem())
+            
+    if not items_to_move:
+        return
+
+    # 2. Determine where the new folder should go (use the parent of the first item)
+    parent_item = items_to_move[0].parent()
+    if parent_item is None:
+        parent_item = model.invisibleRootItem()
+
+    # 3. Create the new folder item
+    group_item = QStandardItem(group_name)
+    group_item.setEditable(False)
+    group_item.setDropEnabled(True)
+    
+    font = group_item.font()
+    font.setBold(True)
+    group_item.setFont(font)
+    group_item.setBackground(QColor('#3C3C3C'))
+    
+    app = QApplication.instance()
+    if app:
+        group_item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+
+    # 4. Insert the new folder at the TOP of the parent (Row 0)
+    parent_item.insertRow(0, group_item)
+
+    # 5. Move the clusters into the new folder safely
+    for item in items_to_move:
+        current_parent = item.parent()
+        if current_parent is None:
+            current_parent = model.invisibleRootItem()
+        
+        row_idx = item.row()
+        if row_idx >= 0:
+            row_items = current_parent.takeRow(row_idx)
+            group_item.appendRow(row_items)
+
+    # 6. Update the DataFrame so saving still works
+    df = main_window.data_manager.cluster_df
+    df.loc[df['cluster_id'].isin(list(target_ids)), 'KSLabel'] = group_name
+
+    # 7. Expand only the new folder to show the user it worked
+    main_window.tree_view.expand(group_item.index())
+    if hasattr(parent_item, 'index'):
+        main_window.tree_view.expand(parent_item.index())
 
 def rename_class(main_window: MainWindow, original_group_name: str, new_group_name: str):
-    df = main_window.data_manager.cluster_df.copy()
+    """Renames a group non-destructively without rebuilding the tree."""
+    df = main_window.data_manager.cluster_df
     df.loc[df["KSLabel"] == original_group_name, 'KSLabel'] = new_group_name
-    main_window.data_manager.cluster_df = df
-
-    populate_tree_view(main_window, df)
+    
+    # Safely find the folder in the tree and update its text in place
+    model = main_window.tree_model
+    matches = model.match(model.index(0, 0), Qt.DisplayRole, original_group_name, 1, Qt.MatchExactly | Qt.MatchRecursive)
+    if matches:
+        item = model.itemFromIndex(matches[0])
+        item.setText(new_group_name)
 
 
 def feature_extraction(main_window: MainWindow, cluster_ids):
@@ -617,6 +797,12 @@ def load_classification_file(main_window: MainWindow):
             if len(parts) >= 2:
                 vision_id = int(parts[0])
                 classification_path = parts[1]
+                
+                # --- FIX: Skip the standard "All/" root folder ---
+                if classification_path.startswith("All/"):
+                    classification_path = classification_path[4:]
+                elif classification_path == "All":
+                    classification_path = ""
 
                 # Convert vision_id (1-indexed) to cluster_id (0-indexed)
                 cluster_id = vision_id - 1
@@ -688,10 +874,14 @@ def load_classification_file(main_window: MainWindow):
                     current_parent = found_item
 
             # Add cluster items to the final group
+            df = main_window.data_manager.cluster_df
             for cluster_id in cluster_ids:
                 if cluster_id in all_cluster_ids:
-                    cluster_info = main_window.data_manager.cluster_df[
-                        main_window.data_manager.cluster_df['cluster_id'] == cluster_id].iloc[0]
+                    # Sync the dataframe so background plots know the cell's new group
+                    leaf_name = path_parts[-1] if path_parts else "Unclassified"
+                    df.loc[df['cluster_id'] == cluster_id, 'KSLabel'] = leaf_name
+                    
+                    cluster_info = df[df['cluster_id'] == cluster_id].iloc[0]
 
                     # Create cluster item with n_spikes and ISI info
                     item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
@@ -757,7 +947,7 @@ def load_classification_file(main_window: MainWindow):
 
         # Set up the tree model and expand all
         main_window.setup_tree_model(main_window.tree_model)
-        main_window.tree_view.expandAll()
+        main_window.tree_view.collapseAll()
 
         main_window.status_bar.showMessage(
             f"Loaded classification file with {len(classifications)} classified clusters.",
@@ -843,3 +1033,38 @@ def save_classification_to_file(main_window: MainWindow):
         main_window.status_bar.showMessage(f"Classification saved to {file_path}", 5000)
     except Exception as e:
         QMessageBox.critical(main_window, "Save Error", f"Could not save file:\n{e}")
+
+
+def load_raw_data(main_window):
+    """Handles manually loading the raw .dat or .bin file after KS is loaded."""
+    if not main_window.data_manager:
+        QMessageBox.warning(main_window, "No Data", "Please load a Kilosort directory first.")
+        return
+
+    # Smartly default to the exact directory where the Kilosort data was found
+    start_dir = str(main_window.data_manager.kilosort_dir) if main_window.data_manager.kilosort_dir else str(Path.home())
+
+    dat_file, _ = QFileDialog.getOpenFileName(
+        main_window, 
+        "Select Raw Data File (.dat or .bin)", 
+        start_dir, 
+        "Binary Files (*.dat *.bin);;All Files (*)"
+    )
+
+    if dat_file:
+        main_window.status_bar.showMessage("Loading raw data file...")
+        QApplication.processEvents()
+        
+        main_window.data_manager.set_dat_path(Path(dat_file))
+        
+        # Unlock the Raw Trace tab
+        main_window.analysis_tabs.setTabEnabled(
+            main_window.analysis_tabs.indexOf(main_window.raw_panel), True)
+            
+        main_window.status_bar.showMessage(f"Raw data loaded: {Path(dat_file).name}", 5000)
+        
+        # If the user is currently looking at the raw tab, refresh it immediately
+        if main_window.analysis_tabs.currentWidget() == main_window.raw_panel:
+            cluster_id = main_window._get_selected_cluster_id()
+            if cluster_id is not None:
+                main_window.raw_panel.load_data(cluster_id)

@@ -104,7 +104,7 @@ def extract_features_from_datamanager(dm, selected_cluster_ids=None, progress_si
             sta_data, stafit, dm.vision_params, vid
         )
 
-        if tc_matrix is None:
+        if tc_matrix is None or tc_matrix.size == 0:
             continue
 
         # Normalize dominant channel
@@ -432,7 +432,6 @@ class UMAPPanel(QWidget):
         from qtpy.QtCore import Qt
 
         try:
-            # Get selected indexes from tree view (QTreeView with QStandardItemModel)
             tree_view = self.main_window.tree_view
             model = self.main_window.tree_model
             if not tree_view or not model or not tree_view.selectionModel():
@@ -440,38 +439,41 @@ class UMAPPanel(QWidget):
 
             selected_indexes = tree_view.selectionModel().selectedIndexes()
             if not selected_indexes:
-                # If nothing is selected, use all clusters
                 logger.info("No cells selected, using all clusters")
                 return None
 
-            selected_ids = []
+            # Use a set to prevent duplicates if a user selects both a parent AND its child
+            selected_ids = set()
+
+            # --- RECURSIVE HELPER ---
+            def extract_cids_recursively(item):
+                # Check if the current item is a cluster (leaf)
+                cid = item.data(Qt.UserRole)
+                if cid is not None:
+                    selected_ids.add(cid)
+                
+                # Dig into children/sub-folders
+                for i in range(item.rowCount()):
+                    child = item.child(i)
+                    if child:
+                        extract_cids_recursively(child)
+
             for index in selected_indexes:
                 item = model.itemFromIndex(index)
                 if item:
-                    # Check if item has cluster_id data stored in UserRole
-                    cid = item.data(Qt.UserRole)
-                    if cid is not None:
-                        selected_ids.append(cid)
-                    elif item.hasChildren():
-                        # If it's a group item, get all children
-                        for i in range(item.rowCount()):
-                            child = item.child(i)
-                            if child:
-                                child_cid = child.data(Qt.UserRole)
-                                if child_cid is not None:
-                                    selected_ids.append(child_cid)
+                    extract_cids_recursively(item)
 
             if not selected_ids:
                 logger.info("No valid cluster IDs found in selection, using all clusters")
                 return None
 
-            logger.info(f"Found {len(selected_ids)} selected cluster IDs")
-            return selected_ids
+            result_list = list(selected_ids)
+            logger.info(f"Found {len(result_list)} selected cluster IDs")
+            return result_list
 
         except Exception as e:
             logger.error(f"Error getting selected cluster IDs: {e}")
             return None
-
     def run_umap(self):
         self._reset_workers()
         self.run_btn.setEnabled(False)
@@ -621,31 +623,21 @@ class UMAPPanel(QWidget):
             self.apply_kmeans_grouping(labels)
 
     def apply_kmeans_grouping(self, labels):
-        """
-        Takes the K-Means labels and creates groups in the main data manager.
-        Only affects the cells that were included in the UMAP (selected cells).
-        """
         try:
-            df = self.main_window.data_manager.cluster_df
-            
+            from ..callbacks import group_clusters_in_tree
             unique_labels = np.unique(labels)
             count = 0
             
             for lbl in unique_labels:
-                # Find cluster IDs for this label (from the subset used in UMAP)
                 subset_indices = np.where(labels == lbl)[0]
                 group_cluster_ids = self.cluster_ids[subset_indices]
-                
-                # Create a group name
                 group_name = f"Type_{lbl+1}"
                 
-                # Update DataFrame - ONLY for these specific cluster IDs
-                df.loc[df['cluster_id'].isin(group_cluster_ids), 'KSLabel'] = group_name
+                # Use our safe, in-place tree modifier!
+                group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
                 count += 1
             
-            from ..callbacks import populate_tree_view
-            populate_tree_view(self.main_window)
-            
+            from qtpy.QtWidgets import QMessageBox
             QMessageBox.information(
                 self, 
                 "Auto-Group", 
@@ -653,7 +645,10 @@ class UMAPPanel(QWidget):
             )
             
         except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.error(f"Failed to auto-group: {e}")
+            from qtpy.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Auto-Group Error", str(e))
 
     def update_plot(self, _color_mode=None):
@@ -856,8 +851,5 @@ class UMAPPanel(QWidget):
         name, ok = QInputDialog.getText(
             self, "Group Name", "Enter name for this cluster group:")
         if ok and name:
-            df = self.main_window.data_manager.cluster_df
-            df.loc[df['cluster_id'].isin(ids), 'KSLabel'] = name
-
-            from ..callbacks import populate_tree_view
-            populate_tree_view(self.main_window)
+            from ..callbacks import group_clusters_in_tree
+            group_clusters_in_tree(self.main_window, ids, name)

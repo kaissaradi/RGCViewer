@@ -410,20 +410,16 @@ class FeatureExtractionWindow(QDialog):
     def create_new_class(self, selected_ids):
         if self.main_window.data_manager is None: return
 
-        from ..callbacks import populate_tree_view
-
-        df = self.main_window.data_manager.cluster_df[
-            self.main_window.data_manager.cluster_df['KSLabel'] != 'mua'
-        ].copy()
-
         current_new_class_id = self.main_window.data_manager.new_class_id
         group_name = f"Nc{current_new_class_id}"
-        
-        df.loc[df['cluster_id'].isin(selected_ids), 'KSLabel'] = group_name
         self.main_window.data_manager.new_class_id += 1
-        self.main_window.data_manager.cluster_df = df
-
-        populate_tree_view(self.main_window, df)
+        
+        # Use our safe, in-place tree modifier!
+        from ..callbacks import group_clusters_in_tree
+        group_clusters_in_tree(self.main_window, selected_ids, group_name)
+        
+        import logging
+        logger = logging.getLogger(__name__)
         logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
         self.close()
 
