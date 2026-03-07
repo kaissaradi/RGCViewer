@@ -42,6 +42,8 @@ def update_cache_progress(main_window):
     if main_window.cache_progress_count >= total_clusters:
         main_window.cache_progress.hide()
         main_window.status_bar.showMessage("Physics Cache Ready: UMAP and Population panels optimized.", 8000)
+        # Persist the now-complete cache once, so next launch is instant
+        main_window.data_manager.save_standard_plot_cache()
 
 def load_directory(main_window, kilosort_dir=None, dat_file=None):
     """Triggers the background loading of a Kilosort directory."""
@@ -115,6 +117,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window._update_tree_view_duplicate_highlight()
 
     # 3. Enable UI & Workers
+    main_window.cache_progress_count = 0
+    main_window.cache_progress.setValue(0)
     main_window.cache_progress.show()
 
     # Start the worker
@@ -599,47 +603,91 @@ def delete_group(main_window, item):
         df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = parent_name
 
 
-def flatten_group(main_window, item):
-    """Removes all sub-folders within a group, pulling all units directly into this group."""
-    from qtpy.QtCore import Qt
-    if item is None or item.data(Qt.ItemDataRole.UserRole) is not None:
+def flatten_group(main_window, folder_item):
+    """
+    Safely flatten a QStandardItem group: move all child rows from `folder_item`
+    into its parent (or the model root if parent is None) and remove the folder.
+    Defensive against deleted Qt objects and thread-unsafe access.
+    Arguments:
+        main_window: unused here but kept to match calling signature.
+        folder_item: QStandardItem expected to be a folder/group node.
+    """
+    # Defensive: bail if folder_item is already deleted or invalid
+    try:
+        # access parent under try to catch "wrapped C/C++ object ... has been deleted"
+        parent = folder_item.parent()
+    except RuntimeError:
         return
-        
-    cluster_items = []
-    folders_to_remove = []
+    except Exception:
+        # any other problem accessing the Qt object -> abort
+        return
 
-    def gather_children(node, is_root=False):
-        for i in range(node.rowCount()):
-            child = node.child(i)
-            if not child: continue
-            
-            if child.data(Qt.ItemDataRole.UserRole) is not None:
-                if not is_root:
-                    cluster_items.append(child)
-            else:
-                folders_to_remove.append(child)
-                gather_children(child)
+    # If no parent, use model's invisible root item (top-level folder)
+    if parent is None:
+        try:
+            model = folder_item.model()
+            if model is None:
+                return
+            parent = model.invisibleRootItem()
+        except Exception:
+            return
 
-    gather_children(item, is_root=True)
+    # Move rows out of folder into parent. Use takeRow/appendRow to avoid cloning.
+    try:
+        # Keep moving the first row until none remain.
+        while True:
+            # rowCount may raise if the item was deleted concurrently
+            row_count = folder_item.rowCount()
+            if row_count <= 0:
+                break
+            # takeRow returns a list of QStandardItem forming that row
+            try:
+                row = folder_item.takeRow(0)
+            except RuntimeError:
+                # folder_item was deleted during operation
+                return
+            except Exception:
+                # unexpected failure taking a row; stop to avoid corruption
+                break
 
-    # Extract all deeply nested cells and pull them up to this folder
-    for cell in cluster_items:
-        parent = cell.parent()
-        if parent:
-            row_items = parent.takeRow(cell.row())
-            item.appendRow(row_items)
+            # append into parent. This can also fail if parent was deleted; guard it.
+            try:
+                parent.appendRow(row)
+            except RuntimeError:
+                # parent was deleted concurrently; abort
+                return
+            except Exception:
+                # on any other failure, attempt to continue (best-effort)
+                continue
+    except Exception:
+        # broad guard: if anything unexpected happened, abort safely
+        return
 
-    # Delete all the now-empty sub-folders
-    for folder in folders_to_remove:
-        parent = folder.parent()
-        if parent:
-            parent.removeRow(folder.row())
-    
-    # Sync DataFrame in the background
-    cluster_ids = [c.data(Qt.ItemDataRole.UserRole) for c in cluster_items if c.data(Qt.ItemDataRole.UserRole) is not None]
-    if cluster_ids:
-        df = main_window.data_manager.cluster_df
-        df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = item.text()
+    # Remove the now-empty folder from its parent. Use folder_item.row() but guard errors.
+    try:
+        folder_row = folder_item.row()
+        # If folder_row is -1, try to find it manually.
+        if folder_row >= 0:
+            parent.removeRow(folder_row)
+            return
+    except RuntimeError:
+        return
+    except Exception:
+        pass
+
+    # Fallback: search parent children for the exact folder_item and remove when found.
+    try:
+        for r in range(parent.rowCount()):
+            try:
+                if parent.child(r) is folder_item:
+                    parent.removeRow(r)
+                    return
+            except RuntimeError:
+                return
+            except Exception:
+                continue
+    except Exception:
+        return
 
 def group_clusters_in_tree(main_window, cluster_ids, group_name):
     """
