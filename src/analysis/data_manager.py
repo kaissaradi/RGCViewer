@@ -2102,73 +2102,93 @@ class DataManager(QObject):
 
         return pd.DataFrame(rows)
 
-    def _get_vision_similarity_table(self, cluster_id: int):
+    def _get_mea_similarity_table(self, cluster_id: int, top_n: int = 50):
         """
-        Get vision-based similarity table for a cluster.
-
-        EI correlation matrices are computed lazily the first time this
-        is called (via _compute_ei_correlations_if_needed).
+        Fast, vectorized retrieval of MEA similarity table for cluster_id.
+        Returns a pandas DataFrame with the top_n most similar clusters.
         """
+        import numpy as np
         import pandas as pd
 
-        if cluster_id in self.vision_sim_cache:
-            return self.vision_sim_cache[cluster_id]
+        if self.similar_templates is None:
+            return pd.DataFrame([])
 
-        # Ensure correlations exist (may trigger a one-time heavy compute)
-        self._compute_ei_correlations_if_needed()
+        # 1. Map requested cluster_id to its original Kilosort template index
+        tpl_map = getattr(self, "cluster_to_template", None)
+        if tpl_map is None:
+            tpl_map = self._build_cluster_to_template_map()
+            self.cluster_to_template = tpl_map
 
-        # Check again if vision data is available
-        if self.ei_corr_dict is None or self.vision_eis is None:
-            logger.error("Vision data not available for similarity table")
-            return pd.DataFrame()  # Return empty DataFrame
+        t1 = int(tpl_map.get(int(cluster_id), -1))
+        
+        # If this cluster has no valid template (e.g., > 1056), we can't do MEA sim
+        if t1 < 0 or t1 >= self.similar_templates.shape[0]:
+            return pd.DataFrame([])
 
-        # Get vision correlation values for the main cluster
-        vision_cluster_ids = np.array(list(self.vision_eis.keys()))
-        kilosort_cluster_ids = vision_cluster_ids - 1  # Convert to 0-indexed
+        # 2. Get the similarities between t1 and ALL OTHER templates
+        # sim_row has shape (n_templates,)
+        sim_row = self.similar_templates[t1]
 
-        # Check if the selected cluster exists in vision data
-        cluster_match_idx = np.where(kilosort_cluster_ids == cluster_id)[0]
-        if len(cluster_match_idx) == 0:
-            logger.warning(
-                "Cluster ID %s not found in Vision data",
-                cluster_id)
-            return pd.DataFrame()
+        # 3. We only care about clusters that currently exist in cluster_df
+        cluster_ids = self.cluster_df["cluster_id"].values
+        n_clusters = len(cluster_ids)
+        
+        # Map all existing cluster_ids to their template indices
+        t2_array = np.array([int(tpl_map.get(int(cid), -1)) for cid in cluster_ids])
+        
+        # 4. Extract similarities for valid templates
+        tpl_sims = np.zeros(n_clusters, dtype=float)
+        valid_mask = (t2_array >= 0) & (t2_array < len(sim_row))
+        tpl_sims[valid_mask] = sim_row[t2_array[valid_mask]]
 
-        main_idx = cluster_match_idx[0]  # Get the first match index
-        other_idx = np.where(kilosort_cluster_ids != cluster_id)[0]
-        other_ids = kilosort_cluster_ids[other_idx]
+        # Exclude the cluster itself from the "similar" list
+        self_mask = (cluster_ids == cluster_id)
+        tpl_sims[self_mask] = -1.0 
 
-        # Only include other_ids that actually exist in the main cluster
-        # dataframe
-        valid_cluster_df_ids = set(self.cluster_df["cluster_id"].values)
-        valid_other_ids = [
-            oid for oid in other_ids if oid in valid_cluster_df_ids]
+        # 5. Get the top_n indices using argpartition/argsort
+        actual_top_n = min(top_n, n_clusters)
+        if actual_top_n == 0:
+            return pd.DataFrame([])
 
-        if not valid_other_ids:
-            logger.warning(
-                "No valid other cluster IDs found in Vision data for main cluster %s",
-                cluster_id,
-            )
-            return pd.DataFrame()
+        # np.argsort sorts ascending, so we negate tpl_sims to get descending
+        top_idx = np.argsort(-tpl_sims)[:actual_top_n]
 
-        # Map valid other ids back to their Vision index positions
-        valid_other_idx = []
-        for oid in valid_other_ids:
-            matches = np.where(kilosort_cluster_ids == oid)[0]
-            if len(matches) > 0:
-                valid_other_idx.append(matches[0])
+        # 6. Build the output DataFrame rapidly using vectorized slicing
+        other_ids = cluster_ids[top_idx]
+        other_sims = tpl_sims[top_idx]
 
-        valid_other_idx = np.array(valid_other_idx, dtype=int)
-        valid_other_ids = np.array(valid_other_ids, dtype=int)
+        n_spikes_arr = self.cluster_df["n_spikes"].values if "n_spikes" in self.cluster_df.columns else np.zeros(n_clusters, dtype=int)
+        status_arr = self.cluster_df["status"].astype(str).values if "status" in self.cluster_df.columns else np.array([""] * n_clusters)
+        set_col = self.cluster_df["set"] if "set" in self.cluster_df.columns else None
 
-        # Build DataFrame with EI correlation values
-        d_df = {
-            "cluster_id": valid_other_ids,
-            "space_ei_corr": self.ei_corr_dict["space"][main_idx, valid_other_idx],
-            "full_ei_corr": self.ei_corr_dict["full"][main_idx, valid_other_idx],
-            "power_ei_corr": self.ei_corr_dict["power"][main_idx, valid_other_idx],
+        # Distance calculation
+        if "x_um" in self.cluster_df.columns and "y_um" in self.cluster_df.columns:
+            x = self.cluster_df["x_um"].values.astype(float)
+            y = self.cluster_df["y_um"].values.astype(float)
+            
+            target_row = self.cluster_id_to_idx.get(int(cluster_id))
+            if target_row is not None:
+                dx = x[top_idx] - float(x[target_row])
+                dy = y[top_idx] - float(y[target_row])
+                distances = np.sqrt(dx*dx + dy*dy)
+            else:
+                distances = np.full(actual_top_n, np.nan)
+        else:
+            distances = np.full(actual_top_n, np.nan)
+
+        rows = {
+            "cluster_id": other_ids.astype(int),
+            "n_spikes": n_spikes_arr[top_idx].astype(int),
+            "status": status_arr[top_idx],
+            "distance_um": distances,
+            "template_sim": other_sims
         }
-        df = pd.DataFrame(d_df)
+
+        if set_col is not None:
+            set_vals = set_col.values
+            rows["set"] = [set_vals[i] for i in top_idx]
+
+        return pd.DataFrame(rows)
 
         # Add n_spikes, status, set from main cluster_df
         cluster_df = self.cluster_df

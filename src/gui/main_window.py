@@ -1055,11 +1055,31 @@ class MainWindow(QMainWindow):
             elif reply == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return
+                
+        # Stop background workers first
         callbacks.stop_worker(self)
+        
         # Stop any running raw trace worker
-        if hasattr(
-                self,
-                'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
-            self.raw_panel.worker_thread.quit()
+        if hasattr(self, 'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
+            self.raw_panel.worker_thread.stop()
             self.raw_panel.worker_thread.wait()
+
+        # --- NEW: Automatic Temp File Cleanup Sweep ---
+        try:
+            if self.data_manager and self.data_manager.kilosort_dir:
+                import glob
+                import os
+                ks_dir = str(self.data_manager.kilosort_dir)
+                # Find all .tmp files in the Kilosort directory
+                tmp_files = glob.glob(os.path.join(ks_dir, '*.tmp'))
+                for tmp_file in tmp_files:
+                    try:
+                        os.remove(tmp_file)
+                        logging.info(f"Cleaned up orphaned temp file: {tmp_file}")
+                    except OSError:
+                        pass # File might be locked, just skip it
+        except Exception as e:
+            logging.error(f"Error during temp file cleanup: {e}")
+        # ----------------------------------------------
+        
         event.accept()

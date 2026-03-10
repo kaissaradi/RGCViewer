@@ -39,7 +39,7 @@ def update_cache_progress(main_window):
     main_window.cache_progress.setValue(min(val, 100)) # Cap at 100
     
     # UI Notify when complete
-    if main_window.cache_progress_count >= total_clusters:
+    if main_window.cache_progress_count == total_clusters:
         main_window.cache_progress.hide()
         main_window.status_bar.showMessage("Physics Cache Ready: UMAP and Population panels optimized.", 8000)
         # Persist the now-complete cache once, so next launch is instant

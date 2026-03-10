@@ -63,11 +63,6 @@ _MPL_RC = {
     "text.color":            PALETTE["text_primary"],
     "font.family":           "sans-serif",
     "font.sans-serif":       ["IBM Plex Sans", "Helvetica Neue", "DejaVu Sans"],
-    "figure.constrained_layout.use": True,
-    "figure.constrained_layout.h_pad": 0.08,
-    "figure.constrained_layout.w_pad": 0.08,
-    "figure.constrained_layout.hspace": 0.06,
-    "figure.constrained_layout.wspace": 0.06,
     "savefig.facecolor":     PALETTE["bg"],
 }
 mpl.rcParams.update(_MPL_RC)
@@ -384,6 +379,7 @@ class FeatureExtractionWindow(QDialog):
             figsize=(12, 7),
             dpi=100,
         )
+        self.fig.set_layout_engine('constrained')
 
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
