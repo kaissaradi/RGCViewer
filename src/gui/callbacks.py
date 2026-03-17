@@ -22,28 +22,35 @@ if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
 def update_cache_progress(main_window):
-    """Updates the main window progress bar with safety checks."""
-    if not hasattr(main_window, 'cache_progress_count'):
-        main_window.cache_progress_count = 0
-        
-    main_window.cache_progress_count += 1
-    
-    # Safety check: ensure data_manager and cluster_df exist
+    """Updates the main window progress bar based on actual cache state."""
     if not main_window.data_manager or main_window.data_manager.cluster_df.empty:
         return
 
-    total_clusters = len(main_window.data_manager.cluster_df)
-    
-    # Calculate percentage
-    val = int((main_window.cache_progress_count / total_clusters) * 100)
-    main_window.cache_progress.setValue(min(val, 100)) # Cap at 100
-    
-    # UI Notify when complete
-    if main_window.cache_progress_count == total_clusters:
+    dm = main_window.data_manager
+    total = len(dm.cluster_df)
+
+    # Count truly complete feature_cache entries (have _computed sentinel).
+    # Falls back to standard_plot_cache count if physics pass hasn't started.
+    physics_done = sum(1 for v in dm.feature_cache.values() if v.get('_computed'))
+    std_done     = len(dm.standard_plot_cache)
+
+    # Show whichever pass is currently active
+    if physics_done > 0:
+        val = int(physics_done / total * 100)
+        done = physics_done
+        label = "Physics"
+    else:
+        val = int(std_done / total * 100)
+        done = std_done
+        label = "Standard plots"
+
+    main_window.cache_progress.setValue(min(val, 100))
+
+    if done >= total:
         main_window.cache_progress.hide()
-        main_window.status_bar.showMessage("Physics Cache Ready: UMAP and Population panels optimized.", 8000)
-        # Persist the now-complete cache once, so next launch is instant
-        main_window.data_manager.save_standard_plot_cache()
+        main_window.status_bar.showMessage(
+            "Physics Cache Ready: UMAP and Population panels optimized.", 8000)
+        dm.save_standard_plot_cache()
 
 def load_directory(main_window, kilosort_dir=None, dat_file=None):
     """Triggers the background loading of a Kilosort directory."""
@@ -121,16 +128,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.cache_progress.setValue(0)
     main_window.cache_progress.show()
 
-    # Start the worker
+    # Start the worker — handles signal wiring AND queueing all clusters internally
     start_worker(main_window)
-    
-    # Connect the worker's signal to our new progress bar update function
-    if hasattr(main_window, 'standard_plots_worker'):
-        main_window.standard_plots_worker.finished_cluster.connect(
-            lambda cid: update_cache_progress(main_window)
-        )
-        for cid in main_window.data_manager.cluster_df['cluster_id'].values:
-                main_window.standard_plots_worker.add_to_queue(cid)
     main_window.central_widget.setEnabled(True)
 
     main_window.load_raw_action.setEnabled(True)
@@ -157,8 +156,30 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         if cid is not None:
             main_window.standard_plots_panel.update_all(cid)
 
-    main_window.status_bar.showMessage(
-        f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.", 5000)
+    n_clusters = len(main_window.data_manager.cluster_df)
+
+    # Auto-start Vision loading if the KS worker found .ei files in the directory.
+    # This runs as a SEPARATE VisionLoadWorker so the UI is already unlocked
+    # and responsive while Vision data streams in the background.
+    auto_dir     = getattr(main_window.data_manager, '_auto_vision_dir', None)
+    auto_dataset = getattr(main_window.data_manager, '_auto_vision_dataset', None)
+    if auto_dir and auto_dataset:
+        main_window.status_bar.showMessage(
+            f"Loaded {n_clusters} clusters. Auto-loading Vision data in background...", 6000)
+        # Reuse the existing load_vision_directory plumbing but bypass the dialog
+        # VisionLoadWorker is already imported at the top of this module
+        main_window.vision_load_thread = QThread()
+        main_window.vision_load_worker = VisionLoadWorker(main_window.data_manager, auto_dir)
+        main_window.vision_load_worker.moveToThread(main_window.vision_load_thread)
+        main_window.vision_load_thread.started.connect(main_window.vision_load_worker.run)
+        main_window.vision_load_worker.progress.connect(
+            lambda msg: main_window.status_bar.showMessage(msg))
+        main_window.vision_load_worker.finished.connect(
+            lambda success, msg, is_partial: _on_vision_loaded(main_window, success, msg, is_partial))
+        main_window.vision_load_thread.start()
+    else:
+        main_window.status_bar.showMessage(
+            f"Successfully loaded {n_clusters} clusters.", 5000)
 
 
 def load_vision_directory(main_window):
@@ -211,6 +232,41 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # Show STA panel if data is now available
     if main_window.data_manager.vision_stas:
         main_window.sta_panel.show()
+
+    # BUG-6 fix: kick off EI correlation precompute on a background thread
+    # so it's ready before the user opens the similarity panel.
+    # If a pickle cache exists this returns almost instantly; otherwise it
+    # runs the heavy computation without ever touching the UI thread.
+    if success and main_window.data_manager.vision_eis is not None:
+        main_window.data_manager.precompute_ei_correlations_background()
+        main_window.status_bar.showMessage("Vision loaded. Computing EI correlations in background...", 4000)
+
+    # Now that Vision STA data is loaded, compute get_cell_physics for all
+    # clusters. The StandardPlotsWorker deliberately skips this so it can
+    # never produce stale timecourse=None entries before Vision is ready.
+    if success:
+        dm = main_window.data_manager
+        all_ids = dm.cluster_df['cluster_id'].astype(int).tolist()
+
+        # Reset progress bar to show the physics recompute pass
+        main_window.cache_progress_count = 0
+        main_window.cache_progress.setValue(0)
+        main_window.cache_progress.show()
+
+        def _compute_physics():
+            for cid in all_ids:
+                try:
+                    dm.get_cell_physics(cid)
+                    if getattr(main_window, 'standard_plots_worker', None):
+                        main_window.standard_plots_worker.finished_cluster.emit(int(cid))
+                except Exception:
+                    pass
+
+        import threading
+        threading.Thread(target=_compute_physics, daemon=True,
+                         name="PhysicsCompute").start()
+        main_window.status_bar.showMessage(
+            f"Vision loaded. Computing physics for {len(all_ids)} cells...", 5000)
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
@@ -438,14 +494,25 @@ def start_worker(main_window: MainWindow):
     
     main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)
     main_window.standard_worker_thread.start()
-
+    
     # Kick off low-priority background caching for all clusters
     dm = main_window.data_manager
     if dm is not None and not dm.cluster_df.empty:
-        # Reset safety count before queueing
         main_window.cache_progress_count = 0
+        
         for cid in dm.cluster_df['cluster_id']:
-            main_window.standard_plots_worker.add_to_queue(int(cid))
+            cid_int = int(cid)
+            
+            # Check if it's already cached
+            has_std = cid_int in getattr(dm, 'standard_plot_cache', {})
+            has_feat = cid_int in getattr(dm, 'feature_cache', {})
+            
+            if has_std and has_feat:
+                # Bypass the queue entirely and just update the UI tally
+                update_cache_progress(main_window)
+            else:
+                # Only queue cells that actually need math done
+                main_window.standard_plots_worker.add_to_queue(cid_int)
 
 
 def populate_tree_view(main_window: MainWindow, df=None):
@@ -603,92 +670,50 @@ def delete_group(main_window, item):
         df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = parent_name
 
 
-def flatten_group(main_window, folder_item):
-    """
-    Safely flatten a QStandardItem group: move all child rows from `folder_item`
-    into its parent (or the model root if parent is None) and remove the folder.
-    Defensive against deleted Qt objects and thread-unsafe access.
-    Arguments:
-        main_window: unused here but kept to match calling signature.
-        folder_item: QStandardItem expected to be a folder/group node.
-    """
-    # Defensive: bail if folder_item is already deleted or invalid
-    try:
-        # access parent under try to catch "wrapped C/C++ object ... has been deleted"
-        parent = folder_item.parent()
-    except RuntimeError:
+def flatten_group(main_window, item):
+    """Removes all sub-folders within a group, pulling all units directly into this group."""
+    from qtpy.QtCore import Qt
+    if item is None or item.data(Qt.ItemDataRole.UserRole) is not None:
         return
-    except Exception:
-        # any other problem accessing the Qt object -> abort
-        return
+        
+    cluster_items = []
+    direct_subfolders = []  # Changed: We only need to delete top-level subfolders
 
-    # If no parent, use model's invisible root item (top-level folder)
-    if parent is None:
-        try:
-            model = folder_item.model()
-            if model is None:
-                return
-            parent = model.invisibleRootItem()
-        except Exception:
-            return
+    def gather_children(node, is_root=False):
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if not child: continue
+            
+            if child.data(Qt.ItemDataRole.UserRole) is not None:
+                if not is_root:
+                    cluster_items.append(child)
+            else:
+                if is_root:
+                    # Only track folders directly under the main item for deletion
+                    direct_subfolders.append(child)
+                # Keep digging for cells
+                gather_children(child)
 
-    # Move rows out of folder into parent. Use takeRow/appendRow to avoid cloning.
-    try:
-        # Keep moving the first row until none remain.
-        while True:
-            # rowCount may raise if the item was deleted concurrently
-            row_count = folder_item.rowCount()
-            if row_count <= 0:
-                break
-            # takeRow returns a list of QStandardItem forming that row
-            try:
-                row = folder_item.takeRow(0)
-            except RuntimeError:
-                # folder_item was deleted during operation
-                return
-            except Exception:
-                # unexpected failure taking a row; stop to avoid corruption
-                break
+    gather_children(item, is_root=True)
 
-            # append into parent. This can also fail if parent was deleted; guard it.
-            try:
-                parent.appendRow(row)
-            except RuntimeError:
-                # parent was deleted concurrently; abort
-                return
-            except Exception:
-                # on any other failure, attempt to continue (best-effort)
-                continue
-    except Exception:
-        # broad guard: if anything unexpected happened, abort safely
-        return
+    # Extract all deeply nested cells and pull them up to this folder
+    for cell in cluster_items:
+        parent = cell.parent()
+        if parent:
+            row_items = parent.takeRow(cell.row())
+            item.appendRow(row_items)
 
-    # Remove the now-empty folder from its parent. Use folder_item.row() but guard errors.
-    try:
-        folder_row = folder_item.row()
-        # If folder_row is -1, try to find it manually.
-        if folder_row >= 0:
-            parent.removeRow(folder_row)
-            return
-    except RuntimeError:
-        return
-    except Exception:
-        pass
-
-    # Fallback: search parent children for the exact folder_item and remove when found.
-    try:
-        for r in range(parent.rowCount()):
-            try:
-                if parent.child(r) is folder_item:
-                    parent.removeRow(r)
-                    return
-            except RuntimeError:
-                return
-            except Exception:
-                continue
-    except Exception:
-        return
-
+    # Delete the direct sub-folders (this safely destroys all nested folders within them)
+    for folder in direct_subfolders:
+        # We know the parent is 'item', so we can bypass folder.parent() safely
+        item.removeRow(folder.row())
+    
+    # Sync DataFrame in the background
+    cluster_ids = [c.data(Qt.ItemDataRole.UserRole) for c in cluster_items if c.data(Qt.ItemDataRole.UserRole) is not None]
+    if cluster_ids:
+        df = main_window.data_manager.cluster_df
+        df.loc[df['cluster_id'].isin(cluster_ids), 'KSLabel'] = item.text()
+        
 def group_clusters_in_tree(main_window, cluster_ids, group_name):
     """
     Dynamically groups selected clusters into a new folder exactly where they are,

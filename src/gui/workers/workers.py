@@ -8,9 +8,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-
 class KilosortLoadWorker(QObject):
-    """Background worker to handle heavy Kilosort and auto-Vision I/O."""
+    """Background worker to handle Kilosort and Vision I/O synchronously."""
     finished = Signal(bool, str)
     progress = Signal(str)
 
@@ -34,25 +33,25 @@ class KilosortLoadWorker(QObject):
             self.progress.emit("Building cluster dataframe (this may take a moment)...")
             self.dm.build_cluster_dataframe()
 
-            # Auto-load Vision Data
+            # --- SYNCHRONOUS VISION LOADING ---
             vision_dir = Path(self.ks_dir_name)
             dataset_name = None
             for ei_file in vision_dir.glob('*.ei'):
                 dataset_name = ei_file.stem
-                break 
+                break
 
             if dataset_name:
-                self.progress.emit(f"Found Vision EI file ('{dataset_name}') - loading automatically...")
-                self.dm.load_vision_data(vision_dir, dataset_name)
-            else:
-                logger.debug("No complete set of Vision files found; skipping automatic loading")
+                self.progress.emit("Found Vision data. Queueing background load...")
+                # Tell the DataManager where the data is so callbacks.py can spawn the VisionLoadWorker
+                self.dm._auto_vision_dir = str(vision_dir)
+                self.dm._auto_vision_dataset = dataset_name
 
             # Load cell type file
             ls_txt = list(vision_dir.glob('*.txt'))
             txt_file = ls_txt[0] if ls_txt else None
             self.dm.load_cell_type_file(txt_file)
 
-            self.finished.emit(True, "Kilosort data loaded successfully.")
+            self.finished.emit(True, "Kilosort and Vision data loaded successfully.")
         except Exception as e:
             logger.exception("Error in KilosortLoadWorker")
             self.finished.emit(False, str(e))
@@ -79,19 +78,14 @@ class VisionLoadWorker(QObject):
                 dataset_name = ei_file.stem
                 break
                 
+            # load_vision_data handles partial loading internally — one call is enough.
+            # The old code called it a second time on failure which was pure wasted work.
             success, message = self.dm.load_vision_data(vision_dir, dataset_name)
-            
-            is_partial = False
-            if not success:
-                params_path = vision_dir / 'sta_params.params'
-                sta_path = vision_dir / 'sta_container.sta'
-                if params_path.exists() or sta_path.exists():
-                    success_partial, message_partial = self.dm.load_vision_data(vision_dir, dataset_name)
-                    if success_partial:
-                        success = True
-                        is_partial = True
-                        message = message_partial
-            
+
+            has_ei  = self.dm.vision_eis  is not None
+            has_sta = self.dm.vision_stas is not None
+            is_partial = success and has_sta and not has_ei
+
             self.finished.emit(success, message, is_partial)
         except Exception as e:
             logger.exception("Error in VisionLoadWorker")
@@ -309,20 +303,19 @@ class StandardPlotsWorker(QObject):
 
     def run(self):
         """
-        Main worker loop. Pulls cluster IDs off a queue and asks the DataManager
-        to compute standard-plot data and assemble core physics for each one.
+        Computes and caches standard plot data (ISI/ACG/FR) for all clusters.
+        Deliberately does NOT call get_cell_physics — that requires Vision STA
+        data which may not be loaded yet. get_cell_physics is triggered after
+        Vision loads in _on_vision_loaded.
         """
+        if hasattr(self.data_manager, 'load_persisted_caches'):
+            self.data_manager.load_persisted_caches()
+
         while self.is_running:
             if self.queue:
                 cluster_id = self.queue.popleft()
                 try:
-                    # 1. Pre-calculate and cache standard plots
                     self.data_manager.get_standard_plot_data(cluster_id)
-                    
-                    # 2. Pre-assemble and cache physical properties
-                    if hasattr(self.data_manager, 'get_cell_physics'):
-                        self.data_manager.get_cell_physics(cluster_id)
-                        
                     self.finished_cluster.emit(int(cluster_id))
                 except Exception as e:
                     self.error.emit(

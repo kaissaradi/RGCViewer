@@ -1,4 +1,5 @@
 import logging
+import pyqtgraph as pg
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QSlider, QLabel,
@@ -78,18 +79,16 @@ class STAPanel(QWidget):
         self.sta_frame_controls_layout.addStretch()
 
         # --- Create 4 Quadrants for STA Analysis ---
-        self.rf_canvas = MplCanvas(self, width=5, height=4, dpi=120)
-        self.rf_canvas.fig.text(
-            0.5,
-            0.5,
-            "No STA data selected",
-            ha='center',
-            va='center',
-            color='gray')
-        self.rf_canvas.draw()
-        self.rf_canvas.clicked.connect(self.on_rf_canvas_clicked)
-        self.rf_canvas.setToolTip(
-            "Click to toggle between RF view and animation")
+        # Replaced MplCanvas with pyqtgraph components for high-fps animation
+        self.rf_canvas = pg.GraphicsLayoutWidget(self)
+        self.rf_view = self.rf_canvas.addViewBox()
+        self.rf_view.setAspectLocked(True)
+        self.rf_view.invertY(True) # Optional: match typical image coordinate orientation
+        self._pg_image_item = pg.ImageItem()
+        self.rf_view.addItem(self._pg_image_item)
+        self.rf_ellipse_item = pg.PlotCurveItem(pen=pg.mkPen('w', width=2, style=Qt.DashLine))
+        self.rf_view.addItem(self.rf_ellipse_item)
+        self.rf_canvas.setToolTip("RF view and animation")
 
         self.timecourse_canvas = MplCanvas(self, width=5, height=4, dpi=120)
         self.timecourse_canvas.fig.text(
@@ -147,6 +146,23 @@ class STAPanel(QWidget):
         layout.addLayout(self.sta_frame_controls_layout, 0)
         layout.addWidget(self.sta_splitter, 1)
 
+    def _update_pg_image(self):
+        """Helper to extract, normalize, and push the current frame to pyqtgraph."""
+        if self.current_sta_data is None:
+            self._pg_image_item.clear()
+            return
+            
+        red = self.current_sta_data.red[:, :, self.current_frame_index]
+        green = self.current_sta_data.green[:, :, self.current_frame_index]
+        blue = self.current_sta_data.blue[:, :, self.current_frame_index]
+        frame = np.stack([red, green, blue], axis=-1)  # (height, width, 3)
+
+        mn, mx = frame.min(), frame.max()
+        if mx != mn:
+            frame = (frame - mn) / (mx - mn)
+
+        self._pg_image_item.setImage(frame.transpose(1, 0, 2))
+
     def _toggle_population_rfs_view(self):
         """Toggle between population RFs and single-cell STA view."""
         if hasattr(self.main_window, 'current_sta_view'):
@@ -175,31 +191,20 @@ class STAPanel(QWidget):
             self.main_window.data_manager.vision_stas):
 
             # Draw the single-cell plots for the STA quad-view.
-            # Use the STAPanel's own methods instead of the main window's
             self.plot_sta(cluster_id)
             self.plot_sta_timecourse(cluster_id)
 
             # Handle specific view-type overrides for the main RF canvas
             if hasattr(self.main_window, 'current_sta_view'):
                 if self.main_window.current_sta_view == "population_rfs":
-                    # This button press should always draw the population plot in the MAIN STA view (rf_canvas),
-                    # overriding the single-cell RF plot drawn by draw_sta_plot above.
-                    from .population_panel import draw_population_rfs_plot
-                    draw_population_rfs_plot(
-                        main_window=self.main_window, selected_cell_id=cluster_id, canvas=self.rf_canvas)
+                    # MplCanvas removed for RF view, so dropping the population mode override
+                    pass
                 elif self.main_window.current_sta_view == "animation":
                     # Animation should only affect the RF plot
                     self.plot_sta_animation(cluster_id)
         else:
             # No Vision STA data available
-            self.rf_canvas.fig.clear()
-            self.rf_canvas.fig.text(
-                0.5,
-                0.5,
-                "No Vision STA data available",
-                ha='center',
-                va='center',
-                color='gray')
+            self._pg_image_item.clear()
             self.timecourse_canvas.fig.clear()
             self.timecourse_canvas.fig.text(
                 0.5,
@@ -208,7 +213,6 @@ class STAPanel(QWidget):
                 ha='center',
                 va='center',
                 color='gray')
-            self.rf_canvas.draw()
             self.timecourse_canvas.draw()
             self.sta_frame_slider.setEnabled(False)
 
@@ -220,101 +224,51 @@ class STAPanel(QWidget):
     def update_sta_frame_manual(self, frame_index):
         """Updates the STA visualization to a specific frame manually."""
         if self.current_sta_data is not None:
-            # Stop any running animation
             self.stop_animation()
-
-            # Update the frame index
             self.current_frame_index = frame_index
-
-            # Update the label
             self.sta_frame_label.setText(
                 f"Frame: {frame_index+1}/{self.total_sta_frames}")
-            # Update the STA canvas with the new frame - use RF canvas for
-            # animation
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                self.current_sta_data,
-                frame_index=frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            cluster_id = self.current_sta_cluster_id - 1  # Convert back to 0-indexed
-            self.rf_canvas.fig.suptitle(
-                f"Cluster {cluster_id} - STA Frame {frame_index+1}/{self.total_sta_frames}",
-                color='white',
-                fontsize=16)  # this overlaps with self.sta_frame_label
-            self.rf_canvas.draw()
+            self._update_pg_image()
 
     def _advance_frame_internal(self):
         """Internal method for the timer to call without stopping itself."""
         if self.current_sta_data is not None:
-            # Increment frame and loop back to 0 if at the end
             self.current_frame_index = (
                 self.current_frame_index + 1) % self.total_sta_frames
 
-            # --- FIX: Block signals so we don't trigger update_sta_frame_manual ---
+            # Block signals so we don't trigger update_sta_frame_manual
             self.sta_frame_slider.blockSignals(True)
             self.sta_frame_slider.setValue(self.current_frame_index)
             self.sta_frame_slider.blockSignals(False)
-            # ---------------------------------------------------------------------
 
             self.sta_frame_label.setText(
                 f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
 
-            # Redraw the RF canvas
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                self.current_sta_data,
-                stafit=self.current_stafit,
-                frame_index=self.current_frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            self.rf_canvas.draw()
+            self._update_pg_image()
 
     def prev_sta_frame(self):
         """Go to the previous frame in the STA animation."""
         if self.current_sta_data is not None:
-            # Stop the animation when manually navigating
             self.stop_animation()
             self.current_frame_index = (
                 self.current_frame_index - 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
             self.sta_frame_label.setText(
                 f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                self.current_sta_data,
-                stafit=self.current_stafit,  # <-- Pass the stored fit
-                frame_index=self.current_frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            self.rf_canvas.draw()
+                
+            self._update_pg_image()
 
     def next_sta_frame(self):
         """Go to the next frame in the STA animation."""
         if self.current_sta_data is not None:
-            # Stop the animation when manually navigating
             self.stop_animation()
             self.current_frame_index = (
                 self.current_frame_index + 1) % self.total_sta_frames
             self.sta_frame_slider.setValue(self.current_frame_index)
             self.sta_frame_label.setText(
                 f"Frame: {self.current_frame_index+1}/{self.total_sta_frames}")
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                self.current_sta_data,
-                stafit=self.current_stafit,  # <-- Pass the stored fit
-                frame_index=self.current_frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            self.rf_canvas.draw()
+                
+            self._update_pg_image()
 
     def toggle_animation(self):
         """Toggle the animation between play and pause."""
@@ -384,11 +338,10 @@ class STAPanel(QWidget):
             self.stop_animation()
 
             sta_data = self.main_window.data_manager.vision_stas[vision_cluster_id]
-            # --- ADDED: Get STAFit data and store it for other functions to use ---
             stafit = self.main_window.data_manager.vision_params.get_stafit_for_cell(
                 vision_cluster_id)
             self.current_sta_data = sta_data
-            self.current_stafit = stafit  # <-- Store the fit
+            self.current_stafit = stafit
             self.current_sta_cluster_id = vision_cluster_id
 
             n_frames = sta_data.red.shape[2]
@@ -406,33 +359,40 @@ class STAPanel(QWidget):
                 f"Frame: {peak_frame_index + 1}/{n_frames}")
             self.sta_frame_slider.setEnabled(True)
 
-            # Use the RF canvas instead of the old sta_canvas
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                sta_data,
-                stafit=stafit,  # <-- Pass the fit to the plotting function
-                frame_index=peak_frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            self.rf_canvas.draw()
+            self._update_pg_image()
 
+            if stafit:
+                cx, cy = stafit.center_x, stafit.center_y
+                sx, sy = getattr(stafit, 'std_x', 1), getattr(stafit, 'std_y', 1)
+                
+                # Get the height of the STA to flip the Y-axis
+                height = self.current_sta_data.red.shape[0]
+                
+                # 1. Convert angle and negate it because of the Y-axis flip
+                angle = getattr(stafit, 'angle', getattr(stafit, 'orientation', 0))
+                angle_rad = -np.radians(angle) 
+                
+                # 2. Flip Vision's bottom-left Y coordinate to top-left, 
+                # and adjust by 0.5 for Pyqtgraph's pixel anchors
+                cx_plot = cx + 0.5
+                cy_plot = (height - cy) - 0.5 
+                
+                # Generate ellipse points
+                t = np.linspace(0, 2*np.pi, 100)
+                x_el = cx_plot + sx * np.cos(t) * np.cos(angle_rad) - sy * np.sin(t) * np.sin(angle_rad)
+                y_el = cy_plot + sx * np.cos(t) * np.sin(angle_rad) + sy * np.sin(t) * np.cos(angle_rad)
+                
+                self.rf_ellipse_item.setData(x_el, y_el)
+                self.rf_ellipse_item.setVisible(True)
+            else:
+                self.rf_ellipse_item.setVisible(False)
             # --- Update New Panels ---
             self.plot_sta_metrics(cluster_id)
             self.plot_temporal_filter(cluster_id)
 
         else:
             # No Vision STA data available
-            self.rf_canvas.fig.clear()
-            self.rf_canvas.fig.text(
-                0.5,
-                0.5,
-                "No Vision STA data available",
-                ha='center',
-                va='center',
-                color='gray')
-            self.rf_canvas.draw()
+            self._pg_image_item.clear()
             self.sta_frame_slider.setEnabled(False)
 
             # Clear other panels
@@ -498,27 +458,9 @@ class STAPanel(QWidget):
                 # Start the animation only if it's not already running
                 self.sta_animation_timer.start(100)
 
-            # Update the RF canvas with the first frame
-            self.rf_canvas.fig.clear()
-            self.animate_sta_movie(
-                self.rf_canvas.fig,
-                self.current_sta_data,
-                stafit=self.current_stafit,
-                frame_index=self.current_frame_index,
-                sta_width=self.main_window.data_manager.vision_sta_width,
-                sta_height=self.main_window.data_manager.vision_sta_height
-            )
-            self.rf_canvas.draw()
+            self._update_pg_image()
         else:
-            self.rf_canvas.fig.clear()
-            self.rf_canvas.fig.text(
-                0.5,
-                0.5,
-                "No Vision STA data available",
-                ha='center',
-                va='center',
-                color='gray')
-            self.rf_canvas.draw()
+            self._pg_image_item.clear()
             self.sta_frame_slider.setEnabled(False)
 
     def plot_sta_metrics(self, cluster_id):
@@ -636,83 +578,6 @@ class STAPanel(QWidget):
             self.temporal_filter_canvas.fig.text(
                 0.5, 0.5, "No Data", ha='center', va='center', color='gray')
             self.temporal_filter_canvas.draw()
-
-    def animate_sta_movie(
-            self,
-            fig,
-            sta_data,
-            stafit=None,
-            frame_index=0,
-            sta_width=None,
-            sta_height=None,
-            ax=None):
-        """
-        Animates the STA movie by showing individual frames.
-        MODIFIED: Now optionally overlays the STAFit ellipse.
-        """
-        if ax is None:
-            fig.clear()
-            ax = fig.add_subplot(111)
-
-        n_frames = sta_data.red.shape[2]
-        if frame_index >= n_frames:
-            frame_index = 0
-
-        red_frame = sta_data.red[:, :, frame_index]
-        green_frame = sta_data.green[:, :, frame_index]
-        blue_frame = sta_data.blue[:, :, frame_index]
-
-        sta_rgb = np.stack([red_frame, green_frame, blue_frame], axis=-1)
-
-        min_val, max_val = np.min(sta_rgb), np.max(sta_rgb)
-        if max_val != min_val:
-            sta_rgb_normalized = (sta_rgb - min_val) / (max_val - min_val)
-        else:
-            sta_rgb_normalized = np.zeros_like(sta_rgb)
-
-        extent = [
-            0,
-            sta_width,
-            sta_height,
-            0] if sta_width is not None else [
-            0,
-            red_frame.shape[1],
-            red_frame.shape[0],
-            0]
-
-        ax.imshow(sta_rgb_normalized, origin='upper', extent=extent)
-
-        # --- ADDED: Logic to draw the STAFit ellipse if provided ---
-        if stafit:
-            if sta_height is not None:
-                adjusted_y = sta_height - stafit.center_y
-            else:
-                image_height = red_frame.shape[0]
-                adjusted_y = image_height - stafit.center_y
-
-            from matplotlib.patches import Ellipse
-            ellipse = Ellipse(
-                xy=(stafit.center_x, adjusted_y),
-                width=2 * stafit.std_x,
-                height=2 * stafit.std_y,
-                angle=np.rad2deg(stafit.rot),
-                edgecolor='cyan',
-                facecolor='none',
-                lw=2
-            )
-            ax.add_patch(ellipse)
-
-        ax.set_title(
-            f"STA Movie - Frame {frame_index+1}/{n_frames}",
-            color='white')
-        ax.set_xlabel("X (stixels)", color='gray')
-        ax.set_ylabel("Y (stixels)", color='gray')
-        ax.set_facecolor('#1f1f1f')
-        ax.tick_params(colors='gray')
-        for spine in ax.spines.values():
-            spine.set_edgecolor('gray')
-
-        fig.tight_layout()
 
     def plot_sta_timecourse_internal(
             self,

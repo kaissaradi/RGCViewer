@@ -356,11 +356,15 @@ class UMAPPanel(QWidget):
             logger.error(f"Error getting selected cluster IDs: {e}")
             return None
     def run_umap(self):
-        total_clusters = len(self.main_window.data_manager.cluster_df)
-        cached = len(getattr(self.main_window.data_manager, 'feature_cache', {}))
-        if cached < total_clusters:
-            QMessageBox.warning(self, "Cache Warming Up", 
-                                f"Please wait for background caching to finish.\n\nCached: {cached} / {total_clusters} cells.\nCheck the progress bar in the bottom right.")
+        dm = self.main_window.data_manager
+        total_clusters = len(dm.cluster_df)
+        feature_cache  = getattr(dm, 'feature_cache', {})
+        valid_cached = sum(1 for v in feature_cache.values() if v.get('_computed'))
+        if valid_cached < total_clusters:
+            QMessageBox.warning(self, "Cache Warming Up",
+                                f"Please wait for background caching to finish.\n\n"
+                                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                                f"Check the progress bar in the bottom right.")
             return
         self._reset_workers()
         self.run_btn.setEnabled(False)
@@ -393,11 +397,15 @@ class UMAPPanel(QWidget):
         self.worker_thread.start()
 
     def run_umap_3d(self):
-        total_clusters = len(self.main_window.data_manager.cluster_df)
-        cached = len(getattr(self.main_window.data_manager, 'feature_cache', {}))
-        if cached < total_clusters:
-            QMessageBox.warning(self, "Cache Warming Up", 
-                                f"Please wait for background caching to finish.\n\nCached: {cached} / {total_clusters} cells.\nCheck the progress bar in the bottom right.")
+        dm = self.main_window.data_manager
+        total_clusters = len(dm.cluster_df)
+        feature_cache  = getattr(dm, 'feature_cache', {})
+        valid_cached = sum(1 for v in feature_cache.values() if v.get('_computed'))
+        if valid_cached < total_clusters:
+            QMessageBox.warning(self, "Cache Warming Up",
+                                f"Please wait for background caching to finish.\n\n"
+                                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                                f"Check the progress bar in the bottom right.")
             return
         self._reset_workers()
         self.run_btn.setEnabled(False)

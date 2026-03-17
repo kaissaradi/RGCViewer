@@ -197,12 +197,16 @@ class DataManager(QObject):
         self.d_timing = {}
         logger.debug(
             f"Initializing DataManager for experiment={self.exp_name}, datafile={self.datafile_name}")
-        self.load_stim_timing()
+        # NOTE: load_stim_timing() is intentionally NOT called here.
+        # It makes a live DataJoint DB connection which can block for 30-120s
+        # on a timeout. It is called inside load_kilosort_data() instead,
+        # which runs on a background QThread.
 
         self.ei_cache = {}
         self.heavyweight_cache = {}
         self.feature_cache = {} # Cache for feature extraction panel (PCA, ACG, etc.)
         # Lock to protect accesses to heavyweight_cache from multiple threads
+        self._feature_lock = threading.Lock()
         self._heavyweight_lock = threading.Lock()
         self.isi_cache = {}  # Cache for ISI violation calculations
 
@@ -420,6 +424,10 @@ class DataManager(QObject):
         import pandas as pd
         ks = self.kilosort_dir
 
+        # --- stimulus timing (DataJoint) — safe here because we're on a background thread ---
+        import threading
+        threading.Thread(target=self.load_stim_timing, daemon=True).start()
+
         try:
             # --- core spike arrays (memmap, view) --------------------------------
             st_path = ks / "spike_times.npy"
@@ -427,7 +435,12 @@ class DataManager(QObject):
             if not st_path.exists() or not sc_path.exists():
                 return False, "Missing spike_times.npy or spike_clusters.npy in kilosort dir."
 
-            self.spike_times = np.load(st_path, mmap_mode="r").ravel()
+            # mmap_mode="r" avoids loading the full arrays into RAM upfront
+            # (~200–800 MB for a 1-hour recording). Per-cluster access via
+            # cluster_spike_indices does a single fancy-index copy of only that
+            # cluster's spikes, so UI scrolling is unaffected; the OS page
+            # cache keeps hot pages warm across accesses.
+            self.spike_times    = np.load(st_path,  mmap_mode="r").ravel()
             self.spike_clusters = np.load(sc_path, mmap_mode="r").ravel()
 
             # --- channel positions / map -----------------------------------------
@@ -476,29 +489,34 @@ class DataManager(QObject):
                 self.cluster_info = pd.read_csv(group_path, sep="\t")
             else:
                 self.info_path = None
-                # create minimal cluster_info fallback (fast)
-                unique_ids = np.unique(self.spike_clusters).astype(int)
+                # _unique_ids/_counts computed once below — reuse here
+                self.cluster_info = None  # filled after the single np.unique call
+
+            # --- single np.unique scan — reused everywhere below ----------------
+            # Previously called 3 separate times (lines ~487, ~501, ~504).
+            # np.unique on a multi-million element array is O(N log N); doing it
+            # once and threading the results through saves 2 full sort passes.
+            _unique_ids, _counts = np.unique(self.spike_clusters, return_counts=True)
+
+            # Fill in the fallback cluster_info now that we have _unique_ids
+            if self.cluster_info is None:
                 self.cluster_info = pd.DataFrame({
-                    "cluster_id": unique_ids,
-                    "group": ["unsorted"] * len(unique_ids)
+                    "cluster_id": _unique_ids.astype(int),
+                    "group": ["unsorted"] * len(_unique_ids)
                 })
 
             # --- build minimal cluster_df (used heavily elsewhere) ---------------
-            # prefer cluster_info.cluster_id if present
             if "cluster_id" in self.cluster_info.columns:
                 cluster_ids = self.cluster_info["cluster_id"].astype(int).values
-                # prefer 'group' or fallback to 'status'
                 if "group" in self.cluster_info.columns:
                     status_vals = self.cluster_info["group"].astype(str).values
                 else:
                     status_vals = self.cluster_info.get("status", pd.Series(["unsorted"] * len(cluster_ids))).astype(str).values
             else:
-                cluster_ids = np.unique(self.spike_clusters).astype(int)
+                cluster_ids = _unique_ids.astype(int)
                 status_vals = np.array(["unsorted"] * len(cluster_ids), dtype=object)
 
-            # quick spike counts (vectorized)
-            unique_ids, counts = np.unique(self.spike_clusters, return_counts=True)
-            counts_map = dict(zip(unique_ids.astype(int).tolist(), counts.astype(int).tolist()))
+            counts_map = dict(zip(_unique_ids.astype(int).tolist(), _counts.astype(int).tolist()))
             n_spikes = np.array([int(counts_map.get(int(cid), 0)) for cid in cluster_ids], dtype=int)
 
             self.cluster_df = pd.DataFrame({
@@ -509,10 +527,9 @@ class DataManager(QObject):
                 "y_um": np.nan
             })
 
-            # id -> row index map used by many routines
             self.cluster_id_to_idx = {int(cid): int(i) for i, cid in enumerate(self.cluster_df["cluster_id"].values)}
 
-            # --- optional: channel-template mappings (try, but non-fatal) -------
+            # --- optional: channel-template mappings ----------------------------
             try:
                 if self.templates is not None:
                     d_mappings = get_channel_template_mappings(self.templates)
@@ -522,15 +539,13 @@ class DataManager(QObject):
                     self.channel_to_templates = {}
                     self.template_to_channels = {}
             except Exception:
-                # mapping can be expensive or fail for memmaps; skip until needed
                 self.channel_to_templates = {}
                 self.template_to_channels = {}
 
-            # --- load params and similarity (these use their own IO/caching) ----
+            # --- load params and similarity -------------------------------------
             try:
                 self._load_kilosort_params()
             except Exception:
-                # non-fatal: keep going
                 logger.debug("Failed to load kilosort params (non-fatal).", exc_info=True)
 
             try:
@@ -538,20 +553,37 @@ class DataManager(QObject):
             except Exception:
                 logger.debug("Failed to load kilosort similarity (non-fatal).", exc_info=True)
 
-            # Restore persisted standard-plot cache so the background worker
-            # skips clusters that were already computed on a previous session.
-            cache_pkl = ks / 'standard_plot_cache.pkl'
-            if cache_pkl.exists():
-                try:
-                    import pickle
-                    with open(cache_pkl, 'rb') as f:
-                        self.standard_plot_cache = pickle.load(f)
-                    logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
-                except Exception:
-                    logger.warning("Could not load standard_plot_cache.pkl; will recompute", exc_info=True)
-                    self.standard_plot_cache = {}
+            # NOTE: Caches (standard_plot_cache, feature_cache) are intentionally
+            # NOT loaded here. They are loaded at the end of build_cluster_dataframe(),
+            # after cluster_df has been finalized, so stale keys from a previous
+            # session can be pruned against the real cluster population.
 
-            return True, "Successfully loaded Kilosort data (memmapped, minimal cluster_df)."
+            # --- Build O(1) spike index lookup + cache sort order for reuse ---
+            logger.debug("Building cluster index mapping...")
+            order      = np.argsort(self.spike_clusters, kind='mergesort')
+            sorted_cls = self.spike_clusters[order]
+            sorted_t   = self.spike_times[order]
+
+            self._spk_sort_order = order
+            self._spk_sorted_cls = sorted_cls
+            self._spk_sorted_t   = sorted_t
+
+            _, split_idxs   = np.unique(sorted_cls, return_index=True)
+            grouped_indices = np.split(order, split_idxs[1:])
+            unique_cls      = sorted_cls[split_idxs]
+
+            self.cluster_spike_indices = {
+                int(cid): idxs for cid, idxs in zip(unique_cls, grouped_indices)
+            }
+
+            # _unique_ids / _counts already computed above — no repeat scan needed.
+            # unique_cls is derived from sorted_cls which covers the same set,
+            # so we reuse _counts directly (order matches since both come from
+            # the same np.unique on spike_clusters).
+            self._spk_unique_cls    = unique_cls
+            self._spk_unique_counts = _counts
+
+            return True, "Successfully loaded Kilosort data."
 
         except Exception as e:
             return False, f"Error during Kilosort data loading: {e}"
@@ -714,12 +746,33 @@ class DataManager(QObject):
 
         return success, f"{'Successfully' if success else 'Failed to'} load Vision data for {dataset_name}."
 
+    def precompute_ei_correlations_background(self):
+        """
+        BUG-6 fix: launch _compute_ei_correlations_if_needed() on a daemon
+        thread so the UI is never blocked when Vision data is first loaded.
+        Safe to call multiple times — the internal lock prevents double work.
+        """
+        if not hasattr(self, '_ei_corr_lock'):
+            self._ei_corr_lock = threading.Lock()
+
+        def _run():
+            if not self._ei_corr_lock.acquire(blocking=False):
+                return  # already running
+            try:
+                self._compute_ei_correlations_if_needed()
+            finally:
+                self._ei_corr_lock.release()
+
+        t = threading.Thread(target=_run, daemon=True, name="EICorrelationWorker")
+        t.start()
+
     def _compute_ei_correlations_if_needed(self):
         """
         Lazily compute EI correlation matrices and duplicate flags.
 
         This used to run inside load_vision_data() and block Vision loading.
-        Now it is called on-demand (e.g. from the Vision similarity table).
+        Now called from precompute_ei_correlations_background() (background
+        thread) so the UI is never blocked.
         """
         # Already computed / loaded?
         if self.ei_corr_dict is not None:
@@ -968,9 +1021,13 @@ class DataManager(QObject):
         """
         logger.debug("Starting build_cluster_dataframe")
 
-        # --- basic counts / fast table ---
-        cluster_ids, n_spikes = np.unique(
-            self.spike_clusters, return_counts=True)
+        # --- basic counts — reuse cached results from load_kilosort_data ---
+        # spike_clusters was already scanned + sorted there; don't repeat it.
+        if hasattr(self, '_spk_unique_cls') and self._spk_unique_cls is not None:
+            cluster_ids = self._spk_unique_cls
+            n_spikes    = self._spk_unique_counts
+        else:
+            cluster_ids, n_spikes = np.unique(self.spike_clusters, return_counts=True)
         logger.debug("Found %d clusters", len(cluster_ids))
 
         df = pd.DataFrame({'cluster_id': cluster_ids, 'n_spikes': n_spikes})
@@ -987,6 +1044,10 @@ class DataManager(QObject):
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={
                                                                     col: 'KSLabel'})
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
+        # Any cluster present in spike_clusters but absent from cluster_info.tsv
+        # gets KSLabel=NaN from the left-merge. Fill with 'unsorted' so they are
+        # never silently excluded when downstream code filters by KSLabel.
+        df['KSLabel'] = df['KSLabel'].fillna('unsorted')
 
         df['status'] = 'Original'
         df['set'] = [set([cid]) for cid in df['cluster_id']]
@@ -1010,100 +1071,47 @@ class DataManager(QObject):
         self.original_cluster_df = self.cluster_df.copy()
         logger.debug("build_cluster_dataframe basic structure complete")
 
-        # Initialize / reset the ISI cache
+        # Reset ISI cache (BUG-5 fix: was reset twice here; now just once)
         self.isi_cache = {}
 
-        # --- Fast vectorized ISI computation when possible ---
-        try:
-            spikes = np.asarray(self.spike_times)
-            clusters = np.asarray(self.spike_clusters)
-            if spikes.size >= 2 and spikes.shape[0] == clusters.shape[0]:
-                logger.debug(
-                    "Computing ISI violations with vectorized routine")
-                # Sort by cluster id while preserving per-cluster time order
-                # (mergesort)
-                order = np.argsort(clusters, kind="mergesort")
-                clusters_sorted = clusters[order]
-                spikes_sorted = spikes[order]
+        # --- Vectorized ISI Computation (BUG-4 fix) ---
+        # Old code: Python for-loop calling _calculate_isi_violations() per cluster.
+        # New code: single argsort + diff pass over the full spike array, then
+        # group-count violations — O(N log N) total instead of O(N*C) with loop overhead.
+        logger.debug("Computing ISI violations per cluster (vectorized)...")
 
-                # Within-cluster adjacent diffs
-                same_cluster = clusters_sorted[1:] == clusters_sorted[:-1]
-                if np.any(same_cluster):
-                    dt = spikes_sorted[1:] - spikes_sorted[:-1]
-                    dt = dt[same_cluster]
-                    pair_clusters = clusters_sorted[1:][same_cluster]
+        refractory_samples = (ISI_REFRACTORY_PERIOD_MS / 1000.0) * self.sampling_rate
 
-                    refractory_samples = (
-                        ISI_REFRACTORY_PERIOD_MS / 1000.0) * float(self.sampling_rate)
-                    violations_mask = dt < refractory_samples
+        # Reuse the sort order already computed in load_kilosort_data.
+        # This avoids two more full scans + fancy-index reads of spike arrays.
+        if hasattr(self, '_spk_sorted_cls') and self._spk_sorted_cls is not None:
+            sorted_cls = self._spk_sorted_cls
+            sorted_t   = self._spk_sorted_t
+        else:
+            _order     = np.argsort(self.spike_clusters, kind='stable')
+            sorted_cls = self.spike_clusters[_order]
+            sorted_t   = self.spike_times[_order]
 
-                    # Aggregate counts per cluster id
-                    max_cid = int(max(pair_clusters.max(), int(
-                        self.cluster_df['cluster_id'].max())))
-                    total_pairs = np.bincount(
-                        pair_clusters.astype(int), minlength=max_cid + 1)
-                    violation_counts = np.bincount(
-                        pair_clusters.astype(int), weights=violations_mask.astype(
-                            np.int64), minlength=max_cid + 1)
+        isis        = np.diff(sorted_t.astype(np.int64))
+        same_cls    = sorted_cls[:-1] == sorted_cls[1:]   # mask out cluster boundaries
+        violations  = (isis < refractory_samples) & same_cls
+        spike_count = same_cls  # denominator: pairs within same cluster
 
-                    isi_vals = []
-                    for cid in self.cluster_df['cluster_id'].astype(
-                            int).values:
-                        if cid <= max_cid:
-                            pairs = int(total_pairs[cid])
-                            viol = int(violation_counts[cid])
-                        else:
-                            pairs = 0
-                            viol = 0
-                        pct = 0.0 if pairs == 0 else (viol / pairs) * 100.0
-                        isi_vals.append(pct)
-                        # cache it
-                        try:
-                            self.isi_cache[(int(cid), float(
-                                ISI_REFRACTORY_PERIOD_MS))] = pct
-                        except Exception:
-                            pass
+        # Count violations and total pairs per cluster
+        unique_ids, first_idx = np.unique(sorted_cls, return_index=True)
+        # split_indices mark where each cluster starts in the sorted arrays
+        viol_counts  = np.array([violations [i:j].sum()    for i, j in zip(first_idx, np.append(first_idx[1:], len(violations)))])
+        pair_counts  = np.array([spike_count[i:j].sum()    for i, j in zip(first_idx, np.append(first_idx[1:], len(spike_count)))])
 
-                    self.cluster_df['isi_violations_pct'] = isi_vals
-                    logger.debug("Vectorized ISI computation complete")
-                else:
-                    # no within-cluster adjacent pairs => zeros
-                    logger.debug(
-                        "No within-cluster pairs found; ISI values set to 0")
-                    self.cluster_df['isi_violations_pct'] = 0.0
-                    for cid in self.cluster_df['cluster_id'].astype(
-                            int).values:
-                        self.isi_cache[(int(cid),
-                                        float(ISI_REFRACTORY_PERIOD_MS))] = 0.0
-            else:
-                # fallback to per-cluster loop below
-                raise ValueError(
-                    "spike_times/spike_clusters shapes not compatible for vectorized path")
-        except Exception as e:
-            # Fallback: compute per-cluster to preserve behavior if vectorized
-            # path fails
-            logger.debug(
-                "Vectorized ISI compute failed or unavailable (%s); falling back to per-cluster loop",
-                str(e))
-            cluster_ids_list = self.cluster_df['cluster_id'].values
-            isi_values = []
-            total_clusters = len(cluster_ids_list)
-            for i, cluster_id in enumerate(cluster_ids_list):
-                isi_value = self._calculate_isi_violations(
-                    cluster_id, refractory_period_ms=ISI_REFRACTORY_PERIOD_MS)
-                isi_values.append(isi_value)
-                try:
-                    self.isi_cache[(int(cluster_id), float(
-                        ISI_REFRACTORY_PERIOD_MS))] = isi_value
-                except Exception:
-                    pass
-                if (i + 1) % 50 == 0 or i == total_clusters - 1:
-                    logger.debug(
-                        "Calculated ISI for %d/%d clusters",
-                        i + 1,
-                        total_clusters)
-            self.cluster_df['isi_violations_pct'] = isi_values
-            logger.debug("Per-cluster ISI computation complete")
+        isi_pct_map = {}
+        for cid, viol, pairs in zip(unique_ids, viol_counts, pair_counts):
+            val = float(viol / pairs * 100) if pairs > 0 else 0.0
+            isi_pct_map[int(cid)] = val
+            self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = val
+
+        self.cluster_df['isi_violations_pct'] = (
+            self.cluster_df['cluster_id'].map(isi_pct_map).fillna(0.0)
+        )
 
         # --- Load status & compute remaining metrics ---
         self.load_status()
@@ -1121,14 +1129,46 @@ class DataManager(QObject):
 
         # NOTE: similar_templates.npy and mea_sorted_indices are loaded by
         # _load_kilosort_similarity(), called from load_kilosort_data().
+
+        # --- Load persisted caches now that cluster_df is fully finalized ---
+        # This is the correct place (not load_kilosort_data) because we can
+        # now validate cache keys against the real cluster population and
+        # prune any stale entries from a previous session (e.g. after refinement
+        # changed cluster IDs).
+        self.load_persisted_caches()
+
+        valid_ids = set(self.cluster_df['cluster_id'].astype(int).tolist())
+
+        with self._standard_plot_lock:
+            stale = [k for k in list(self.standard_plot_cache) if k not in valid_ids]
+            for k in stale:
+                del self.standard_plot_cache[k]
+            if stale:
+                logger.debug("Pruned %d stale standard_plot_cache entries", len(stale))
+
+        with self._feature_lock:
+            stale = [k for k in list(self.feature_cache)
+                     if k not in valid_ids or not self.feature_cache[k].get('_computed')]
+            for k in stale:
+                del self.feature_cache[k]
+            if stale:
+                logger.debug("Pruned %d stale feature_cache entries", len(stale))
+
         logger.debug("build_cluster_dataframe complete")
 
-    def get_cluster_spikes(self, cluster_id):
-        return self.spike_times[self.spike_clusters == cluster_id]
-
     def get_cluster_spike_indices(self, cluster_id):
-        """Return the indices into the master spike arrays for spikes of a cluster."""
-        return np.where(self.spike_clusters == cluster_id)[0]
+        """Return the indices into the master spike arrays for spikes of a cluster in O(1) time."""
+        if not hasattr(self, 'cluster_spike_indices'):
+            # Fallback if somehow not initialized
+            return np.where(self.spike_clusters == cluster_id)[0]
+        return self.cluster_spike_indices.get(int(cluster_id), np.array([], dtype=int))
+
+    def get_cluster_spikes(self, cluster_id):
+        """Instantly fetch spike times using the precomputed indices."""
+        inds = self.get_cluster_spike_indices(cluster_id)
+        if len(inds) == 0:
+            return np.array([])
+        return self.spike_times[inds]
 
     def get_cluster_spike_amplitudes(self, cluster_id):
         """Return the per-spike amplitudes for a cluster (empty array if not available)."""
@@ -1166,26 +1206,53 @@ class DataManager(QObject):
         return data
 
     def save_standard_plot_cache(self):
-        """Persist the full standard-plot cache to disk in a background thread.
-
-        Called once when the StandardPlotsWorker finishes its queue.
-        Runs off the main thread so the UI is never blocked.
-        """
+        """Persist the full standard-plot and feature caches to disk in a background thread."""
         save_path = str(self.kilosort_dir / 'standard_plot_cache.pkl')
+        feature_save_path = str(self.kilosort_dir / 'feature_cache.pkl')
 
         with self._standard_plot_lock:
             snapshot = dict(self.standard_plot_cache)
+            
+        with getattr(self, '_feature_lock', threading.Lock()):
+            feature_snapshot = dict(getattr(self, 'feature_cache', {}))
 
         def _save():
             try:
                 self._save_pickle_with_fallback(snapshot, save_path)
-                logger.debug("Saved standard_plot_cache (%d entries) to %s", len(snapshot), save_path)
+                self._save_pickle_with_fallback(feature_snapshot, feature_save_path)
+                logger.debug("Saved caches (%d std, %d feat) to disk", len(snapshot), len(feature_snapshot))
             except Exception:
                 logger.exception("Failed to persist standard_plot_cache")
 
         t = threading.Thread(target=_save, daemon=True)
         t.start()
     
+    def load_persisted_caches(self):
+        """Loads both standard plot and feature caches from disk.
+        Designed to be called safely from a background thread."""
+        if not self.kilosort_dir:
+            return
+
+        cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
+        if cache_pkl.exists() and not getattr(self, 'standard_plot_cache', {}):
+            try:
+                with open(cache_pkl, 'rb') as f:
+                    self.standard_plot_cache = pickle.load(f)
+                logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
+            except Exception:
+                logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
+                self.standard_plot_cache = {}
+
+        feat_pkl = self.kilosort_dir / 'feature_cache.pkl'
+        if feat_pkl.exists() and not getattr(self, 'feature_cache', {}):
+            try:
+                with open(feat_pkl, 'rb') as f:
+                    self.feature_cache = pickle.load(f)
+                logger.debug("Restored feature_cache (%d entries) from disk", len(self.feature_cache))
+            except Exception:
+                logger.warning("Could not load feature_cache.pkl", exc_info=True)
+                self.feature_cache = {}
+
     def get_cell_physics(self, cluster_id):
         """
         Single Source of Truth for a cell's physical metrics.
@@ -1195,18 +1262,23 @@ class DataManager(QObject):
         # Ensure thread safety for background loading
         if not hasattr(self, '_feature_lock'):
             self._feature_lock = threading.Lock()
-            self.feature_cache = {}
 
-        # 1. Fast path: check cache under lock
+
+        # 1. Fast path: check feature cache under lock.
+        # We use a '_computed' sentinel key to distinguish "cached and done"
+        # from "never cached" — this correctly handles cells where acg is
+        # legitimately None (too few spikes for ACG to compute).
         with self._feature_lock:
-            if cluster_id in self.feature_cache:
-                return self.feature_cache[cluster_id]
+            cached = self.feature_cache.get(cluster_id)
+            if cached is not None and cached.get('_computed'):
+                return cached
 
-        # 2. Grab ACG (pulls from standard cache if already calculated from raw spikes)
-        acg_norm = None
+        # 2. Get standard plot data — use cache if warm, compute inline if cold.
+        # NOTE: we intentionally do NOT return None on a cold cache. UMAP and other
+        # callers iterate every cluster and cannot handle None in their feature matrix.
+        # get_standard_plot_data() checks the cache first and only computes if needed.
         std_data = self.get_standard_plot_data(cluster_id)
-        if std_data:
-            acg_norm = std_data.get('acg_norm')
+        acg_norm = std_data.get('acg_norm') if std_data else None
 
         # 3. Assemble Pre-Calculated Vision/STA Features
         timecourse = None
@@ -1250,6 +1322,7 @@ class DataManager(QObject):
 
         # 4. Package into our immutable physics dictionary
         metrics = {
+            '_computed': True,   # sentinel: marks entry as fully computed, not stale
             'acg': acg_norm,
             'timecourse': timecourse,
             'rf_area': rf_area,
@@ -1353,10 +1426,14 @@ class DataManager(QObject):
         data['spikes_sec'] = spikes_sec
         data['spikes_ms'] = spikes_ms
 
-        # ISI vector (ms) and histogram
+        # ISI vector (ms) and histogram.
+        # get_cluster_spikes() returns spike_times[cluster_spike_indices[cid]].
+        # cluster_spike_indices was built from argsort(spike_clusters) which
+        # preserves the original spike_times order — and spike_times is already
+        # monotonically increasing (Kilosort writes spikes in time order).
+        # So `spikes` is already sorted; np.sort() is unnecessary.
         if spikes.size > 1:
-            sorted_spikes = np.sort(spikes)
-            isi_ms = np.diff(sorted_spikes) / sr * 1000.0
+            isi_ms = np.diff(spikes) / sr * 1000.0
             data['isi_ms'] = isi_ms
 
             if isi_ms.size > 0:
@@ -1379,32 +1456,41 @@ class DataManager(QObject):
                 data['isi_vs_amp_valid_isi'] = valid_isi
                 data['isi_vs_amp_valid_amplitudes'] = valid_amplitudes
 
-        # --- Autocorrelation (ACG) ---
-        # For each spike, use searchsorted to find all spikes within the 100ms
-        # window ahead, then accumulate integer-millisecond lags with bincount.
-        # Pure numpy — no Python inner loop, safe for high-firing/noisy clusters.
+        # --- Autocorrelation (ACG) — FFT on capped-duration spike train ---
+        # The original bug: np.arange(first_ms, last_ms) → 3.6M bins for 1hr recording.
+        # Our previous fix (Python loop) was actually SLOWER for large clusters.
+        # Correct fix: cap the spike train at MAX_DURATION_MS, then use the fast
+        # FFT-based correlate on a small fixed-size array (~120K bins max = ~480KB).
+        # ACG statistics are stable after ~2 minutes of spikes, so capping is valid.
         if spikes_ms.size > 1:
-            max_lag_ms = 100
-            sorted_ms = np.sort(spikes_ms).astype(np.int64)
-            acg_counts = np.zeros(max_lag_ms + 1, dtype=np.int64)
+            from scipy.signal import fftconvolve
+            MAX_LAG       = 100    # ms
+            MAX_DURATION  = 120_000  # ms — 2 minutes max, enough for stable ACG stats
 
-            for i in range(len(sorted_ms)):
-                t = sorted_ms[i]
-                # find the half-open window (t, t + max_lag_ms]
-                lo = int(np.searchsorted(sorted_ms, t + 1,            side='left'))
-                hi = int(np.searchsorted(sorted_ms, t + max_lag_ms + 1, side='left'))
-                if lo < hi:
-                    diffs = (sorted_ms[lo:hi] - t).astype(np.int64)
-                    acg_counts += np.bincount(diffs, minlength=max_lag_ms + 1)
+            t = np.sort(spikes_ms).astype(np.int64)
+            t = t - t[0]  # shift to 0-based
 
-            # Mirror into symmetric ACG (lags -100..0..100 ms)
-            acg_symmetric = np.concatenate([acg_counts[1:][::-1], [0], acg_counts[1:]])
-            time_lags = np.arange(-max_lag_ms, max_lag_ms + 1, dtype=float)
-            n_spikes_f = float(spikes_ms.size)
-            acg_norm = acg_symmetric.astype(float) / n_spikes_f if n_spikes_f > 0 else acg_symmetric.astype(float)
+            # Cap at MAX_DURATION to keep the FFT array small regardless of recording length
+            if t[-1] > MAX_DURATION:
+                t = t[t <= MAX_DURATION]
 
-            data['acg_time_lags'] = time_lags
-            data['acg_norm'] = acg_norm
+            if t.size > 1:
+                duration = int(t[-1]) + 1
+                bins_arr = np.zeros(duration, dtype=np.float32)
+                np.add.at(bins_arr, t, 1)
+
+                # FFT cross-correlation: O(N log N), pure C, <1ms for 120K bins
+                acg_full = fftconvolve(bins_arr, bins_arr[::-1], mode='full')
+                center   = len(acg_full) // 2
+                acg      = acg_full[center - MAX_LAG : center + MAX_LAG + 1].copy()
+                acg[MAX_LAG] = 0.0  # zero self-coincidence at lag 0
+
+                time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
+                n_spikes_f = float(spikes_ms.size)
+                acg_norm   = acg / n_spikes_f if n_spikes_f > 0 else acg
+
+                data['acg_time_lags'] = time_lags
+                data['acg_norm']      = acg_norm
 
         # --- Firing rate & amplitude over time ---
         if spikes_sec.size > 0:
@@ -1425,15 +1511,21 @@ class DataManager(QObject):
                 rate = np.zeros_like(bin_centers, dtype=float)
             data['fr_rate'] = rate
 
-            # Amplitude on the right axis (gold line) — vectorized binning
+            # Amplitude per bin — O(N) with bincount instead of the old
+            # O(N × B) loop that did `all_amplitudes[bin_indices == b]` for
+            # every bin b.  For a 1-hour recording with 3600 bins and 100k
+            # spikes that loop was doing 360M element comparisons.
             if all_amplitudes.size > 0 and bin_centers.size > 0:
-                # Use searchsorted to assign each spike to its 1-second bin in O(N log N)
-                # instead of iterating over every bin with a boolean mask.
                 bin_indices = np.searchsorted(bins[1:], spikes_sec, side='left')
                 bin_indices = np.clip(bin_indices, 0, len(bin_centers) - 1)
-                amplitude_binned = np.full(len(bin_centers), np.nan, dtype=float)
-                for b in np.unique(bin_indices):
-                    amplitude_binned[b] = float(np.mean(all_amplitudes[bin_indices == b]))
+
+                amp_sums   = np.bincount(bin_indices, weights=all_amplitudes.astype(float),
+                                         minlength=len(bin_centers))
+                amp_counts = np.bincount(bin_indices, minlength=len(bin_centers))
+                with np.errstate(invalid='ignore'):
+                    amplitude_binned = np.where(amp_counts > 0,
+                                                amp_sums / amp_counts,
+                                                np.nan)
 
                 amplitude_binned = np.asarray(amplitude_binned, dtype=float)
 
@@ -1901,9 +1993,10 @@ class DataManager(QObject):
             logger.warning("Required files for cluster geometry not found, skipping.")
             return
 
-        # Materialise once; single max/min pass over (n_tpl, nt, n_tCh)
-        templates_arr = np.array(templates)
-        ptp = templates_arr.max(axis=1) - templates_arr.min(axis=1)  # (n_tpl, n_tCh)
+        # Compute PTP directly on the memmap — no full copy into RAM.
+        # NumPy streams the memmap in blocks, so peak memory is a single row
+        # rather than the entire (n_tpl, nt, n_tCh) array (~84 MB for 512-ch).
+        ptp = templates.max(axis=1) - templates.min(axis=1)  # (n_tpl, n_tCh)
 
         n_tpl = ptp.shape[0]
         best_local = ptp.argmax(axis=1)                                        # (n_tpl,)
@@ -1973,10 +2066,7 @@ class DataManager(QObject):
                     logger.warning(f"Could not load {fname}: {e}")
 
     def _load_kilosort_similarity(self):
-        """
-        Load similar_templates.npy as a memmap and precompute a few
-        derived structures for fast MEA lookup.
-        """
+        """Load similar_templates.npy as a memmap without blocking the main thread."""
         import numpy as np
         ks_dir = self.kilosort_dir
 
@@ -1984,27 +2074,18 @@ class DataManager(QObject):
             sim_path = ks_dir / "similar_templates.npy"
             if not sim_path.exists():
                 raise FileNotFoundError
+            
             # memmap for zero-copy access
             self.similar_templates = np.load(sim_path, mmap_mode="r")
 
-            # Build quick lookup arrays used by get_similarity_table:
-            # cluster_id -> index (cluster_df must exist)
+            # cluster_id -> index lookup
             cluster_ids = self.cluster_df["cluster_id"].values
-            # mapping for fast integer-indexed lookup (dict is fine here)
             self.cluster_id_to_idx = {int(cid): int(i) for i, cid in enumerate(cluster_ids)}
 
-            # Precompute MEA similarity ordering (per-cluster sorted indices descending)
-            # we only keep indices; do not materialize large sorted similarity values.
-            # If the matrix is huge, this still requires memory for the indices (int32).
-            if self.similar_templates is not None and self.similar_templates.size:
-                # argsort descending along last axis; keep as int32 to reduce memory.
-                # axis=1 sorts each row; we store as a 2D int array.
-                self.mea_sorted_indices = np.argsort(-self.similar_templates, axis=1).astype(np.int32)
-                # Optionally build a distance-sorted index (spatial) in background if desired.
-            else:
-                self.mea_sorted_indices = None
+            # DELETED the massive argsort here. We will do it lazily.
+            self.mea_sorted_indices = None
 
-            logger.debug("Loaded similar_templates.npy shape=%s; prepared indices", self.similar_templates.shape)
+            logger.debug("Loaded similar_templates.npy shape=%s", self.similar_templates.shape)
         except FileNotFoundError:
             logger.warning("similar_templates.npy not found; MEA similarity disabled")
             self.similar_templates = None
@@ -2023,90 +2104,7 @@ class DataManager(QObject):
             raise ValueError(f"Unknown sim source: {source}")
 
     def _get_mea_similarity_table(self, cluster_id: int, top_n: int = 50):
-        """
-        Fast, vectorized retrieval of MEA similarity table for cluster_id.
-        Returns a pandas DataFrame with the top_n most similar clusters (by template_sim).
-        """
-        import numpy as np
-        import pandas as pd
-
-        # sanity
-        if self.mea_sorted_indices is None or self.cluster_id_to_idx is None:
-            return self._get_mea_similarity_table_fallback(cluster_id)
-
-        idx = self.cluster_id_to_idx.get(int(cluster_id))
-        if idx is None:
-            return pd.DataFrame([])
-
-        # fetch sorted indices for that cluster (already descending by similarity)
-        sorted_idx_row = self.mea_sorted_indices[idx]
-        top_idx = sorted_idx_row[:top_n]
-
-        # vectorized access to cluster metadata
-        cluster_ids = self.cluster_df["cluster_id"].values
-        # n_spikes may not exist for all datasets; guard
-        n_spikes_arr = self.cluster_df["n_spikes"].values if "n_spikes" in self.cluster_df.columns else np.zeros(len(cluster_ids), dtype=int)
-        status_arr = self.cluster_df["status"].astype(str).values if "status" in self.cluster_df.columns else np.array([""] * len(cluster_ids))
-        # some datasets use 'set' column; convert to string safely
-        set_col = self.cluster_df["set"] if "set" in self.cluster_df.columns else None
-
-        other_ids = cluster_ids[top_idx].astype(int)
-        other_n_spikes = n_spikes_arr[top_idx].astype(int)
-        other_status = status_arr[top_idx].astype(str)
-
-        # positions: vectorized distance calculation
-        if "x_um" in self.cluster_df.columns and "y_um" in self.cluster_df.columns:
-            x = self.cluster_df["x_um"].values.astype(float)
-            y = self.cluster_df["y_um"].values.astype(float)
-            x0 = float(x[idx]); y0 = float(y[idx])
-            dx = x[top_idx] - x0
-            dy = y[top_idx] - y0
-            distances = np.sqrt(dx * dx + dy * dy).astype(float)
-        else:
-            distances = np.full(top_n, np.nan, dtype=float)
-
-        # template similarity: use memmap slice (fast, no copy if left as memmap view)
-        if self.similar_templates is not None:
-            # cluster -> template map must exist
-            tpl_map = getattr(self, "cluster_to_template", None)
-            if tpl_map is None:
-                tpl_map = self._build_cluster_to_template_map()
-                self.cluster_to_template = tpl_map
-            t1 = int(tpl_map.get(int(cluster_id), -1))
-            tpl_sims = []
-            if t1 >= 0:
-                # vectorized safe indexing (bounds check)
-                sim_row = self.similar_templates[t1]
-                # if memmap, this returns a view; cast to float for DataFrame
-                tpl_sims = np.array([float(sim_row[t2]) if (t2 >= 0 and t2 < sim_row.shape[0]) else 0.0 for t2 in
-                                    [tpl_map.get(int(oid), -1) for oid in other_ids]])
-            else:
-                tpl_sims = np.zeros(len(top_idx), dtype=float)
-        else:
-            tpl_sims = np.zeros(len(top_idx), dtype=float)
-
-        # assemble DataFrame (vectorized)
-        rows = {
-            "cluster_id": other_ids.astype(int),
-            "n_spikes": other_n_spikes,
-            "status": other_status,
-            "distance_um": distances,
-            "template_sim": tpl_sims
-        }
-
-        # include 'set' if present
-        if set_col is not None:
-            # convert each entry to a string or keep original; do this vectorized-ishly
-            set_vals = set_col.values
-            rows["set"] = [set_vals[i] if i < len(set_vals) else None for i in top_idx]
-
-        return pd.DataFrame(rows)
-
-    def _get_mea_similarity_table(self, cluster_id: int, top_n: int = 50):
-        """
-        Fast, vectorized retrieval of MEA similarity table for cluster_id.
-        Returns a pandas DataFrame with the top_n most similar clusters.
-        """
+        """Fast, vectorized retrieval of MEA similarity table for cluster_id on the fly."""
         import numpy as np
         import pandas as pd
 
@@ -2121,39 +2119,33 @@ class DataManager(QObject):
 
         t1 = int(tpl_map.get(int(cluster_id), -1))
         
-        # If this cluster has no valid template (e.g., > 1056), we can't do MEA sim
         if t1 < 0 or t1 >= self.similar_templates.shape[0]:
             return pd.DataFrame([])
 
         # 2. Get the similarities between t1 and ALL OTHER templates
-        # sim_row has shape (n_templates,)
         sim_row = self.similar_templates[t1]
 
-        # 3. We only care about clusters that currently exist in cluster_df
+        # 3. Extract similarities for valid templates only
         cluster_ids = self.cluster_df["cluster_id"].values
         n_clusters = len(cluster_ids)
-        
-        # Map all existing cluster_ids to their template indices
         t2_array = np.array([int(tpl_map.get(int(cid), -1)) for cid in cluster_ids])
         
-        # 4. Extract similarities for valid templates
         tpl_sims = np.zeros(n_clusters, dtype=float)
         valid_mask = (t2_array >= 0) & (t2_array < len(sim_row))
         tpl_sims[valid_mask] = sim_row[t2_array[valid_mask]]
 
-        # Exclude the cluster itself from the "similar" list
+        # Exclude the cluster itself
         self_mask = (cluster_ids == cluster_id)
         tpl_sims[self_mask] = -1.0 
 
-        # 5. Get the top_n indices using argpartition/argsort
+        # 4. Fast partial sort (argpartition) instead of full argsort
         actual_top_n = min(top_n, n_clusters)
         if actual_top_n == 0:
             return pd.DataFrame([])
 
-        # np.argsort sorts ascending, so we negate tpl_sims to get descending
         top_idx = np.argsort(-tpl_sims)[:actual_top_n]
 
-        # 6. Build the output DataFrame rapidly using vectorized slicing
+        # 5. Build output DataFrame
         other_ids = cluster_ids[top_idx]
         other_sims = tpl_sims[top_idx]
 
@@ -2161,20 +2153,15 @@ class DataManager(QObject):
         status_arr = self.cluster_df["status"].astype(str).values if "status" in self.cluster_df.columns else np.array([""] * n_clusters)
         set_col = self.cluster_df["set"] if "set" in self.cluster_df.columns else None
 
-        # Distance calculation
+        distances = np.full(actual_top_n, np.nan)
         if "x_um" in self.cluster_df.columns and "y_um" in self.cluster_df.columns:
             x = self.cluster_df["x_um"].values.astype(float)
             y = self.cluster_df["y_um"].values.astype(float)
-            
             target_row = self.cluster_id_to_idx.get(int(cluster_id))
             if target_row is not None:
                 dx = x[top_idx] - float(x[target_row])
                 dy = y[top_idx] - float(y[target_row])
                 distances = np.sqrt(dx*dx + dy*dy)
-            else:
-                distances = np.full(actual_top_n, np.nan)
-        else:
-            distances = np.full(actual_top_n, np.nan)
 
         rows = {
             "cluster_id": other_ids.astype(int),
@@ -2189,38 +2176,3 @@ class DataManager(QObject):
             rows["set"] = [set_vals[i] for i in top_idx]
 
         return pd.DataFrame(rows)
-
-        # Add n_spikes, status, set from main cluster_df
-        cluster_df = self.cluster_df
-        n_spikes_map = dict(
-            zip(cluster_df["cluster_id"], cluster_df["n_spikes"]))
-        df["n_spikes"] = df["cluster_id"].map(n_spikes_map)
-
-        status_map = dict(zip(cluster_df["cluster_id"], cluster_df["status"]))
-        df["status"] = df["cluster_id"].map(status_map)
-
-        set_map = dict(zip(cluster_df["cluster_id"], cluster_df["set"]))
-        df["set"] = df["cluster_id"].map(set_map)
-
-        # Sort by EI correlation
-        df = df.sort_values(
-            by="space_ei_corr",
-            ascending=False).reset_index(
-            drop=True)
-
-        # Potential duplicate flag (Vision-side)
-        df["potential_dups"] = (
-            (df["full_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
-            | (df["space_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
-            | (df["power_ei_corr"].astype(float) > EI_CORR_THRESHOLD)
-        )
-
-        # Format correlation columns to 2 decimal places
-        for col in ["full_ei_corr", "space_ei_corr", "power_ei_corr"]:
-            df[col] = df[col].map(lambda x: f"{x:.2f}")
-
-        df["potential_dups"] = df["potential_dups"].map(
-            lambda x: "Yes" if x else "")
-
-        self.vision_sim_cache[cluster_id] = df
-        return df

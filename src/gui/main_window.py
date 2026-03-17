@@ -192,6 +192,9 @@ class MainWindow(QMainWindow):
                         canvas=self.sta_panel.rf_canvas  # <--- Only target main canvas if in Pop mode
                     )
                 except Exception: pass
+            else:
+                # Bypass the 150ms debouncer and load instantly for single-cell views
+                self.sta_panel.update_view(cluster_id)
             # If self.current_sta_view == 'rf', we DO NOTHING here.
             # We wait for Tier 2 to draw the correct single-cell STA.
 

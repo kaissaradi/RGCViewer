@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 def draw_population_timecourse_panel(main_window, subset_ids=None):
     """
     Draw population average timecourse with futuristic "shadow traces".
-    OPTIMIZATION: Uses Hot-Swap rendering, explicit scaling, Trace Caching, 
-    and computes metrics on the mean trace to guarantee instant scrolling.
+    OPTIMIZATION: Uses Hot-Swap rendering, explicit scaling, and the 
+    O(1) Physics Cache to guarantee instant scrolling.
     """
     if subset_ids is None:
         try:
@@ -47,45 +47,15 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             del canvas._timecourse_state
         return
 
-    # --- 1. Fast Data Extraction with Caching ---
-    # Initialize a lightweight cache on the datamanager if it doesn't exist
-    if not hasattr(main_window.data_manager, 'pop_trace_cache'):
-        main_window.data_manager.pop_trace_cache = {}
-    
-    trace_cache = main_window.data_manager.pop_trace_cache
+    # --- 1. Fast Data Extraction via Physics Cache ---
+    # We completely bypass the SSD and LazySTADict by using the pre-computed 
+    # timecourses stored in DataManager's feature_cache!
     traces = []
-
     for cid in subset_ids:
-        if cid in trace_cache:
-            traces.append(trace_cache[cid])
-            continue
-            
-        vision_id = cid + 1
-        tc = None
-        
-        sta = main_window.data_manager.vision_stas.get(vision_id)
-        if not sta:
-            continue
-            
-        stafit = main_window.data_manager.vision_params.get_stafit_for_cell(vision_id)
-        t_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-            sta, stafit, main_window.data_manager.vision_params, vision_id
-        )
-
-        if tc_matrix is not None:
-            energies = np.sum(tc_matrix**2, axis=0)
-            dom = int(np.argmax(energies))
-            tc = tc_matrix[:, dom]
-        else:
-            try:
-                tc = np.nanmean(sta, axis=(0, 1))
-            except Exception:
-                continue
-
+        physics = main_window.data_manager.get_cell_physics(cid)
+        tc = physics.get('timecourse')
         if tc is not None:
-            flat_tc = np.asarray(tc).flatten()
-            trace_cache[cid] = flat_tc
-            traces.append(flat_tc)
+            traces.append(tc)
 
     if not traces:
         canvas.fig.clear()
@@ -107,6 +77,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
     # Calculate FWHM directly on the mean trace (Instantaneous)
     mean_fwhm = float("nan")
     try:
+        from scipy.signal import peak_widths
         # Use abs so it works for ON and OFF cells
         widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
         if len(widths) > 0:
@@ -145,6 +116,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
         
     else:
+        from matplotlib.collections import LineCollection
         # Full Rebuild (Runs once)
         canvas.fig.clear()
         canvas.fig.set_facecolor('#1f1f1f')
@@ -168,7 +140,6 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
                             fontsize=8, ha='center', va='bottom')
 
         # Aesthetics
-        #ax.set_title("Population Dynamics", color='white', fontsize=11, pad=10)
         ax.set_xlabel("Time (frames)", color='gray', fontsize=9)
         ax.set_ylabel("Response (a.u.)", color='gray', fontsize=9)
         
@@ -196,7 +167,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
     # Update summary label
     n = arr.shape[0]
     main_window.pop_timecourse_summary.setText(f"n={n}  mean_t2p={peak_time:.1f}  mean_fwhm={mean_fwhm:.1f}")
-
+    
 def draw_population_rfs_plot(
         main_window,
         selected_cell_id=None,

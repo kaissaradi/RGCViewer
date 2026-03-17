@@ -3,15 +3,15 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from matplotlib.widgets import RectangleSelector
+from matplotlib.widgets import RectangleSelector, LassoSelector
+from matplotlib.path import Path
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from sklearn.decomposition import PCA
-from scipy.signal import correlate
 from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QMenu, QLabel,
-    QApplication, QProgressBar, QSizePolicy, QFrame, QWidget
+    QApplication, QProgressBar, QSizePolicy, QWidget, QPushButton, QButtonGroup
 )
-from qtpy.QtGui import QCursor, QFont, QColor, QPalette
+from qtpy.QtGui import QCursor, QColor, QPalette
 from qtpy.QtCore import QThread, Signal, Qt
 from typing import TYPE_CHECKING, Optional, List
 
@@ -26,19 +26,20 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 PALETTE = {
-    "bg":           "#0f1117",   # Near-black background
-    "surface":      "#171923",   # Slightly lighter surface
-    "border":       "#2a2d3e",   # Subtle border
-    "text_primary": "#e8eaf0",   # Near-white text
-    "text_muted":   "#6b7280",   # Muted labels
-    "accent":       "#4f8ef7",   # Blue accent (default points)
-    "highlight":    "#f97316",   # Orange highlight (selected points)
-    "grid":         "#1e2130",   # Very subtle grid lines
+    "bg":           "#0f1117",
+    "surface":      "#171923",
+    "border":       "#2a2d3e",
+    "text_primary": "#e8eaf0",
+    "text_muted":   "#6b7280",
+    "accent":       "#4f8ef7",
+    "highlight":    "#f97316",
+    "grid":         "#1e2130",
     "progress_fg":  "#4f8ef7",
     "progress_bg":  "#1e2130",
+    "btn_active":   "#4f8ef7",
+    "btn_inactive": "#1e2130",
 }
 
-# Matplotlib RC overrides — applied once at module import
 _MPL_RC = {
     "figure.facecolor":      PALETTE["bg"],
     "axes.facecolor":        PALETTE["surface"],
@@ -114,17 +115,37 @@ QMenu::item:selected {{
     background-color: {PALETTE["accent"]};
     color: #ffffff;
 }}
+
+QPushButton#tool_btn {{
+    background-color: {PALETTE["btn_inactive"]};
+    color: {PALETTE["text_muted"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 5px;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    min-width: 80px;
+}}
+QPushButton#tool_btn:hover {{
+    background-color: {PALETTE["border"]};
+    color: {PALETTE["text_primary"]};
+}}
+QPushButton#tool_btn[active="true"] {{
+    background-color: {PALETTE["btn_active"]};
+    color: #ffffff;
+    border-color: {PALETTE["btn_active"]};
+}}
 """
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Background worker (unchanged logic, cleaner progress messages)
+#  Background worker
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FeatureAnalysisWorker(QThread):
     """
     Background worker to compute features and PCA scores.
-    Utilises caching in DataManager to avoid re-computation.
+    Utilises the DataManager's robust get_cell_physics cache as SSOT.
     """
     finished = Signal(dict)
     progress = Signal(str, int)
@@ -137,155 +158,70 @@ class FeatureAnalysisWorker(QThread):
 
     def run(self):
         try:
-            uncached_ids = [cid for cid in self.cluster_ids
-                            if cid not in self.data_manager.feature_cache]
-
-            if uncached_ids:
-                total_steps = len(uncached_ids) * 3
-                current_step = 0
-
-                # 1. Temporal Traces
-                temporal_traces = {}
-                if (self.data_manager.vision_params and
-                        hasattr(self.data_manager.vision_params, 'main_datatable') and
-                        self.data_manager.vision_params.main_datatable is not None):
-
-                    for i, cluster_index in enumerate(uncached_ids):
-                        if not self.is_running:
-                            return
-                        current_step += 1
-                        if i % 10 == 0:
-                            self.progress.emit(
-                                f"Loading temporal traces  {i + 1}/{len(uncached_ids)}",
-                                int(current_step / total_steps * 100))
-                        vision_cluster_index = cluster_index + 1
-                        if vision_cluster_index in self.data_manager.vision_params.main_datatable:
-                            red_tc = self.data_manager.vision_params.get_data_for_cell(
-                                vision_cluster_index, 'RedTimeCourse')
-                            if red_tc is not None:
-                                temporal_traces[cluster_index] = red_tc
-
-                # 2. ACG
-                ACG = {}
-                for i, cluster_index in enumerate(uncached_ids):
-                    if not self.is_running:
-                        return
-                    current_step += 1
-                    if i % 10 == 0:
-                        self.progress.emit(
-                            f"Computing autocorrelograms  {i + 1}/{len(uncached_ids)}",
-                            int(current_step / total_steps * 100))
-
-                    acg_computed = False
-                    try:
-                        spikes = self.data_manager.get_cluster_spikes(cluster_index)
-                        sr = self.data_manager.sampling_rate
-                        if len(spikes) > 1:
-                            limit_samples = int(300 * sr)
-                            if spikes[-1] > limit_samples:
-                                spikes = spikes[spikes < limit_samples]
-                            if len(spikes) > 1:
-                                spikes_ms = (spikes / sr * 1000.0).astype(int)
-                                duration = int(spikes_ms[-1])
-                                bin_width_ms = 1
-                                bins = np.arange(0, duration + bin_width_ms, bin_width_ms)
-                                binned_spikes, _ = np.histogram(spikes_ms, bins=bins)
-                                if binned_spikes.size > 0:
-                                    centered = binned_spikes - np.mean(binned_spikes)
-                                    acg_full = correlate(centered, centered, mode='full')
-                                    zero_lag_idx = len(acg_full) // 2
-                                    max_lag_ms = 100
-                                    lag_range = min(int(max_lag_ms / bin_width_ms), zero_lag_idx)
-                                    if lag_range > 0:
-                                        acg_symmetric = acg_full[
-                                            zero_lag_idx - lag_range:
-                                            zero_lag_idx + lag_range + 1]
-                                        acg_symmetric[lag_range] = 0
-                                        spike_variance = np.var(binned_spikes)
-                                        if spike_variance != 0:
-                                            acg_norm = acg_symmetric / spike_variance / len(binned_spikes)
-                                        else:
-                                            acg_norm = acg_symmetric.astype(float)
-                                        ACG[cluster_index] = acg_norm
-                                        acg_computed = True
-                    except Exception:
-                        pass
-
-                    if not acg_computed:
-                        ACG_current = self.data_manager.get_acg_data(cluster_index)
-                        if (ACG_current is not None and len(ACG_current) > 1
-                                and ACG_current[1] is not None):
-                            ACG[cluster_index] = ACG_current[1]
-
-                # 3. STA Fit (RF Diameter)
-                stafit = {}
-                if (self.data_manager.vision_params and
-                        hasattr(self.data_manager.vision_params, 'main_datatable') and
-                        self.data_manager.vision_params.main_datatable is not None):
-
-                    for i, cluster_index in enumerate(uncached_ids):
-                        if not self.is_running:
-                            return
-                        current_step += 1
-                        if i % 10 == 0:
-                            self.progress.emit(
-                                f"Loading STA fits  {i + 1}/{len(uncached_ids)}",
-                                int(current_step / total_steps * 100))
-                        vision_cluster_index = cluster_index + 1
-                        if vision_cluster_index in self.data_manager.vision_params.main_datatable:
-                            stafit_current = self.data_manager.vision_params.get_stafit_for_cell(
-                                vision_cluster_index)
-                            if stafit_current is not None:
-                                stafit[cluster_index] = [stafit_current.std_x, stafit_current.std_y]
-
-                # Update cache
-                for cid in uncached_ids:
-                    self.data_manager.feature_cache[cid] = {
-                        'temporal_trace': temporal_traces.get(cid),
-                        'acg':            ACG.get(cid),
-                        'stafit':         stafit.get(cid),
-                    }
-
-            # Consolidate
             valid_ids = []
             final_traces = []
             final_acg = []
             final_rf_diam = []
             final_time_to_peak = []
 
-            for cid in self.cluster_ids:
-                cached = self.data_manager.feature_cache.get(cid)
-                if cached:
-                    trace     = cached.get('temporal_trace')
-                    acg       = cached.get('acg')
-                    stafit_val = cached.get('stafit')
-                    if trace is not None and acg is not None and stafit_val is not None:
-                        valid_ids.append(cid)
-                        final_traces.append(trace)
-                        final_acg.append(acg)
-                        final_rf_diam.append(np.sqrt(stafit_val[0] * stafit_val[1]))
-                        final_time_to_peak.append(np.argmax(np.abs(trace)))
+            total_steps = len(self.cluster_ids)
 
-            final_traces      = np.array(final_traces)
-            final_acg         = np.array(final_acg)
-            final_rf_diam     = np.array(final_rf_diam)
+            for i, cid in enumerate(self.cluster_ids):
+                if not self.is_running:
+                    return
+
+                if i % max(1, total_steps // 10) == 0:
+                    self.progress.emit(
+                        f"Loading features {i + 1}/{total_steps}",
+                        int(i / total_steps * 100),
+                    )
+
+                metrics = self.data_manager.get_cell_physics(cid)
+                trace = metrics.get('timecourse')
+                acg   = metrics.get('acg')
+                rf_area = metrics.get('rf_area', 0.0)
+
+                if trace is None or acg is None or len(trace) == 0 or len(acg) == 0:
+                    continue
+
+                valid_ids.append(cid)
+                final_traces.append(trace)
+                final_acg.append(acg)
+                final_rf_diam.append(np.sqrt(rf_area / np.pi) if rf_area > 0 else 0.0)
+                final_time_to_peak.append(metrics.get('time_to_peak', 0))
+
+            final_traces       = np.array(final_traces)
+            final_acg          = np.array(final_acg)
+            final_rf_diam      = np.array(final_rf_diam)
             final_time_to_peak = np.array(final_time_to_peak)
 
             if len(valid_ids) > 0:
-                pca_traces = (PCA(n_components=3).fit_transform(final_traces)
-                              if final_traces.size > 0 else np.empty((0, 3)))
-                pca_acg    = (PCA(n_components=3).fit_transform(final_acg)
-                              if final_acg.size > 0 else np.empty((0, 3)))
+                n_samples = len(valid_ids)
+                n_comps   = min(3, n_samples)
+
+                if n_comps > 0 and final_traces.shape[1] >= n_comps:
+                    pca_traces = PCA(n_components=n_comps).fit_transform(final_traces)
+                    if n_comps < 3:
+                        pca_traces = np.pad(pca_traces, ((0, 0), (0, 3 - n_comps)), mode='constant')
+                else:
+                    pca_traces = np.zeros((n_samples, 3))
+
+                if n_comps > 0 and final_acg.shape[1] >= n_comps:
+                    pca_acg = PCA(n_components=n_comps).fit_transform(final_acg)
+                    if n_comps < 3:
+                        pca_acg = np.pad(pca_acg, ((0, 0), (0, 3 - n_comps)), mode='constant')
+                else:
+                    pca_acg = np.zeros((n_samples, 3))
             else:
                 pca_traces = np.empty((0, 3))
                 pca_acg    = np.empty((0, 3))
 
             results = {
-                'cluster_ids':   valid_ids,
-                'temporal_pca':  pca_traces,
-                'acg_pca':       pca_acg,
-                'rf_diameter':   final_rf_diam,
-                'time_to_peak':  final_time_to_peak,
+                'cluster_ids':  valid_ids,
+                'temporal_pca': pca_traces,
+                'acg_pca':      pca_acg,
+                'rf_diameter':  final_rf_diam,
+                'time_to_peak': final_time_to_peak,
             }
 
             self.progress.emit("Finalizing…", 100)
@@ -305,28 +241,36 @@ class FeatureAnalysisWorker(QThread):
 
 class FeatureExtractionWindow(QDialog):
     """
-    Pop-up window for feature extraction with linked brushing and lazy loading.
-    Redesigned with a clean dark-scientific aesthetic.
+    Pop-up window for feature extraction with linked brushing.
+
+    Improvements over the original:
+    • useblit=True on all selectors → rubber-band draws via XOR/blit, near-instant
+    • draw_idle() instead of draw() when updating point colours → no blocking redraws
+    • LassoSelector added alongside RectangleSelector; toggle with toolbar buttons
+    • Window stays open after creating a new cluster group
     """
 
-    # Plot descriptors: (title, x_label, y_label)
     _PLOT_META = [
-        ("Temporal PCA",          "PC 1",          "PC 2"),
-        ("RF vs Temporal PC1",    "RF Diameter (µm)", "Temporal PC 1"),
-        ("Time to Peak vs RF",    "RF Diameter (µm)", "Time to Peak (frames)"),
-        ("ACG PCA",               "PC 1",          "PC 2"),
-        ("RF vs ACG PC1",         "RF Diameter (µm)", "ACG PC 1"),
-        ("Temporal vs ACG PC1",   "Temporal PC 1", "ACG PC 1"),
+        ("Temporal PCA",        "PC 1",             "PC 2"),
+        ("RF vs Temporal PC1",  "RF Diameter (µm)", "Temporal PC 1"),
+        ("Time to Peak vs RF",  "RF Diameter (µm)", "Time to Peak (frames)"),
+        ("ACG PCA",             "PC 1",             "PC 2"),
+        ("RF vs ACG PC1",       "RF Diameter (µm)", "ACG PC 1"),
+        ("Temporal vs ACG PC1", "Temporal PC 1",    "ACG PC 1"),
     ]
 
     def __init__(self, main_window: "MainWindow", cluster_ids, parent=None):
         logger.debug(f"Initializing FeatureExtractionWindow with {len(cluster_ids)} clusters")
         super().__init__(parent)
-        self.main_window = main_window
+        self.main_window         = main_window
         self.initial_cluster_ids = cluster_ids
-        self.cluster_ids: list = []
+        self.cluster_ids: list   = []
+
+        # Selection tool state: 'rect' | 'lasso'
+        self._selection_mode = 'rect'
 
         self._build_window()
+        self._build_toolbar()
         self._build_loading_ui()
         self._build_canvas()
         self._start_worker()
@@ -335,19 +279,79 @@ class FeatureExtractionWindow(QDialog):
 
     def _build_window(self):
         self.setWindowTitle("Feature Extraction")
-        self.setMinimumSize(900, 600)
-        self.resize(1200, 780)
+        self.setMinimumSize(900, 640)
+        self.resize(1200, 820)
         self.setStyleSheet(DIALOG_STYLESHEET)
 
-        # Dark window background via palette so Qt chrome matches
         pal = self.palette()
         pal.setColor(QPalette.Window, QColor(PALETTE["bg"]))
         self.setPalette(pal)
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(16, 14, 16, 14)
-        self.main_layout.setSpacing(10)
+        self.main_layout.setSpacing(8)
         self.setLayout(self.main_layout)
+
+    # ── Toolbar ───────────────────────────────────────────────────────────────
+
+    def _build_toolbar(self):
+        """Thin toolbar with Rectangle / Lasso toggle buttons."""
+        toolbar = QWidget()
+        toolbar.setFixedHeight(36)
+        row = QHBoxLayout(toolbar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        label = QLabel("Selection tool:")
+        label.setStyleSheet(
+            f"color: {PALETTE['text_muted']}; font-size: 12px; padding-right: 4px;"
+        )
+        row.addWidget(label)
+
+        self._btn_rect  = self._make_tool_btn("▭  Rectangle", 'rect')
+        self._btn_lasso = self._make_tool_btn("⌇  Lasso",     'lasso')
+
+        row.addWidget(self._btn_rect)
+        row.addWidget(self._btn_lasso)
+        row.addStretch()
+
+        hint = QLabel("Drag to select · right-click selection to create cluster")
+        hint.setStyleSheet(
+            f"color: {PALETTE['text_muted']}; font-size: 11px; font-style: italic;"
+        )
+        row.addWidget(hint)
+
+        self.main_layout.addWidget(toolbar)
+        self._update_tool_buttons()
+
+    def _make_tool_btn(self, text: str, mode: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("tool_btn")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda _, m=mode: self._set_selection_mode(m))
+        return btn
+
+    def _update_tool_buttons(self):
+        for btn, mode in [(self._btn_rect, 'rect'), (self._btn_lasso, 'lasso')]:
+            active = (self._selection_mode == mode)
+            btn.setProperty("active", "true" if active else "false")
+            # Force stylesheet re-evaluation
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _set_selection_mode(self, mode: str):
+        if mode == self._selection_mode:
+            return
+        self._selection_mode = mode
+        self._update_tool_buttons()
+
+        # Enable only the matching selector family; disable the other
+        for sel in self._rect_selectors:
+            sel.set_active(mode == 'rect')
+        for sel in self._lasso_selectors:
+            sel.set_active(mode == 'lasso')
+
+        self.canvas.draw_idle()
 
     # ── Loading UI ────────────────────────────────────────────────────────────
 
@@ -373,12 +377,7 @@ class FeatureExtractionWindow(QDialog):
     # ── Canvas ────────────────────────────────────────────────────────────────
 
     def _build_canvas(self):
-        # Use constrained_layout (set via rcParams above) + explicit figsize
-        self.fig, self.axes = plt.subplots(
-            2, 3,
-            figsize=(12, 7),
-            dpi=100,
-        )
+        self.fig, self.axes = plt.subplots(2, 3, figsize=(12, 7), dpi=100)
         self.fig.set_layout_engine('constrained')
 
         self.canvas = FigureCanvas(self.fig)
@@ -388,13 +387,22 @@ class FeatureExtractionWindow(QDialog):
         self.main_layout.addWidget(self.canvas, stretch=1)
 
         self.scatter_artists: List[Optional[any]] = [None] * 6
-        self.selectors: list = []
+        # Overlay scatters: one per axes, holds ONLY selected points (orange, larger)
+        # We update these via set_offsets() — much faster than recoloring the base scatter
+        self._overlay_artists: List[Optional[any]] = [None] * 6
+        # Per-axes (x, y) arrays stored so highlight_selection can look up coordinates
+        self._plot_data: List[Optional[tuple]] = [None] * 6
+
+        # Separate lists so we can toggle them independently
+        self._rect_selectors:  list = []
+        self._lasso_selectors: list = []
 
     # ── Worker ────────────────────────────────────────────────────────────────
 
     def _start_worker(self):
         self.worker = FeatureAnalysisWorker(
-            self.main_window.data_manager, self.initial_cluster_ids)
+            self.main_window.data_manager, self.initial_cluster_ids
+        )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
@@ -413,11 +421,11 @@ class FeatureExtractionWindow(QDialog):
             self.loading_widget.show()
             return
 
-        self.cluster_ids      = results.get("cluster_ids",   [])
-        self.temporal_pca     = results.get("temporal_pca",  np.empty((0, 3)))
-        self.acg_pca          = results.get("acg_pca",       np.empty((0, 3)))
-        self.rf_diameter      = results.get("rf_diameter",   np.empty((0,)))
-        self.time_to_peak     = results.get("time_to_peak",  np.empty((0,)))
+        self.cluster_ids  = results.get("cluster_ids",  [])
+        self.temporal_pca = results.get("temporal_pca", np.empty((0, 3)))
+        self.acg_pca      = results.get("acg_pca",      np.empty((0, 3)))
+        self.rf_diameter  = results.get("rf_diameter",  np.empty((0,)))
+        self.time_to_peak = results.get("time_to_peak", np.empty((0,)))
 
         if len(self.cluster_ids) == 0:
             self.status_label.setText("No valid data found for the selected clusters.")
@@ -430,22 +438,12 @@ class FeatureExtractionWindow(QDialog):
     # ── Plotting ──────────────────────────────────────────────────────────────
 
     def draw_plots(self):
-        """Render all six scatter plots with modern dark-scientific aesthetics."""
-
-        n = len(self.cluster_ids)
-
-        # Base scatter style — filled translucent circles, accent-coloured
+        """Render all six scatter plots."""
         scatter_kwargs = dict(
-            marker="o",
-            s=28,
-            linewidths=0,
-            alpha=0.65,
-            color=PALETTE["accent"],
-            picker=5,
-            zorder=3,
+            marker="o", s=28, linewidths=0, alpha=0.65,
+            color=PALETTE["accent"], picker=5, zorder=3,
         )
 
-        # Data pairs for each subplot
         pca_t = self.temporal_pca
         pca_a = self.acg_pca
         rf    = self.rf_diameter
@@ -454,23 +452,23 @@ class FeatureExtractionWindow(QDialog):
         data_pairs = [
             (pca_t[:, 0] if len(pca_t) > 0 else np.empty(0),
              pca_t[:, 1] if len(pca_t) > 0 else np.empty(0)),
-            (rf,   pca_t[:, 0] if len(pca_t) > 0 else np.empty(0)),
-            (rf,   ttp),
+            (rf, pca_t[:, 0] if len(pca_t) > 0 else np.empty(0)),
+            (rf, ttp),
             (pca_a[:, 0] if len(pca_a) > 0 else np.empty(0),
              pca_a[:, 1] if len(pca_a) > 0 else np.empty(0)),
-            (rf,   pca_a[:, 0] if len(pca_a) > 0 else np.empty(0)),
+            (rf, pca_a[:, 0] if len(pca_a) > 0 else np.empty(0)),
             (pca_t[:, 0] if len(pca_t) > 0 else np.empty(0),
              pca_a[:, 0] if len(pca_a) > 0 else np.empty(0)),
         ]
 
-        self.selectors = []
+        self._rect_selectors.clear()
+        self._lasso_selectors.clear()
 
         for idx, ax in enumerate(self.axes.flat):
             ax.clear()
             title, xlabel, ylabel = self._PLOT_META[idx]
             x_data, y_data = data_pairs[idx]
 
-            # Style the axes
             ax.set_facecolor(PALETTE["surface"])
             for spine in ax.spines.values():
                 spine.set_edgecolor(PALETTE["border"])
@@ -482,50 +480,76 @@ class FeatureExtractionWindow(QDialog):
                          color=PALETTE["text_primary"])
             ax.set_xlabel(xlabel, fontsize=8.5, color=PALETTE["text_muted"], labelpad=5)
             ax.set_ylabel(ylabel, fontsize=8.5, color=PALETTE["text_muted"], labelpad=5)
-
             ax.tick_params(colors=PALETTE["text_muted"], length=3, width=0.7)
             ax.grid(True, color=PALETTE["grid"], linewidth=0.8, linestyle="-", zorder=0)
 
             if len(x_data) > 0 and len(y_data) > 0:
+                # Base scatter — drawn once, NEVER mutated again
                 artist = ax.scatter(x_data, y_data, **scatter_kwargs)
                 self.scatter_artists[idx] = artist
 
-                # Add a 5% margin so edge points aren't clipped
+                # Overlay scatter — starts empty, updated cheaply via set_offsets()
+                overlay = ax.scatter(
+                    [], [],
+                    marker="o", s=55, linewidths=0.6,
+                    edgecolors=PALETTE["bg"],
+                    color=PALETTE["highlight"],
+                    alpha=0.95, zorder=4,
+                )
+                self._overlay_artists[idx] = overlay
+
+                # Store data for coordinate lookup in highlight_selection
+                self._plot_data[idx] = (x_data, y_data)
+
                 x_pad = (x_data.max() - x_data.min()) * 0.05 or 0.1
                 y_pad = (y_data.max() - y_data.min()) * 0.05 or 0.1
                 ax.set_xlim(x_data.min() - x_pad, x_data.max() + x_pad)
                 ax.set_ylim(y_data.min() - y_pad, y_data.max() + y_pad)
 
-                self._setup_selector(ax, idx, x_data, y_data)
+                self._attach_rect_selector(ax, x_data, y_data)
+                self._attach_lasso_selector(ax, x_data, y_data)
             else:
                 ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
                         ha="center", va="center", fontsize=9,
                         color=PALETTE["text_muted"])
 
         self.fig.patch.set_facecolor(PALETTE["bg"])
+
+        # Apply initial active state
+        for sel in self._lasso_selectors:
+            sel.set_active(self._selection_mode == 'lasso')
+        for sel in self._rect_selectors:
+            sel.set_active(self._selection_mode == 'rect')
+
+        # Full render once — then snapshot the clean background for blitting
         self.canvas.draw()
+        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
 
-    # ── Selection ─────────────────────────────────────────────────────────────
+    # ── Selection: Rectangle ──────────────────────────────────────────────────
 
-    def _setup_selector(self, ax, index: int, x_data: np.ndarray, y_data: np.ndarray):
-        """Attach a RectangleSelector to an axes."""
-
+    def _attach_rect_selector(self, ax, x_data: np.ndarray, y_data: np.ndarray):
+        """
+        Attach a RectangleSelector with useblit=True for instant rubber-banding.
+        The selector fires only on mouse release; no blocking work happens during drag.
+        """
         def onselect(eclick, erelease):
-            if len(self.cluster_ids) == 0:
+            if not self.cluster_ids:
                 return
             x1, y1 = eclick.xdata, eclick.ydata
             x2, y2 = erelease.xdata, erelease.ydata
+            if None in (x1, y1, x2, y2):
+                return
             xmin, xmax = sorted([x1, x2])
             ymin, ymax = sorted([y1, y2])
             mask = ((x_data >= xmin) & (x_data <= xmax) &
                     (y_data >= ymin) & (y_data <= ymax))
-            selected_indices = np.where(mask)[0]
-            self.highlight_selection(selected_indices)
-            self.show_context_menu(selected_indices)
+            selected = np.where(mask)[0]
+            self.highlight_selection(selected)
+            self.show_context_menu(selected)
 
         rect = RectangleSelector(
             ax, onselect,
-            useblit=False,
+            useblit=True,                # ← key speed-up: XOR/blit rubber band
             button=[1],
             interactive=True,
             minspanx=5, minspany=5,
@@ -538,42 +562,106 @@ class FeatureExtractionWindow(QDialog):
                 linestyle="--",
             ),
         )
-        self.selectors.append(rect)
+        self._rect_selectors.append(rect)
 
-    # Keep old name as alias so any external callers still work
+    # ── Selection: Lasso ──────────────────────────────────────────────────────
+
+    def _attach_lasso_selector(self, ax, x_data: np.ndarray, y_data: np.ndarray):
+        """
+        Attach a LassoSelector with useblit=True.
+        Points inside the closed lasso path are selected on mouse release.
+        """
+        # Pre-build the (N, 2) array of point coordinates for this subplot
+        pts = np.column_stack([x_data, y_data])
+
+        def onselect(verts):
+            if not self.cluster_ids or len(verts) < 3:
+                return
+            path = Path(verts)
+            mask = path.contains_points(pts)
+            selected = np.where(mask)[0]
+            self.highlight_selection(selected)
+            self.show_context_menu(selected)
+
+        lasso = LassoSelector(
+            ax, onselect,
+            useblit=True,               # ← blitting keeps the lasso line fast
+            button=[1],
+            props=dict(
+                color=PALETTE["highlight"],
+                linewidth=1.5,
+                linestyle="-",
+                alpha=0.80,
+            ),
+        )
+        lasso.set_active(False)         # starts inactive; activated by toolbar
+        self._lasso_selectors.append(lasso)
+
+    # ── Public aliases (keep external callers working) ────────────────────────
+
+    def _setup_selector(self, ax, index, x_data, y_data):
+        self._attach_rect_selector(ax, x_data, y_data)
+        self._attach_lasso_selector(ax, x_data, y_data)
+
     def setup_selector(self, ax, index, x_data, y_data):
         self._setup_selector(ax, index, x_data, y_data)
 
+    # ── Highlight ─────────────────────────────────────────────────────────────
+
     def highlight_selection(self, indices: np.ndarray):
-        """Highlight selected indices across ALL plots."""
-        n = len(self.cluster_ids)
-        base_color    = np.array([*mpl.colors.to_rgb(PALETTE["accent"]),    0.60])
-        sel_color     = np.array([*mpl.colors.to_rgb(PALETTE["highlight"]), 0.95])
+        """
+        True blit highlight — genuinely instant regardless of N.
 
-        colors = np.tile(base_color, (n, 1))
-        sizes  = np.full(n, 28.0)
+        Pattern:
+          1. Restore the clean background snapshot (no redraw)
+          2. Update overlay scatter offsets (O(k), k = selected points)
+          3. draw_artist() each overlay directly onto the canvas pixels
+          4. blit() — pushes only the dirty rectangle to the screen
 
-        if len(indices) > 0:
-            colors[indices] = sel_color
-            sizes[indices]  = 55.0   # Slightly larger for selected points
+        The matplotlib render pipeline is never invoked.
+        """
+        for idx, overlay in enumerate(self._overlay_artists):
+            if overlay is None:
+                continue
+            if len(indices) == 0:
+                overlay.set_offsets(np.empty((0, 2)))
+            else:
+                plot_xy = self._plot_data[idx]
+                if plot_xy is None:
+                    continue
+                x_data, y_data = plot_xy
+                overlay.set_offsets(np.column_stack([x_data[indices], y_data[indices]]))
 
-        for scatter in self.scatter_artists:
-            if scatter is not None:
-                scatter.set_facecolor(colors)
-                scatter.set_sizes(sizes)
+        # Restore clean background — wipes previous orange dots in one memcpy
+        self.canvas.restore_region(self._blit_bg)
 
-        self.canvas.draw()
+        # Stamp each overlay artist directly onto the canvas buffer
+        for idx, overlay in enumerate(self._overlay_artists):
+            if overlay is not None:
+                self.axes.flat[idx].draw_artist(overlay)
+
+        # Push the updated buffer to the screen — single GPU/X11 flush
+        self.canvas.blit(self.fig.bbox)
+
+    # ── Context menu ──────────────────────────────────────────────────────────
 
     def show_context_menu(self, selected_indices: np.ndarray):
         if len(selected_indices) == 0:
             return
         selected_ids = [self.cluster_ids[i] for i in selected_indices]
         menu = QMenu(self)
-        action_label = f"Create group from {len(selected_ids)} cluster{'s' if len(selected_ids) != 1 else ''}"
-        create_action = menu.addAction(action_label)
+        n = len(selected_ids)
+        label = f"Create group from {n} cluster{'s' if n != 1 else ''}"
+        create_action = menu.addAction(label)
+
+        # Add a "Clear selection" option as a convenience
+        clear_action = menu.addAction("Clear selection")
+
         action = menu.exec(QCursor.pos())
         if action == create_action:
             self._create_new_class(selected_ids)
+        elif action == clear_action:
+            self.highlight_selection(np.array([], dtype=int))
 
     # Keep old name as alias
     def create_new_class(self, selected_ids):
@@ -588,16 +676,24 @@ class FeatureExtractionWindow(QDialog):
         from ..callbacks import group_clusters_in_tree
         group_clusters_in_tree(self.main_window, selected_ids, group_name)
         logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
-        self.close()
+        # ← self.close() removed: window stays open so you can keep selecting
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
+
+    def resizeEvent(self, event):
+        """Invalidate the blit background cache whenever the window is resized."""
+        super().resizeEvent(event)
+        # After resize matplotlib will redraw; re-snapshot on the next draw event
+        if hasattr(self, '_blit_bg') and self._blit_bg is not None:
+            self._blit_bg = None
+            self.canvas.mpl_connect('draw_event', self._on_canvas_draw)
+
+    def _on_canvas_draw(self, event):
+        """Re-snapshot the background after a full redraw (e.g. after resize)."""
+        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
 
     def closeEvent(self, event):
         if self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
         super().closeEvent(event)
-
-
-
-        
