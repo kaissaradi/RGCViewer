@@ -539,10 +539,12 @@ def populate_tree_view(main_window: MainWindow, df=None):
     if 'KSLabel' not in df_tree.columns:
         df_tree['KSLabel'] = 'Unknown'
 
+    # Pre-compute string conversions ONCE (O(n) total, not O(n²))
+    df_tree['KSLabel_str'] = df_tree['KSLabel'].astype(str)
+    unique_labels = sorted(df_tree['KSLabel_str'].unique())
+
     # Create top-level nodes for each unique KSLabel
     groups = {}
-    # Sort for consistent display
-    unique_labels = sorted(df_tree['KSLabel'].unique().astype(str))
 
     for label in unique_labels:
         group_item = QStandardItem(label)
@@ -569,7 +571,7 @@ def populate_tree_view(main_window: MainWindow, df=None):
     # Add each cluster as a child item to its group
     for _, row in df_tree.iterrows():
         cluster_id = row['cluster_id']
-        label = row['KSLabel']
+        label = row['KSLabel_str']  # Use pre-converted string
 
         # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
         item_text = f"Cluster {cluster_id} (n={row.get('n_spikes', '?')})"
@@ -593,8 +595,8 @@ def populate_tree_view(main_window: MainWindow, df=None):
         # Prevent dropping items onto cells
         cell_item.setDropEnabled(False)
 
-        if str(label) in groups:
-            groups[str(label)].appendRow(cell_item)
+        if label in groups:  # Use pre-converted label directly
+            groups[label].appendRow(cell_item)
 
     main_window.setup_tree_model(model)
     main_window.tree_view.collapseAll() 

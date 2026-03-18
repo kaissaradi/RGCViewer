@@ -312,7 +312,7 @@ class StandardPlotsPanel(QWidget):
     def update_all(self, cluster_id):
         """
         Update all standard plots for the given cluster.
-        Uses persistent objects and setData() for speed.
+        Uses batch rendering with disabled auto-range for single render pass.
         """
         if cluster_id is None:
             return
@@ -320,6 +320,11 @@ class StandardPlotsPanel(QWidget):
         dm = self.main_window.data_manager
         if dm is None:
             return
+
+        # Disable auto-range for batch rendering (prevents multiple render passes)
+        plots_to_update = [self.grid_plot, self.acg_plot, self.isi_plot, self.fr_plot]
+        for plot in plots_to_update:
+            plot.disableAutoRange()
 
         # If user requests array image but none is loaded, prompt for calibration
         current_mode = self.channel_mode_combo.currentText()
@@ -631,3 +636,7 @@ class StandardPlotsPanel(QWidget):
             self._fr_overlay_curve.setData(overlay_x, overlay_y)
         else:
             self._fr_overlay_curve.setData([], [])
+
+        # Re-enable auto-range after batch updates
+        for plot in plots_to_update:
+            plot.enableAutoRange()

@@ -329,52 +329,55 @@ class DataManager(QObject):
             return
 
     def update_and_export_status(self, selected_ids, status):
+        """
+        Batch update status_df efficiently in O(n) time.
+        """
         selected_ids = set(selected_ids)
         logger.debug("Marking %s: %s", status, selected_ids)
-        # Update status_df
+
+        if not selected_ids:
+            return
+
+        # Build all updates in memory first (O(n))
+        updates = []
         for cid in selected_ids:
-            # If Duplicate, all selected ids are a 'set', else only self
-            if status == 'Duplicate':
-                set_ids = selected_ids
-            else:
-                set_ids = set([cid])
+            set_ids = selected_ids if status == 'Duplicate' else {cid}
+            updates.append({
+                'cluster_id': cid,
+                'status': status,
+                'set': set_ids
+            })
 
-            if cid in self.status_df['cluster_id'].values:
-                idx = self.status_df[self.status_df['cluster_id']
-                                     == cid].index[0]
+        updates_df = pd.DataFrame(updates)
 
-                # Update existing entry
-                self.status_df.at[idx, 'status'] = status
-                self.status_df.at[idx, 'set'] = set_ids
-            else:
-                # Create new entry
-                self.status_df = pd.concat([self.status_df, pd.DataFrame({
-                    'cluster_id': [cid],
-                    'status': [status],
-                    'set': [set_ids]
-                })], ignore_index=True)
+        # Single batch operation: remove old + add new (O(n) total)
+        self.status_df = pd.concat([
+            self.status_df[~self.status_df['cluster_id'].isin(selected_ids)],
+            updates_df
+        ], ignore_index=True)
 
-        # Update cluster_df status and export status csv
         self.update_cluster_df_with_status()
         self.export_status()
 
     def update_cluster_df_with_status(self):
         """
         Update the cluster_df 'status' column based on current status_df.
+        Uses vectorized operations for efficiency.
         """
-        if self.cluster_df.empty:
+        if self.cluster_df.empty or self.status_df.empty:
             return
 
         # Reset all statuses to 'Original'
         self.cluster_df['status'] = 'Original'
+        self.cluster_df['set'] = None
 
-        for _, row in self.status_df.iterrows():
-            cluster_id = row['cluster_id']
-            status = row['status']
-            idx = self.cluster_df[self.cluster_df['cluster_id']
-                                  == cluster_id].index[0]
-            self.cluster_df.at[idx, 'status'] = status
-            self.cluster_df.at[idx, 'set'] = row['set']
+        # Use vectorized merge for efficient update
+        status_dict = self.status_df.set_index('cluster_id')[['status', 'set']].to_dict('index')
+        for cluster_id, row_data in status_dict.items():
+            if cluster_id in self.cluster_df['cluster_id'].values:
+                idx = self.cluster_df[self.cluster_df['cluster_id'] == cluster_id].index[0]
+                self.cluster_df.at[idx, 'status'] = row_data['status']
+                self.cluster_df.at[idx, 'set'] = row_data['set']
 
     def export_status(self):
         """

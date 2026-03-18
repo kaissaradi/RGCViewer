@@ -101,6 +101,8 @@ class MplCanvas(FigureCanvas):
 
 
 class HighlightStatusPandasModel(PandasModel):
+    """Optimized model with role-based caching for faster scrolling."""
+    
     STATUS_COLORS = {
         'Duplicate': QColor('#FFDDDD'),      # Light red
         'Clean': QColor('#DDFFDD'),          # Light green
@@ -111,10 +113,29 @@ class HighlightStatusPandasModel(PandasModel):
         'Off Array': QColor('#CCCCCC'),      # Gray
     }
 
+    def __init__(self, dataframe: pd.DataFrame, parent=None):
+        super().__init__(dataframe, parent)
+        # Caching dictionaries for faster data() lookups
+        self._background_cache = {}
+        self._foreground_cache = {}
+        self._display_cache = {}
+
     def refresh_view(self, row_indices=None):
-        # for row in row_indices:
-        #     self._dataframe.at[row, 'status'] = status
-        # Notify the view that the data has changed for these rows
+        """Invalidate cache on data change."""
+        if row_indices is None:
+            # Full refresh
+            self._background_cache.clear()
+            self._foreground_cache.clear()
+            self._display_cache.clear()
+        else:
+            # Partial refresh
+            for row in row_indices:
+                for cache in [self._background_cache, self._foreground_cache, self._display_cache]:
+                    keys_to_remove = [k for k in cache if k[0] == row]
+                    for k in keys_to_remove:
+                        cache.pop(k, None)
+
+        # Notify views
         if row_indices is None:
             row_indices = range(len(self._dataframe))
         top_left = self.index(min(row_indices), 0)
@@ -124,6 +145,39 @@ class HighlightStatusPandasModel(PandasModel):
                 Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole])
 
     def data(self, index, role=Qt.DisplayRole):
+        """Return cached data if available, otherwise compute and cache."""
+        if not index.isValid():
+            return None
+
+        row = index.row()
+        cache_key = (row, index.column())
+
+        # Check appropriate cache first
+        if role == Qt.BackgroundRole:
+            if cache_key in self._background_cache:
+                return self._background_cache[cache_key]
+        elif role == Qt.ForegroundRole:
+            if cache_key in self._foreground_cache:
+                return self._foreground_cache[cache_key]
+        elif role == Qt.DisplayRole:
+            if cache_key in self._display_cache:
+                return self._display_cache[cache_key]
+
+        # Compute if not cached
+        result = self._compute_data(index, role)
+
+        # Cache the result
+        if role == Qt.BackgroundRole:
+            self._background_cache[cache_key] = result
+        elif role == Qt.ForegroundRole:
+            self._foreground_cache[cache_key] = result
+        elif role == Qt.DisplayRole:
+            self._display_cache[cache_key] = result
+
+        return result
+
+    def _compute_data(self, index, role):
+        """Original data() logic moved here."""
         value = super().data(index, role)
         if not index.isValid():
             return value
@@ -154,6 +208,6 @@ class HighlightStatusPandasModel(PandasModel):
 
         except Exception:
             # If any error occurs, log and return the default value
-            logger.exception("HighlightDuplicatesPandasModel.data error")
+            logger.exception("HighlightStatusPandasModel.data error")
 
         return value

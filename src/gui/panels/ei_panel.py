@@ -395,69 +395,88 @@ class EIPanel(QWidget):
     def update_ei(self, cluster_ids):
         """
         Main entry point: update the EI panel for one or more clusters.
+        With proper error handling and timeouts.
         """
         if not self.isVisible():
             return
         cluster_ids = np.array(cluster_ids, dtype=int)
         if cluster_ids.ndim == 0:
             cluster_ids = np.array([cluster_ids], dtype=int)
-        
+
         # We focus on the first cluster for the main check, though we might support multi-cluster later
         primary_cluster_id = cluster_ids[0]
         vision_cluster_ids = cluster_ids + 1
 
-        # Check for Vision EI
-        has_vision_ei = self.main_window.data_manager.vision_eis and any(
-            cid in self.main_window.data_manager.vision_eis for cid in vision_cluster_ids)
+        try:
+            # Check for Vision EI
+            has_vision_ei = self.main_window.data_manager.vision_eis and any(
+                cid in self.main_window.data_manager.vision_eis for cid in vision_cluster_ids)
 
-        if has_vision_ei:
-            self._load_and_draw_vision_ei(cluster_ids)
-        else:
-            if self.main_window.data_manager.vision_eis is not None:
-                logger.debug(
-                    "No Vision EI found for cluster(s) %s; falling back to Kilosort EI",
-                    cluster_ids)
+            if has_vision_ei:
+                self._load_and_draw_vision_ei(cluster_ids)
             else:
-                logger.debug(
-                    "Vision EIs not loaded; falling back to Kilosort EI")
-            
-            # --- ASYNC LOADING LOGIC FOR KILOSORT EI ---
-            # Check if we have the data cached in DataManager
-            lightweight = self.main_window.data_manager.get_lightweight_features(primary_cluster_id)
-            heavyweight = self.main_window.data_manager.get_heavyweight_features(primary_cluster_id)
+                if self.main_window.data_manager.vision_eis is not None:
+                    logger.debug(
+                        "No Vision EI found for cluster(s) %s; falling back to Kilosort EI",
+                        cluster_ids)
+                else:
+                    logger.debug(
+                        "Vision EIs not loaded; falling back to Kilosort EI")
 
-            if lightweight is None or heavyweight is None:
-                # Data not ready. Show loading screen and request it.
-                self.clear()
-                self.spatial_canvas.fig.text(
-                    0.5, 0.5, "Loading spatial features...",
-                    ha='center', va='center', color='cyan', fontsize=14
-                )
-                self.spatial_canvas.draw()
-                
-                # Request background computation
-                if self.main_window.spatial_worker:
-                    self.main_window.spatial_worker.add_to_queue(primary_cluster_id, high_priority=True)
-                return
+                # --- ASYNC LOADING LOGIC FOR KILOSORT EI ---
+                # Check if we have the data cached in DataManager
+                lightweight = self.main_window.data_manager.get_lightweight_features(primary_cluster_id)
+                heavyweight = self.main_window.data_manager.get_heavyweight_features(primary_cluster_id)
 
-            # If data is present, draw immediately
-            self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
+                if lightweight is None or heavyweight is None:
+                    # Data not ready. Show loading screen and request it.
+                    self._show_loading_state("Loading spatial features...")
 
-        # If the current view is the latency map, refresh it with the new
-        # cluster data
-        if self.current_view == "Latency Map":
-            if self.current_ei_data is not None and len(
-                    self.current_ei_data) > 0:
-                # Use the first cluster's data
-                ei_data = self.current_ei_data[0]
-                channel_positions = self.main_window.data_manager.channel_positions
-                if self.main_window.data_manager.vision_channel_positions is not None:
-                    channel_positions = self.main_window.data_manager.vision_channel_positions
-                plot_latency_map(
-                    self.spatial_canvas.fig,
-                    ei_data,
-                    channel_positions,
-                    self.main_window.data_manager.sampling_rate)
+                    # Request background computation
+                    if self.main_window.spatial_worker:
+                        self.main_window.spatial_worker.add_to_queue(primary_cluster_id, high_priority=True)
+                    return
+
+                # If data is present, draw immediately
+                self._load_and_draw_ks_ei(cluster_ids, is_fallback=True)
+
+            # If the current view is the latency map, refresh it with the new
+            # cluster data
+            if self.current_view == "Latency Map":
+                if self.current_ei_data is not None and len(
+                        self.current_ei_data) > 0:
+                    # Use the first cluster's data
+                    ei_data = self.current_ei_data[0]
+                    channel_positions = self.main_window.data_manager.channel_positions
+                    if self.main_window.data_manager.vision_channel_positions is not None:
+                        channel_positions = self.main_window.data_manager.vision_channel_positions
+                    plot_latency_map(
+                        self.spatial_canvas.fig,
+                        ei_data,
+                        channel_positions,
+                        self.main_window.data_manager.sampling_rate)
+
+        except Exception as e:
+            logger.exception(f"EI update failed for cluster {primary_cluster_id}")
+            self._show_error_state(f"Error: {str(e)[:100]}")
+
+    def _show_loading_state(self, message="Loading..."):
+        """Display a loading overlay."""
+        self.clear()
+        self.spatial_canvas.fig.text(
+            0.5, 0.5, message,
+            ha='center', va='center', color='cyan', fontsize=14
+        )
+        self.spatial_canvas.draw()
+
+    def _show_error_state(self, message="Error"):
+        """Display an error state."""
+        self.clear()
+        self.spatial_canvas.fig.text(
+            0.5, 0.5, message,
+            ha='center', va='center', color='red', fontsize=12
+        )
+        self.spatial_canvas.draw()
 
     def clear(self):
         self.spatial_canvas.fig.clear()

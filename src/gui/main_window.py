@@ -64,6 +64,10 @@ class MainWindow(QMainWindow):
         self.standard_worker_thread = None
         self.standard_plots_worker = None
 
+        # Additional thread references for proper cleanup
+        self.ks_load_thread = None
+        self.vision_load_thread = None
+
         self.spatial_plot_dirty = False
 
         self.current_spatial_features = None
@@ -87,7 +91,7 @@ class MainWindow(QMainWindow):
         # selection timer for debouncing rapid selections
         self.selection_timer = QTimer(self)
         self.selection_timer.setSingleShot(True)
-        self.selection_timer.setInterval(150)  # 150ms delay
+        self.selection_timer.setInterval(25)  # 25ms - minimal delay for responsive feel
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
 
@@ -168,35 +172,32 @@ class MainWindow(QMainWindow):
 
         # --- TIER 1: IMMEDIATE UPDATES (Hot-Swap / Cached Data) ---
 
-        # 1. Population RF Updates
-        # We must be specific about WHICH canvas we update to avoid overwriting the Single-Cell STA view.
-
-        # A. Split View (Right Side Pane) - Always update if enabled
+        # 1. Population RF Updates - Only if hot-swap is possible (fast path)
+        # Full rebuild is deferred to Tier 2 to avoid first-click freeze
         if self.population_view_enabled:
-            try:
-                draw_population_rfs_plot(
-                    main_window=self,
-                    selected_cell_id=cluster_id,
-                    canvas=self.pop_mosaic_canvas  # <--- Explicitly target the right-side canvas
-                )
-            except Exception as e:
-                logger.error(f"Tier 1 Pop Split update failed: {e}")
-
-        # B. STA Tab (Main Center Pane) - Only update if explicitly in 'Population' mode
-        if self.analysis_tabs.currentWidget() == self.sta_panel:
-            if self.current_sta_view == 'population_rfs':
+            # Quick check if we can hot-swap (check if canvas already has state)
+            canvas = self.pop_mosaic_canvas
+            can_hot_swap = (
+                hasattr(canvas, '_pop_plot_state') and
+                canvas._pop_plot_state.get('ax') in canvas.fig.axes
+            )
+            if can_hot_swap:
+                # Fast update - update existing ellipse geometry only
                 try:
                     draw_population_rfs_plot(
                         main_window=self,
                         selected_cell_id=cluster_id,
-                        canvas=self.sta_panel.rf_canvas  # <--- Only target main canvas if in Pop mode
+                        canvas=self.pop_mosaic_canvas
                     )
-                except Exception: pass
-            else:
-                # Bypass the 150ms debouncer and load instantly for single-cell views
-                self.sta_panel.update_view(cluster_id)
-            # If self.current_sta_view == 'rf', we DO NOTHING here.
-            # We wait for Tier 2 to draw the correct single-cell STA.
+                except Exception as e:
+                    logger.error(f"Tier 1 Pop Split update failed: {e}")
+            # If can't hot-swap, defer to Tier 2 for full rebuild
+
+        # B. STA Tab (Main Center Pane) - Only update if explicitly in 'Population' mode
+        if self.analysis_tabs.currentWidget() == self.sta_panel:
+            if self.current_sta_view == 'population_rfs':
+                # Population RF in STA tab - also defer to Tier 2
+                pass  # Will be handled in _draw_plots
 
         # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
         # Standard plots are updated only in _draw_plots to prevent redundant redraws
@@ -239,11 +240,8 @@ class MainWindow(QMainWindow):
 
         # Only run FeatureWorker if dat_path is available
         if self.data_manager.dat_path is not None:
-            # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
-            if self.feature_worker_thread and self.feature_worker_thread.isRunning():
-                self.feature_worker_thread.quit()
-                # ensure previous thread fully stops before starting a new one
-                self.feature_worker_thread.wait()
+            # Cleanup previous worker before starting a new one
+            self._cleanup_thread('feature_worker_thread')
 
             self.feature_worker_thread = QThread()
             self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
@@ -260,23 +258,40 @@ class MainWindow(QMainWindow):
 
     def on_features_ready(self, cluster_id, features):
         """
-        Slot that receives the features from the background worker.
+        Cache features and update UI ONLY if still the current selection.
+        Prevents stale data from overwriting fresh results.
         """
-        # Cache the newly computed features.
+        current_selection = self._get_selected_cluster_id()
+
+        # CRITICAL: Discard stale results BEFORE caching
+        if cluster_id != current_selection:
+            logger.debug(f"Discarding stale features for C{cluster_id} (now viewing C{current_selection})")
+            return
+
+        # Cache the newly computed features
         self.data_manager.ei_cache[cluster_id] = features
 
-        # VERY IMPORTANT: Only draw if the returned data is for the currently selected cluster.
-        # This prevents a slow, old request from overwriting a new, quick one.
-        if cluster_id == self._get_selected_cluster_id():
+        # Only draw if still on a tab that needs these features
+        current_tab = self.analysis_tabs.currentWidget()
+        if current_tab in (self.ei_panel, self.waveforms_panel, self.standard_plots_panel):
             self._draw_plots(cluster_id, features)
 
-        self.feature_worker_thread.quit()
-        try:
-            # Wait for the thread to finish teardown to avoid races
-            if self.feature_worker_thread and self.feature_worker_thread.isRunning():
-                self.feature_worker_thread.wait()
-        except Exception:
-            pass
+        # Cleanup with timeout to prevent hangs
+        self._cleanup_thread('feature_worker_thread')
+
+    def _cleanup_thread(self, thread_attr: str, timeout_ms: int = 2000):
+        """
+        Safely cleanup a QThread and its worker with timeout.
+        Prevents memory leaks and application hangs.
+        """
+        thread = getattr(self, thread_attr, None)
+        if thread and thread.isRunning():
+            thread.quit()
+            if not thread.wait(timeout_ms):  # Timeout prevents infinite waits
+                logger.warning(f"Thread {thread_attr} didn't exit cleanly, terminating")
+                thread.terminate()
+                thread.wait(1000)
+        setattr(self, thread_attr, None)
 
     def on_tab_changed(self, index):
         """
@@ -315,6 +330,25 @@ class MainWindow(QMainWindow):
 
         current_tab = self.analysis_tabs.currentWidget()
 
+        # --- TIER 2: POPULATION RF (full rebuild) ---
+        # Only when hot-swap wasn't possible in Tier 1
+        if self.population_view_enabled:
+            canvas = self.pop_mosaic_canvas
+            can_hot_swap = (
+                hasattr(canvas, '_pop_plot_state') and
+                canvas._pop_plot_state.get('ax') in canvas.fig.axes
+            )
+            if not can_hot_swap:
+                # Full rebuild needed - do it in Tier 2
+                try:
+                    draw_population_rfs_plot(
+                        main_window=self,
+                        selected_cell_id=cluster_id,
+                        canvas=self.pop_mosaic_canvas
+                    )
+                except Exception as e:
+                    logger.error(f"Tier 2 Pop Split rebuild failed: {e}")
+
         # --- ONLY UPDATE STANDARD PLOTS WHEN THAT TAB IS VISIBLE ---
         if current_tab == self.standard_plots_panel:
             self.standard_plots_panel.update_all(cluster_id)
@@ -335,8 +369,20 @@ class MainWindow(QMainWindow):
             self.raw_panel.load_data(cluster_id)
 
         elif current_tab == self.sta_panel:
-            # STA tab must be FAST — no standard plots, no recompute
-            self.sta_panel.update_view(cluster_id)
+            # STA tab - update single-cell or population view
+            if self.current_sta_view == 'population_rfs':
+                # Population RF in STA tab - full rebuild in Tier 2
+                try:
+                    draw_population_rfs_plot(
+                        main_window=self,
+                        selected_cell_id=cluster_id,
+                        canvas=self.sta_panel.rf_canvas
+                    )
+                except Exception as e:
+                    logger.error(f"Tier 2 STA Pop RF rebuild failed: {e}")
+            else:
+                # Single-cell STA view
+                self.sta_panel.update_view(cluster_id)
 
         self.status_bar.showMessage("Ready.", 2000)
 
@@ -1058,10 +1104,18 @@ class MainWindow(QMainWindow):
             elif reply == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return
-                
+
         # Stop background workers first
         callbacks.stop_worker(self)
-        
+
+        # Cleanup all threads with timeout to prevent hangs
+        for thread_attr in [
+            'feature_worker_thread', 'worker_thread',
+            'standard_worker_thread', 'ks_load_thread',
+            'vision_load_thread', 'refine_thread'
+        ]:
+            self._cleanup_thread(thread_attr, timeout_ms=1000)
+
         # Stop any running raw trace worker
         if hasattr(self, 'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
             self.raw_panel.worker_thread.stop()
