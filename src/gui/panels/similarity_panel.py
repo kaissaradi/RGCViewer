@@ -19,6 +19,33 @@ class SimilarityPanel(QWidget):
     # cluster IDs
     selection_changed = Signal(list)
 
+    def restyle_plots(self, colors):
+        """Updates UI elements based on the provided color scheme."""
+        # Update segmented buttons
+        for i, btn in enumerate([self.mea_btn, self.vision_btn]):
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 0.5px solid {colors['border_default']};
+                    border-{'right' if i == 0 else 'left'}-width: 0;
+                    border-radius: 0;
+                    {'border-top-left-radius: 4px; border-bottom-left-radius: 4px;' if i == 0 else
+                    'border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-left: none;'}
+                    color: {colors['text_secondary']};
+                    background: transparent;
+                }}
+                QPushButton:checked {{
+                    background: rgba(46, 109, 212, 0.20);
+                    border-color: {colors['accent']};
+                    color: {colors['accent_hover']};
+                }}
+            """)
+        
+        # Update model if it exists
+        if self.table.model() and hasattr(self.table.model(), 'update_colors'):
+            self.table.model().update_colors(colors)
+
     def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window
@@ -39,6 +66,9 @@ class SimilarityPanel(QWidget):
         self.mea_btn    = QPushButton("MEA")
         self.vision_btn = QPushButton("Vision")
 
+        # Get initial colors from main window
+        colors = self.main_window.get_current_colors()
+
         for i, btn in enumerate([self.mea_btn, self.vision_btn]):
             btn.setCheckable(True)
             btn.setFixedHeight(24)
@@ -46,17 +76,18 @@ class SimilarityPanel(QWidget):
                 QPushButton {{
                     font-size: 11px;
                     padding: 0 10px;
-                    border: 0.5px solid #3D3F48;
+                    border: 0.5px solid {colors['border_default']};
                     border-{'right' if i == 0 else 'left'}-width: 0;
                     border-radius: 0;
                     {'border-top-left-radius: 4px; border-bottom-left-radius: 4px;' if i == 0 else
                     'border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-left: none;'}
-                    color: #9B9DA6;
+                    color: {colors['text_secondary']};
                     background: transparent;
                 }}
                 QPushButton:checked {{
                     background: rgba(46, 109, 212, 0.20);
-                    color: #4A8BEF;
+                    border-color: {colors['accent']};
+                    color: {colors['accent_hover']};
                 }}
             """)
 

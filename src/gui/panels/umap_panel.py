@@ -207,17 +207,24 @@ class UMAPPanel(QWidget):
 
         self.layout = QVBoxLayout(self)
 
+        # Define dark theme colors for initialization (will be updated by restyle_plots)
+        self._umap_colors = {
+            "accent": "#2E6DD4",
+            "accent_positive": "#1A5C3A",
+            "bg_panel": "#18191C",
+        }
+
         # --- Controls Row 1 ---
         ctrl_layout = QHBoxLayout()
         self.run_btn = QPushButton("Run UMAP (2D)")
         self.run_btn.clicked.connect(self.run_umap)
         self.run_btn.setStyleSheet(
-            "background-color: #4282DA; font-weight: bold;")
+            f"background-color: {self._umap_colors['accent']}; font-weight: bold;")
 
         self.run_3d_btn = QPushButton("Run UMAP (3D)")
         self.run_3d_btn.clicked.connect(self.run_umap_3d)
         self.run_3d_btn.setStyleSheet(
-            "background-color: #2D6A4F; font-weight: bold;")
+            f"background-color: {self._umap_colors['accent_positive']}; font-weight: bold;")
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
@@ -283,13 +290,13 @@ class UMAPPanel(QWidget):
         self.layout.addLayout(cluster_layout)
 
         # Plot Initialization
-        self.fig = Figure(facecolor='#1f1f1f')
+        self.fig = Figure(facecolor=self._umap_colors['bg_panel'])
         self.canvas = FigureCanvas(self.fig)
         self.layout.addWidget(self.canvas)
 
         # Initialize default 2D axes
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor('#1f1f1f')
+        self.ax.set_facecolor(self._umap_colors['bg_panel'])
 
         # NEW: Initialize empty selector state
         self.current_selector = None
@@ -556,9 +563,31 @@ class UMAPPanel(QWidget):
             from qtpy.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Auto-Group Error", str(e))
 
+    def restyle_plots(self, colors):
+        """Updates plot styling based on the provided color scheme."""
+        self.fig.patch.set_facecolor(colors['bg_panel'])
+        self.ax.set_facecolor(colors['bg_panel'])
+        
+        # Update button colors
+        self.run_btn.setStyleSheet(
+            f"background-color: {colors['accent']}; font-weight: bold;")
+        self.run_3d_btn.setStyleSheet(
+            f"background-color: {colors['accent_positive']}; font-weight: bold;")
+        
+        # Update stored colors
+        self._umap_colors = {
+            "accent": colors['accent'],
+            "accent_positive": colors['accent_positive'],
+            "bg_panel": colors['bg_panel'],
+        }
+        
+        self.update_plot()
+
     def update_plot(self, _color_mode=None):
         if self.embedding is None:
             return
+            
+        colors = self.main_window.get_current_colors()
 
         # Clean up old plot
         if getattr(self, "cbar", None):
@@ -577,10 +606,13 @@ class UMAPPanel(QWidget):
                 self.ax = self.fig.add_subplot(111, projection='3d')
             else:
                 self.ax = self.fig.add_subplot(111)
-            self.ax.set_facecolor('#1f1f1f')
+            self.ax.set_facecolor(colors['bg_panel'])
+            self.fig.patch.set_facecolor(colors['bg_panel'])
         else:
             self.ax.clear()
+            self.ax.set_facecolor(colors['bg_panel'])
 
+        # ... (rest of update_plot, updating hardcoded colors) ...
         # Determine Colors
         mode = self.color_combo.currentText()
         c = 'cyan'
@@ -643,9 +675,9 @@ class UMAPPanel(QWidget):
                 alpha=0.8,
                 edgecolors='none'
             )
-            self.ax.set_xlabel('Dim 1', color='gray')
-            self.ax.set_ylabel('Dim 2', color='gray')
-            self.ax.set_zlabel('Dim 3', color='gray')
+            self.ax.set_xlabel('Dim 1', color=colors['text_secondary'])
+            self.ax.set_ylabel('Dim 2', color=colors['text_secondary'])
+            self.ax.set_zlabel('Dim 3', color=colors['text_secondary'])
             self.ax.xaxis.pane.fill = False
             self.ax.yaxis.pane.fill = False
             self.ax.zaxis.pane.fill = False
@@ -663,14 +695,18 @@ class UMAPPanel(QWidget):
 
         if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
+            # Style colorbar ticks
+            if self.cbar:
+                self.cbar.ax.yaxis.set_tick_params(color=colors['text_secondary'])
+                plt.setp(plt.getp(self.cbar.ax.axes, 'yticklabels'), color=colors['text_secondary'])
         
         # Add selection info to title
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
         title_prefix = "UMAP (3D)" if self.is_3d else "UMAP (2D)"
         self.ax.set_title(
             f"{title_prefix} - {len(self.cluster_ids)} {selection_info} cells - Color: {mode}",
-            color='white')
-        self.ax.tick_params(colors='gray')
+            color=colors['text_primary'])
+        self.ax.tick_params(colors=colors['text_secondary'])
 
         # NEW: Re-attach the active selection tool to the fresh plot
         self.update_selector()

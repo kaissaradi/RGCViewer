@@ -1,11 +1,19 @@
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSplitter, QFrame, QGridLayout, QTabWidget
 )
 from qtpy.QtCore import Qt
 from sklearn.decomposition import PCA
+
+# Dark theme colors (defined locally to avoid circular imports)
+WAVEFORM_DARK_COLORS = {
+    "bg_surface": "#1E2025",
+    "border_subtle": "#2E3038",
+    "text_primary": "#F0F0F2",
+    "text_secondary": "#9B9DA6",
+}
 
 class WaveformPanel(QWidget):
     """
@@ -20,6 +28,27 @@ class WaveformPanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self._setup_ui()
+
+    def restyle_plots(self, colors):
+        """Updates plot styling based on the provided color scheme."""
+        self.plot_widget.setBackground(colors['bg_panel'])
+        self.pca_plot.setBackground(colors['bg_panel'])
+        self.hist_plot.setBackground(colors['bg_panel'])
+        
+        # Style axes
+        for plot in [self.plot_widget, self.pca_plot, self.hist_plot]:
+            plot.getAxis('bottom').setPen(pg.mkPen(colors['border_default']))
+            plot.getAxis('left').setPen(pg.mkPen(colors['border_default']))
+            plot.getAxis('bottom').setTextPen(pg.mkPen(colors['text_secondary']))
+            plot.getAxis('left').setTextPen(pg.mkPen(colors['text_secondary']))
+
+        # Update container style
+        self.stats_container.setStyleSheet(f"background-color: {colors['bg_surface']}; border-left: 1px solid {colors['border_subtle']};")
+        
+        # Force a redraw of current cluster if it exists
+        cluster_id = self.main_window._get_selected_cluster_id()
+        if cluster_id is not None:
+            self.update_all(cluster_id)
 
     def _setup_ui(self):
         self.layout = QHBoxLayout(self)
@@ -44,8 +73,9 @@ class WaveformPanel(QWidget):
 
         # --- RIGHT: Analytics Panel ---
         self.stats_container = QFrame()
-        self.stats_container.setStyleSheet("background-color: #252525; border-left: 1px solid #3d3d3d;")
-        self.stats_container.setFixedWidth(400) 
+        # Use dark colors by default - will be updated by restyle_plots()
+        self.stats_container.setStyleSheet(f"background-color: {WAVEFORM_DARK_COLORS['bg_surface']}; border-left: 1px solid {WAVEFORM_DARK_COLORS['border_subtle']};")
+        self.stats_container.setFixedWidth(400)
         stats_layout = QVBoxLayout(self.stats_container)
         stats_layout.setContentsMargins(10, 10, 10, 10)
         stats_layout.setSpacing(10)
@@ -72,13 +102,13 @@ class WaveformPanel(QWidget):
         self.tmpl_tab = QWidget()
         tmpl_layout = QVBoxLayout(self.tmpl_tab)
         tmpl_layout.setContentsMargins(5,5,5,5)
-        
+
         self.hist_plot = pg.PlotWidget()
         self.hist_plot.setBackground(None)
         self.hist_plot.setLabel('bottom', "Correlation with Median")
         self.hist_plot.setLabel('left', "Count")
         self.hist_plot.showGrid(x=True, y=True, alpha=0.2)
-        
+
         tmpl_layout.addWidget(QLabel("<b>Template Match Score</b> (Dot Product)"))
         tmpl_layout.addWidget(self.hist_plot)
         self.tabs.addTab(self.tmpl_tab, "Template Match")
@@ -87,22 +117,22 @@ class WaveformPanel(QWidget):
         stats_layout.addWidget(QLabel("<b>Cluster Statistics</b>"))
         self.stats_grid = QGridLayout()
         self.stats_labels = {}
-        
+
         metrics = [
-            ("n_spikes", "Spike Count"), 
+            ("n_spikes", "Spike Count"),
             ("p2p", "Peak-to-Peak (µV)"),
             ("snr", "SNR (Est)"),
             ("jitter", "Jitter (ms)"),
             ("resid_rms", "Resid. RMS (µV)"), # New metric
             ("match_mean", "Mean Match Score") # New metric
         ]
-        
+
         for i, (key, label) in enumerate(metrics):
             lbl_title = QLabel(label)
-            lbl_title.setStyleSheet("color: #888;")
+            lbl_title.setStyleSheet(f"color: {WAVEFORM_DARK_COLORS['text_secondary']};")
             lbl_value = QLabel("--")
-            lbl_value.setStyleSheet("font-size: 13px; font-weight: bold; color: #ddd;")
-            
+            lbl_value.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {WAVEFORM_DARK_COLORS['text_primary']};")
+
             self.stats_labels[key] = lbl_value
             self.stats_grid.addWidget(lbl_title, i // 2, (i % 2) * 2)
             self.stats_grid.addWidget(lbl_value, i // 2, (i % 2) * 2 + 1)

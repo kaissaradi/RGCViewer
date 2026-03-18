@@ -12,8 +12,31 @@ from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
 
+# Dark theme colors (defined locally to avoid circular imports)
+DARK_COLORS = {
+    "bg_surface": "#1E2025",
+    "border_subtle": "#2E3038",
+    "text_primary": "#F0F0F2",
+    "text_secondary": "#9B9DA6",
+    "accent": "#2E6DD4",
+}
+
 
 class STAPanel(QWidget):
+    def restyle_plots(self, colors):
+        """Updates plot styling based on the provided color scheme."""
+        self.rf_canvas.setBackground(colors['bg_panel'])
+        self.timecourse_canvas.restyle(colors)
+        self.spatial_canvas.restyle(colors)
+        
+        # Update text edit style
+        self.sta_metrics_text.setStyleSheet(f"background-color: {colors['bg_surface']}; color: {colors['text_primary']}; border: 1px solid {colors['border_subtle']};")
+        
+        # Force a redraw of current cluster if it exists
+        cluster_id = self.main_window._get_selected_cluster_id()
+        if cluster_id is not None:
+             self.update_sta(cluster_id)
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
@@ -102,15 +125,16 @@ class STAPanel(QWidget):
 
         self.sta_metrics_text = QTextEdit()
         self.sta_metrics_text.setReadOnly(True)
-        self.sta_metrics_text.setStyleSheet("""
-            QTextEdit {
-                background-color: #1f1f1f;
-                color: #e0e0e0;
+        # Use dark theme colors by default - will be updated by restyle_plots()
+        self.sta_metrics_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {DARK_COLORS['bg_surface']};
+                color: {DARK_COLORS['text_primary']};
                 font-family: Consolas, "Courier New", monospace;
                 font-size: 11pt;
-                border: 1px solid #333;
+                border: 1px solid {DARK_COLORS['border_subtle']};
                 padding: 10px;
-            }
+            }}
         """)
         self.sta_metrics_text.setPlaceholderText(
             "Select a cell to view STA metrics...")
@@ -478,17 +502,20 @@ class STAPanel(QWidget):
             metrics = analysis_core.compute_sta_metrics(
                 sta_data, stafit, self.main_window.data_manager.vision_params, vision_cluster_id)
 
-            # Format metrics as HTML table with sections
-            html = """
+            # Get current theme colors
+            colors = self.main_window.get_current_colors()
+
+            # Format metrics as HTML table with sections - using theme colors
+            html = f"""
             <style>
-                table { width: 100%; border-collapse: collapse; color: #e0e0e0; font-family: sans-serif; }
-                th { text-align: left; color: #aaa; border-bottom: 1px solid #555; padding: 4px; }
-                td { padding: 6px; border-bottom: 1px solid #333; }
-                .section { font-weight: bold; color: #4282DA; margin-top: 12px; display: block; font-size: 1.1em; }
-                .subsection { font-weight: bold; color: #6AA84F; margin-top: 8px; display: block; }
-                .metric-name { font-weight: 600; color: #cccccc; }
-                .metric-value { color: #ffffff; }
-                .highlight { background-color: rgba(66, 130, 218, 0.1); }
+                table {{ width: 100%; border-collapse: collapse; color: {colors['text_primary']}; font-family: sans-serif; }}
+                th {{ text-align: left; color: {colors['text_secondary']}; border-bottom: 1px solid {colors['border_default']}; padding: 4px; }}
+                td {{ padding: 6px; border-bottom: 1px solid {colors['border_subtle']}; }}
+                .section {{ font-weight: bold; color: {colors['accent']}; margin-top: 12px; display: block; font-size: 1.1em; }}
+                .subsection {{ font-weight: bold; color: {colors['accent_positive']}; margin-top: 8px; display: block; }}
+                .metric-name {{ font-weight: 600; color: {colors['text_secondary']}; }}
+                .metric-value {{ color: {colors['text_primary']}; }}
+                .highlight {{ background-color: rgba(46, 109, 212, 0.1); }}
             </style>
             """
 
@@ -628,30 +655,41 @@ class STAPanel(QWidget):
 
                 n_channels_to_plot = min(n_channels, 3)
                 channel_names = ['Red', 'Green', 'Blue'][:n_channels_to_plot]
-                colors = ['red', 'green', 'blue'][:n_channels_to_plot]
+                channel_colors = ['red', 'green', 'blue'][:n_channels_to_plot]
+                
+                # Get theme colors from main window
+                theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
+                if not theme_colors:
+                    # Fallback to dark theme defaults
+                    theme_colors = {
+                        'bg_panel': '#1f1f1f',
+                        'text_primary': 'white',
+                        'text_secondary': 'gray',
+                        'border_default': 'gray',
+                    }
 
                 for i in range(n_channels_to_plot):
                     ax.plot(
                         time_axis,
                         timecourse_matrix[:,
                                           i],
-                        color=colors[i],
+                        color=channel_colors[i],
                         linewidth=1.5,
                         label=channel_names[i])
 
-                ax.set_title("STA Timecourse (Pre-calculated)", color='white')
-                ax.set_xlabel("Time (ms)", color='gray')
-                ax.set_ylabel("Response", color='gray')
+                ax.set_title("STA Timecourse (Pre-calculated)", color=theme_colors['text_primary'])
+                ax.set_xlabel("Time (ms)", color=theme_colors['text_secondary'])
+                ax.set_ylabel("Response", color=theme_colors['text_secondary'])
                 ax.grid(True, alpha=0.3)
-                ax.legend(facecolor='#1f1f1f', labelcolor='white')
+                ax.legend(facecolor=theme_colors['bg_panel'], labelcolor=theme_colors['text_primary'])
 
-                ax.set_facecolor('#1f1f1f')
-                ax.tick_params(colors='gray')
+                ax.set_facecolor(theme_colors['bg_panel'])
+                ax.tick_params(colors=theme_colors['text_secondary'])
                 for spine in ax.spines.values():
-                    spine.set_edgecolor('gray')
+                    spine.set_edgecolor(theme_colors['border_default'])
 
-                ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
-                ax.axhline(y=0, color='white', linestyle=':',
+                ax.axvline(x=0, color=theme_colors['text_primary'], linestyle='--', alpha=0.7)
+                ax.axhline(y=0, color=theme_colors['text_secondary'], linestyle=':',
                            alpha=0.5)  # Add dotted line at y=0
 
                 # --- ACCURATE Y-AXIS SCALING ---
@@ -714,19 +752,29 @@ class STAPanel(QWidget):
             linewidth=1.5,
             label='Blue')
 
-        ax.set_title("STA Timecourse (Recalculated)", color='white')
-        ax.set_xlabel("Time (ms)", color='gray')
-        ax.set_ylabel("Response", color='gray')
+        # Get theme colors from main window
+        theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
+        if not theme_colors:
+            theme_colors = {
+                'bg_panel': '#1f1f1f',
+                'text_primary': 'white',
+                'text_secondary': 'gray',
+                'border_default': 'gray',
+            }
+
+        ax.set_title("STA Timecourse (Recalculated)", color=theme_colors['text_primary'])
+        ax.set_xlabel("Time (ms)", color=theme_colors['text_secondary'])
+        ax.set_ylabel("Response", color=theme_colors['text_secondary'])
         ax.grid(True, alpha=0.3)
-        ax.legend(facecolor='#1f1f1f', labelcolor='white')
+        ax.legend(facecolor=theme_colors['bg_panel'], labelcolor=theme_colors['text_primary'])
 
-        ax.set_facecolor('#1f1f1f')
-        ax.tick_params(colors='gray')
+        ax.set_facecolor(theme_colors['bg_panel'])
+        ax.tick_params(colors=theme_colors['text_secondary'])
         for spine in ax.spines.values():
-            spine.set_edgecolor('gray')
+            spine.set_edgecolor(theme_colors['border_default'])
 
-        ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
-        ax.axhline(y=0, color='white', linestyle=':',
+        ax.axvline(x=0, color=theme_colors['text_primary'], linestyle='--', alpha=0.7)
+        ax.axhline(y=0, color=theme_colors['text_secondary'], linestyle=':',
                    alpha=0.5)  # Add dotted line at y=0
 
     def plot_temporal_filter_properties(self, fig, sta_data, stafit, vision_params, cell_id):
@@ -815,11 +863,21 @@ class STAPanel(QWidget):
         except Exception:
             pass
 
-        ax.set_title("Temporal Dynamics Analysis", color='white')
-        ax.set_xlabel("Time (ms)", color='gray')
-        ax.set_facecolor('#1f1f1f')
-        ax.tick_params(colors='gray')
+        # Get theme colors from main window
+        theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
+        if not theme_colors:
+            theme_colors = {
+                'bg_panel': '#1f1f1f',
+                'text_primary': 'white',
+                'text_secondary': 'gray',
+                'border_default': 'gray',
+            }
+
+        ax.set_title("Temporal Dynamics Analysis", color=theme_colors['text_primary'])
+        ax.set_xlabel("Time (ms)", color=theme_colors['text_secondary'])
+        ax.set_facecolor(theme_colors['bg_panel'])
+        ax.tick_params(colors=theme_colors['text_secondary'])
         for spine in ax.spines.values():
-            spine.set_edgecolor('gray')
+            spine.set_edgecolor(theme_colors['border_default'])
         ax.grid(True, alpha=0.2)
-        ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
+        ax.axhline(0, color=theme_colors['text_secondary'], linestyle=':', alpha=0.5)

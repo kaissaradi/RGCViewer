@@ -120,6 +120,9 @@ class StandardPlotsPanel(QWidget):
         isi_controls = QHBoxLayout()
         isi_controls.setSpacing(4)
 
+        # Get colors for styling
+        colors = self.main_window.get_current_colors()
+
         # Group 1: View type
         self.isi_view_combo = QComboBox()
         self.isi_view_combo.addItems(['ISI Histogram', 'ISI vs Amplitude'])
@@ -128,7 +131,7 @@ class StandardPlotsPanel(QWidget):
 
         # Separator
         sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine)
-        sep1.setStyleSheet("color: #2E3038;"); sep1.setFixedWidth(1)
+        sep1.setStyleSheet(f"color: {colors['border_subtle']};"); sep1.setFixedWidth(1)
         isi_controls.addWidget(sep1)
 
         # Group 2: Refractory line
@@ -152,7 +155,7 @@ class StandardPlotsPanel(QWidget):
 
         # Separator
         sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
-        sep2.setStyleSheet("color: #2E3038;"); sep2.setFixedWidth(1)
+        sep2.setStyleSheet(f"color: {colors['border_subtle']};"); sep2.setFixedWidth(1)
         isi_controls.addWidget(sep2)
 
         # Group 3: Display and range
@@ -238,22 +241,59 @@ class StandardPlotsPanel(QWidget):
         if cluster_id is not None:
             self.update_all(cluster_id)
 
-    def _style_plot(self, plot_widget):
-        plot_widget.getPlotItem().getAxis('bottom').setPen(pg.mkPen('#3D3F48'))
-        plot_widget.getPlotItem().getAxis('left').setPen(pg.mkPen('#3D3F48'))
-        plot_widget.getPlotItem().getAxis('bottom').setTextPen(pg.mkPen('#9B9DA6'))
-        plot_widget.getPlotItem().getAxis('left').setTextPen(pg.mkPen('#9B9DA6'))
+    def restyle_plots(self, colors):
+        """Updates plot styling based on the provided color scheme."""
+        self._style_plot(self.grid_plot, colors)
+        self._style_plot(self.acg_plot, colors)
+        self._style_plot(self.isi_plot, colors)
+        self._style_plot(self.fr_plot, colors)
+        
+        # Update Titles
+        self.grid_plot.setTitle(
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
+        )
+        self.acg_plot.setTitle(
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
+        )
+        self.isi_plot.setTitle(
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>INTER-SPIKE INTERVAL</span>"
+        )
+        self.fr_plot.setTitle(
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE (OVER TIME)</span>"
+        )
+
+        # Update specific items
+        # BarGraphItem uses setOpts instead of setBrush/setPen
+        self._acg_bar.setOpts(brush=pg.mkBrush(170, 0, 255, 130), pen=pg.mkPen('#9933FF', width=0.5))
+
+        # Refresh widgets
+        self.grid_widget.setBackground(colors['bg_panel'])
+
+    def _style_plot(self, plot_widget, colors=None):
+        if colors is None:
+            colors = self.main_window.get_current_colors()
+
+        # Handle both PlotWidget and PlotItem (for GraphicsLayoutWidget)
+        if isinstance(plot_widget, pg.PlotWidget):
+            plot_item = plot_widget.getPlotItem()
+            plot_widget.setBackground(colors['bg_panel'])
+        else:
+            plot_item = plot_widget
+
+        plot_item.getAxis('bottom').setPen(pg.mkPen(colors['border_default']))
+        plot_item.getAxis('left').setPen(pg.mkPen(colors['border_default']))
+        plot_item.getAxis('bottom').setTextPen(pg.mkPen(colors['text_secondary']))
+        plot_item.getAxis('left').setTextPen(pg.mkPen(colors['text_secondary']))
 
         # Hide top and right spines
-        plot_widget.showAxis('top', False)
-        plot_widget.showAxis('right', False)
+        plot_item.showAxis('top', False)
+        plot_item.showAxis('right', False)
 
         # Subtle grid
-        plot_widget.showGrid(x=True, y=True, alpha=0.08)
+        plot_item.showGrid(x=True, y=True, alpha=0.08)
 
         # Remove the default blue border pyqtgraph adds
-        plot_widget.getPlotItem().setContentsMargins(8, 8, 8, 8)
-        plot_widget.setBackground('#18191C')
+        plot_item.setContentsMargins(8, 8, 8, 8)
 
     def _create_hot_colormap(self):
         colors = [(0, 0, 0), (255, 0, 0), (255, 255, 0), (255, 255, 255)]

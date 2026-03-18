@@ -81,12 +81,13 @@ class MplCanvas(FigureCanvas):
     clicked = Signal()
 
     def __init__(self, parent=None, width=5, height=4, dpi=100):
+        # Default to dark theme background - will be updated by restyle() if needed
         self.fig = Figure(
             figsize=(
                 width,
                 height),
             dpi=dpi,
-            facecolor='#1f1f1f')
+            facecolor='#18191C')
         super().__init__(self.fig)
 
         # Enable mouse tracking and set cursor
@@ -94,6 +95,11 @@ class MplCanvas(FigureCanvas):
 
         # Connect matplotlib mouse press event
         self.mpl_connect('button_press_event', self._on_click)
+
+    def restyle(self, colors):
+        """Updates the canvas background based on the provided color scheme."""
+        self.fig.patch.set_facecolor(colors['bg_panel'])
+        self.draw()
 
     def _on_click(self, _event):
         """Handle matplotlib mouse click events."""
@@ -118,6 +124,18 @@ class HighlightStatusPandasModel(PandasModel):
         self._background_cache = {}
         self._foreground_cache = {}
         self._display_cache = {}
+
+    def update_colors(self, colors):
+        """Updates status colors based on the current theme."""
+        self.STATUS_COLORS = {
+            "Clean":     colors.get("status_good_text", "#6EE7B7"),
+            "Edge":      colors.get("status_mua_text", "#F0C060"),
+            "Duplicate": colors.get("status_noise_text", "#F08080"),
+            "Noise":     colors.get("status_noise_text", "#F08080"),
+            "Unsure":    colors.get("status_unsort_text", "#7EB8F7"),
+            "Original":  colors.get("text_secondary", "#9B9DA6"),
+        }
+        self.refresh_view()
 
     def refresh_view(self, row_indices=None):
         """Invalidate cache on data change."""

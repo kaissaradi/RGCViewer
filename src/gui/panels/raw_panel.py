@@ -18,6 +18,19 @@ class RawPanel(QWidget):
     status_message = Signal(str)
     error_message = Signal(str)
 
+    def restyle_plots(self, colors):
+        """Updates plot styling based on the provided color scheme."""
+        self.plot.setBackground(colors['bg_panel'])
+        self.plot.getAxis('bottom').setPen(pg.mkPen(colors['border_default']))
+        self.plot.getAxis('left').setPen(pg.mkPen(colors['border_default']))
+        self.plot.getAxis('bottom').setTextPen(pg.mkPen(colors['text_secondary']))
+        self.plot.getAxis('left').setTextPen(pg.mkPen(colors['text_secondary']))
+        
+        # Update existing plot items if possible
+        cluster_id = self.main_window._get_selected_cluster_id()
+        if cluster_id is not None:
+             self.load_data(cluster_id)
+
     def __init__(self, main_window: MainWindow, parent=None):
         super().__init__(parent)
         self.main_window = main_window

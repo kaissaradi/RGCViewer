@@ -6,7 +6,7 @@ from qtpy.QtWidgets import (
     QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
-    QTextEdit, QCheckBox, QProgressBar
+    QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
@@ -40,7 +40,7 @@ pg.setConfigOption('background', '#18191C')   # Matches --bg-panel
 pg.setConfigOption('foreground', '#9B9DA6')   # Matches --text-secondary
 pg.setConfigOptions(antialias=True)
 
-COLORS = {
+DARK_COLORS = {
     # Surfaces
     "bg_base":     "#111214",   # Window / app background
     "bg_panel":    "#18191C",   # Left and right panes, plot backgrounds
@@ -75,6 +75,41 @@ COLORS = {
     "status_unsort_text":"#7EB8F7",
 }
 
+LIGHT_COLORS = {
+    # Surfaces
+    "bg_base":     "#F0F2F5",   # Window / app background
+    "bg_panel":    "#FFFFFF",   # Left and right panes, plot backgrounds
+    "bg_surface":  "#F8F9FA",   # Table rows, cards
+    "bg_elevated": "#E9ECEF",   # Hover states, alternating table rows
+
+    # Accents
+    "accent":          "#2E6DD4",   # Active tabs, selected rows, links
+    "accent_hover":    "#1A4A9E",   # Hover on accent elements
+    "accent_positive": "#6EE7B7",   # Refine button, "good" status
+    "accent_pos_text": "#1A5C3A",   # Text on positive background
+
+    # Text hierarchy
+    "text_primary":   "#111214",   # Main data, labels
+    "text_secondary": "#495057",   # Supporting text, axis labels
+    "text_tertiary":  "#6C757D",   # Placeholder text, column headers
+    "text_disabled":  "#ADB5BD",   # Disabled controls
+
+    # Borders
+    "border_subtle":   "#DEE2E6",   # Table dividers, panel edges
+    "border_default":  "#CED4DA",   # Button borders, input outlines
+    "border_strong":   "#ADB5BD",   # Focused inputs, hover borders
+
+    # Status badges
+    "status_good_bg":   "rgba(110, 231, 183, 0.20)",
+    "status_good_text": "#065F46",
+    "status_mua_bg":    "rgba(240, 192, 96, 0.20)",
+    "status_mua_text":  "#92400E",
+    "status_noise_bg":  "rgba(240, 128, 128, 0.20)",
+    "status_noise_text":"#991B1B",
+    "status_unsort_bg": "rgba(46, 109, 212, 0.20)",
+    "status_unsort_text":"#1E40AF",
+}
+
 PANEL_PADDING  = 8   # px — inner padding on all panels
 CTRL_SPACING   = 6   # px — gap between controls in a row
 ROW_HEIGHT     = 28  # px — standard table row height (was ~32px)
@@ -91,6 +126,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(50, 50, 1800, 1000)
 
         # --- Application State ---
+        self.theme = "dark"
         self.data_manager: Optional[DataManager] = None
         self.main_cluster_model = None
 
@@ -123,7 +159,7 @@ class MainWindow(QMainWindow):
         self.population_view_enabled = False
 
         # --- UI Setup ---
-        self._setup_style()
+        self._setup_style(DARK_COLORS)
         self._setup_ui()
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
@@ -187,284 +223,337 @@ class MainWindow(QMainWindow):
                 index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             view.scrollTo(index)
 
-    def _setup_style(self):
+    def _setup_style(self, colors):
         self.setFont(QFont("Inter", 11))
 
-        self.setStyleSheet("""
+        self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
-            QWidget {
-                color: #F0F0F2;
-                background-color: #111214;
+            QWidget {{
+                color: {colors['text_primary']};
+                background-color: {colors['bg_base']};
                 font-family: 'Inter', 'Segoe UI', sans-serif;
                 font-size: 12px;
-            }
-            QMainWindow, QDialog {
-                background-color: #111214;
-            }
+            }}
+            QMainWindow, QDialog {{
+                background-color: {colors['bg_base']};
+            }}
 
             /* ── Splitter handles ────────────────── */
-            QSplitter::handle {
-                background: #2E3038;
-            }
-            QSplitter::handle:horizontal {
+            QSplitter::handle {{
+                background: {colors['border_subtle']};
+            }}
+            QSplitter::handle:horizontal {{
                 width: 5px;
-            }
-            QSplitter::handle:vertical {
+            }}
+            QSplitter::handle:vertical {{
                 height: 5px;
-            }
+            }}
             QSplitter::handle:horizontal:hover,
-            QSplitter::handle:vertical:hover {
-                background: #4A8BEF;
-            }
+            QSplitter::handle:vertical:hover {{
+                background: {colors['accent_hover']};
+            }}
 
             /* ── Tables ──────────────────────────── */
-            QTableView {
-                background-color: #18191C;
-                alternate-background-color: #1E2025;
+            QTableView {{
+                background-color: {colors['bg_panel']};
+                alternate-background-color: {colors['bg_surface']};
                 gridline-color: transparent;
                 border: none;
                 selection-background-color: rgba(46, 109, 212, 0.18);
-                selection-color: #F0F0F2;
-            }
-            QTableView::item {
-                border-bottom: 1px solid #2E3038;
+                selection-color: {colors['text_primary']};
+            }}
+            QTableView::item {{
+                border-bottom: 1px solid {colors['border_subtle']};
                 padding: 0 8px;
-            }
-            QTableView::item:selected {
+            }}
+            QTableView::item:selected {{
                 background-color: rgba(46, 109, 212, 0.18);
-            }
-            QHeaderView::section {
-                background-color: #18191C;
-                color: #5A5C65;
+            }}
+            QHeaderView::section {{
+                background-color: {colors['bg_panel']};
+                color: {colors['text_tertiary']};
                 padding: 4px 8px;
                 border: none;
-                border-bottom: 1px solid #3D3F48;
+                border-bottom: 1px solid {colors['border_default']};
                 font-size: 10px;
                 font-weight: 500;
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
-            }
-            QHeaderView::section:hover {
-                background-color: #1E2025;
-                color: #9B9DA6;
-            }
-            QHeaderView {
-                background-color: #18191C;
-            }
+            }}
+            QHeaderView::section:hover {{
+                background-color: {colors['bg_surface']};
+                color: {colors['text_secondary']};
+            }}
+            QHeaderView {{
+                background-color: {colors['bg_panel']};
+            }}
 
             /* ── Buttons ─────────────────────────── */
-            QPushButton {
+            QPushButton {{
                 background-color: transparent;
-                border: 0.5px solid #3D3F48;
-                color: #9B9DA6;
+                border: 0.5px solid {colors['border_default']};
+                color: {colors['text_secondary']};
                 padding: 4px 10px;
                 border-radius: 5px;
                 font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #1E2025;
-                border-color: #5A5C65;
-                color: #F0F0F2;
-            }
-            QPushButton:pressed {
-                background-color: #282A30;
-            }
-            QPushButton:checked {
+            }}
+            QPushButton:hover {{
+                background-color: {colors['bg_surface']};
+                border-color: {colors['border_strong']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['bg_elevated']};
+            }}
+            QPushButton:checked {{
                 background-color: rgba(46, 109, 212, 0.20);
-                border-color: #2E6DD4;
-                color: #4A8BEF;
-            }
-            QPushButton:disabled {
-                color: #3A3C44;
-                border-color: #2E3038;
-            }
+                border-color: {colors['accent']};
+                color: {colors['accent_hover']};
+            }}
+            QPushButton:disabled {{
+                color: {colors['text_disabled']};
+                border-color: {colors['border_subtle']};
+            }}
 
             /* ── Tabs ────────────────────────────── */
-            QTabWidget::pane {
+            QTabWidget::pane {{
                 border: none;
-                border-top: 1px solid #2E3038;
-            }
-            QTabBar::tab {
-                color: #9B9DA6;
+                border-top: 1px solid {colors['border_subtle']};
+            }}
+            QTabBar::tab {{
+                color: {colors['text_secondary']};
                 background: transparent;
                 padding: 6px 16px;
                 font-size: 12px;
                 border-bottom: 2px solid transparent;
                 margin-right: 2px;
                 min-width: 40px;
-            }
-            QTabBar::tab:selected {
-                color: #F0F0F2;
-                border-bottom: 2px solid #4A8BEF;
-            }
-            QTabBar::tab:hover:!selected {
-                color: #F0F0F2;
-                background: #1E2025;
-            }
-            QTabBar::scroller {
+            }}
+            QTabBar::tab:selected {{
+                color: {colors['text_primary']};
+                border-bottom: 2px solid {colors['accent_hover']};
+            }}
+            QTabBar::tab:hover:!selected {{
+                color: {colors['text_primary']};
+                background: {colors['bg_surface']};
+            }}
+            QTabBar::scroller {{
                 width: 24px;
-            }
+            }}
 
             /* ── Inputs ──────────────────────────── */
-            QComboBox {
-                background-color: #18191C;
-                border: 0.5px solid #3D3F48;
+            QComboBox {{
+                background-color: {colors['bg_panel']};
+                border: 0.5px solid {colors['border_default']};
                 border-radius: 4px;
                 padding: 3px 8px;
-                color: #F0F0F2;
+                color: {colors['text_primary']};
                 font-size: 12px;
                 min-height: 22px;
-            }
-            QComboBox:hover { border-color: #5A5C65; }
-            QComboBox::drop-down {
+            }}
+            QComboBox:hover {{ border-color: {colors['border_strong']}; }}
+            QComboBox::drop-down {{
                 border: none;
                 width: 18px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #1E2025;
-                border: 0.5px solid #3D3F48;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {colors['bg_surface']};
+                border: 0.5px solid {colors['border_default']};
                 selection-background-color: rgba(46, 109, 212, 0.25);
-                color: #F0F0F2;
-            }
-            QDoubleSpinBox, QSpinBox {
-                background-color: #18191C;
-                border: 0.5px solid #3D3F48;
+                color: {colors['text_primary']};
+            }}
+            QDoubleSpinBox, QSpinBox {{
+                background-color: {colors['bg_panel']};
+                border: 0.5px solid {colors['border_default']};
                 border-radius: 4px;
                 padding: 3px 6px;
-                color: #F0F0F2;
+                color: {colors['text_primary']};
                 font-size: 12px;
-            }
-            QDoubleSpinBox:hover, QSpinBox:hover {
-                border-color: #5A5C65;
-            }
+            }}
+            QDoubleSpinBox:hover, QSpinBox:hover {{
+                border-color: {colors['border_strong']};
+            }}
 
             /* ── Checkboxes ──────────────────────── */
-            QCheckBox {
-                color: #9B9DA6;
+            QCheckBox {{
+                color: {colors['text_secondary']};
                 spacing: 5px;
                 font-size: 12px;
-            }
-            QCheckBox:hover { color: #F0F0F2; }
-            QCheckBox::indicator {
+            }}
+            QCheckBox:hover {{ color: {colors['text_primary']}; }}
+            QCheckBox::indicator {{
                 width: 14px;
                 height: 14px;
-                border: 0.5px solid #3D3F48;
+                border: 0.5px solid {colors['border_default']};
                 border-radius: 3px;
-                background: #18191C;
-            }
-            QCheckBox::indicator:checked {
-                background: #2E6DD4;
-                border-color: #2E6DD4;
-            }
+                background: {colors['bg_panel']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent']};
+                border-color: {colors['accent']};
+            }}
 
             /* ── Radio buttons ───────────────────── */
-            QRadioButton {
-                color: #9B9DA6;
+            QRadioButton {{
+                color: {colors['text_secondary']};
                 spacing: 5px;
                 font-size: 12px;
-            }
-            QRadioButton:hover { color: #F0F0F2; }
+            }}
+            QRadioButton:hover {{ color: {colors['text_primary']}; }}
 
             /* ── Labels ──────────────────────────── */
-            QLabel {
-                color: #9B9DA6;
+            QLabel {{
+                color: {colors['text_secondary']};
                 font-size: 12px;
-            }
+            }}
 
             /* ── Scrollbars ──────────────────────── */
-            QScrollBar:vertical {
-                background: #18191C;
+            QScrollBar:vertical {{
+                background: {colors['bg_panel']};
                 width: 6px;
                 border-radius: 3px;
                 margin: 0;
-            }
-            QScrollBar::handle:vertical {
-                background: #3D3F48;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['border_default']};
                 border-radius: 3px;
                 min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover { background: #5A5C65; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-            QScrollBar:horizontal {
-                background: #18191C;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {colors['border_strong']}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar:horizontal {{
+                background: {colors['bg_panel']};
                 height: 6px;
                 border-radius: 3px;
                 margin: 0;
-            }
-            QScrollBar::handle:horizontal {
-                background: #3D3F48;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {colors['border_default']};
                 border-radius: 3px;
                 min-width: 20px;
-            }
-            QScrollBar::handle:horizontal:hover { background: #5A5C65; }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+            }}
+            QScrollBar::handle:horizontal:hover {{ background: {colors['border_strong']}; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
             /* ── Tree View ───────────────────────── */
-            QTreeView {
-                background-color: #18191C;
+            QTreeView {{
+                background-color: {colors['bg_panel']};
                 border: none;
-                alternate-background-color: #1E2025;
+                alternate-background-color: {colors['bg_surface']};
                 selection-background-color: rgba(46, 109, 212, 0.18);
-            }
-            QTreeView::item:hover { background: #1E2025; }
-            QTreeView::item:selected { background: rgba(46, 109, 212, 0.18); }
-            QTreeView::branch { background: #18191C; }
+            }}
+            QTreeView::item:hover {{ background: {colors['bg_surface']}; }}
+            QTreeView::item:selected {{ background: rgba(46, 109, 212, 0.18); }}
+            QTreeView::branch {{ background: {colors['bg_panel']}; }}
 
             /* ── Status bar ──────────────────────── */
-            QStatusBar {
-                color: #5A5C65;
+            QStatusBar {{
+                color: {colors['text_tertiary']};
                 font-size: 11px;
-                border-top: 0.5px solid #2E3038;
-                background: #111214;
+                border-top: 0.5px solid {colors['border_subtle']};
+                background: {colors['bg_base']};
                 padding: 2px 8px;
-            }
+            }}
 
             /* ── Menu bar ────────────────────────── */
-            QMenuBar {
-                background-color: #111214;
-                color: #9B9DA6;
-                border-bottom: 0.5px solid #2E3038;
+            QMenuBar {{
+                background-color: {colors['bg_base']};
+                color: {colors['text_secondary']};
+                border-bottom: 0.5px solid {colors['border_subtle']};
                 font-size: 12px;
-            }
-            QMenuBar::item:selected { background: #1E2025; color: #F0F0F2; }
-            QMenu {
-                background-color: #1E2025;
-                border: 0.5px solid #3D3F48;
-                color: #F0F0F2;
+            }}
+            QMenuBar::item:selected {{ background: {colors['bg_surface']}; color: {colors['text_primary']}; }}
+            QMenu {{
+                background-color: {colors['bg_surface']};
+                border: 0.5px solid {colors['border_default']};
+                color: {colors['text_primary']};
                 font-size: 12px;
-            }
-            QMenu::item:selected { background: rgba(46, 109, 212, 0.25); }
-            QMenu::separator {
+            }}
+            QMenu::item:selected {{ background: rgba(46, 109, 212, 0.25); }}
+            QMenu::separator {{
                 height: 1px;
-                background: #2E3038;
+                background: {colors['border_subtle']};
                 margin: 3px 0;
-            }
+            }}
 
             /* ── Progress bar ────────────────────── */
-            QProgressBar {
-                background-color: #18191C;
-                border: 0.5px solid #3D3F48;
+            QProgressBar {{
+                background-color: {colors['bg_panel']};
+                border: 0.5px solid {colors['border_default']};
                 border-radius: 4px;
                 text-align: center;
-                color: #9B9DA6;
+                color: {colors['text_secondary']};
                 font-size: 11px;
                 height: 8px;
-            }
-            QProgressBar::chunk {
-                background-color: #2E6DD4;
+            }}
+            QProgressBar::chunk {{
+                background-color: {colors['accent']};
                 border-radius: 3px;
-            }
+            }}
 
             /* ── Tooltip ─────────────────────────── */
-            QToolTip {
-                background-color: #1E2025;
-                border: 0.5px solid #3D3F48;
-                color: #F0F0F2;
+            QToolTip {{
+                background-color: {colors['bg_surface']};
+                border: 0.5px solid {colors['border_default']};
+                color: {colors['text_primary']};
                 font-size: 11px;
                 padding: 4px 8px;
                 border-radius: 4px;
-            }
+            }}
         """)
+
+    def get_current_colors(self):
+        """Returns the color dictionary for the current theme."""
+        return LIGHT_COLORS if self.theme == "light" else DARK_COLORS
+
+    def toggle_theme(self):
+        """Toggles between light and dark themes."""
+        self.theme = "light" if self.theme == "dark" else "dark"
+        colors = self.get_current_colors()
+        
+        # 1. Update Application-wide Stylesheet
+        self._setup_style(colors)
+        
+        # 2. Update Global pyqtgraph options
+        pg.setConfigOption('background', colors['bg_panel'])
+        pg.setConfigOption('foreground', colors['text_secondary'])
+        
+        # 3. Notify all panels to restyle their internal plots
+        panels = [
+            self.standard_plots_panel,
+            self.ei_panel,
+            self.waveforms_panel,
+            self.raw_panel,
+            self.sta_panel,
+            self.umap_panel
+        ]
+        
+        for panel in panels:
+            if hasattr(panel, 'restyle_plots'):
+                panel.restyle_plots(colors)
+        
+        # 4. Refresh similarity panel
+        self.similarity_panel.restyle_plots(colors)
+
+        # 4b. Refresh population canvases
+        self.pop_mosaic_canvas.restyle(colors)
+        self.pop_timecourse_canvas.restyle(colors)
+        self.pop_acg_canvas.restyle(colors)
+
+        # Update population header styles
+        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        
+        # 5. Refresh data models if they use custom colors
+        if self.table_view.model() and hasattr(self.table_view.model(), 'update_colors'):
+            self.table_view.model().update_colors(colors)
+        
+        # 6. Re-load current cluster to ensure plot colors update
+        cluster_id = self._get_selected_cluster_id()
+        if cluster_id is not None:
+            self.on_tab_changed(self.analysis_tabs.currentIndex())
+            
+        self.status_bar.showMessage(f"Switched to {self.theme} mode.")
 
     def update_cluster_views(self, cluster_id):
         """
@@ -769,7 +858,23 @@ class MainWindow(QMainWindow):
         # Tree View
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
-...
+        self.tree_view.setDragEnabled(True)
+        self.tree_view.setAcceptDrops(True)
+        self.tree_view.setDropIndicatorShown(True)
+        self.tree_view.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove)
+        self.tree_view.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(
+            self.open_tree_context_menu)
+
+        # Table View
+        self.table_view = CustomTableView()
+        self.table_view.setSortingEnabled(True)
+        self.table_view.setAlternatingRowColors(True)
+        self.table_view.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive)
+
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
         # Default to table view
@@ -859,7 +964,7 @@ class MainWindow(QMainWindow):
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
         self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
-        self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #4282DA; padding: 4px 10px;")
+        self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {DARK_COLORS['accent']}; padding: 4px 10px;")
         pop_ctrl_layout.addStretch()
         pop_ctrl_layout.addWidget(self.pop_expand_btn)
         pop_layout.addLayout(pop_ctrl_layout)
@@ -880,10 +985,10 @@ class MainWindow(QMainWindow):
         tc_layout = QVBoxLayout(self.pop_timecourse_widget)
         tc_layout.setContentsMargins(0, 0, 0, 0)
         tc_hdr = QHBoxLayout()
-        tc_label = QLabel("Population Dynamics")
-        tc_label.setStyleSheet("font-weight:bold; color: white;")
+        self.pop_tc_label = QLabel("Population Dynamics")
+        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {DARK_COLORS['text_primary']};")
         self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
-        tc_hdr.addWidget(tc_label)
+        tc_hdr.addWidget(self.pop_tc_label)
         tc_hdr.addStretch()
         tc_hdr.addWidget(self.pop_timecourse_summary)
         tc_layout.addLayout(tc_hdr)
@@ -896,10 +1001,10 @@ class MainWindow(QMainWindow):
         acg_layout = QVBoxLayout(self.pop_acg_widget)
         acg_layout.setContentsMargins(0, 0, 0, 0)
         acg_hdr = QHBoxLayout()
-        acg_label = QLabel("Population Autocorrelation")
-        acg_label.setStyleSheet("font-weight:bold; color: white;")
+        self.pop_acg_label = QLabel("Population Autocorrelation")
+        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {DARK_COLORS['text_primary']};")
         self.pop_acg_summary = QLabel("n=0")
-        acg_hdr.addWidget(acg_label)
+        acg_hdr.addWidget(self.pop_acg_label)
         acg_hdr.addStretch()
         acg_hdr.addWidget(self.pop_acg_summary)
         acg_layout.addLayout(acg_hdr)
@@ -988,6 +1093,11 @@ class MainWindow(QMainWindow):
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
         self.calibrate_array_action.setEnabled(False)  # Enabled after data loads
         self.calibrate_array_action.triggered.connect(self._open_array_calibration)
+
+        # --- View Menu ---
+        view_menu = menu.addMenu("&View")
+        self.toggle_theme_action = view_menu.addAction("Toggle Light/Dark Mode")
+        self.toggle_theme_action.triggered.connect(self.toggle_theme)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -1438,11 +1548,12 @@ class MainWindow(QMainWindow):
 
     def toggle_population_fullscreen(self, checked):
         """Toggles the Population panel to take up 100% of the right pane."""
+        colors = self.get_current_colors()
         if checked:
             # Full screen mode: Collapse the main tabs completely
             self.right_splitter.setSizes([0, 1000])
             self.pop_expand_btn.setText("🗗 Restore")
-            self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #2D6A4F; padding: 4px 10px;")
+            self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent_positive']}; padding: 4px 10px;")
         else:
             # Restore mode: 75/25 split
             total = sum(self.right_splitter.sizes()) or 1400
@@ -1450,7 +1561,7 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
             self.pop_expand_btn.setText("⛶ Full Screen")
-            self.pop_expand_btn.setStyleSheet("font-weight: bold; background-color: #4282DA; padding: 4px 10px;")
+            self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;")
 
     def closeEvent(self, event):
         """Handles the window close event."""
