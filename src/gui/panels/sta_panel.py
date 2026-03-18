@@ -35,7 +35,7 @@ class STAPanel(QWidget):
         # Force a redraw of current cluster if it exists
         cluster_id = self.main_window._get_selected_cluster_id()
         if cluster_id is not None:
-             self.update_sta(cluster_id)
+             self.update_view(cluster_id)
 
     def __init__(self, main_window):
         super().__init__()

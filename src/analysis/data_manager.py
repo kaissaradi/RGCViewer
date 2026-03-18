@@ -975,7 +975,7 @@ class DataManager(QObject):
 
             # Add to cluster_df
             self.cluster_df['cell_type'] = self.cluster_df['cluster_id'].map(
-                d_result).fillna('Unknown')
+                d_result).fillna('Unknown').infer_objects(copy=False)
             logger.debug("Loaded cell type file: %s", txt_file)
 
             # If all are unknown, delete column and print
@@ -1089,7 +1089,7 @@ class DataManager(QObject):
         # Any cluster present in spike_clusters but absent from cluster_info.tsv
         # gets KSLabel=NaN from the left-merge. Fill with 'unsorted' so they are
         # never silently excluded when downstream code filters by KSLabel.
-        df['KSLabel'] = df['KSLabel'].fillna('unsorted')
+        df['KSLabel'] = df['KSLabel'].fillna('unsorted').infer_objects(copy=False)
 
         df['status'] = 'Original'
         df['set'] = [set([cid]) for cid in df['cluster_id']]
@@ -1152,7 +1152,7 @@ class DataManager(QObject):
             self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = val
 
         self.cluster_df['isi_violations_pct'] = (
-            self.cluster_df['cluster_id'].map(isi_pct_map).fillna(0.0)
+            self.cluster_df['cluster_id'].map(isi_pct_map).fillna(0.0).infer_objects(copy=False)
         )
 
         # --- Load status & compute remaining metrics ---

@@ -535,9 +535,13 @@ def draw_population_acg_panel(main_window, subset_ids=None):
     if hasattr(canvas, '_acg_state') and canvas._acg_state['ax'] in canvas.fig.axes:
         state = canvas._acg_state
         ax = state['ax']
-        
+
         current_facecolor = QColor(colors['bg_panel']).name().lower()
-        stored_facecolor = QColor(ax.get_facecolor()).name().lower()
+        # ax.get_facecolor() returns RGBA tuple, need to unpack it
+        facecolor_tuple = ax.get_facecolor()
+        stored_facecolor = QColor.fromRgbF(
+            facecolor_tuple[0], facecolor_tuple[1], facecolor_tuple[2], facecolor_tuple[3]
+        ).name().lower()
         if current_facecolor != stored_facecolor:
              if hasattr(canvas, '_acg_state'): del canvas._acg_state
              draw_population_acg_panel(main_window, subset_ids)
