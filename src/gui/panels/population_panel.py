@@ -195,6 +195,9 @@ def draw_population_rfs_plot(
 
     colors = main_window.get_current_colors()
     vision_params = main_window.data_manager.vision_params
+    
+    logger.debug(f"draw_population_rfs_plot: vision_params={vision_params is not None}, selected_cell={selected_cell_id}, subset={len(subset_cell_ids) if subset_cell_ids else None}")
+    
     if not vision_params:
         canvas.fig.clear()
         canvas.fig.set_facecolor(colors['bg_panel'])
@@ -271,7 +274,8 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
         patch.height = 2 * stafit.std_y
         patch.angle = np.rad2deg(stafit.rot)
         patch.set_visible(True)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to get stafit for cell {vision_id}: {e}")
         patch.set_visible(False)
 
 
@@ -279,7 +283,13 @@ def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height
     if colors is None:
         colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
 
-    all_cell_ids = vision_params.get_cell_ids()
+    try:
+        all_cell_ids = vision_params.get_cell_ids()
+        logger.debug(f"plot_population_rfs_background: got {len(all_cell_ids) if all_cell_ids else 0} cell IDs from vision_params")
+    except Exception as e:
+        logger.error(f"Failed to get cell IDs from vision_params: {e}")
+        return
+    
     vision_subset_ids = [cid + 1 for cid in subset_cell_ids] if subset_cell_ids is not None else None
 
     x_coords, y_coords = [], []
@@ -331,7 +341,13 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
     ax = fig.add_subplot(111)
     ax.set_facecolor(colors['bg_panel'])
 
-    all_cell_ids = vision_params.get_cell_ids()
+    try:
+        all_cell_ids = vision_params.get_cell_ids()
+        logger.debug(f"plot_population_rfs: got {len(all_cell_ids) if all_cell_ids else 0} cell IDs")
+    except Exception as e:
+        logger.error(f"Failed to get cell IDs: {e}")
+        ax.text(0.5, 0.5, f"Error: {e}", ha='center', va='center', color='red')
+        return
 
     if not all_cell_ids:
         ax.text(0.5, 0.5, "No RF data available", ha='center', va='center', color=colors['text_secondary'])

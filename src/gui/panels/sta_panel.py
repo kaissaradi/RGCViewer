@@ -357,13 +357,21 @@ class STAPanel(QWidget):
         """
         vision_cluster_id = cluster_id + 1
         has_vision_sta = self.main_window.data_manager.vision_stas and vision_cluster_id in self.main_window.data_manager.vision_stas
+        
+        logger.debug(f"plot_sta: cluster_id={cluster_id}, vision_cluster_id={vision_cluster_id}, has_vision_sta={has_vision_sta}")
+        logger.debug(f"vision_stas keys: {list(self.main_window.data_manager.vision_stas.keys())[:5] if self.main_window.data_manager.vision_stas else 'None'}")
 
         if has_vision_sta:
             self.stop_animation()
 
             sta_data = self.main_window.data_manager.vision_stas[vision_cluster_id]
-            stafit = self.main_window.data_manager.vision_params.get_stafit_for_cell(
-                vision_cluster_id)
+            try:
+                stafit = self.main_window.data_manager.vision_params.get_stafit_for_cell(
+                    vision_cluster_id)
+                logger.debug(f"Got stafit for {vision_cluster_id}: {stafit is not None}")
+            except Exception as e:
+                logger.error(f"Failed to get stafit for {vision_cluster_id}: {e}")
+                stafit = None
             self.current_sta_data = sta_data
             self.current_stafit = stafit
             self.current_sta_cluster_id = vision_cluster_id

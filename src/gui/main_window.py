@@ -1587,6 +1587,11 @@ class MainWindow(QMainWindow):
             'vision_load_thread', 'refine_thread'
         ]:
             self._cleanup_thread(thread_attr, timeout_ms=1000)
+        
+        # Also cleanup vision_load_worker if it exists
+        if hasattr(self, 'vision_load_worker') and self.vision_load_worker:
+            self.vision_load_worker.deleteLater()
+            self.vision_load_worker = None
 
         # Stop any running raw trace worker
         if hasattr(self, 'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():

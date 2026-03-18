@@ -214,16 +214,26 @@ def load_vision_directory(main_window):
 
 def _on_vision_loaded(main_window, success, message, is_partial):
     """Callback triggered on the UI thread when VisionLoadWorker finishes."""
-    main_window.vision_load_thread.quit()
-    main_window.vision_load_thread.wait()
+    # Properly cleanup the thread and worker
+    if hasattr(main_window, 'vision_load_thread') and main_window.vision_load_thread:
+        main_window.vision_load_thread.quit()
+        if not main_window.vision_load_thread.wait(2000):
+            logger.warning("Vision load thread didn't exit cleanly, terminating")
+            main_window.vision_load_thread.terminate()
+            main_window.vision_load_thread.wait(500)
+        main_window.vision_load_thread = None
     
+    if hasattr(main_window, 'vision_load_worker') and main_window.vision_load_worker:
+        main_window.vision_load_worker.deleteLater()
+        main_window.vision_load_worker = None
+
     main_window.central_widget.setEnabled(True)
 
     if success and not is_partial:
         main_window.status_bar.showMessage(message, 5000)
     elif is_partial:
         main_window.status_bar.showMessage(f"Loaded partial Vision data: {message}", 5000)
-        QMessageBox.warning(main_window, "Vision Loading Warning", 
+        QMessageBox.warning(main_window, "Vision Loading Warning",
                             f"Could not load all Vision data, but some files were found.\n{message}")
     else:
         QMessageBox.critical(main_window, "Vision Loading Error", message)
