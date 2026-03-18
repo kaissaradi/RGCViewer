@@ -1,6 +1,6 @@
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QCheckBox, QComboBox, QLabel, QPushButton, QDoubleSpinBox
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QCheckBox, QComboBox, QLabel, QPushButton, QDoubleSpinBox, QFrame
 from qtpy.QtCore import Qt
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
@@ -38,7 +38,7 @@ class StandardPlotsPanel(QWidget):
         # Controls: top control bar
         ctrl_bar = QHBoxLayout()
         ctrl_bar_widget = QWidget()
-        ctrl_bar_widget.setMaximumHeight(35)
+        ctrl_bar_widget.setFixedHeight(32)
         ctrl_bar_widget.setLayout(ctrl_bar)
 
         # Channel display mode
@@ -72,7 +72,10 @@ class StandardPlotsPanel(QWidget):
         template_layout.setContentsMargins(0, 0, 0, 0)
 
         self.grid_widget = pg.GraphicsLayoutWidget()
-        self.grid_plot = self.grid_widget.addPlot(title="Spatial Template")
+        self.grid_plot = self.grid_widget.addPlot()
+        self.grid_plot.setTitle(
+            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
+        )
         self.grid_plot.setAspectLocked(True)
         self.grid_plot.hideAxis('bottom')
         self.grid_plot.hideAxis('left')
@@ -83,14 +86,17 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         # 2. Autocorrelation (Top Right)
         # ---------------------------------------------------------
-        self.acg_plot = pg.PlotWidget(title="Autocorrelation")
+        self.acg_plot = pg.PlotWidget()
+        self.acg_plot.setTitle(
+            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
+        )
         self.acg_plot.setLabel('bottom', "Time lag (ms)")
         self.acg_plot.setLabel('left', "Autocorrelation")
         self._style_plot(self.acg_plot)
         
         # --- PERSISTENT ACG/CCG ITEMS ---
         # 1. ACG Bar (Purple) - Default
-        self._acg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=(170, 0, 255, 100), pen=pg.mkPen('#aa00ff', width=1))
+        self._acg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=pg.mkBrush(170, 0, 255, 130), pen=pg.mkPen('#9933FF', width=0.5))
         self.acg_plot.addItem(self._acg_bar)
         
         # 2. CCG Bar (Orange) - Hidden by default
@@ -110,44 +116,65 @@ class StandardPlotsPanel(QWidget):
         isi_container = QWidget()
         isi_layout = QVBoxLayout(isi_container)
         isi_layout.setContentsMargins(0, 0, 0, 0)
+        
         isi_controls = QHBoxLayout()
+        isi_controls.setSpacing(4)
 
-        isi_controls.addWidget(QLabel('View:'))
+        # Group 1: View type
         self.isi_view_combo = QComboBox()
         self.isi_view_combo.addItems(['ISI Histogram', 'ISI vs Amplitude'])
+        self.isi_view_combo.setFixedHeight(24)
         isi_controls.addWidget(self.isi_view_combo)
 
-        self.show_refractory_line_checkbox = QCheckBox('Refr line')
-        self.show_refractory_line_checkbox.setChecked(True)
-        isi_controls.addWidget(self.show_refractory_line_checkbox)
+        # Separator
+        sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine)
+        sep1.setStyleSheet("color: #2E3038;"); sep1.setFixedWidth(1)
+        isi_controls.addWidget(sep1)
 
-        isi_controls.addWidget(QLabel('Ref (ms):'))
+        # Group 2: Refractory line
+        self.show_refractory_line_checkbox = QCheckBox('Refr.')
+        self.show_refractory_line_checkbox.setChecked(True)
         self.refractory_spinbox = QDoubleSpinBox()
         self.refractory_spinbox.setRange(0.1, 10.0)
-        self.refractory_spinbox.setDecimals(2)
+        self.refractory_spinbox.setDecimals(1)
         self.refractory_spinbox.setSingleStep(0.1)
         self.refractory_spinbox.setValue(1.0)
-        isi_controls.addWidget(self.refractory_spinbox)
-
+        self.refractory_spinbox.setFixedWidth(52)
+        self.refractory_spinbox.setFixedHeight(24)
+        self.refractory_spinbox.setSuffix(' ms')
         self.update_refractory_btn = QPushButton('Set')
+        self.update_refractory_btn.setFixedHeight(24)
+        self.update_refractory_btn.setFixedWidth(32)
+
+        isi_controls.addWidget(self.show_refractory_line_checkbox)
+        isi_controls.addWidget(self.refractory_spinbox)
         isi_controls.addWidget(self.update_refractory_btn)
 
-        isi_controls.addWidget(QLabel('Plot:'))
+        # Separator
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("color: #2E3038;"); sep2.setFixedWidth(1)
+        isi_controls.addWidget(sep2)
+
+        # Group 3: Display and range
         self.isi_display_combo = QComboBox()
         self.isi_display_combo.addItems(['Scatter', 'Density'])
-        self.isi_display_combo.setCurrentText('Scatter')
-        isi_controls.addWidget(self.isi_display_combo)
-
-        isi_controls.addWidget(QLabel('X:'))
+        self.isi_display_combo.setFixedHeight(24)
         self.isi_range_combo = QComboBox()
         self.isi_range_combo.addItems(['0–50 ms', '0–500 ms', '0–1000 ms', 'Full'])
-        self.isi_range_combo.setCurrentText('0–50 ms')
-        isi_controls.addWidget(self.isi_range_combo)
+        self.isi_range_combo.setFixedHeight(24)
 
+        isi_controls.addWidget(QLabel('Plot:'))
+        isi_controls.addWidget(self.isi_display_combo)
+        isi_controls.addWidget(QLabel('X:'))
+        isi_controls.addWidget(self.isi_range_combo)
         isi_controls.addStretch()
+        
         isi_layout.addLayout(isi_controls)
 
-        self.isi_plot = pg.PlotWidget(title="ISI Distribution")
+        self.isi_plot = pg.PlotWidget()
+        self.isi_plot.setTitle(
+            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>ISI DISTRIBUTION</span>"
+        )
         self.isi_plot.setLabel('bottom', "ISI (ms)")
         self._style_plot(self.isi_plot)
         
@@ -184,7 +211,10 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         # 4. Firing Rate (Bottom Right)
         # ---------------------------------------------------------
-        self.fr_plot = pg.PlotWidget(title="Signal Health")
+        self.fr_plot = pg.PlotWidget()
+        self.fr_plot.setTitle(
+            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>SIGNAL HEALTH</span>"
+        )
         self.fr_plot.setLabel('bottom', "Time (s)")
         self.fr_plot.setLabel('left', "Firing Rate (Hz)", color='#ffeb3b')
         self._style_plot(self.fr_plot)
@@ -208,12 +238,22 @@ class StandardPlotsPanel(QWidget):
         if cluster_id is not None:
             self.update_all(cluster_id)
 
-    def _style_plot(self, plot):
-        plot.showGrid(x=True, y=True, alpha=0.2)
-        plot.getAxis('bottom').setPen(pg.mkPen('#888888'))
-        plot.getAxis('bottom').setTextPen(pg.mkPen('#888888'))
-        plot.getAxis('left').setPen(pg.mkPen('#888888'))
-        plot.getAxis('left').setTextPen(pg.mkPen('#888888'))
+    def _style_plot(self, plot_widget):
+        plot_widget.getPlotItem().getAxis('bottom').setPen(pg.mkPen('#3D3F48'))
+        plot_widget.getPlotItem().getAxis('left').setPen(pg.mkPen('#3D3F48'))
+        plot_widget.getPlotItem().getAxis('bottom').setTextPen(pg.mkPen('#9B9DA6'))
+        plot_widget.getPlotItem().getAxis('left').setTextPen(pg.mkPen('#9B9DA6'))
+
+        # Hide top and right spines
+        plot_widget.showAxis('top', False)
+        plot_widget.showAxis('right', False)
+
+        # Subtle grid
+        plot_widget.showGrid(x=True, y=True, alpha=0.08)
+
+        # Remove the default blue border pyqtgraph adds
+        plot_widget.getPlotItem().setContentsMargins(8, 8, 8, 8)
+        plot_widget.setBackground('#18191C')
 
     def _create_hot_colormap(self):
         colors = [(0, 0, 0), (255, 0, 0), (255, 255, 0), (255, 255, 255)]

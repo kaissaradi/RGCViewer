@@ -1,5 +1,5 @@
 from __future__ import annotations
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox, QButtonGroup, QRadioButton
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox
 from qtpy.QtCore import Signal, QItemSelectionModel
 from ..widgets.widgets import HighlightStatusPandasModel, CustomTableView
 import pandas as pd
@@ -8,6 +8,10 @@ if TYPE_CHECKING:
     from ..main_window import MainWindow
 import logging
 logger = logging.getLogger(__name__)
+
+PANEL_PADDING  = 8   # px — inner padding on all panels
+CTRL_SPACING   = 6   # px — gap between controls in a row
+ROW_HEIGHT     = 28  # px — standard table row height (was ~32px)
 
 
 class SimilarityPanel(QWidget):
@@ -22,75 +26,93 @@ class SimilarityPanel(QWidget):
         self._spacebar_select_count = 1
         self.current_source = "MEA"  # Default to MEA-based similarity
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, PANEL_PADDING, 0, 0)
+        layout.setSpacing(CTRL_SPACING)
 
         self.label = QLabel("Similar Clusters")
         layout.addWidget(self.label)
 
-        # Add source selection buttons (MEA / Vision toggle)
-        source_layout = QHBoxLayout()
-        self.source_button_group = QButtonGroup()
+        # Segmented source toggle (MEA / Vision)
+        source_row = QHBoxLayout()
+        source_row.setSpacing(0)
 
-        self.mea_radio = QRadioButton("MEA Similarity")
-        self.vision_radio = QRadioButton("Vision Similarity")
-        self.mea_radio.setChecked(True)  # Default to MEA
+        self.mea_btn    = QPushButton("MEA")
+        self.vision_btn = QPushButton("Vision")
 
-        self.source_button_group.addButton(self.mea_radio)
-        self.source_button_group.addButton(self.vision_radio)
+        for i, btn in enumerate([self.mea_btn, self.vision_btn]):
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 0.5px solid #3D3F48;
+                    border-{'right' if i == 0 else 'left'}-width: 0;
+                    border-radius: 0;
+                    {'border-top-left-radius: 4px; border-bottom-left-radius: 4px;' if i == 0 else
+                    'border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-left: none;'}
+                    color: #9B9DA6;
+                    background: transparent;
+                }}
+                QPushButton:checked {{
+                    background: rgba(46, 109, 212, 0.20);
+                    color: #4A8BEF;
+                }}
+            """)
 
-        source_layout.addWidget(self.mea_radio)
-        source_layout.addWidget(self.vision_radio)
-        source_layout.addStretch()
-        layout.addLayout(source_layout)
+        self.mea_btn.setChecked(True)
+        self.mea_btn.clicked.connect(lambda: self._set_source("MEA"))
+        self.vision_btn.clicked.connect(lambda: self._set_source("vision"))
 
-        # Connect radio buttons to source change handler
-        self.mea_radio.toggled.connect(self._on_source_toggled)
+        source_row.addWidget(self.mea_btn)
+        source_row.addWidget(self.vision_btn)
+        source_row.addStretch()
+        layout.addLayout(source_row)
 
         self.table = CustomTableView()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
-
-        # Button row
-        # button_layout = QHBoxLayout()
-        # self.clean_button = QPushButton("Mark Clean")
-        # self.edge_button = QPushButton("Mark Edge")
-        # self.duplicate_button = QPushButton("Mark as Duplicates")
-        # self.unsure_button = QPushButton("Mark Unsure")
-        # self.duplicate_button.setToolTip("Mark selected clusters as duplicates (Cmd+D / Ctrl+D)")
-        # self.clean_button.setToolTip("Mark selected clusters as clean (Cmd+C / Ctrl+C)")
-        # self.edge_button.setToolTip("Mark selected clusters as edge (Cmd+E / Ctrl+E)")
-        # self.unsure_button.setToolTip("Mark selected clusters as unsure like What? (Cmd+W / Ctrl+W)")
-        # button_layout.addWidget(self.duplicate_button)
-        # button_layout.addWidget(self.clean_button)
-        # button_layout.addWidget(self.edge_button)
-        # button_layout.addWidget(self.unsure_button)
-        # button_layout.addStretch()
-        # layout.addLayout(button_layout)
 
         status_layout = QHBoxLayout()
         self.status_combo = QComboBox()
         self.status_combo.addItems([
             "Clean", "Edge", "Duplicate", "Unsure", "Noisy", "Contaminated", "Off Array"
         ])
-        self.mark_button = QPushButton("Mark Status")
+        self.status_combo.setFixedHeight(26)
+        self.status_combo.setFixedWidth(110)
+        
+        self.mark_button = QPushButton("Mark")
+        self.mark_button.setFixedHeight(26)
+        
         status_layout.addWidget(self.status_combo)
         status_layout.addWidget(self.mark_button)
         status_layout.addStretch()
         layout.addLayout(status_layout)
 
-        # self.duplicate_button.clicked.connect(lambda: self._mark_status('Duplicate'))
-        # self.clean_button.clicked.connect(lambda: self._mark_status('Clean'))
-        # self.edge_button.clicked.connect(lambda: self._mark_status('Edge'))
-        # self.unsure_button.clicked.connect(lambda: self._mark_status('Unsure'))
         self.mark_button.clicked.connect(self._mark_selected_status)
 
         self.similarity_model = None
 
         # Connect selection change after model is set (see set_data)
         self.table_selection_connected = False
+
+    def _set_source(self, source):
+        """Update source selection and refresh table."""
+        self.current_source = source
+        if source == "MEA":
+            self.mea_btn.setChecked(True)
+            self.vision_btn.setChecked(False)
+        else:
+            self.mea_btn.setChecked(False)
+            self.vision_btn.setChecked(True)
+        
+        if self.main_cluster_id is not None:
+            self.update_main_cluster_id(self.main_cluster_id)
 
     def set_data(self, similarity_df):
         """Set the DataFrame for the similarity table."""
@@ -132,10 +154,6 @@ class SimilarityPanel(QWidget):
         model = self.table.model()
         if model is None or model.rowCount() == 0:
             return
-        # self._spacebar_select_count += 1
-        # if self._spacebar_select_count > model.rowCount():
-        #     self._spacebar_select_count = 1  # wrap around
-        # self.select_top_n_rows(self._spacebar_select_count)
 
         # Find the currently selected row
         selection_model = self.table.selectionModel()
@@ -194,21 +212,10 @@ class SimilarityPanel(QWidget):
     def on_vision_loaded(self):
         """Called when vision data is loaded - enables vision similarity option."""
         # Enable the vision radio button
-        self.vision_radio.setEnabled(True)
+        self.vision_btn.setEnabled(True)
 
         # Update the table if vision similarity is currently selected
         if self.current_source == "vision" and self.main_cluster_id is not None:
-            self.update_main_cluster_id(self.main_cluster_id)
-
-    def _on_source_toggled(self):
-        """Handle when the user toggles between MEA and Vision similarity sources."""
-        if self.mea_radio.isChecked():
-            self.current_source = "MEA"
-        else:
-            self.current_source = "vision"
-
-        # Update the table with the new source if a main cluster is selected
-        if self.main_cluster_id is not None:
             self.update_main_cluster_id(self.main_cluster_id)
 
     def update_main_cluster_id(self, cluster_id):

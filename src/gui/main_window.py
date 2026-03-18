@@ -36,8 +36,50 @@ from .panels.umap_panel import UMAPPanel
 from .panels.array_calibration_panel import ArrayCalibrationDialog
 
 # Global pyqtgraph configuration
-pg.setConfigOption('background', '#1f1f1f')
-pg.setConfigOption('foreground', 'd')
+pg.setConfigOption('background', '#18191C')   # Matches --bg-panel
+pg.setConfigOption('foreground', '#9B9DA6')   # Matches --text-secondary
+pg.setConfigOptions(antialias=True)
+
+COLORS = {
+    # Surfaces
+    "bg_base":     "#111214",   # Window / app background
+    "bg_panel":    "#18191C",   # Left and right panes, plot backgrounds
+    "bg_surface":  "#1E2025",   # Table rows, cards
+    "bg_elevated": "#282A30",   # Hover states, alternating table rows
+
+    # Accents
+    "accent":          "#2E6DD4",   # Active tabs, selected rows, links
+    "accent_hover":    "#4A8BEF",   # Hover on accent elements
+    "accent_positive": "#1A5C3A",   # Refine button, "good" status
+    "accent_pos_text": "#6EE7B7",   # Text on positive background
+
+    # Text hierarchy
+    "text_primary":   "#F0F0F2",   # Main data, labels
+    "text_secondary": "#9B9DA6",   # Supporting text, axis labels
+    "text_tertiary":  "#5A5C65",   # Placeholder text, column headers
+    "text_disabled":  "#3A3C44",   # Disabled controls
+
+    # Borders
+    "border_subtle":   "#2E3038",   # Table dividers, panel edges
+    "border_default":  "#3D3F48",   # Button borders, input outlines
+    "border_strong":   "#5A5C65",   # Focused inputs, hover borders
+
+    # Status badges
+    "status_good_bg":   "rgba(26,  92,  58,  0.20)",
+    "status_good_text": "#6EE7B7",
+    "status_mua_bg":    "rgba(186, 117,  23, 0.20)",
+    "status_mua_text":  "#F0C060",
+    "status_noise_bg":  "rgba(163,  45,  45, 0.20)",
+    "status_noise_text":"#F08080",
+    "status_unsort_bg": "rgba(46,  109, 212, 0.20)",
+    "status_unsort_text":"#7EB8F7",
+}
+
+PANEL_PADDING  = 8   # px — inner padding on all panels
+CTRL_SPACING   = 6   # px — gap between controls in a row
+ROW_HEIGHT     = 28  # px — standard table row height (was ~32px)
+HEADER_HEIGHT  = 36  # px — tab bar and control bar height
+STATUS_HEIGHT  = 24  # px — status bar
 
 logger = logging.getLogger(__name__)
 
@@ -146,19 +188,282 @@ class MainWindow(QMainWindow):
             view.scrollTo(index)
 
     def _setup_style(self):
-        """Sets the application's stylesheet."""
-        self.setFont(QFont("Segoe UI", 9))
+        self.setFont(QFont("Inter", 11))
+
         self.setStyleSheet("""
-            QWidget { color: white; background-color: #2D2D2D; }
-            QTableView { background-color: #191919; alternate-background-color: #252525; gridline-color: #454545; }
-            QHeaderView::section { background-color: #353535; padding: 4px; border: 1px solid #555555; }
-            QPushButton { background-color: #353535; border: 1px solid #555555; padding: 5px; border-radius: 4px; }
-            QPushButton:hover { background-color: #454545; }
-            QPushButton:pressed { background-color: #252525; }
-            QTabWidget::pane { border: 1px solid #4282DA; }
-            QTabBar::tab { color: white; background: #353535; padding: 8px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            QTabBar::tab:selected { background: #4282DA; }
-            QStatusBar { color: white; }
+            /* ── Base ───────────────────────────── */
+            QWidget {
+                color: #F0F0F2;
+                background-color: #111214;
+                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-size: 12px;
+            }
+            QMainWindow, QDialog {
+                background-color: #111214;
+            }
+
+            /* ── Splitter handles ────────────────── */
+            QSplitter::handle {
+                background: #2E3038;
+            }
+            QSplitter::handle:horizontal {
+                width: 5px;
+            }
+            QSplitter::handle:vertical {
+                height: 5px;
+            }
+            QSplitter::handle:horizontal:hover,
+            QSplitter::handle:vertical:hover {
+                background: #4A8BEF;
+            }
+
+            /* ── Tables ──────────────────────────── */
+            QTableView {
+                background-color: #18191C;
+                alternate-background-color: #1E2025;
+                gridline-color: transparent;
+                border: none;
+                selection-background-color: rgba(46, 109, 212, 0.18);
+                selection-color: #F0F0F2;
+            }
+            QTableView::item {
+                border-bottom: 1px solid #2E3038;
+                padding: 0 8px;
+            }
+            QTableView::item:selected {
+                background-color: rgba(46, 109, 212, 0.18);
+            }
+            QHeaderView::section {
+                background-color: #18191C;
+                color: #5A5C65;
+                padding: 4px 8px;
+                border: none;
+                border-bottom: 1px solid #3D3F48;
+                font-size: 10px;
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            QHeaderView::section:hover {
+                background-color: #1E2025;
+                color: #9B9DA6;
+            }
+            QHeaderView {
+                background-color: #18191C;
+            }
+
+            /* ── Buttons ─────────────────────────── */
+            QPushButton {
+                background-color: transparent;
+                border: 0.5px solid #3D3F48;
+                color: #9B9DA6;
+                padding: 4px 10px;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1E2025;
+                border-color: #5A5C65;
+                color: #F0F0F2;
+            }
+            QPushButton:pressed {
+                background-color: #282A30;
+            }
+            QPushButton:checked {
+                background-color: rgba(46, 109, 212, 0.20);
+                border-color: #2E6DD4;
+                color: #4A8BEF;
+            }
+            QPushButton:disabled {
+                color: #3A3C44;
+                border-color: #2E3038;
+            }
+
+            /* ── Tabs ────────────────────────────── */
+            QTabWidget::pane {
+                border: none;
+                border-top: 1px solid #2E3038;
+            }
+            QTabBar::tab {
+                color: #9B9DA6;
+                background: transparent;
+                padding: 6px 16px;
+                font-size: 12px;
+                border-bottom: 2px solid transparent;
+                margin-right: 2px;
+                min-width: 40px;
+            }
+            QTabBar::tab:selected {
+                color: #F0F0F2;
+                border-bottom: 2px solid #4A8BEF;
+            }
+            QTabBar::tab:hover:!selected {
+                color: #F0F0F2;
+                background: #1E2025;
+            }
+            QTabBar::scroller {
+                width: 24px;
+            }
+
+            /* ── Inputs ──────────────────────────── */
+            QComboBox {
+                background-color: #18191C;
+                border: 0.5px solid #3D3F48;
+                border-radius: 4px;
+                padding: 3px 8px;
+                color: #F0F0F2;
+                font-size: 12px;
+                min-height: 22px;
+            }
+            QComboBox:hover { border-color: #5A5C65; }
+            QComboBox::drop-down {
+                border: none;
+                width: 18px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1E2025;
+                border: 0.5px solid #3D3F48;
+                selection-background-color: rgba(46, 109, 212, 0.25);
+                color: #F0F0F2;
+            }
+            QDoubleSpinBox, QSpinBox {
+                background-color: #18191C;
+                border: 0.5px solid #3D3F48;
+                border-radius: 4px;
+                padding: 3px 6px;
+                color: #F0F0F2;
+                font-size: 12px;
+            }
+            QDoubleSpinBox:hover, QSpinBox:hover {
+                border-color: #5A5C65;
+            }
+
+            /* ── Checkboxes ──────────────────────── */
+            QCheckBox {
+                color: #9B9DA6;
+                spacing: 5px;
+                font-size: 12px;
+            }
+            QCheckBox:hover { color: #F0F0F2; }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 0.5px solid #3D3F48;
+                border-radius: 3px;
+                background: #18191C;
+            }
+            QCheckBox::indicator:checked {
+                background: #2E6DD4;
+                border-color: #2E6DD4;
+            }
+
+            /* ── Radio buttons ───────────────────── */
+            QRadioButton {
+                color: #9B9DA6;
+                spacing: 5px;
+                font-size: 12px;
+            }
+            QRadioButton:hover { color: #F0F0F2; }
+
+            /* ── Labels ──────────────────────────── */
+            QLabel {
+                color: #9B9DA6;
+                font-size: 12px;
+            }
+
+            /* ── Scrollbars ──────────────────────── */
+            QScrollBar:vertical {
+                background: #18191C;
+                width: 6px;
+                border-radius: 3px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #3D3F48;
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover { background: #5A5C65; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: #18191C;
+                height: 6px;
+                border-radius: 3px;
+                margin: 0;
+            }
+            QScrollBar::handle:horizontal {
+                background: #3D3F48;
+                border-radius: 3px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #5A5C65; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+
+            /* ── Tree View ───────────────────────── */
+            QTreeView {
+                background-color: #18191C;
+                border: none;
+                alternate-background-color: #1E2025;
+                selection-background-color: rgba(46, 109, 212, 0.18);
+            }
+            QTreeView::item:hover { background: #1E2025; }
+            QTreeView::item:selected { background: rgba(46, 109, 212, 0.18); }
+            QTreeView::branch { background: #18191C; }
+
+            /* ── Status bar ──────────────────────── */
+            QStatusBar {
+                color: #5A5C65;
+                font-size: 11px;
+                border-top: 0.5px solid #2E3038;
+                background: #111214;
+                padding: 2px 8px;
+            }
+
+            /* ── Menu bar ────────────────────────── */
+            QMenuBar {
+                background-color: #111214;
+                color: #9B9DA6;
+                border-bottom: 0.5px solid #2E3038;
+                font-size: 12px;
+            }
+            QMenuBar::item:selected { background: #1E2025; color: #F0F0F2; }
+            QMenu {
+                background-color: #1E2025;
+                border: 0.5px solid #3D3F48;
+                color: #F0F0F2;
+                font-size: 12px;
+            }
+            QMenu::item:selected { background: rgba(46, 109, 212, 0.25); }
+            QMenu::separator {
+                height: 1px;
+                background: #2E3038;
+                margin: 3px 0;
+            }
+
+            /* ── Progress bar ────────────────────── */
+            QProgressBar {
+                background-color: #18191C;
+                border: 0.5px solid #3D3F48;
+                border-radius: 4px;
+                text-align: center;
+                color: #9B9DA6;
+                font-size: 11px;
+                height: 8px;
+            }
+            QProgressBar::chunk {
+                background-color: #2E6DD4;
+                border-radius: 3px;
+            }
+
+            /* ── Tooltip ─────────────────────────── */
+            QToolTip {
+                background-color: #1E2025;
+                border: 0.5px solid #3D3F48;
+                color: #F0F0F2;
+                font-size: 11px;
+                padding: 4px 8px;
+                border-radius: 4px;
+            }
         """)
 
     def update_cluster_views(self, cluster_id):
@@ -395,34 +700,68 @@ class MainWindow(QMainWindow):
         # --- Left Pane ---
         self.left_pane = QWidget()
         left_layout = QVBoxLayout(self.left_pane)
-
-        # Add a toggle button for collapsing/expanding the sidebar
-        self.sidebar_toggle_button = QPushButton("◀")
-        self.sidebar_toggle_button.setFixedWidth(20)
-        self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
-        self.sidebar_collapsed = False
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
 
         # Create a widget to contain the filter box and views
         left_content = QWidget()
         left_content_layout = QVBoxLayout(left_content)
+        left_content_layout.setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, PANEL_PADDING)
+        left_content_layout.setSpacing(CTRL_SPACING)
 
-        # Add filter controls
-        filter_box = QHBoxLayout()
-        self.filter_button = QPushButton("Filter 'Good'")
-        self.reset_button = QPushButton("Reset View")
-        filter_box.addWidget(self.filter_button)
-        filter_box.addWidget(self.reset_button)
+        # --- Filter + View Toggle Row ---
+        top_ctrl_layout = QHBoxLayout()
+        top_ctrl_layout.setSpacing(4)
 
-        # --- View Switcher ---
-        view_switch_layout = QHBoxLayout()
-        self.tree_view_button = QPushButton("Tree View")
-        self.table_view_button = QPushButton("Table View")
-        self.tree_view_button.clicked.connect(
-            lambda: self._switch_left_view(0))
-        self.table_view_button.clicked.connect(
-            lambda: self._switch_left_view(1))
-        view_switch_layout.addWidget(self.tree_view_button)
-        view_switch_layout.addWidget(self.table_view_button)
+        # Segmented filter toggle
+        self.filter_group = QButtonGroup(self)
+        self.filter_all_btn  = QPushButton("All")
+        self.filter_good_btn = QPushButton("Good")
+        self.filter_group.addButton(self.filter_all_btn)
+        self.filter_group.addButton(self.filter_good_btn)
+        self.filter_group.setExclusive(True)
+        
+        for btn in (self.filter_all_btn, self.filter_good_btn):
+            btn.setCheckable(True)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet("QPushButton { border-radius: 0; }")
+        self.filter_all_btn.setChecked(True)
+        self.filter_all_btn.setStyleSheet(
+            "border-radius: 0; border-top-left-radius: 5px; border-bottom-left-radius: 5px;"
+        )
+        self.filter_good_btn.setStyleSheet(
+            "border-radius: 0; border-top-right-radius: 5px; border-bottom-right-radius: 5px;"
+        )
+
+        # Segmented view toggle
+        self.view_group = QButtonGroup(self)
+        self.table_view_button = QPushButton("Table")
+        self.tree_view_button  = QPushButton("Tree")
+        self.view_group.addButton(self.table_view_button)
+        self.view_group.addButton(self.tree_view_button)
+        self.view_group.setExclusive(True)
+        
+        for btn in (self.table_view_button, self.tree_view_button):
+            btn.setCheckable(True)
+            btn.setFixedHeight(26)
+        self.table_view_button.setChecked(True)
+
+        # Reset as ghost link
+        self.reset_button = QPushButton("↺")
+        self.reset_button.setToolTip("Reset View")
+        self.reset_button.setFixedSize(26, 26)
+        self.reset_button.setStyleSheet(
+            "QPushButton { border: none; color: #5A5C65; font-size: 14px; }"
+            "QPushButton:hover { color: #F0F0F2; }"
+        )
+
+        top_ctrl_layout.addWidget(self.filter_all_btn)
+        top_ctrl_layout.addWidget(self.filter_good_btn)
+        top_ctrl_layout.addSpacing(8)
+        top_ctrl_layout.addWidget(self.table_view_button)
+        top_ctrl_layout.addWidget(self.tree_view_button)
+        top_ctrl_layout.addStretch()
+        top_ctrl_layout.addWidget(self.reset_button)
 
         # --- View Stack (Tree and Table) ---
         self.view_stack = QStackedWidget()
@@ -430,35 +769,33 @@ class MainWindow(QMainWindow):
         # Tree View
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
-        self.tree_view.setDragEnabled(True)
-        self.tree_view.setAcceptDrops(True)
-        self.tree_view.setDropIndicatorShown(True)
-        self.tree_view.setDragDropMode(
-            QAbstractItemView.DragDropMode.InternalMove)
-        self.tree_view.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(
-            self.open_tree_context_menu)
-
-        # Table View
-        self.table_view = CustomTableView()
-        self.table_view.setSortingEnabled(True)
-        self.table_view.setAlternatingRowColors(True)
-        self.table_view.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive)
-
+...
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
         # Default to table view
         self.view_stack.setCurrentIndex(1)
 
         self.refine_button = QPushButton("Refine Selected Cluster")
-        self.refine_button.setFixedHeight(40)
-        self.refine_button.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #aeffe3; background-color: #005230;")
+        self.refine_button.setFixedHeight(32)
+        self.refine_button.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                font-weight: 500;
+                color: #6EE7B7;
+                background-color: #1A5C3A;
+                border: none;
+                border-radius: 6px;
+                padding: 0 12px;
+            }
+            QPushButton:hover  { background-color: #226B46; }
+            QPushButton:pressed { background-color: #14452C; }
+            QPushButton:disabled {
+                background-color: #1E2025;
+                color: #3A3C44;
+            }
+        """)
 
-        left_content_layout.addLayout(filter_box)
-        left_content_layout.addLayout(view_switch_layout)
+        left_content_layout.addLayout(top_ctrl_layout)
         left_content_layout.addWidget(self.view_stack)
         left_content_layout.addWidget(self.refine_button)
 
@@ -468,8 +805,7 @@ class MainWindow(QMainWindow):
         self.similarity_panel.selection_changed.connect(
             self.on_similarity_selection_changed)
 
-        # Add the toggle button and content to the left pane
-        left_layout.addWidget(self.sidebar_toggle_button)
+        # Add the content to the left pane
         left_layout.addWidget(left_content)
         # Store reference to content widget for collapsing/expanding
         self.left_content = left_content
@@ -482,16 +818,34 @@ class MainWindow(QMainWindow):
 
         # Create Tab Widget
         self.analysis_tabs = QTabWidget()
+        self.analysis_tabs.tabBar().setUsesScrollButtons(True)
+        self.analysis_tabs.tabBar().setElideMode(Qt.ElideNone)
 
-        # New Checkbox for Population Split View (Moved to Top Right of Tabs)
-        self.pop_view_checkbox = QCheckBox("Population Split View")
-        self.pop_view_checkbox.setFocusPolicy(Qt.NoFocus)
-        self.pop_view_checkbox.toggled.connect(
-            self.toggle_population_split_view)
-
-        # Place checkbox in the top-right corner of the tab bar
-        self.analysis_tabs.setCornerWidget(
-            self.pop_view_checkbox, Qt.TopRightCorner)
+        # Replace corner widget checkbox with a compact icon button:
+        self.pop_view_btn = QPushButton("⊞  Population")
+        self.pop_view_btn.setCheckable(True)
+        self.pop_view_btn.setFixedHeight(28)
+        self.pop_view_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 11px;
+                padding: 0 10px;
+                border: 0.5px solid #3D3F48;
+                border-radius: 5px;
+                color: #9B9DA6;
+                background: transparent;
+            }
+            QPushButton:checked {
+                background: rgba(46, 109, 212, 0.20);
+                border-color: #2E6DD4;
+                color: #4A8BEF;
+            }
+            QPushButton:hover:!checked {
+                background: #1E2025;
+                color: #F0F0F2;
+            }
+        """)
+        self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
+        self.analysis_tabs.setCornerWidget(self.pop_view_btn, Qt.TopRightCorner)
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
@@ -577,19 +931,24 @@ class MainWindow(QMainWindow):
         self.sta_panel = STAPanel(self)
         self.umap_panel = UMAPPanel(self)
 
-        # --- Tab Order ---
-        self.analysis_tabs.addTab(self.standard_plots_panel, "Standard Plots")
-        self.analysis_tabs.addTab(self.ei_panel, "EI Analysis")
-        self.analysis_tabs.addTab(self.sta_panel, "STA Analysis")
-        self.analysis_tabs.addTab(self.umap_panel, "Class Discovery (UMAP)")
-        self.analysis_tabs.addTab(self.waveforms_panel, "Raw Waveforms")
-        self.analysis_tabs.addTab(self.raw_panel, "Raw Trace")
+        # --- Tab Order (Short Labels) ---
+        self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
+        self.analysis_tabs.addTab(self.ei_panel, "EI")
+        self.analysis_tabs.addTab(self.sta_panel, "STA")
+        self.analysis_tabs.addTab(self.umap_panel, "UMAP")
+        self.analysis_tabs.addTab(self.waveforms_panel, "Waveforms")
+        self.analysis_tabs.addTab(self.raw_panel, "Raw")
 
         # --- Main Splitter and Layout ---
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([450, 1350])  # Adjusted initial size
+        self.main_splitter.setSizes([220, 1800 - 220])
+        self.main_splitter.setStretchFactor(0, 0)  # Left panel doesn't stretch
+        self.main_splitter.setStretchFactor(1, 1)  # Right panel takes remaining space
+        self.main_splitter.setHandleWidth(5)
+        self.main_splitter.handle(1).mouseDoubleClickEvent = lambda e: self.toggle_sidebar()
+        
         main_layout.addWidget(self.main_splitter)
 
         self.status_bar = QStatusBar()
@@ -638,7 +997,12 @@ class MainWindow(QMainWindow):
         self.save_classification_action.triggered.connect(self.on_save_classification_action)
         self.save_action.triggered.connect(self.on_save_action)
 
-        self.filter_button.clicked.connect(self.apply_good_filter)
+        # Connect New Left Panel Buttons
+        self.filter_all_btn.clicked.connect(self.reset_views)
+        self.filter_good_btn.clicked.connect(self.apply_good_filter)
+        self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
+        self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
+        
         self.reset_button.clicked.connect(self.reset_views)
         self.refine_button.clicked.connect(self.on_refine_cluster)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
@@ -803,6 +1167,8 @@ class MainWindow(QMainWindow):
     def setup_table_model(self, model):
         """Sets up the table view model and connects the selection changed signal."""
         self.table_view.setModel(model)
+        self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        self.table_view.verticalHeader().setVisible(False)
         try:
             self.table_view.selectionModel().selectionChanged.disconnect(
                 self.on_view_selection_changed)
@@ -1056,23 +1422,18 @@ class MainWindow(QMainWindow):
 
     def toggle_sidebar(self):
         """Collapses or expands the left sidebar by manipulating the main splitter."""
-        if self.sidebar_collapsed:
+        widths = self.main_splitter.sizes()
+        if widths[0] < 50:
             # --- EXPAND ---
-            self.sidebar_toggle_button.setText("◀")
-            widths = self.main_splitter.sizes()
             total_width = sum(widths)
             self.main_splitter.setSizes(
                 [self.last_left_width, total_width - self.last_left_width])
             self.sidebar_collapsed = False
         else:
             # --- COLLAPSE ---
-            self.sidebar_toggle_button.setText("▶")
-            widths = self.main_splitter.sizes()
-            # Save the current width if it's not already collapsed
-            if widths[0] > 35:
-                self.last_left_width = widths[0]
+            self.last_left_width = widths[0]
             total_width = sum(widths)
-            self.main_splitter.setSizes([35, total_width - 35])
+            self.main_splitter.setSizes([0, total_width])
             self.sidebar_collapsed = True
 
     def toggle_population_fullscreen(self, checked):

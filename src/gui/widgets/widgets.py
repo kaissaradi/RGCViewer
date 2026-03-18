@@ -104,13 +104,12 @@ class HighlightStatusPandasModel(PandasModel):
     """Optimized model with role-based caching for faster scrolling."""
     
     STATUS_COLORS = {
-        'Duplicate': QColor('#FFDDDD'),      # Light red
-        'Clean': QColor('#DDFFDD'),          # Light green
-        'Edge': QColor('#FFFFDD'),           # Light yellow
-        'Unsure': QColor('#DDDDFF'),         # Light blue
-        'Noisy': QColor('#FFDDEE'),          # Pink
-        'Contaminated': QColor('#FFCCFF'),   # Purple
-        'Off Array': QColor('#CCCCCC'),      # Gray
+        "Clean":    "#6EE7B7",
+        "Edge":     "#F0C060",
+        "Duplicate":"#F08080",
+        "Noise":    "#F08080",
+        "Unsure":   "#7EB8F7",
+        "Original": "#9B9DA6",
     }
 
     def __init__(self, dataframe: pd.DataFrame, parent=None):
@@ -183,31 +182,26 @@ class HighlightStatusPandasModel(PandasModel):
             return value
 
         try:
-            # Use lowercase 'status' to match your cluster_df column name
             if 'status' not in self._dataframe.columns:
                 return value
 
+            col_name = self._dataframe.columns[index.column()]
             status_col_idx = self._dataframe.columns.get_loc('status')
-            status_value = self._dataframe.iloc[index.row(), status_col_idx]
-
-            if role == Qt.BackgroundRole:
-                color = self.STATUS_COLORS.get(status_value)
-                if color:
-                    return color
+            status_value = str(self._dataframe.iloc[index.row(), status_col_idx])
 
             if role == Qt.ForegroundRole:
-                cluster_id_col_idx = self._dataframe.columns.get_loc(
-                    'cluster_id')
+                if col_name == 'status':
+                    color = self.STATUS_COLORS.get(status_value, "#9B9DA6")
+                    return QColor(color)
+                
+                # Default text color for other columns
+                return QColor("#9B9DA6")
 
-                # Set text color for highlighted statuses
-                if status_value in ['Clean', 'Edge', 'Unsure', 'Duplicate']:
-                    if index.column() == cluster_id_col_idx:
-                        return QColor('#FF2222')  # Red text for cluster_id
-                    else:
-                        return QColor('#000000')  # Black text
+            if role == Qt.BackgroundRole:
+                # Background handled by alternatingRowColors and QSS
+                return None
 
         except Exception:
-            # If any error occurs, log and return the default value
             logger.exception("HighlightStatusPandasModel.data error")
 
         return value
