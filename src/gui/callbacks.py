@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread, Qt
+from qtpy.QtCore import QThread, Qt, QObject
 from qtpy.QtGui import QStandardItem, QColor
 from src.gui import main_window
 
@@ -262,9 +262,20 @@ def _on_vision_loaded(main_window, success, message, is_partial):
                 except Exception:
                     pass
 
-        import threading
-        threading.Thread(target=_compute_physics, daemon=True,
-                         name="PhysicsCompute").start()
+        # Use QThread instead of threading.Thread to avoid Numba/TBB fork issues
+        physics_thread = QThread()
+        physics_worker = QObject()
+        physics_worker.moveToThread(physics_thread)
+
+        def run_physics():
+            _compute_physics()
+            physics_thread.quit()
+
+        physics_thread.started.connect(run_physics)
+        physics_thread.finished.connect(physics_worker.deleteLater)
+        physics_thread.finished.connect(physics_thread.deleteLater)
+        physics_thread.start()
+
         main_window.status_bar.showMessage(
             f"Vision loaded. Computing physics for {len(all_ids)} cells...", 5000)
 

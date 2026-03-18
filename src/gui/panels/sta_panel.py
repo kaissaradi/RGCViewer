@@ -27,11 +27,11 @@ class STAPanel(QWidget):
         """Updates plot styling based on the provided color scheme."""
         self.rf_canvas.setBackground(colors['bg_panel'])
         self.timecourse_canvas.restyle(colors)
-        self.spatial_canvas.restyle(colors)
-        
+        self.temporal_filter_canvas.restyle(colors)
+
         # Update text edit style
         self.sta_metrics_text.setStyleSheet(f"background-color: {colors['bg_surface']}; color: {colors['text_primary']}; border: 1px solid {colors['border_subtle']};")
-        
+
         # Force a redraw of current cluster if it exists
         cluster_id = self.main_window._get_selected_cluster_id()
         if cluster_id is not None:

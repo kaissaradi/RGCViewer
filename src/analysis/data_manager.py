@@ -920,11 +920,13 @@ class DataManager(QObject):
                 self.cluster_df["cluster_id"]
                 .map(potential_dups_map)
                 .fillna(False)
+                .infer_objects(copy=False)
             )
             self.cluster_df["max_dup_r"] = (
                 self.cluster_df["cluster_id"]
                 .map(max_dup_r_map)
                 .fillna(0.0)
+                .infer_objects(copy=False)
             )
 
             # Sort in-place by max_dup_r
@@ -2190,7 +2192,7 @@ class DataManager(QObject):
             self.cluster_to_template = tpl_map
 
         t1 = int(tpl_map.get(int(cluster_id), -1))
-        
+
         if t1 < 0 or t1 >= self.similar_templates.shape[0]:
             return pd.DataFrame([])
 
@@ -2201,14 +2203,14 @@ class DataManager(QObject):
         cluster_ids = self.cluster_df["cluster_id"].values
         n_clusters = len(cluster_ids)
         t2_array = np.array([int(tpl_map.get(int(cid), -1)) for cid in cluster_ids])
-        
+
         tpl_sims = np.zeros(n_clusters, dtype=float)
         valid_mask = (t2_array >= 0) & (t2_array < len(sim_row))
         tpl_sims[valid_mask] = sim_row[t2_array[valid_mask]]
 
         # Exclude the cluster itself
         self_mask = (cluster_ids == cluster_id)
-        tpl_sims[self_mask] = -1.0 
+        tpl_sims[self_mask] = -1.0
 
         # 4. Fast partial sort (argpartition) instead of full argsort
         actual_top_n = min(top_n, n_clusters)
@@ -2248,3 +2250,79 @@ class DataManager(QObject):
             rows["set"] = [set_vals[i] for i in top_idx]
 
         return pd.DataFrame(rows)
+
+    def _get_vision_similarity_table(self, cluster_id: int, top_n: int = 50):
+        """Get vision-based similarity table for cluster_id using STA correlations."""
+        import numpy as np
+        import pandas as pd
+
+        if not self.vision_stas or not self.vision_params:
+            return pd.DataFrame([])
+
+        vision_cluster_id = cluster_id + 1  # Convert to vision's 1-based indexing
+
+        if vision_cluster_id not in self.vision_stas:
+            return pd.DataFrame([])
+
+        # Get the source STA data
+        source_sta = self.vision_stas[vision_cluster_id]
+        if not hasattr(source_sta, 'red') or source_sta.red is None:
+            return pd.DataFrame([])
+
+        # Compute similarity between source and all other vision clusters
+        similarities = {}
+        for vid, sta_data in self.vision_stas.items():
+            if vid == vision_cluster_id:
+                continue  # Skip self
+
+            if not hasattr(sta_data, 'red') or sta_data.red is None:
+                continue
+
+            # Compute correlation-based similarity using flattened STA frames
+            # Stack channels and compute correlation
+            source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis=0).flatten()
+            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=0).flatten()
+
+            # Pearson correlation
+            if np.std(source_flat) > 0 and np.std(target_flat) > 0:
+                corr = np.corrcoef(source_flat, target_flat)[0, 1]
+                if not np.isnan(corr):
+                    similarities[vid] = corr
+
+        if not similarities:
+            return pd.DataFrame([])
+
+        # Sort by similarity and get top N
+        sorted_sims = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+        # Build DataFrame
+        cluster_ids = []
+        sim_values = []
+        n_spikes_list = []
+        status_list = []
+        set_list = []
+
+        for vid, sim in sorted_sims:
+            # Convert vision ID back to cluster ID
+            cid = vid - 1
+            cluster_ids.append(cid)
+            sim_values.append(sim)
+
+            # Get metadata from cluster_df if available
+            row = self.cluster_df[self.cluster_df['cluster_id'] == cid]
+            if not row.empty:
+                n_spikes_list.append(row['n_spikes'].values[0] if 'n_spikes' in row.columns else 0)
+                status_list.append(row['status'].values[0] if 'status' in row.columns else '')
+                set_list.append(row['set'].values[0] if 'set' in row.columns else '')
+            else:
+                n_spikes_list.append(0)
+                status_list.append('')
+                set_list.append('')
+
+        return pd.DataFrame({
+            'cluster_id': cluster_ids,
+            'n_spikes': n_spikes_list,
+            'status': status_list,
+            'set': set_list,
+            'template_sim': sim_values
+        })

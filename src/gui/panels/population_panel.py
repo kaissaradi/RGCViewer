@@ -97,11 +97,15 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         # Fast update
         state = canvas._timecourse_state
         ax = state['ax']
-        
+
         # Check if theme changed (background color mismatch)
         current_facecolor = QColor(colors['bg_panel']).name().lower()
-        stored_facecolor = QColor(ax.get_facecolor()).name().lower()
-        
+        # ax.get_facecolor() returns RGBA tuple, need to unpack it
+        facecolor_tuple = ax.get_facecolor()
+        stored_facecolor = QColor.fromRgbF(
+            facecolor_tuple[0], facecolor_tuple[1], facecolor_tuple[2], facecolor_tuple[3]
+        ).name().lower()
+
         if current_facecolor != stored_facecolor:
              # Force full rebuild on theme change
              if hasattr(canvas, '_timecourse_state'):
