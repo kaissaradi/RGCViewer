@@ -31,7 +31,7 @@ def update_cache_progress(main_window):
 
     # Count truly complete feature_cache entries (have _computed sentinel).
     # Falls back to standard_plot_cache count if physics pass hasn't started.
-    physics_done = sum(1 for v in dm.feature_cache.values() if v.get('_computed'))
+    physics_done = getattr(dm, '_physics_done_count', 0)
     std_done     = len(dm.standard_plot_cache)
 
     # Show whichever pass is currently active
@@ -46,7 +46,8 @@ def update_cache_progress(main_window):
 
     main_window.cache_progress.setValue(min(val, 100))
 
-    if done >= total:
+    if done >= total and not getattr(main_window, '_cache_save_triggered', False):
+        main_window._cache_save_triggered = True
         main_window.cache_progress.hide()
         main_window.status_bar.showMessage(
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000)
@@ -492,6 +493,7 @@ def reset_views(main_window: MainWindow):
 
 def start_worker(main_window: MainWindow):
     """Starts the background worker threads (spatial features + standard plots)."""
+    main_window._cache_save_triggered = False
     if main_window.worker_thread is not None or getattr(main_window, "standard_worker_thread", None) is not None:
         stop_worker(main_window)
 
@@ -528,12 +530,12 @@ def start_worker(main_window: MainWindow):
             has_std = cid_int in getattr(dm, 'standard_plot_cache', {})
             has_feat = cid_int in getattr(dm, 'feature_cache', {})
             
-            if has_std and has_feat:
-                # Bypass the queue entirely and just update the UI tally
-                update_cache_progress(main_window)
-            else:
+            if not (has_std and has_feat):
                 # Only queue cells that actually need math done
                 main_window.standard_plots_worker.add_to_queue(cid_int)
+
+        # Update once after queueing/checking all
+        update_cache_progress(main_window)
 
 
 def populate_tree_view(main_window: MainWindow, df=None):

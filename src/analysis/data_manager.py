@@ -210,6 +210,7 @@ class DataManager(QObject):
         self.ei_cache = {}
         self.heavyweight_cache = {}
         self.feature_cache = {} # Cache for feature extraction panel (PCA, ACG, etc.)
+        self._physics_done_count = 0
         # Lock to protect accesses to heavyweight_cache from multiple threads
         self._feature_lock = threading.Lock()
         self._heavyweight_lock = threading.Lock()
@@ -218,6 +219,10 @@ class DataManager(QObject):
         # Cache + lock for standard plots (ISI / ACG / FR)
         self.standard_plot_cache = {}
         self._standard_plot_lock = threading.Lock()
+
+        # Background save protection
+        self._save_lock = threading.Lock()
+        self._save_in_progress = False
 
         self.dat_path = None
 
@@ -1193,6 +1198,7 @@ class DataManager(QObject):
                      if k not in valid_ids or not self.feature_cache[k].get('_computed')]
             for k in stale:
                 del self.feature_cache[k]
+            self._physics_done_count = sum(1 for v in self.feature_cache.values() if v.get('_computed'))
             if stale:
                 logger.debug("Pruned %d stale feature_cache entries", len(stale))
 
@@ -1249,13 +1255,18 @@ class DataManager(QObject):
 
     def save_standard_plot_cache(self):
         """Persist the full standard-plot and feature caches to disk in a background thread."""
+        with self._save_lock:
+            if self._save_in_progress:
+                return
+            self._save_in_progress = True
+
         save_path = str(self.kilosort_dir / 'standard_plot_cache.pkl')
         feature_save_path = str(self.kilosort_dir / 'feature_cache.pkl')
 
         with self._standard_plot_lock:
             snapshot = dict(self.standard_plot_cache)
             
-        with getattr(self, '_feature_lock', threading.Lock()):
+        with self._feature_lock:
             feature_snapshot = dict(getattr(self, 'feature_cache', {}))
 
         def _save():
@@ -1265,6 +1276,9 @@ class DataManager(QObject):
                 logger.debug("Saved caches (%d std, %d feat) to disk", len(snapshot), len(feature_snapshot))
             except Exception:
                 logger.exception("Failed to persist standard_plot_cache")
+            finally:
+                with self._save_lock:
+                    self._save_in_progress = False
 
         t = threading.Thread(target=_save, daemon=True)
         t.start()
@@ -1276,24 +1290,31 @@ class DataManager(QObject):
             return
 
         cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
-        if cache_pkl.exists() and not getattr(self, 'standard_plot_cache', {}):
-            try:
-                with open(cache_pkl, 'rb') as f:
-                    self.standard_plot_cache = pickle.load(f)
-                logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
-            except Exception:
-                logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
-                self.standard_plot_cache = {}
+        with self._standard_plot_lock:
+            if cache_pkl.exists() and not self.standard_plot_cache:
+                try:
+                    with open(cache_pkl, 'rb') as f:
+                        self.standard_plot_cache = pickle.load(f)
+                    logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
+                except Exception:
+                    logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
+                    self.standard_plot_cache = {}
 
         feat_pkl = self.kilosort_dir / 'feature_cache.pkl'
-        if feat_pkl.exists() and not getattr(self, 'feature_cache', {}):
-            try:
-                with open(feat_pkl, 'rb') as f:
-                    self.feature_cache = pickle.load(f)
-                logger.debug("Restored feature_cache (%d entries) from disk", len(self.feature_cache))
-            except Exception:
-                logger.warning("Could not load feature_cache.pkl", exc_info=True)
-                self.feature_cache = {}
+        with self._feature_lock:
+            if feat_pkl.exists() and not self.feature_cache:
+                try:
+                    with open(feat_pkl, 'rb') as f:
+                        self.feature_cache = pickle.load(f)
+                    self._physics_done_count = sum(1 for v in self.feature_cache.values() if v.get('_computed'))
+                    logger.debug("Restored feature_cache (%d entries, %d computed) from disk", 
+                                 len(self.feature_cache), self._physics_done_count)
+                except Exception:
+                    logger.warning("Could not load feature_cache.pkl", exc_info=True)
+                    self.feature_cache = {}
+                    self._physics_done_count = 0
+            else:
+                self._physics_done_count = sum(1 for v in self.feature_cache.values() if v.get('_computed'))
 
     def get_cell_physics(self, cluster_id):
         """
@@ -1375,6 +1396,7 @@ class DataManager(QObject):
         # 5. Store in global cache safely
         with self._feature_lock:
             self.feature_cache[cluster_id] = metrics
+            self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
         return metrics
 
