@@ -287,6 +287,7 @@ class DataManager(QObject):
             with open(tmp_path, 'wb') as f:
                 pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp_path, path)   # atomic move
+            return path
         except Exception:
             try:
                 if os.path.exists(tmp_path):
@@ -1255,6 +1256,9 @@ class DataManager(QObject):
 
     def save_standard_plot_cache(self):
         """Persist the full standard-plot and feature caches to disk in a background thread."""
+        if not self.kilosort_dir:
+            return
+
         with self._save_lock:
             if self._save_in_progress:
                 return
