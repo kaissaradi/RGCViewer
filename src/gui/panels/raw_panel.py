@@ -35,7 +35,7 @@ class RawPanel(QWidget):
 
         # --- DEBUG: Check data manager ---
         dm = self.main_window.data_manager
-        if dm and dm.raw_data_memmap is not None:
+        if dm and self._dm_has_raw(dm):
             logger.info("RawPanel: Data manager has raw data loaded")
         else:
             logger.warning("RawPanel: Data manager has NO raw data loaded!")
@@ -110,6 +110,20 @@ class RawPanel(QWidget):
         
         logger.info("RawPanel initialized successfully")
 
+    @staticmethod
+    def _dm_has_raw(dm) -> bool:
+        """Return True if the DataManager has any raw data source available.
+
+        Supports both the legacy numpy memmap (``raw_data_memmap``) and the
+        newer PyBinFileReader (``raw_reader``) backends.
+        """
+        if dm is None:
+            return False
+        return (
+            getattr(dm, 'raw_reader', None) is not None
+            or getattr(dm, 'raw_data_memmap', None) is not None
+        )
+
     def load_data(self, cluster_id):
         """Load and display raw trace data for a cluster."""
         logger.info(f"RawPanel.load_data called for cluster {cluster_id}")
@@ -119,7 +133,7 @@ class RawPanel(QWidget):
             return
             
         dm = self.main_window.data_manager
-        if dm.raw_data_memmap is None:
+        if not self._dm_has_raw(dm):
             logger.error("No raw data file loaded in data manager!")
             self.status_message.emit("No raw data file loaded.")
             return
