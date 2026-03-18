@@ -1112,35 +1112,80 @@ def save_classification_to_file(main_window: MainWindow):
 
 
 def load_raw_data(main_window):
-    """Handles manually loading the raw .dat or .bin file after KS is loaded."""
+    """Handles manually loading raw data after Kilosort is loaded.
+
+    Presents a two-option dialog so the user can choose between:
+    - **Litke directory** (folder containing chunked data000.bin, data001.bin …)
+      → opens via PyBinFileReader, which handles the multi-file format natively.
+    - **Flat binary file** (.dat / .bin, Kilosort-concatenated)
+      → opened as a numpy memmap (legacy path).
+
+    ``DataManager.set_dat_path`` routes to the correct backend automatically
+    based on whether the supplied path is a directory or a file.
+    """
     if not main_window.data_manager:
         QMessageBox.warning(main_window, "No Data", "Please load a Kilosort directory first.")
         return
 
-    # Smartly default to the exact directory where the Kilosort data was found
-    start_dir = str(main_window.data_manager.kilosort_dir) if main_window.data_manager.kilosort_dir else str(Path.home())
-
-    dat_file, _ = QFileDialog.getOpenFileName(
-        main_window, 
-        "Select Raw Data File (.dat or .bin)", 
-        start_dir, 
-        "Binary Files (*.dat *.bin);;All Files (*)"
+    start_dir = (
+        str(main_window.data_manager.kilosort_dir)
+        if main_window.data_manager.kilosort_dir
+        else str(Path.home())
     )
 
-    if dat_file:
-        main_window.status_bar.showMessage("Loading raw data file...")
-        QApplication.processEvents()
-        
-        main_window.data_manager.set_dat_path(Path(dat_file))
-        
-        # Unlock the Raw Trace tab
-        main_window.analysis_tabs.setTabEnabled(
-            main_window.analysis_tabs.indexOf(main_window.raw_panel), True)
-            
-        main_window.status_bar.showMessage(f"Raw data loaded: {Path(dat_file).name}", 5000)
-        
-        # If the user is currently looking at the raw tab, refresh it immediately
-        if main_window.analysis_tabs.currentWidget() == main_window.raw_panel:
-            cluster_id = main_window._get_selected_cluster_id()
-            if cluster_id is not None:
-                main_window.raw_panel.load_data(cluster_id)
+    # Ask the user which format they are loading.
+    choice = QMessageBox(main_window)
+    choice.setWindowTitle("Select Raw Data Format")
+    choice.setText("Which raw data format would you like to load?")
+    btn_litke  = choice.addButton("Litke .bin folder",  QMessageBox.ButtonRole.AcceptRole)
+    btn_flat   = choice.addButton("Flat .dat / .bin file", QMessageBox.ButtonRole.AcceptRole)
+    btn_cancel = choice.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    choice.exec()
+
+    clicked = choice.clickedButton()
+    if clicked is btn_cancel or clicked is None:
+        return
+
+    raw_path = None
+
+    if clicked is btn_litke:
+        # Litke directory: let PyBinFileReader find data000.bin, data001.bin …
+        selected = QFileDialog.getExistingDirectory(
+            main_window,
+            "Select Litke Dataset Folder (containing data*.bin files)",
+            start_dir,
+        )
+        if selected:
+            raw_path = Path(selected)
+    else:
+        # Legacy flat file
+        selected, _ = QFileDialog.getOpenFileName(
+            main_window,
+            "Select Raw Data File (.dat or .bin)",
+            start_dir,
+            "Binary Files (*.dat *.bin);;All Files (*)",
+        )
+        if selected:
+            raw_path = Path(selected)
+
+    if not raw_path:
+        return  # user cancelled the file/folder dialog
+
+    main_window.status_bar.showMessage("Loading raw data...")
+    QApplication.processEvents()
+
+    main_window.data_manager.set_dat_path(raw_path)
+
+    # Unlock the Raw Trace tab
+    main_window.analysis_tabs.setTabEnabled(
+        main_window.analysis_tabs.indexOf(main_window.raw_panel), True
+    )
+
+    display_name = raw_path.name or str(raw_path)
+    main_window.status_bar.showMessage(f"Raw data loaded: {display_name}", 5000)
+
+    # Refresh immediately if the raw tab is currently visible
+    if main_window.analysis_tabs.currentWidget() == main_window.raw_panel:
+        cluster_id = main_window._get_selected_cluster_id()
+        if cluster_id is not None:
+            main_window.raw_panel.load_data(cluster_id)

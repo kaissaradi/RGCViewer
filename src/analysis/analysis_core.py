@@ -10,31 +10,95 @@ import logging
 logger = logging.getLogger(__name__)
 from scipy.signal import peak_widths
 
+try:
+    from bin2py import PyBinFileReader as _PyBinFileReader
+except ImportError:
+    _PyBinFileReader = None
+
+
+def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
+    """
+    Extract snippets from a PyBinFileReader.
+
+    The Litke .bin format stores a TTL channel at index 0 (row 0 when
+    is_row_major=True), so all Kilosort channel indices must be shifted
+    by +1 to skip it.  reader.get_data() returns shape
+    (N_ELECTRODES_total, num_samples) with is_row_major=True.
+
+    Returns array of shape (n_channels, snip_len, n_spikes), matching
+    the contract of extract_snippets.
+    """
+    snip_len  = int(window[1] - window[0])
+    n_spikes  = len(spike_times)
+    total_samples = reader.length
+
+    snips = np.zeros((n_spikes, n_channels, snip_len), dtype=np.float32)
+
+    # Litke electrode indices are 1-based (0 is TTL); build the index array once.
+    # We want Kilosort channels 0..(n_channels-1)  →  Litke rows 1..n_channels.
+    litke_channel_rows = np.arange(1, n_channels + 1, dtype=np.intp)
+
+    spike_times = np.asarray(spike_times, dtype=np.int64)
+
+    for i, spike_time in enumerate(spike_times):
+        start_sample = int(spike_time) + int(window[0])
+        end_sample   = start_sample + snip_len
+
+        if start_sample < 0 or end_sample > total_samples:
+            continue  # out-of-bounds spike — leave row as zeros
+
+        try:
+            # raw_block: (N_ELECTRODES_total, snip_len)
+            raw_block = reader.get_data(start_sample, snip_len)
+            # Select the real electrode rows (skip TTL at row 0)
+            snips[i, :, :] = raw_block[litke_channel_rows, :]
+        except Exception:
+            logger.debug("PyBinFileReader.get_data failed for spike %d at sample %d",
+                         i, start_sample, exc_info=True)
+            continue
+
+    # (n_spikes, n_channels, snip_len) → (n_channels, snip_len, n_spikes)
+    return snips.transpose(1, 2, 0)
+
 
 def extract_snippets(dat_path_or_memmap, spike_times,
                      window=(-20, 60), n_channels=512, dtype='int16'):
-    """Extracts snippets of raw data. Accepts either a file path (str/Path)
-    or a memory-mapped array (np.memmap / ndarray-like). Returns array of
-    shape (n_channels, snip_len, n_spikes).
+    """Extracts snippets of raw data around each spike time.
+
+    Accepts one of three source types:
+    - ``PyBinFileReader``   – native Litke .bin format (preferred when
+                              loading from Litke directories).  A +1 channel
+                              offset is applied internally to skip the TTL row.
+    - ``str`` / ``Path``   – path to a flat binary .dat file; opened as a
+                              read-only numpy memmap.
+    - ndarray-like          – an already-open memmap or in-memory array with
+                              shape ``(n_samples, n_channels)``.
+
+    Returns:
+        np.ndarray of shape ``(n_channels, snip_len, n_spikes)``, dtype float32.
     """
-    snip_len = int(window[1] - window[0])
+    snip_len    = int(window[1] - window[0])
     spike_count = len(spike_times)
 
     if spike_count == 0:
         return np.zeros((n_channels, snip_len, 0), dtype=np.float32)
 
-    # Accept either a path or an existing memmap/ndarray
+    # --- PyBinFileReader branch (Litke native) -----------------------------------
+    if _PyBinFileReader is not None and isinstance(dat_path_or_memmap, _PyBinFileReader):
+        return _extract_snippets_from_reader(
+            dat_path_or_memmap, spike_times, window, n_channels
+        )
+
+    # --- flat file path branch ---------------------------------------------------
     if isinstance(dat_path_or_memmap, (str, Path)):
         raw_data = np.memmap(str(dat_path_or_memmap), dtype=dtype, mode='r')
         try:
             raw_data = raw_data.reshape(-1, n_channels)
         except Exception:
-            # If reshape fails, try inferring number of channels
             raw_data = raw_data.reshape(-1, n_channels)
     else:
-        # Assume it's an ndarray-like (memmap or already shaped array)
+        # --- ndarray / memmap branch ---------------------------------------------
         raw_data = dat_path_or_memmap
-        # If 1D memmap, reshape to (n_samples, n_channels)
         if raw_data.ndim == 1:
             raw_data = raw_data.reshape(-1, n_channels)
 
@@ -43,20 +107,17 @@ def extract_snippets(dat_path_or_memmap, spike_times,
     # Preallocate in spike-major order then transpose for return
     snips = np.zeros((spike_count, n_channels, snip_len), dtype=np.float32)
 
-    # Ensure integer spike times
     spike_times = np.asarray(spike_times, dtype=np.int64)
 
     for i, spike_time in enumerate(spike_times):
         start_sample = int(spike_time) + int(window[0])
-        end_sample = start_sample + snip_len
+        end_sample   = start_sample + snip_len
 
-        # Skip out-of-bounds spikes
         if start_sample < 0 or end_sample > total_samples:
             continue
 
         snippet = raw_data[start_sample:end_sample, :]
-        # snippet shape: (snip_len, n_channels) -> transpose to (n_channels,
-        # snip_len)
+        # (snip_len, n_channels) → (n_channels, snip_len)
         snips[i, :, :] = snippet.T
 
     return snips.transpose(1, 2, 0)

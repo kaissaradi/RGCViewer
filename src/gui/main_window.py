@@ -1067,6 +1067,12 @@ class MainWindow(QMainWindow):
             self.raw_panel.worker_thread.stop()
             self.raw_panel.worker_thread.wait()
 
+        # Close any open PyBinFileReader file handles to avoid leaking OS-level
+        # file descriptors.  _close_raw_reader() is a no-op when raw_reader is
+        # already None, so it is always safe to call.
+        if self.data_manager is not None:
+            self.data_manager._close_raw_reader()
+
         # --- NEW: Automatic Temp File Cleanup Sweep ---
         try:
             if self.data_manager and self.data_manager.kilosort_dir:

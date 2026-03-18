@@ -13,6 +13,11 @@ import pickle
 import os
 import tempfile
 import logging
+try:
+    import bin2py
+    _BIN2PY_AVAILABLE = True
+except ImportError:
+    _BIN2PY_AVAILABLE = False
 logger = logging.getLogger(__name__)
 
 
@@ -248,8 +253,11 @@ class DataManager(QObject):
         self.vision_sim_cache = {}             # cluster_id -> DataFrame
         self.vision_available = False
 
-        # Initialize raw data memmap attribute (will hold memmap object)
+        # Initialize raw data memmap attribute (kept for legacy/fallback paths)
         self.raw_data_memmap = None
+        # PyBinFileReader instance — used when loading native Litke .bin files.
+        # Takes priority over raw_data_memmap when set.
+        self.raw_reader = None
 
         # Initialize refractory period (default from constants)
         self.refractory_period_ms = ISI_REFRACTORY_PERIOD_MS
@@ -999,18 +1007,47 @@ class DataManager(QObject):
 
     def set_dat_path(self, dat_path):
         """
-        Set the path to the raw data file and create a memory map for efficient access.
+        Set the path to the raw data source and prepare it for efficient access.
+
+        Accepts either:
+        - A directory path containing chunked Litke .bin files  →  opens a
+          PyBinFileReader (preferred, native Litke format).
+        - A single flat .dat/.bin file  →  falls back to a numpy memmap
+          (legacy Kilosort-concatenated raw data).
+
+        In both cases self.n_samples is updated so that downstream panels
+        (e.g. RawPanel) continue to know the total recording duration.
         """
-        self.dat_path = Path(dat_path)
-        # Calculate the number of samples in the file based on its size
-        file_size = self.dat_path.stat().st_size
+        dat_path = Path(dat_path)
+
+        # --- close any previously opened reader to avoid file-handle leaks ---
+        self._close_raw_reader()
+
+        # --- Litke directory path: use PyBinFileReader ---
+        if dat_path.is_dir() and _BIN2PY_AVAILABLE:
+            logger.info("set_dat_path: opening Litke bin directory via PyBinFileReader: %s", dat_path)
+            self.dat_path = dat_path
+            self.raw_reader = bin2py.PyBinFileReader(str(dat_path), is_row_major=True)
+            self.n_samples = self.raw_reader.length
+            # raw_data_memmap is intentionally left None — get_raw_trace_snippet
+            # will route through raw_reader instead.
+            self.raw_data_memmap = None
+            return
+
+        # --- single flat file: legacy numpy memmap ---
+        if not dat_path.exists():
+            logger.warning("set_dat_path: path does not exist: %s", dat_path)
+            return
+
+        logger.info("set_dat_path: opening flat dat file via memmap: %s", dat_path)
+        self.dat_path = dat_path
+        file_size = dat_path.stat().st_size
         # Assuming int16 (2 bytes) per sample
         self.n_samples = file_size // (self.n_channels * 2)
-        # Create a memory map to efficiently access the raw data without
-        # loading it all into RAM
         self.raw_data_memmap = np.memmap(
-            self.dat_path, dtype=np.int16, mode='r', shape=(
-                self.n_samples, self.n_channels))
+            dat_path, dtype=np.int16, mode='r',
+            shape=(self.n_samples, self.n_channels)
+        )
 
     def build_cluster_dataframe(self):
         """
@@ -1712,32 +1749,64 @@ class DataManager(QObject):
 
     def get_raw_trace_snippet(self, channel_indices, start_sample, end_sample):
         """
-        Get a snippet of raw trace data for specified channels and time range.
-        Apply the uV_per_bit conversion factor.
+        Get a snippet of raw trace data for specified channels and time range,
+        returned in microvolts with shape (n_channels, n_samples).
+
+        Supports two backends:
+        - PyBinFileReader (self.raw_reader): native Litke .bin format.  Channel
+          index 0 in the Litke stream is the TTL channel, so a +1 offset is
+          applied automatically so that callers use the same 0-based Kilosort
+          channel numbering in both backends.
+        - numpy memmap (self.raw_data_memmap): legacy flat .dat file.
         """
+        # --- bounds / validation -------------------------------------------------
+        start_sample = max(0, int(start_sample))
+        end_sample   = min(self.n_samples, int(end_sample))
+        valid_channel_indices = [
+            int(idx) for idx in channel_indices if 0 <= int(idx) < self.n_channels
+        ]
+        if start_sample >= end_sample or not valid_channel_indices:
+            return np.array([]).reshape(0, 0)
+
+        # --- PyBinFileReader backend (Litke native) ------------------------------
+        if self.raw_reader is not None:
+            num_samples = end_sample - start_sample
+            try:
+                # get_data returns (n_electrodes_with_ttl, num_samples) when
+                # is_row_major=True.  Row 0 is the TTL channel, rows 1..N are
+                # the real electrodes, so we add 1 to convert Kilosort 0-based
+                # channel indices to Litke 1-based electrode indices.
+                raw_block = self.raw_reader.get_data(start_sample, num_samples)
+                # raw_block shape: (N_ELECTRODES_total, num_samples)
+                litke_indices = [idx + 1 for idx in valid_channel_indices]
+                raw_snippet = raw_block[litke_indices, :]   # (n_ch, n_samples)
+            except Exception:
+                logger.exception("PyBinFileReader.get_data failed for samples %d:%d",
+                                 start_sample, end_sample)
+                return None
+
+            return raw_snippet.astype(np.float32) * self.uV_per_bit
+
+        # --- legacy memmap backend -----------------------------------------------
         if self.raw_data_memmap is None:
             return None
 
-        # Ensure indices are within bounds
-        valid_channel_indices = [
-            idx for idx in channel_indices if 0 <= idx < self.n_channels]
-
-        # Ensure sample range is within bounds
-        start_sample = max(0, start_sample)
-        end_sample = min(self.n_samples, end_sample)
-
-        if start_sample >= end_sample or len(valid_channel_indices) == 0:
-            # Return empty array with proper shape if no valid data
-            return np.array([]).reshape(0, 0)
-
-        # Extract the requested data
         raw_snippet = self.raw_data_memmap[start_sample:end_sample,
                                            valid_channel_indices]
-
-        # Convert to microvolts using the conversion factor
         uv_snippet = raw_snippet.astype(np.float32) * self.uV_per_bit
+        return uv_snippet.T   # → (n_channels, n_samples)
 
-        return uv_snippet.T  # Transpose to have channels as rows and time as columns
+    def _close_raw_reader(self):
+        """Safely close the PyBinFileReader file handles, if any are open."""
+        if self.raw_reader is not None:
+            try:
+                # PyBinFileReader supports the context-manager protocol;
+                # calling __exit__ directly is the safest teardown path.
+                self.raw_reader.__exit__(None, None, None)
+            except Exception:
+                logger.warning("Error closing PyBinFileReader", exc_info=True)
+            finally:
+                self.raw_reader = None
 
     def clear_caches(self):
         """Clear large caches to free memory. Thread-safe for heavyweight_cache."""

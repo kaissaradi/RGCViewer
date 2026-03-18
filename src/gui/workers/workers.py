@@ -145,11 +145,13 @@ class RefinementWorker(QObject):
             spike_times_cluster = self.data_manager.get_cluster_spikes(
                 self.cluster_id)
             params = {'min_spikes': 500, 'ei_sim_threshold': 0.90}
-            # Prefer passing the memmap if available to avoid reopening the dat
-            # file
-            dat_source = self.data_manager.raw_data_memmap if getattr(
-                self.data_manager, 'raw_data_memmap', None) is not None else str(
-                self.data_manager.dat_path)
+            # Prefer PyBinFileReader if available, then memmap, then path string.
+            if getattr(self.data_manager, 'raw_reader', None) is not None:
+                dat_source = self.data_manager.raw_reader
+            elif getattr(self.data_manager, 'raw_data_memmap', None) is not None:
+                dat_source = self.data_manager.raw_data_memmap
+            else:
+                dat_source = str(self.data_manager.dat_path)
             refined_clusters = analysis_core.refine_cluster_v2(
                 spike_times_cluster,
                 dat_source,
@@ -257,9 +259,12 @@ class FeatureWorker(QObject):
             sample_size = min(len(all_spikes), 100)
             spike_sample = all_spikes[:sample_size]
 
-            # 3. Perform the disk I/O for the small sample. Prefer memmap if
-            # set.
-            if getattr(self.data_manager, 'raw_data_memmap', None) is not None:
+            # 3. Perform the disk I/O for the small sample.
+            # Priority: PyBinFileReader > memmap > path string.
+            # RefinementWorker uses the same priority order for consistency.
+            if getattr(self.data_manager, 'raw_reader', None) is not None:
+                dat_source = self.data_manager.raw_reader
+            elif getattr(self.data_manager, 'raw_data_memmap', None) is not None:
                 dat_source = self.data_manager.raw_data_memmap
             else:
                 dat_source = str(self.data_manager.dat_path)
