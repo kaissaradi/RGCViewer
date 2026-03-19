@@ -1594,9 +1594,8 @@ class MainWindow(QMainWindow):
             self.vision_load_worker = None
 
         # Stop any running raw trace worker
-        if hasattr(self, 'raw_panel') and self.raw_panel.worker_thread and self.raw_panel.worker_thread.isRunning():
-            self.raw_panel.worker_thread.stop()
-            self.raw_panel.worker_thread.wait()
+        if hasattr(self, 'raw_panel'):
+            self.raw_panel._stop_worker()
 
         # Close any open PyBinFileReader file handles to avoid leaking OS-level
         # file descriptors.  _close_raw_reader() is a no-op when raw_reader is

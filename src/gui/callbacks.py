@@ -273,19 +273,22 @@ def _on_vision_loaded(main_window, success, message, is_partial):
                 except Exception:
                     pass
 
-        # Use QThread instead of threading.Thread to avoid Numba/TBB fork issues
-        physics_thread = QThread()
-        physics_worker = QObject()
-        physics_worker.moveToThread(physics_thread)
+        # Use QThread instead of threading.Thread to avoid Numba/TBB fork issues.
+        # Attach to main_window (not local variables) so Python's GC doesn't
+        # destroy the thread object while the OS thread is still running, which
+        # would cause: "QThread: Destroyed while thread is still running" + abort.
+        main_window.physics_thread = QThread()
+        main_window.physics_worker = QObject()
+        main_window.physics_worker.moveToThread(main_window.physics_thread)
 
         def run_physics():
             _compute_physics()
-            physics_thread.quit()
+            main_window.physics_thread.quit()
 
-        physics_thread.started.connect(run_physics)
-        physics_thread.finished.connect(physics_worker.deleteLater)
-        physics_thread.finished.connect(physics_thread.deleteLater)
-        physics_thread.start()
+        main_window.physics_thread.started.connect(run_physics)
+        main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
+        main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
+        main_window.physics_thread.start()
 
         main_window.status_bar.showMessage(
             f"Vision loaded. Computing physics for {len(all_ids)} cells...", 5000)

@@ -1713,6 +1713,214 @@ class DataManager(QObject):
         handled by the FeatureWorker.
         """
         return self.ei_cache.get(cluster_id, None)
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+# Paste this method into the DataManager class in data_manager.py,
+# directly after get_lightweight_features() (~line 1716).
+# It is a regular instance method — indented 4 spaces like all other methods.
+# ──────────────────────────────────────────────────────────────────────────────
+
+    def get_channel_all_snippets(
+            self,
+            dom_chan: int,
+            target_cluster_id: int,
+            max_bg_spikes: int = 1500,
+            snippet_window=(-20, 60),
+            ) -> dict:
+        """
+        Return all spike waveforms on *dom_chan*, labelled by cluster.
+
+        Two backends:
+          1. Raw data (memmap / PyBinFileReader) — real snippets, preferred.
+          2. Template fallback — synthetic waveforms, no disk I/O.
+
+        Returns
+        -------
+        dict:
+            "unit_waves"      : np.ndarray (n_unit, n_time) float32
+            "bg_waves"        : np.ndarray (n_bg,   n_time) float32
+            "bg_waves_by_cid" : dict[int, np.ndarray]  — per-cluster bg waves
+            "unit_indices"    : np.ndarray (n_unit,) int64  — global spike idx
+            "source"          : "raw" | "template" | "none"
+        """
+        import numpy as np
+        from . import analysis_core
+
+        snip_len_fallback = int(snippet_window[1] - snippet_window[0])
+
+        empty = {
+            "unit_waves":      np.empty((0, snip_len_fallback), dtype=np.float32),
+            "bg_waves":        np.empty((0, snip_len_fallback), dtype=np.float32),
+            "bg_waves_by_cid": {},
+            "unit_indices":    np.empty((0,), dtype=np.int64),
+            "source":          "none",
+        }
+
+        # ── 1. Find clusters that live on dom_chan ─────────────────────────────
+        if "best_chan" not in self.cluster_df.columns:
+            return empty
+
+        chan_df = self.cluster_df[self.cluster_df["best_chan"] == dom_chan]
+        if chan_df.empty:
+            return empty
+
+        # ── 2a. Raw data path ──────────────────────────────────────────────────
+        raw_available = (self.raw_reader is not None or
+                         self.raw_data_memmap is not None)
+
+        if raw_available:
+            try:
+                snip_len = int(snippet_window[1] - snippet_window[0])
+                unit_waves_list   = []
+                unit_indices_list = []
+                bg_waves_by_cid   = {}   # {cid: ndarray (n, snip_len)}
+
+                n_bg_clusters = max(1, len(chan_df) - 1)
+                quota_per_bg  = max(1, max_bg_spikes // n_bg_clusters)
+
+                source = self.raw_reader if self.raw_reader is not None \
+                    else self.raw_data_memmap
+
+                for row in chan_df.itertuples():
+                    cid           = int(row.cluster_id)
+                    spike_indices = self.get_cluster_spike_indices(cid)
+                    spike_times   = self.spike_times[spike_indices]
+                    n             = len(spike_times)
+
+                    if n == 0:
+                        continue
+
+                    if cid == target_cluster_id:
+                        # Unit: subsample up to 1500, keep global indices
+                        if n > 1500:
+                            chosen = np.random.choice(n, 1500, replace=False)
+                        else:
+                            chosen = np.arange(n, dtype=np.intp)
+                        st_chosen  = spike_times[chosen].astype(np.int64)
+                        idx_chosen = spike_indices[chosen]
+
+                        raw = analysis_core.extract_snippets(
+                            source, st_chosen,
+                            window=snippet_window,
+                            n_channels=self.n_channels,
+                        )                              # (n_ch, snip_len, n_chosen)
+                        if raw.shape[2] == 0:
+                            continue
+                        waves = raw[dom_chan, :, :].T  # (n_chosen, snip_len)
+                        unit_waves_list.append(waves.astype(np.float32) * self.uV_per_bit)
+                        unit_indices_list.append(idx_chosen)
+
+                    else:
+                        # Background cluster — subsample to quota
+                        if n > quota_per_bg:
+                            chosen    = np.random.choice(n, quota_per_bg, replace=False)
+                            st_chosen = spike_times[chosen].astype(np.int64)
+                        else:
+                            st_chosen = spike_times.astype(np.int64)
+
+                        raw = analysis_core.extract_snippets(
+                            source, st_chosen,
+                            window=snippet_window,
+                            n_channels=self.n_channels,
+                        )
+                        if raw.shape[2] == 0:
+                            continue
+                        waves = (raw[dom_chan, :, :].T.astype(np.float32)
+                                 * self.uV_per_bit)
+                        bg_waves_by_cid[cid] = waves
+
+                unit_waves = (np.vstack(unit_waves_list)
+                              if unit_waves_list
+                              else np.empty((0, snip_len), dtype=np.float32))
+                unit_indices = (np.concatenate(unit_indices_list)
+                                if unit_indices_list
+                                else np.empty((0,), dtype=np.int64))
+                bg_waves_all = (np.vstack(list(bg_waves_by_cid.values()))
+                                if bg_waves_by_cid
+                                else np.empty((0, snip_len), dtype=np.float32))
+
+                return {
+                    "unit_waves":      unit_waves,
+                    "bg_waves":        bg_waves_all,
+                    "bg_waves_by_cid": bg_waves_by_cid,
+                    "unit_indices":    unit_indices,
+                    "source":          "raw",
+                }
+
+            except Exception:
+                logger.exception(
+                    "get_channel_all_snippets raw path failed cid=%d chan=%d",
+                    target_cluster_id, dom_chan)
+                # fall through to template path
+
+        # ── 2b. Template fallback (no disk I/O) ────────────────────────────────
+        try:
+            templates = getattr(self, "templates", None)     # (n_tpl, n_time, n_tCh)
+            tmpl_ind  = getattr(self, "templates_ind", None)
+            if templates is None:
+                return empty
+
+            snip_len        = templates.shape[1]
+            unit_waves_list = []
+            bg_waves_by_cid = {}
+
+            n_bg_clusters = max(1, len(chan_df) - 1)
+            quota_per_bg  = max(5, max_bg_spikes // n_bg_clusters)
+
+            for row in chan_df.itertuples():
+                cid = int(row.cluster_id)
+                if cid >= templates.shape[0]:
+                    continue
+
+                tpl = np.asarray(templates[cid], dtype=np.float32)  # (n_time, n_tCh)
+
+                # Map dom_chan → local template channel index
+                if tmpl_ind is not None and cid < tmpl_ind.shape[0]:
+                    local = np.where(tmpl_ind[cid] == dom_chan)[0]
+                    if len(local) == 0:
+                        continue
+                    wave = tpl[:, int(local[0])]
+                else:
+                    if dom_chan >= tpl.shape[1]:
+                        continue
+                    wave = tpl[:, dom_chan]
+
+                n_spikes_row = int(row.n_spikes)
+                noise_scale  = float(np.std(wave)) or 1e-6
+
+                if cid == target_cluster_id:
+                    n_rep = min(500, max(20, n_spikes_row // 50))
+                    noise = np.random.normal(
+                        0, noise_scale * 0.12,
+                        (n_rep, snip_len)).astype(np.float32)
+                    unit_waves_list.append(np.tile(wave, (n_rep, 1)) + noise)
+                else:
+                    n_rep = min(quota_per_bg, max(5, n_spikes_row // 100))
+                    noise = np.random.normal(
+                        0, noise_scale * 0.05,
+                        (n_rep, snip_len)).astype(np.float32)
+                    bg_waves_by_cid[cid] = np.tile(wave, (n_rep, 1)) + noise
+
+            unit_waves = (np.vstack(unit_waves_list)
+                          if unit_waves_list
+                          else np.empty((0, snip_len), dtype=np.float32))
+            bg_waves_all = (np.vstack(list(bg_waves_by_cid.values()))
+                            if bg_waves_by_cid
+                            else np.empty((0, snip_len), dtype=np.float32))
+
+            return {
+                "unit_waves":      unit_waves,
+                "bg_waves":        bg_waves_all,
+                "bg_waves_by_cid": bg_waves_by_cid,
+                "unit_indices":    np.empty((0,), dtype=np.int64),
+                "source":          "template",
+            }
+
+        except Exception:
+            logger.exception(
+                "get_channel_all_snippets template path failed cid=%d chan=%d",
+                target_cluster_id, dom_chan)
+            return empty
 
     def get_heavyweight_features(self, cluster_id):
         # Fast-path: check cache under lock

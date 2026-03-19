@@ -698,7 +698,8 @@ class UMAPPanel(QWidget):
             # Style colorbar ticks
             if self.cbar:
                 self.cbar.ax.yaxis.set_tick_params(color=colors['text_secondary'])
-                plt.setp(plt.getp(self.cbar.ax.axes, 'yticklabels'), color=colors['text_secondary'])
+                for label in self.cbar.ax.get_yticklabels():
+                    label.set_color(colors['text_secondary'])
         
         # Add selection info to title
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
