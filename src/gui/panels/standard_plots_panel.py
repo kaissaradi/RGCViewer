@@ -95,18 +95,18 @@ class StandardPlotsPanel(QWidget):
         self._style_plot(self.acg_plot)
         
         # --- PERSISTENT ACG/CCG ITEMS ---
-        # 1. ACG Bar (Purple) - Default
-        self._acg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=pg.mkBrush(170, 0, 255, 130), pen=pg.mkPen('#9933FF', width=0.5))
-        self.acg_plot.addItem(self._acg_bar)
-        
+        # 1. ACG Line (Purple) - positive lags only
+        self._acg_line = self.acg_plot.plot([], [], pen=pg.mkPen('#9933FF', width=2))
+
         # 2. CCG Bar (Orange) - Hidden by default
         self._ccg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=(255, 152, 0, 100), pen=pg.mkPen('#ff9800', width=1))
         self.acg_plot.addItem(self._ccg_bar)
         self._ccg_bar.setVisible(False)
 
-        # 3. Zero Line
+        # 3. Zero Line (only shown during CCG)
         self._acg_zero_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
         self.acg_plot.addItem(self._acg_zero_line)
+        self._acg_zero_line.setVisible(False)
 
         self.top_splitter.addWidget(self.acg_plot)
 
@@ -153,23 +153,6 @@ class StandardPlotsPanel(QWidget):
         isi_controls.addWidget(self.refractory_spinbox)
         isi_controls.addWidget(self.update_refractory_btn)
 
-        # Separator
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
-        sep2.setStyleSheet(f"color: {colors['border_subtle']};"); sep2.setFixedWidth(1)
-        isi_controls.addWidget(sep2)
-
-        # Group 3: Display and range
-        self.isi_display_combo = QComboBox()
-        self.isi_display_combo.addItems(['Scatter', 'Density'])
-        self.isi_display_combo.setFixedHeight(24)
-        self.isi_range_combo = QComboBox()
-        self.isi_range_combo.addItems(['0–50 ms', '0–500 ms', '0–1000 ms', 'Full'])
-        self.isi_range_combo.setFixedHeight(24)
-
-        isi_controls.addWidget(QLabel('Plot:'))
-        isi_controls.addWidget(self.isi_display_combo)
-        isi_controls.addWidget(QLabel('X:'))
-        isi_controls.addWidget(self.isi_range_combo)
         isi_controls.addStretch()
         
         isi_layout.addLayout(isi_controls)
@@ -182,9 +165,9 @@ class StandardPlotsPanel(QWidget):
         self._style_plot(self.isi_plot)
         
         # --- PERSISTENT ISI ITEMS ---
-        # 1. Histogram (Step Mode)
-        self._isi_curve = self.isi_plot.plot([], [], stepMode=True, fillLevel=0, 
-                                             brush=(0, 163, 224, 150), pen=pg.mkPen('#33b5e5', width=2))
+        # 1. Histogram (filled line, bin centers)
+        self._isi_curve = self.isi_plot.plot([], [], stepMode=False, fillLevel=0,
+                                             brush=(0, 163, 224, 80), pen=pg.mkPen('#33b5e5', width=2))
         
         # 2. Scatter
         self._isi_scatter = pg.ScatterPlotItem(size=5, pen=None, brush=pg.mkBrush(255, 165, 0, 150))
@@ -208,8 +191,6 @@ class StandardPlotsPanel(QWidget):
         self.isi_view_combo.currentTextChanged.connect(self._on_control_changed)
         self.show_refractory_line_checkbox.stateChanged.connect(self._on_control_changed)
         self.update_refractory_btn.clicked.connect(self._update_refractory_period)
-        self.isi_display_combo.currentTextChanged.connect(self._on_control_changed)
-        self.isi_range_combo.currentTextChanged.connect(self._on_control_changed)
 
         # ---------------------------------------------------------
         # 4. Firing Rate (Bottom Right)
@@ -263,8 +244,7 @@ class StandardPlotsPanel(QWidget):
         )
 
         # Update specific items
-        # BarGraphItem uses setOpts instead of setBrush/setPen
-        self._acg_bar.setOpts(brush=pg.mkBrush(170, 0, 255, 130), pen=pg.mkPen('#9933FF', width=0.5))
+        self._acg_line.setPen(pg.mkPen('#9933FF', width=2))
 
         # Refresh widgets
         self.grid_widget.setBackground(colors['bg_panel'])
@@ -302,23 +282,8 @@ class StandardPlotsPanel(QWidget):
         return cmap.getLookupTable(start=0.0, stop=1.0, nPts=256)
 
     def _apply_isi_range_preset(self, isi_ms):
-        """Apply X-range preset safely, enforcing positive start for Log stability."""
-        x_min = 0.01 
-        preset = self.isi_range_combo.currentText()
-        if preset == '0–50 ms':
-            self.isi_plot.setXRange(x_min, 50.0, padding=0)
-        elif preset == '0–500 ms':
-            self.isi_plot.setXRange(x_min, 500.0, padding=0)
-        elif preset == '0–1000 ms':
-            self.isi_plot.setXRange(x_min, 1000.0, padding=0)
-        else: # Full
-            if isi_ms is not None and len(isi_ms) > 0:
-                current_max = float(isi_ms.max())
-            else:
-                current_max = 50.0
-            if current_max <= x_min: current_max = 50.0
-            self.isi_plot.setXRange(x_min, current_max * 1.05, padding=0)
-            
+        """Hardcoded 0–100 ms x-range for ISI plot."""
+        self.isi_plot.setXRange(0, 100.0, padding=0)
         self.isi_plot.plotItem.disableAutoRange(pg.ViewBox.XAxis)
     
     def _on_control_changed(self):
@@ -559,9 +524,9 @@ class StandardPlotsPanel(QWidget):
         
         spikes = data.get('spikes') if data else None
         if spikes is None:
-             self._acg_bar.setOpts(height=[])
+             self._acg_line.setData([], [])
              self._ccg_bar.setVisible(False)
-             self._isi_curve.setData([0.01, 1], [0])
+             self._isi_curve.setData([], [])
              self._fr_rate_curve.setData([], [])
              return
 
@@ -619,7 +584,8 @@ class StandardPlotsPanel(QWidget):
                                         
                                         self._ccg_bar.setOpts(x=lags, height=norm)
                                         self._ccg_bar.setVisible(True)
-                                        self._acg_bar.setVisible(False)
+                                        self._acg_line.setVisible(False)
+                                        self._acg_zero_line.setVisible(True)
                                         self.acg_plot.setTitle(f"CCG: {cluster_id} vs {similar_id}")
                                         showing_ccg = True
                         except Exception: pass
@@ -629,13 +595,18 @@ class StandardPlotsPanel(QWidget):
             acg_norm = data.get('acg_norm')
 
             if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
-                self._acg_bar.setOpts(x=time_lags, height=acg_norm)
-                self._acg_bar.setVisible(True)
+                # Positive lags only, rendered as a line
+                mask = np.asarray(time_lags) >= 0
+                self._acg_line.setData(time_lags[mask], acg_norm[mask])
+                self._acg_line.setVisible(True)
                 self._ccg_bar.setVisible(False)
+                self._acg_zero_line.setVisible(False)
+                self.acg_plot.setXRange(0, float(time_lags[mask].max()), padding=0.02)
                 self.acg_plot.setTitle("Autocorrelation")
             else:
-                self._acg_bar.setOpts(height=[])
+                self._acg_line.setData([], [])
                 self._ccg_bar.setVisible(False)
+                self._acg_zero_line.setVisible(False)
 
         # ------------------------------------------------------------------
         # 4. ISI PLOT
@@ -650,11 +621,12 @@ class StandardPlotsPanel(QWidget):
             self._isi_image.setVisible(False)
             
             if len(raw_isi_ms) > 0:
-                bins = np.linspace(0.01, 1000, 1001)
+                bins = np.linspace(0, 150, 151)  # 1 ms bins, headroom past 100 ms display
                 hist_y, hist_x = np.histogram(raw_isi_ms, bins=bins)
-                self._isi_curve.setData(hist_x, hist_y)
+                bin_centers = 0.5 * (hist_x[:-1] + hist_x[1:])
+                self._isi_curve.setData(bin_centers, hist_y)
             else:
-                self._isi_curve.setData([0.01, 1], [0])
+                self._isi_curve.setData([], [])
 
             if self.show_refractory_line_checkbox.isChecked():
                 self._isi_ref_line.setValue(dm.get_refractory_period())
@@ -669,35 +641,20 @@ class StandardPlotsPanel(QWidget):
         elif isi_view == 'ISI vs Amplitude':
             self._isi_curve.setVisible(False)
             self._isi_ref_line.setVisible(False)
-            
+            self._isi_image.setVisible(False)
+
             valid_isi = data.get('isi_vs_amp_valid_isi')
             valid_amp = data.get('isi_vs_amp_valid_amplitudes')
-            
+
             if valid_isi is not None and len(valid_isi) > 0:
-                if len(valid_isi) > 5000 and self.isi_display_combo.currentText() == 'Scatter':
-                    self.isi_display_combo.setCurrentText('Density')
-
-                if self.isi_display_combo.currentText() == 'Scatter':
-                    self._isi_scatter.setData(valid_isi, valid_amp)
-                    self._isi_scatter.setVisible(True)
-                    self._isi_image.setVisible(False)
-                else:
-                    self._isi_scatter.setVisible(False)
-                    self._isi_image.setVisible(True)
-                    isi_min, isi_max = float(valid_isi.min()), float(valid_isi.max())
-                    amp_min, amp_max = float(valid_amp.min()), float(valid_amp.max())
-                    if isi_max <= isi_min: isi_max = isi_min + 1e-3
-                    if amp_max <= amp_min: amp_max = amp_min + 1e-3
-                    H, xedges, yedges = np.histogram2d(valid_isi, valid_amp, bins=[100, 80], range=[[isi_min, isi_max], [amp_min, amp_max]])
-                    self._isi_image.setImage(np.log1p(H.T))
-                    self._isi_image.setRect(pg.QtCore.QRectF(xedges[0], yedges[0], xedges[-1]-xedges[0], yedges[-1]-yedges[0]))
-
+                self._isi_scatter.setData(valid_isi, valid_amp)
+                self._isi_scatter.setVisible(True)
                 self._apply_isi_range_preset(valid_isi)
                 self.isi_plot.setLabel('bottom', 'ISI (ms)')
                 self.isi_plot.setLabel('left', 'Amplitude (µV)')
             else:
                 self._isi_scatter.setData([], [])
-                self._isi_image.clear()
+                self._isi_scatter.setVisible(False)
 
         # ------------------------------------------------------------------
         # 5. FIRING RATE

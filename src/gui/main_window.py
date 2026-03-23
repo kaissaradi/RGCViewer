@@ -1286,7 +1286,181 @@ class MainWindow(QMainWindow):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed)
-        
+
+        # Column header labels override (keeps internal df names intact)
+        HEADER_LABELS = {
+            'cluster_id':        'ID',
+            'n_spikes':          '# Spikes',
+            'best_chan':         'Ch',
+            'KSLabel':           'KS Label',
+            'isi_violations_pct':'ISI Viol%',
+            'contam_pct':        'Contam%',
+            'amp_median':        'Amp (µV)',
+            'firing_rate_hz':    'FR (Hz)',
+            'template_amp':      'Tpl Amp',
+            'max_dup_r':         'Max Dup R',
+            'potential_dups':    'Dup?',
+            'cell_type':         'Type',
+            'status':            'Status',
+            'x_um':              'X (µm)',
+            'y_um':              'Y (µm)',
+            'set':               'Set',
+        }
+
+        df_cols = list(model._dataframe.columns)
+        col_index = {name: idx for idx, name in enumerate(df_cols)}
+
+        # Monkey-patch pretty header labels onto the model
+        model._header_overrides = {}
+        _orig_headerData = model.headerData
+
+        def _make_patched(orig, overrides, cols):
+            def patched(section, orientation, role=Qt.DisplayRole):
+                if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+                    col_name = cols[section] if section < len(cols) else None
+                    if col_name and col_name in overrides:
+                        return overrides[col_name]
+                return orig(section, orientation, role)
+            return patched
+
+        model.headerData = _make_patched(
+            _orig_headerData, model._header_overrides, df_cols)
+
+        for col_name, label in HEADER_LABELS.items():
+            model._header_overrides[col_name] = label
+
+        # Allow drag-to-reorder; only apply the default ordering on first load
+        header = self.table_view.horizontalHeader()
+        header.setSectionsMovable(True)
+
+        if not getattr(self, '_table_columns_initialized', False):
+            self._apply_default_column_order(header, df_cols, col_index)
+            self._table_columns_initialized = True
+
+        self.table_view.resizeColumnsToContents()
+
+    def _apply_default_column_order(self, header, df_cols, col_index):
+        """Apply the desired default visual column order. Called only once."""
+        ORDERED_COLS = [
+            'cluster_id',       # shown as "ID" — thin
+            'n_spikes',
+            'best_chan',
+            'KSLabel',
+            'isi_violations_pct',
+            'contam_pct',
+            'amp_median',
+            'firing_rate_hz',
+            'template_amp',
+            'max_dup_r',
+            'potential_dups',
+            'cell_type',
+            'status',
+            'x_um',
+            'y_um',
+            'set',
+        ]
+        visual_order = [c for c in ORDERED_COLS if c in col_index]
+        listed = set(ORDERED_COLS)
+        for c in df_cols:
+            if c not in listed:
+                visual_order.append(c)
+
+        for target_visual, col_name in enumerate(visual_order):
+            logical = col_index[col_name]
+            current_visual = header.visualIndex(logical)
+            if current_visual != target_visual:
+                header.moveSection(current_visual, target_visual)
+
+    def refresh_table_model(self):
+        """Rebuild the main cluster table from the current cluster_df.
+        Call this after async column additions (best_chan, amp_median, etc.)
+        to make newly added columns visible without resetting user column order."""
+        if self.data_manager is None:
+            return
+        df = self.data_manager.cluster_df
+        # Preserve the user's current visual column order across the rebuild
+        header = self.table_view.horizontalHeader()
+        old_model = self.table_view.model()
+        if old_model is not None and hasattr(old_model, '_dataframe'):
+            old_cols = list(old_model._dataframe.columns)
+            # Build logical→visual map from the old header state
+            old_visual_order = [
+                old_cols[header.logicalIndex(v)]
+                for v in range(header.count())
+                if header.logicalIndex(v) < len(old_cols)
+            ]
+        else:
+            old_visual_order = None
+
+        model = HighlightStatusPandasModel(df)
+        self.main_cluster_model = model
+        self.table_view.setModel(model)
+        self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        self.table_view.verticalHeader().setVisible(False)
+        try:
+            self.table_view.selectionModel().selectionChanged.disconnect(
+                self.on_view_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self.table_view.selectionModel().selectionChanged.connect(
+            self.on_view_selection_changed)
+
+        # Re-apply header labels
+        new_df_cols = list(df.columns)
+        HEADER_LABELS = {
+            'cluster_id': 'ID', 'n_spikes': '# Spikes', 'best_chan': 'Ch',
+            'KSLabel': 'KS Label', 'isi_violations_pct': 'ISI Viol%',
+            'contam_pct': 'Contam%', 'amp_median': 'Amp (µV)',
+            'firing_rate_hz': 'FR (Hz)', 'template_amp': 'Tpl Amp',
+            'max_dup_r': 'Max Dup R', 'potential_dups': 'Dup?',
+            'cell_type': 'Type', 'status': 'Status',
+            'x_um': 'X (µm)', 'y_um': 'Y (µm)', 'set': 'Set',
+        }
+        model._header_overrides = {}
+        _orig = model.headerData
+
+        def _make_patched(orig, overrides, cols):
+            def patched(section, orientation, role=Qt.DisplayRole):
+                if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+                    col_name = cols[section] if section < len(cols) else None
+                    if col_name and col_name in overrides:
+                        return overrides[col_name]
+                return orig(section, orientation, role)
+            return patched
+
+        model.headerData = _make_patched(_orig, model._header_overrides, new_df_cols)
+        for col_name, label in HEADER_LABELS.items():
+            model._header_overrides[col_name] = label
+
+        new_header = self.table_view.horizontalHeader()
+        new_header.setSectionsMovable(True)
+        new_col_index = {name: idx for idx, name in enumerate(new_df_cols)}
+
+        if old_visual_order:
+            # Restore the user's previous order for columns that still exist;
+            # new columns (e.g. best_chan just added) go after
+            ordered = [c for c in old_visual_order if c in new_col_index]
+            for c in new_df_cols:
+                if c not in ordered:
+                    ordered.append(c)
+        else:
+            ordered = None
+
+        if ordered:
+            for target_visual, col_name in enumerate(ordered):
+                if col_name not in new_col_index:
+                    continue
+                logical = new_col_index[col_name]
+                current_visual = new_header.visualIndex(logical)
+                if current_visual != target_visual:
+                    new_header.moveSection(current_visual, target_visual)
+        else:
+            self._apply_default_column_order(
+                new_header, new_df_cols, new_col_index)
+
+        self.table_view.resizeColumnsToContents()
+
+    
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
@@ -1392,9 +1566,7 @@ class MainWindow(QMainWindow):
             self.standard_plots_panel.update_all(main_cluster)
 
     def _update_table_view_duplicate_highlight(self):
-        df = self.data_manager.cluster_df
-        self.main_cluster_model = HighlightStatusPandasModel(df)
-        self.setup_table_model(self.main_cluster_model)
+        self.refresh_table_model()
 
     def _update_tree_view_duplicate_highlight(self):
         # Collect all duplicate IDs

@@ -2277,54 +2277,56 @@ class DataManager(QObject):
         """
         ks_dir = self.kilosort_dir
 
-        # ── Fast path: KS4 writes per-cluster positions directly ──────────────
+        # Use already-loaded arrays — no redundant disk reads
+        templates     = getattr(self, 'templates', None)
+        templates_ind = getattr(self, 'templates_ind', None)
+        chan_pos       = getattr(self, 'channel_positions', None)
+        cids           = self.cluster_df["cluster_id"].values
+
+        # ── best_chan + template_amp from self.templates (always computed first) ─
+        if templates is not None:
+            ptp         = templates.max(axis=1) - templates.min(axis=1)  # (n_tpl, n_tCh)
+            n_tpl       = ptp.shape[0]
+            best_local  = ptp.argmax(axis=1)                              # (n_tpl,) local index
+            if templates_ind is not None:
+                best_global = templates_ind[np.arange(n_tpl), best_local].astype(int)
+            else:
+                best_global = best_local   # dense layout: local == global channel
+            ptp_at_best = ptp[np.arange(n_tpl), best_local]
+
+            valid_tpl   = (cids >= 0) & (cids < n_tpl)
+            safe_cids   = np.where(valid_tpl, cids, 0)
+            best_chans  = np.where(valid_tpl, best_global[safe_cids], -1)
+            self.cluster_df["best_chan"]    = best_chans
+            self.cluster_df["template_amp"] = np.where(valid_tpl, ptp_at_best[safe_cids], np.nan)
+            logger.debug("Computed best_chan + template_amp from self.templates")
+        else:
+            logger.warning("templates not loaded; best_chan unavailable")
+            return
+
+        # ── x_um / y_um: KS4 cluster_positions.npy fast path ─────────────────
         cluster_pos_path = ks_dir / "cluster_positions.npy"
         if cluster_pos_path.exists():
             try:
                 cluster_pos = np.load(cluster_pos_path)  # (n_clusters, 2)
-                cids = self.cluster_df["cluster_id"].values
                 valid = (cids >= 0) & (cids < len(cluster_pos))
-                safe_cids = np.where(valid, cids, 0)
-                self.cluster_df["x_um"] = np.where(valid, cluster_pos[safe_cids, 0], np.nan)
-                self.cluster_df["y_um"] = np.where(valid, cluster_pos[safe_cids, 1], np.nan)
-                logger.debug("Loaded cluster geometry from cluster_positions.npy")
+                safe_cids2 = np.where(valid, cids, 0)
+                self.cluster_df["x_um"] = np.where(valid, cluster_pos[safe_cids2, 0], np.nan)
+                self.cluster_df["y_um"] = np.where(valid, cluster_pos[safe_cids2, 1], np.nan)
+                logger.debug("Loaded x_um/y_um from cluster_positions.npy")
                 return
             except Exception as e:
-                logger.warning("Failed to load cluster_positions.npy (%s); falling back", e)
+                logger.warning("Failed to load cluster_positions.npy (%s); falling back to channel_positions", e)
 
-        # ── Fallback: derive best channel from templates.npy (fully vectorized) ─
-        try:
-            chan_pos = np.load(ks_dir / "channel_positions.npy")               # (n_ch, 2)
-            templates = np.load(ks_dir / "templates.npy", mmap_mode="r")      # (n_tpl, nt, n_tCh)
-            templates_ind = np.load(ks_dir / "templates_ind.npy", mmap_mode="r")  # (n_tpl, n_tCh)
-        except FileNotFoundError:
-            logger.warning("Required files for cluster geometry not found, skipping.")
-            return
-
-        # Compute PTP directly on the memmap — no full copy into RAM.
-        # NumPy streams the memmap in blocks, so peak memory is a single row
-        # rather than the entire (n_tpl, nt, n_tCh) array (~84 MB for 512-ch).
-        ptp = templates.max(axis=1) - templates.min(axis=1)  # (n_tpl, n_tCh)
-
-        n_tpl = ptp.shape[0]
-        best_local = ptp.argmax(axis=1)                                        # (n_tpl,)
-        best_global = templates_ind[np.arange(n_tpl), best_local].astype(int) # (n_tpl,)
-        ptp_at_best = ptp[np.arange(n_tpl), best_local]                       # (n_tpl,)
-
-        cids = self.cluster_df["cluster_id"].values
-        valid_tpl = (cids >= 0) & (cids < n_tpl)
-        safe_cids = np.where(valid_tpl, cids, 0)
-
-        best_chans = np.where(valid_tpl, best_global[safe_cids], -1)
-        self.cluster_df["best_chan"] = best_chans
-        self.cluster_df["template_amp"] = np.where(valid_tpl, ptp_at_best[safe_cids], np.nan)
-
-        valid_ch = (best_chans >= 0) & (best_chans < len(chan_pos))
-        safe_chans = np.where(valid_ch, best_chans, 0)
-        self.cluster_df["x_um"] = np.where(valid_ch, chan_pos[safe_chans, 0], np.nan)
-        self.cluster_df["y_um"] = np.where(valid_ch, chan_pos[safe_chans, 1], np.nan)
-
-        logger.debug("Computed cluster geometry via vectorized template PTP")
+        # ── x_um / y_um fallback: look up best_chan in self.channel_positions ──
+        if chan_pos is not None:
+            valid_ch  = (best_chans >= 0) & (best_chans < len(chan_pos))
+            safe_chs  = np.where(valid_ch, best_chans, 0)
+            self.cluster_df["x_um"] = np.where(valid_ch, chan_pos[safe_chs, 0], np.nan)
+            self.cluster_df["y_um"] = np.where(valid_ch, chan_pos[safe_chs, 1], np.nan)
+            logger.debug("Computed x_um/y_um from channel_positions[best_chan]")
+        else:
+            logger.warning("channel_positions not loaded; x_um/y_um unavailable")
 
     def _build_cluster_to_template_map(self):
         """
