@@ -1,6 +1,6 @@
 from __future__ import annotations
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QAbstractItemView, QComboBox
-from qtpy.QtCore import Signal, QItemSelectionModel
+from qtpy.QtCore import Signal, QItemSelectionModel, Qt
 from ..widgets.widgets import HighlightStatusPandasModel, CustomTableView
 import pandas as pd
 from typing import TYPE_CHECKING
@@ -146,10 +146,79 @@ class SimilarityPanel(QWidget):
             self.update_main_cluster_id(self.main_cluster_id)
 
     def set_data(self, similarity_df):
-        """Set the DataFrame for the similarity table."""
+        """Set the DataFrame for the similarity table and format it."""
         self.similarity_model = HighlightStatusPandasModel(similarity_df)
+        
+        # --- Monkey-patch pretty header labels onto the model ---
+        HEADER_LABELS = {
+            'cluster_id':        'ID',
+            'best_chan':         'Ch',
+            'n_spikes':          '# Spikes',
+            'status':            'Status',
+            'set':               'Set',
+            'similarity':        'Sim.',
+            'distance':          'Dist.',
+            'potential_dups':    'Dup?',
+            'KSLabel':           'KS Label',
+        }
+
+        df_cols = list(self.similarity_model._dataframe.columns)
+        self.similarity_model._header_overrides = HEADER_LABELS.copy()
+        _orig_headerData = self.similarity_model.headerData
+
+        def _make_patched(orig, overrides, cols):
+            def patched(section, orientation, role=Qt.DisplayRole):
+                if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+                    col_name = cols[section] if section < len(cols) else None
+                    if col_name and col_name in overrides:
+                        return overrides[col_name]
+                return orig(section, orientation, role)
+            return patched
+
+        self.similarity_model.headerData = _make_patched(
+            _orig_headerData, self.similarity_model._header_overrides, df_cols)
+
         self.table.setModel(self.similarity_model)
+        
+        # --- Allow drag-to-reorder ---
+        header = self.table.horizontalHeader()
+        header.setSectionsMovable(True)
+        
+        # --- Set Default Visual Column Order ---
+        col_index = {name: idx for idx, name in enumerate(df_cols)}
+        
+        # Define the exact order you want from left to right
+        ORDERED_COLS = [
+            'cluster_id', 
+            'best_chan', 
+            'similarity', 
+            'distance', 
+            'potential_dups', 
+            'n_spikes', 
+            'status', 
+            'set'
+        ]
+        
+        visual_order = [c for c in ORDERED_COLS if c in col_index]
+        listed = set(ORDERED_COLS)
+        for c in df_cols:
+            if c not in listed:
+                visual_order.append(c)
+
+        for target_visual, col_name in enumerate(visual_order):
+            logical = col_index[col_name]
+            current_visual = header.visualIndex(logical)
+            if current_visual != target_visual:
+                header.moveSection(current_visual, target_visual)
+
+        # Compress columns to minimum width based on contents
         self.table.resizeColumnsToContents()
+        
+        # Manage selection connections
+        try:
+            self.table.selectionModel().selectionChanged.disconnect(self._on_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.table_selection_connected = True
 
@@ -273,7 +342,7 @@ class SimilarityPanel(QWidget):
                 # Add any custom columns that are useful for display if not
                 # already present
                 if similarity_df is not None and not similarity_df.empty:
-                    # Add n_spikes and status from main cluster_df for
+                    # Add n_spikes, status, and best_chan from main cluster_df for
                     # consistency
                     cluster_df = dm.cluster_df
                     if 'n_spikes' not in similarity_df.columns:
@@ -294,6 +363,13 @@ class SimilarityPanel(QWidget):
                         similarity_df['set'] = similarity_df['cluster_id'].map(
                             set_map)
 
+                    # --- NEW: Inject Best Channel ---
+                    if 'best_chan' not in similarity_df.columns:
+                        chan_map = dict(
+                            zip(cluster_df['cluster_id'], cluster_df['best_chan']))
+                        similarity_df['best_chan'] = similarity_df['cluster_id'].map(
+                            chan_map)
+
             elif self.current_source == "vision":
                 # Check if vision data is available
                 if not dm.vision_available:
@@ -301,11 +377,20 @@ class SimilarityPanel(QWidget):
                         "Vision data not available for similarity table")
                     # Show empty table or placeholder data
                     similarity_df = pd.DataFrame(
-                        columns=['cluster_id', 'n_spikes', 'status'])
+                        columns=['cluster_id', 'n_spikes', 'status', 'best_chan'])
                 else:
                     # Get vision-based similarity data
                     similarity_df = dm.get_similarity_table(
                         cluster_id, source="vision")
+                    
+                    # Ensure best_chan is there for Vision too
+                    if similarity_df is not None and not similarity_df.empty:
+                        cluster_df = dm.cluster_df
+                        if 'best_chan' not in similarity_df.columns:
+                            chan_map = dict(
+                                zip(cluster_df['cluster_id'], cluster_df['best_chan']))
+                            similarity_df['best_chan'] = similarity_df['cluster_id'].map(
+                                chan_map)
             else:
                 logger.error(f"Unknown source: {self.current_source}")
                 self.clear()
