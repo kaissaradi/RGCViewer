@@ -7,7 +7,7 @@ A high-performance GUI for refining and analyzing neural spike sorting clusters 
 1.  **Clone the repository:**
     ```bash
     git clone <your-repository-url>
-    cd axolotl-wrapper
+    cd RGCViewer
     ```
 
 2.  **Set up a virtual environment (recommended):**
