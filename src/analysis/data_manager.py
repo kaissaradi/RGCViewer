@@ -2507,23 +2507,25 @@ class DataManager(QObject):
 
         # Compute similarity between source and all other vision clusters
         similarities = {}
-        for vid, sta_data in self.vision_stas.items():
+        for vid in self.vision_stas.keys_list:
+            sta_data = self.vision_stas[vid]
             if vid == vision_cluster_id:
-                continue  # Skip self
+                continue
 
             if not hasattr(sta_data, 'red') or sta_data.red is None:
                 continue
 
             # Compute correlation-based similarity using flattened STA frames
             # Stack channels and compute correlation
-            source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis=0).flatten()
-            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=0).flatten()
+            source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis = 0).flatten()
+            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis = 0).flatten()
 
             # Pearson correlation
             if np.std(source_flat) > 0 and np.std(target_flat) > 0:
                 corr = np.corrcoef(source_flat, target_flat)[0, 1]
                 if not np.isnan(corr):
                     similarities[vid] = corr
+
 
         if not similarities:
             return pd.DataFrame([])
