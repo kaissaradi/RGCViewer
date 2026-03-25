@@ -91,7 +91,27 @@ def extract_features_from_datamanager(dm, cluster_ids):
 
     scalars_mat = np.array(scalars_list)
 
-    # 3. Robust Normalization 
+    # 3a. Drop rows that contain NaN in any matrix (skip those units)
+    nan_mask = (
+        np.any(np.isnan(tc_mat), axis=1) |
+        np.any(np.isnan(acg_mat), axis=1) |
+        np.any(np.isnan(scalars_mat), axis=1)
+    )
+    if np.any(nan_mask):
+        n_dropped = int(nan_mask.sum())
+        logger.warning(f"Dropping {n_dropped} unit(s) with NaN features before UMAP")
+        keep = ~nan_mask
+        valid_ids   = [vid for vid, k in zip(valid_ids, keep) if k]
+        tc_mat      = tc_mat[keep]
+        acg_mat     = acg_mat[keep]
+        scalars_mat = scalars_mat[keep]
+        for key in metadata:
+            metadata[key] = [v for v, k in zip(metadata[key], keep) if k]
+
+    if len(valid_ids) == 0:
+        return np.array([]), [], {}
+
+    # 3b. Robust Normalization 
     if scalars_mat.shape[0] > 0 and scalars_mat.shape[1] > 0:
         scalars_mat = RobustScaler().fit_transform(scalars_mat)
 
@@ -491,6 +511,7 @@ class UMAPPanel(QWidget):
 
         # Determine if result is 3D
         self.is_3d = (self.embedding.shape[1] == 3)
+        self.project_3d_chk.setVisible(self.is_3d)
 
         self.run_btn.setEnabled(True)
         self.run_3d_btn.setEnabled(True)
@@ -500,13 +521,7 @@ class UMAPPanel(QWidget):
 
         self._reset_workers()
 
-        self.update_plot()
-        
-        # Re-initialize selector (needs to be attached to the new axes)
-        if self.selector:
-            self.selector.disconnect_events()
-        self.selector = LassoSelector(self.ax, self.on_select)
-        self.selector.set_active(True)
+        self.update_plot()  # already calls update_selector() at the end
 
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
@@ -545,11 +560,8 @@ class UMAPPanel(QWidget):
                 group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
                 count += 1
             
-            from qtpy.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, 
-                "Auto-Group", 
-                f"Successfully created {count} groups (Type_1...Type_{count}) for the selected cells."
+            self.main_window.status_bar.showMessage(
+                f"Auto-Group: created {count} groups (Type_1 … Type_{count})."
             )
             
             # Force the main tree view to collapse all groups after K-Means auto-grouping
