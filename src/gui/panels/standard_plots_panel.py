@@ -294,13 +294,14 @@ class StandardPlotsPanel(QWidget):
         except Exception:
             pass
 
+        
     def refresh_array_image(self, transform_path: str):
         """Loads and aligns the microscope image behind the template grid."""
         import json
         from pathlib import Path
         from PIL import Image
         import numpy as np
-        from qtpy.QtGui import QTransform
+        from qtpy.QtCore import QRectF
         import logging
         logger = logging.getLogger(__name__)
 
@@ -309,7 +310,7 @@ class StandardPlotsPanel(QWidget):
                 data = json.load(f)
 
             img_name = data.get('image_file')
-            if not img_name: 
+            if not img_name:
                 return
 
             img_path = Path(transform_path).parent / img_name
@@ -318,41 +319,44 @@ class StandardPlotsPanel(QWidget):
 
             img = Image.open(img_path).convert('RGB')
             img_array = np.array(img, dtype=np.uint8)
-            # Transpose to match pyqtgraph's (Width, Height, Color) expectation
-            img_pg = img_array.transpose(1, 0, 2)
+            img_h, img_w = img_array.shape[:2]
+
+            # Calibration was done with invertY=True (pixel y=0 at top).
+            # grid_plot is Y-up, so we flip the image vertically before display.
+            img_pg = img_array[::-1, :, :].transpose(1, 0, 2)  # flip rows → (W, H, C)
 
             if self._array_bg_image is None:
                 self._array_bg_image = pg.ImageItem()
-                self._array_bg_image.setZValue(-20)  # Push firmly to background
+                self._array_bg_image.setZValue(-20)
                 self.grid_plot.addItem(self._array_bg_image)
 
             self._array_bg_image.setImage(img_pg)
 
-            # Store transform data
             self._array_transform_data = data
             self._array_image_path = img_path
             self._has_valid_array_transform = True
 
-            # --- Proper QTransform Mapping ---
-            # Math: pixels = scale * microns + offset
-            # Ergo: microns = (pixels - offset) / scale
+            # Transform (calibrated): pixel = scale * micron + offset
+            # Invert to get micron corners from pixel corners.
             sx = float(data.get('scale_x', 1.0))
             sy = float(data.get('scale_y', 1.0))
             ox = float(data.get('offset_x', 0.0))
             oy = float(data.get('offset_y', 0.0))
 
-            # Since the grid distortion (x_scale) turns off when the image is active,
-            # we do a pure 1:1 physical translation matrix.
-            tr = QTransform()
-            tr.setMatrix(1/sx, 0, 0,
-                         0, 1/sy, 0,
-                         -ox/sx, -oy/sy, 1)
-            self._array_bg_image.setTransform(tr)
+            x0 = (0     - ox) / sx   # left micron edge   (pixel x=0)
+            x1 = (img_w - ox) / sx   # right micron edge  (pixel x=W)
+            y_top    = (0     - oy) / sy   # micron Y of pixel row 0 (top of image)
+            y_bottom = (img_h - oy) / sy   # micron Y of pixel row H (bottom of image)
+
+            # In a Y-up plot, y_top > y_bottom (larger micron = higher on screen).
+            # setRect(left, bottom, width, height) — height is positive upward.
+            bottom = min(y_top, y_bottom)
+            height = abs(y_top - y_bottom)
+            self._array_bg_image.setRect(QRectF(x0, bottom, x1 - x0, height))
 
         except Exception as e:
             logger.warning(f"Failed to load array image: {e}")
             self._has_valid_array_transform = False
-
 
     def update_all(self, cluster_id):
         """

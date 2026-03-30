@@ -220,6 +220,14 @@ class DataManager(QObject):
         self.standard_plot_cache = {}
         self._standard_plot_lock = threading.Lock()
 
+        # Per-cell in-flight locks for get_cell_physics.
+        # Prevents two concurrent workers from both missing the cache and
+        # redundantly recomputing the same cell at the same time.
+        # _physics_cell_locks: dict[cluster_id -> threading.Lock]
+        # _physics_cell_locks_lock: guards the dict itself.
+        self._physics_cell_locks = {}
+        self._physics_cell_locks_lock = threading.Lock()
+
         # Background save protection
         self._save_lock = threading.Lock()
         self._save_in_progress = False
@@ -1329,7 +1337,9 @@ class DataManager(QObject):
         # Ensure thread safety for background loading
         if not hasattr(self, '_feature_lock'):
             self._feature_lock = threading.Lock()
-
+        if not hasattr(self, '_physics_cell_locks'):
+            self._physics_cell_locks = {}
+            self._physics_cell_locks_lock = threading.Lock()
 
         # 1. Fast path: check feature cache under lock.
         # We use a '_computed' sentinel key to distinguish "cached and done"
@@ -1340,69 +1350,89 @@ class DataManager(QObject):
             if cached is not None and cached.get('_computed'):
                 return cached
 
-        # 2. Get standard plot data — use cache if warm, compute inline if cold.
-        # NOTE: we intentionally do NOT return None on a cold cache. UMAP and other
-        # callers iterate every cluster and cannot handle None in their feature matrix.
-        # get_standard_plot_data() checks the cache first and only computes if needed.
-        std_data = self.get_standard_plot_data(cluster_id)
-        acg_norm = std_data.get('acg_norm') if std_data else None
+        # 1b. Per-cell in-flight lock: if another thread is already computing
+        # this cell, wait for it to finish and then read its cached result
+        # instead of recomputing from scratch.  This prevents the double-pass
+        # race where FeatureAnalysisWorker and UmapColorWorker both miss the
+        # cache simultaneously and both enter _compute_standard_plots for the
+        # same cluster concurrently, causing the second writer to redo work
+        # and creating a race on feature_cache[cluster_id].
+        with self._physics_cell_locks_lock:
+            if cluster_id not in self._physics_cell_locks:
+                self._physics_cell_locks[cluster_id] = threading.Lock()
+            cell_lock = self._physics_cell_locks[cluster_id]
 
-        # 3. Assemble Pre-Calculated Vision/STA Features
-        timecourse = None
-        rf_area = 0.0
-        ellipticity = 0.0
-        time_to_peak = 0
+        with cell_lock:
+            # Re-check cache now that we hold the per-cell lock — the thread
+            # that was in-flight before us may have already populated it.
+            with self._feature_lock:
+                cached = self.feature_cache.get(cluster_id)
+                if cached is not None and cached.get('_computed'):
+                    return cached
 
-        vid = cluster_id + 1  # Vision IDs are 1-indexed
-        if self.vision_stas and vid in self.vision_stas:
-            sta_data = self.vision_stas[vid]
-            
-            # Geometry (Extracting from Vision's pre-computed Gaussian fits)
-            try:
-                stafit = self.vision_params.get_stafit_for_cell(vid)
-                if stafit:
-                    rf_area = np.pi * stafit.std_x * stafit.std_y
-                    if stafit.std_x > 0:
-                        ellipticity = stafit.std_y / stafit.std_x
-            except Exception:
-                stafit = None
+            # 2. Get standard plot data — use cache if warm, compute inline if cold.
+            # NOTE: we intentionally do NOT return None on a cold cache. UMAP and other
+            # callers iterate every cluster and cannot handle None in their feature matrix.
+            # get_standard_plot_data() checks the cache first and only computes if needed.
+            std_data = self.get_standard_plot_data(cluster_id)
+            acg_norm = std_data.get('acg_norm') if std_data else None
 
-            # Timecourse (Pulls pre-computed 1D arrays from Vision params)
-            time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                sta_data, stafit, self.vision_params, vid
-            )
+            # 3. Assemble Pre-Calculated Vision/STA Features
+            timecourse = None
+            rf_area = 0.0
+            ellipticity = 0.0
+            time_to_peak = 0
 
-            if tc_matrix is not None and tc_matrix.size > 0:
-                # Stack, find dominant channel by energy, and normalize just once
-                energies = np.sum(tc_matrix**2, axis=0)
-                dom_idx = np.argmax(energies)
-                dom_trace = tc_matrix[:, dom_idx]
+            vid = cluster_id + 1  # Vision IDs are 1-indexed
+            if self.vision_stas and vid in self.vision_stas:
+                sta_data = self.vision_stas[vid]
                 
-                # Normalize the trace to -1 to 1 bounds for UI rendering
-                abs_max = np.max(np.abs(dom_trace))
-                if abs_max > 0:
-                    timecourse = dom_trace / abs_max
-                else:
-                    timecourse = dom_trace
-                
-                time_to_peak = int(np.argmax(np.abs(timecourse)))
+                # Geometry (Extracting from Vision's pre-computed Gaussian fits)
+                try:
+                    stafit = self.vision_params.get_stafit_for_cell(vid)
+                    if stafit:
+                        rf_area = np.pi * stafit.std_x * stafit.std_y
+                        if stafit.std_x > 0:
+                            ellipticity = stafit.std_y / stafit.std_x
+                except Exception:
+                    stafit = None
 
-        # 4. Package into our immutable physics dictionary
-        metrics = {
-            '_computed': True,   # sentinel: marks entry as fully computed, not stale
-            'acg': acg_norm,
-            'timecourse': timecourse,
-            'rf_area': rf_area,
-            'ellipticity': ellipticity,
-            'time_to_peak': time_to_peak
-        }
+                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+                time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                    sta_data, stafit, self.vision_params, vid
+                )
 
-        # 5. Store in global cache safely
-        with self._feature_lock:
-            self.feature_cache[cluster_id] = metrics
-            self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
+                if tc_matrix is not None and tc_matrix.size > 0:
+                    # Stack, find dominant channel by energy, and normalize just once
+                    energies = np.sum(tc_matrix**2, axis=0)
+                    dom_idx = np.argmax(energies)
+                    dom_trace = tc_matrix[:, dom_idx]
+                    
+                    # Normalize the trace to -1 to 1 bounds for UI rendering
+                    abs_max = np.max(np.abs(dom_trace))
+                    if abs_max > 0:
+                        timecourse = dom_trace / abs_max
+                    else:
+                        timecourse = dom_trace
+                    
+                    time_to_peak = int(np.argmax(np.abs(timecourse)))
 
-        return metrics
+            # 4. Package into our immutable physics dictionary
+            metrics = {
+                '_computed': True,   # sentinel: marks entry as fully computed, not stale
+                'acg': acg_norm,
+                'timecourse': timecourse,
+                'rf_area': rf_area,
+                'ellipticity': ellipticity,
+                'time_to_peak': time_to_peak
+            }
+
+            # 5. Store in global cache safely
+            with self._feature_lock:
+                self.feature_cache[cluster_id] = metrics
+                self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
+
+            return metrics
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
@@ -1530,9 +1560,15 @@ class DataManager(QObject):
         # Correct fix: cap the spike train at MAX_DURATION_MS, then use the fast
         # FFT-based correlate on a small fixed-size array (~120K bins max = ~480KB).
         # ACG statistics are stable after ~2 minutes of spikes, so capping is valid.
-        if spikes_ms.size > 1:
+        #
+        # Minimum spike threshold: ACG is meaningless (and very noisy) with fewer
+        # than ~50 spikes — we'd be correlating a handful of 1s in a long zero array.
+        # Raise the bar to MIN_SPIKES so the downstream PCA / UMAP features don't
+        # get driven by noise from low-count clusters.
+        MIN_SPIKES = 50
+        if spikes_ms.size > MIN_SPIKES:
             from scipy.signal import fftconvolve
-            MAX_LAG       = 100    # ms
+            MAX_LAG       = 100    # ms — ±100 ms window, giving 201-sample ACG
             MAX_DURATION  = 120_000  # ms — 2 minutes max, enough for stable ACG stats
 
             t = np.sort(spikes_ms).astype(np.int64)
@@ -1542,7 +1578,7 @@ class DataManager(QObject):
             if t[-1] > MAX_DURATION:
                 t = t[t <= MAX_DURATION]
 
-            if t.size > 1:
+            if t.size > MIN_SPIKES:
                 duration = int(t[-1]) + 1
                 bins_arr = np.zeros(duration, dtype=np.float32)
                 np.add.at(bins_arr, t, 1)
@@ -1550,8 +1586,19 @@ class DataManager(QObject):
                 # FFT cross-correlation: O(N log N), pure C, <1ms for 120K bins
                 acg_full = fftconvolve(bins_arr, bins_arr[::-1], mode='full')
                 center   = len(acg_full) // 2
-                acg      = acg_full[center - MAX_LAG : center + MAX_LAG + 1].copy()
-                acg[MAX_LAG] = 0.0  # zero self-coincidence at lag 0
+
+                # Bug fix: if the spike train is shorter than 2*MAX_LAG ms (e.g. a
+                # low-count cluster whose entire spike history spans < 200 ms), numpy
+                # silently clips the slice and we get fewer than 201 elements, making
+                # acg[MAX_LAG] = 0.0 raise IndexError.  Clamp the half-window and
+                # zero-pad symmetrically so downstream PCA always sees a 201-sample
+                # vector regardless of recording duration.
+                half = min(MAX_LAG, center)
+                acg  = acg_full[center - half : center + half + 1].copy()
+                if len(acg) < 2 * MAX_LAG + 1:
+                    pad = MAX_LAG - half
+                    acg = np.pad(acg, (pad, pad), mode='constant')
+                acg[MAX_LAG] = 0.0  # zero self-coincidence at lag 0 — now always safe
 
                 time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
                 n_spikes_f = float(spikes_ms.size)
