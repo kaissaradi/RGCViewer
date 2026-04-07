@@ -75,18 +75,19 @@ class LazySTADict:
 
 def load_vision_data(vision_dir: Path, dataset_name: str):
     """
-    Loads all relevant data from Vision files (.ei, .sta, .params).
+    Loads all relevant data from Vision files (.ei, .sta, .params, .neurons).
     """
     logger.debug(f"Loading Vision files from: {vision_dir}")
 
     if not VISION_LOADER_AVAILABLE:
         logger.warning(
             f"visionloader is not available; skipping vision load for {vision_dir}")
-        return {'ei': None, 'sta': None, 'params': None}
+        return {'ei': None, 'sta': None, 'params': None, 'neurons': None}
 
     ei_data = None
     sta_data = None
     params_data = None
+    neurons_data = None
 
     try:
         ei_data = load_ei_data(vision_dir, dataset_name)
@@ -102,11 +103,17 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
         params_data = load_params_data(vision_dir, dataset_name)
     except Exception as e:
         logger.warning(f"Could not load Params data: {e}")
+        
+    try:
+        neurons_data = load_neurons_data(vision_dir, dataset_name)
+    except Exception as e:
+        logger.warning(f"Could not load Neurons data: {e}")
 
     return {
         'ei': ei_data,
         'sta': sta_data,
-        'params': params_data
+        'params': params_data,
+        'neurons': neurons_data
     }
 
 
@@ -166,3 +173,27 @@ def load_params_data(vision_dir: Path, dataset_name: str):
     except Exception:
         logger.exception("Unexpected error loading params data")
         return None
+
+
+def load_neurons_data(vision_dir: Path, dataset_name: str):
+    """Loads spike times, seed electrodes, and sampling rate from a .neurons file."""
+    if not VISION_LOADER_AVAILABLE:
+        return None
+
+    try:
+        with vl.NeuronsReader(str(vision_dir), dataset_name) as nr:
+            spikes_by_id = nr.get_spike_sample_nums_for_all_real_neurons()
+            seed_electrodes = nr.get_identifier_electrodes_for_all_real_neurons()
+            sampling_rate = nr.sample_freq
+            logger.info(f"Loaded .neurons for {len(spikes_by_id)} cells")
+            return {
+                'spikes_by_id': spikes_by_id, 
+                'seed_electrodes': seed_electrodes,
+                'sampling_rate': sampling_rate
+            }
+    except FileNotFoundError:
+        logger.error(f"Neurons file not found in {vision_dir}")
+        return None
+    except Exception:
+        logger.exception("Unexpected error loading Neurons data")
+        return Nones

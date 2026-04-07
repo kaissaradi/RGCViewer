@@ -1077,7 +1077,7 @@ class MainWindow(QMainWindow):
         self.load_raw_action.setEnabled(False) # Disabled until KS is loaded
         
         self.load_vision_action = file_menu.addAction("&Load Vision Files...")
-        self.load_vision_action.setEnabled(False)
+        self.load_vision_action.setEnabled(True)
         
         self.load_classification_action = file_menu.addAction("&Load Classification File...")
         self.load_classification_action.setEnabled(False)

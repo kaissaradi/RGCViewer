@@ -181,35 +181,107 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     else:
         main_window.status_bar.showMessage(
             f"Successfully loaded {n_clusters} clusters.", 5000)
+        
+def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
+    """Cleanup and GUI update after StandaloneVisionWorker finishes."""
+    main_window.vision_load_thread.quit()
+    main_window.vision_load_thread.wait()
+
+    if not success:
+        QMessageBox.critical(main_window, "Loading Error", message)
+        main_window.status_bar.showMessage("Loading failed.", 5000)
+        main_window.central_widget.setEnabled(True)
+        return
+
+    # Disable raw tab since we don't have .bin data
+    main_window.analysis_tabs.setTabEnabled(
+        main_window.analysis_tabs.indexOf(main_window.raw_panel), False)
+
+    # Populate Tree and Tables
+    populate_tree_view(main_window)
+    main_window._update_table_view_duplicate_highlight()
+    main_window._update_tree_view_duplicate_highlight()
+
+    # Enable UI
+    main_window.central_widget.setEnabled(True)
+    main_window.load_raw_action.setEnabled(True) 
+    main_window.save_action.setEnabled(True)
+    main_window.save_classification_action.setEnabled(True)
+
+    if main_window.data_manager.vision_stas:
+        main_window.sta_panel.show()
+
+    # Start standard plots background worker
+    start_worker(main_window)
+    
+    # Precompute EI correlations directly (bypassing auto-load since we just loaded it)
+    if main_window.data_manager.vision_eis is not None:
+        main_window.data_manager.precompute_ei_correlations_background()
+        
+    # Manually trigger the physics extraction thread
+    all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+    
+    main_window.physics_thread = QThread()
+    main_window.physics_worker = QObject()
+    main_window.physics_worker.moveToThread(main_window.physics_thread)
+
+    def run_physics():
+        for cid in all_ids:
+            try:
+                main_window.data_manager.get_cell_physics(cid)
+                # Notify the standard plot worker that physics are ready for this cell
+                if getattr(main_window, 'standard_plots_worker', None):
+                    main_window.standard_plots_worker.finished_cluster.emit(int(cid))
+            except Exception as e:
+                logger.warning(f"Physics failed for cluster {cid}: {e}")
+        main_window.physics_thread.quit()
+
+    main_window.physics_thread.started.connect(run_physics)
+    main_window.physics_thread.start()
+
+    main_window.status_bar.showMessage(f"Successfully loaded Vision dataset.", 5000)
 
 
 def load_vision_directory(main_window):
-    """Triggers the background loading of an explicit Vision directory."""
-    if not main_window.data_manager:
-        QMessageBox.warning(main_window, "No Kilosort Data", "Please load a Kilosort directory first.")
-        return
-
-    vision_dir_name = QFileDialog.getExistingDirectory(main_window, "Select Vision Analysis Directory")
+    """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
+    vision_dir_name = QFileDialog.getExistingDirectory(
+        main_window, "Select Vision Analysis Directory")
     if not vision_dir_name:
         return
 
-    # 1. Lock UI
     main_window.central_widget.setEnabled(False)
-    
-    # 2. Setup Thread and Worker
-    main_window.vision_load_thread = QThread()
-    main_window.vision_load_worker = VisionLoadWorker(main_window.data_manager, vision_dir_name)
-    main_window.vision_load_worker.moveToThread(main_window.vision_load_thread)
 
-    # 3. Connect Signals
+    # PATH A: Standalone Vision Load (No Kilosort loaded, or already in Vision-only mode)
+    if not main_window.data_manager or getattr(main_window.data_manager, 'is_vision_only', False):
+        main_window.status_bar.showMessage("Initializing Vision-native loader...")
+        
+        # Initialize a fresh DataManager and set the flag immediately
+        main_window.data_manager = DataManager(vision_dir_name, main_window)
+        main_window.data_manager.is_vision_only = True
+        main_window.setWindowTitle(f"RGC Viewer - {Path(vision_dir_name).name} (Vision Native)")
+
+        from .workers.workers import StandaloneVisionWorker
+        main_window.vision_load_thread = QThread()
+        main_window.vision_load_worker = StandaloneVisionWorker(main_window.data_manager, vision_dir_name)
+        main_window.vision_load_worker.moveToThread(main_window.vision_load_thread)
+        
+        main_window.vision_load_worker.finished.connect(
+            lambda success, msg: _on_vision_native_loaded(main_window, success, msg, vision_dir_name)
+        )
+        
+    # PATH B: Append Vision to Kilosort (Standard flow)
+    else:
+        main_window.status_bar.showMessage("Appending Vision data to Kilosort dataset...")
+        main_window.vision_load_thread = QThread()
+        main_window.vision_load_worker = VisionLoadWorker(main_window.data_manager, vision_dir_name)
+        main_window.vision_load_worker.moveToThread(main_window.vision_load_thread)
+        
+        main_window.vision_load_worker.finished.connect(
+            lambda success, msg, is_partial: _on_vision_loaded(main_window, success, msg, is_partial)
+        )
+
     main_window.vision_load_thread.started.connect(main_window.vision_load_worker.run)
     main_window.vision_load_worker.progress.connect(lambda msg: main_window.status_bar.showMessage(msg))
-    
-    main_window.vision_load_worker.finished.connect(
-        lambda success, msg, is_partial: _on_vision_loaded(main_window, success, msg, is_partial)
-    )
-
-    # 4. Fire!
     main_window.vision_load_thread.start()
 
 
@@ -814,7 +886,7 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
     df = main_window.data_manager.cluster_df
     df.loc[df['cluster_id'].isin(list(target_ids)), 'KSLabel'] = group_name
 
-    # 7. Expand only the new folder to show the user it worked
+    # 7. Expand only the new folder to show the user it workedload_vision_directory
     main_window.tree_view.expand(group_item.index())
     if hasattr(parent_item, 'index'):
         main_window.tree_view.expand(parent_item.index())

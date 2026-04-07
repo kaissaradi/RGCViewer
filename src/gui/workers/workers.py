@@ -341,3 +341,39 @@ class StandardPlotsWorker(QObject):
 
     def stop(self):
         self.is_running = False
+
+class StandaloneVisionWorker(QObject):
+    """Background worker to handle loading pure Vision datasets."""
+    finished = Signal(bool, str)
+    progress = Signal(str)
+
+    def __init__(self, data_manager, vision_dir_name):
+        super().__init__()
+        self.dm = data_manager
+        self.vision_dir_name = vision_dir_name
+
+    def run(self):
+        try:
+            vision_dir = Path(self.vision_dir_name)
+            self.progress.emit(f"Loading Vision-native dataset from {vision_dir.name}...")
+            
+            # Find dataset name dynamically
+            dataset_name = None
+            for ei_file in vision_dir.glob('*.ei'):
+                dataset_name = ei_file.stem
+                break
+                
+            if not dataset_name:
+                self.finished.emit(False, "Could not find a valid .ei file to determine dataset name.")
+                return
+
+            # Execute our new native loader
+            success, message = self.dm.load_vision_native_data(vision_dir, dataset_name)
+            
+            if success:
+                pass
+
+            self.finished.emit(success, message)
+        except Exception as e:
+            logger.exception("Error in StandaloneVisionWorker")
+            self.finished.emit(False, str(e))

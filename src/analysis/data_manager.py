@@ -4,7 +4,7 @@ import threading
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from qtpy.QtCore import QObject, Qt
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
 from . import vision_integration
@@ -193,9 +193,11 @@ class DataManager(QObject):
     Manages all data loading, processing, and caching.
     """
     is_dirty = False
+    ei_updates_ready = Signal(dict, dict)
 
     def __init__(self, kilosort_dir, main_window=None):
         super().__init__()
+        self.ei_updates_ready.connect(self._apply_ei_updates)
         self.kilosort_dir = Path(kilosort_dir)
         self.exp_name = self.kilosort_dir.parent.parent.name
         self.datafile_name = self.kilosort_dir.parent.name
@@ -279,6 +281,29 @@ class DataManager(QObject):
         """
         return self.refractory_period_ms
 
+
+    def _apply_ei_updates(self, potential_dups_map, max_dup_r_map):
+        """Safely apply background-computed EI updates to the DataFrame on the main thread."""
+        if self.cluster_df.empty:
+            return
+            
+        # Using .astype() fixes the Pandas 'FutureWarning' spam!
+        self.cluster_df["potential_dups"] = (
+            self.cluster_df["cluster_id"]
+            .map(potential_dups_map)
+            .fillna(False)
+            .astype(bool)
+        )
+        self.cluster_df["max_dup_r"] = (
+            self.cluster_df["cluster_id"]
+            .map(max_dup_r_map)
+            .fillna(0.0)
+            .astype(float)
+        )
+        self.cluster_df["max_dup_r"] = self.cluster_df["max_dup_r"].map(
+            lambda x: f"{x:.2f}"
+        )
+        logger.debug("Successfully updated cluster_df with duplicates on the Main Thread.")
 
     def _save_pickle_with_fallback(self, data, path):
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
@@ -762,6 +787,122 @@ class DataManager(QObject):
         )
 
         return success, f"{'Successfully' if success else 'Failed to'} load Vision data for {dataset_name}."
+    
+    def load_vision_native_data(self, vision_dir, dataset_name):
+        """Fallback loader: builds master spike arrays purely from Vision data."""
+        from pathlib import Path
+        import numpy as np
+        import pandas as pd
+        from . import vision_integration
+        import logging
+        
+        vision_path = Path(vision_dir)
+        self.is_vision_only = True # Flag this session!
+        
+        # 1. Load the Vision data
+        vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
+        
+        neurons_bundle = vision_data.get('neurons')
+        if not neurons_bundle:
+            return False, "No .neurons file found. Cannot build standalone Vision dataset."
+
+        # 2. Extract Spikes and Seed Electrodes
+        spikes_dict = neurons_bundle['spikes_by_id']
+        seed_electrodes = neurons_bundle['seed_electrodes']
+        self.sampling_rate = float(neurons_bundle['sampling_rate'])
+
+        # 3. Concatenate and Sort Spikes
+        all_times = []
+        all_clusters = []
+        for vid, times in spikes_dict.items():
+            all_times.append(times)
+            all_clusters.append(np.full(len(times), vid)) 
+            
+        if not all_times:
+            return False, "Neurons file is empty."
+
+        self.spike_times = np.concatenate(all_times)
+        self.spike_clusters = np.concatenate(all_clusters)
+        
+        sort_order = np.argsort(self.spike_times, kind='mergesort')
+        self.spike_times = self.spike_times[sort_order]
+        self.spike_clusters = self.spike_clusters[sort_order]
+
+        if len(self.spike_times) > 0:
+            self.n_samples = int(self.spike_times[-1]) + int(self.sampling_rate)
+        else:
+            self.n_samples = 0
+
+        # ---------------------------------------------------------
+        # 4. Load Geometry DIRECTLY from .globals
+        # ---------------------------------------------------------
+        self.channel_positions = None
+        self.n_channels = 512
+        try:
+            import visionloader as vl
+            with vl.GlobalsFileReader(str(vision_path), dataset_name) as gbfr:
+                raw_positions, _ = gbfr.get_electrode_map()
+                
+                # OOM Killer Protection
+                if not np.all(np.isfinite(raw_positions)):
+                    logging.warning("Globals file contains NaN coordinates! Discarding to prevent UI crash.")
+                elif np.max(np.abs(raw_positions)) > 100000:
+                    logging.warning("Globals file coordinates are unreasonably large! Discarding.")
+                else:
+                    self.channel_positions = raw_positions
+                    self.n_channels = self.channel_positions.shape[0]
+        except Exception as e:
+            logging.warning(f"Could not load .globals file for array geometry: {e}")
+
+        # ---------------------------------------------------------
+        # 5. Build Base Cluster DataFrame
+        # ---------------------------------------------------------
+        unique_ids, counts = np.unique(self.spike_clusters, return_counts=True)
+        self.cluster_df = pd.DataFrame({
+            "cluster_id": unique_ids,
+            "n_spikes": counts,
+            "status": "Original",
+            "x_um": np.nan,
+            "y_um": np.nan,
+            "best_chan": -1
+        })
+
+        self.cluster_id_to_idx = {int(cid): i for i, cid in enumerate(self.cluster_df["cluster_id"].values)}
+
+        # Map the seed electrode to 0-indexed channel positions
+        if self.channel_positions is not None:
+            best_chans = {}
+            x_dict = {}
+            y_dict = {}
+            
+            for vid, seed_elec in seed_electrodes.items():
+                cid = vid 
+                ch_idx = seed_elec - 1 # Seed electrodes are 1-indexed
+                
+                if 0 <= ch_idx < self.n_channels:
+                    best_chans[cid] = ch_idx
+                    x_dict[cid] = self.channel_positions[ch_idx, 0]
+                    y_dict[cid] = self.channel_positions[ch_idx, 1]
+                    
+            self.cluster_df['best_chan'] = self.cluster_df['cluster_id'].map(best_chans).fillna(-1).astype(int)
+            self.cluster_df['x_um'] = self.cluster_df['cluster_id'].map(x_dict)
+            self.cluster_df['y_um'] = self.cluster_df['cluster_id'].map(y_dict)
+
+        # 6. Populate standard Vision attributes
+        ei_bundle = vision_data.get('ei')
+        self.vision_eis = ei_bundle.get('ei_data') if ei_bundle else None
+        self.vision_stas = vision_data.get('sta')
+        self.vision_params = vision_data.get('params')
+        self.vision_available = True
+        
+        self.templates = None
+        self.templates_ind = None
+        self.raw_data_memmap = None
+        self.raw_reader = None
+        self.cluster_info = pd.DataFrame()
+        
+        return True, "Successfully loaded Vision-native dataset."
+    
 
     def precompute_ei_correlations_background(self):
         """
@@ -791,19 +932,22 @@ class DataManager(QObject):
         Now called from precompute_ei_correlations_background() (background
         thread) so the UI is never blocked.
         """
+        if getattr(self, 'is_vision_only', False):
+            logger.info("Vision dataset detected. Skipping duplicate EI correlation to prevent RAM explosion.")
+            if hasattr(self, 'ei_updates_ready'):
+                self.ei_updates_ready.emit({}, {})
+            return
+        
         # Already computed / loaded?
         if self.ei_corr_dict is not None:
             return
 
         # Must have Vision EIs to do anything
         if self.vision_eis is None:
-            logger.warning(
-                "Cannot compute EI correlations: vision_eis is None")
-            if not self.cluster_df.empty:
-                if "potential_dups" not in self.cluster_df.columns:
-                    self.cluster_df["potential_dups"] = False
-                if "max_dup_r" not in self.cluster_df.columns:
-                    self.cluster_df["max_dup_r"] = 0.0
+            logger.warning("Cannot compute EI correlations: vision_eis is None")
+            # Thread-safe fallback: emit empty dicts so the main thread applies defaults
+            if hasattr(self, 'ei_updates_ready'):
+                self.ei_updates_ready.emit({}, {})
             return
 
         str_corr_pkl = os.path.join(self.kilosort_dir, "ei_corr_dict.pkl")
@@ -812,22 +956,16 @@ class DataManager(QObject):
         sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
 
         if len(sanitized_eis) < 2:
-            logger.warning(
-                "Not enough Vision EIs to compute correlations; skipping duplicate detection"
-            )
-            if not self.cluster_df.empty:
-                if "potential_dups" not in self.cluster_df.columns:
-                    self.cluster_df["potential_dups"] = False
-                if "max_dup_r" not in self.cluster_df.columns:
-                    self.cluster_df["max_dup_r"] = 0.0
+            logger.warning("Not enough Vision EIs to compute correlations; skipping duplicate detection")
+            # Thread-safe fallback: emit empty dicts so the main thread applies defaults
+            if hasattr(self, 'ei_updates_ready'):
+                self.ei_updates_ready.emit({}, {})
             return
 
         # Try to load existing correlations from disk
         if os.path.exists(str_corr_pkl):
             try:
-                logger.debug(
-                    "Loading precomputed EI correlations from %s",
-                    str_corr_pkl)
+                logger.debug("Loading precomputed EI correlations from %s", str_corr_pkl)
                 with open(str_corr_pkl, "rb") as f:
                     self.ei_corr_dict = pickle.load(f)
                 logger.debug("Loaded EI correlations successfully")
@@ -835,70 +973,40 @@ class DataManager(QObject):
                 space_corr = self.ei_corr_dict.get("space")
                 power_corr = self.ei_corr_dict.get("power")
             except Exception as e:
-                logger.warning(
-                    "Failed to load EI correlation pickle: %s; recomputing", e
-                )
-                full_corr = ei_corr(
-                    sanitized_eis,
-                    sanitized_eis,
-                    method="full",
-                    n_removed_channels=1)
-                space_corr = ei_corr(
-                    sanitized_eis,
-                    sanitized_eis,
-                    method="space",
-                    n_removed_channels=1)
-                power_corr = ei_corr(
-                    sanitized_eis,
-                    sanitized_eis,
-                    method="power",
-                    n_removed_channels=1)
+                logger.warning("Failed to load EI correlation pickle: %s; recomputing", e)
+                full_corr = ei_corr(sanitized_eis, sanitized_eis, method="full", n_removed_channels=1)
+                space_corr = ei_corr(sanitized_eis, sanitized_eis, method="space", n_removed_channels=1)
+                power_corr = ei_corr(sanitized_eis, sanitized_eis, method="power", n_removed_channels=1)
                 self.ei_corr_dict = {
                     "full": full_corr,
                     "space": space_corr,
                     "power": power_corr,
                 }
-                saved_path = self._save_pickle_with_fallback(
-                    self.ei_corr_dict, str_corr_pkl
-                )
-                logger.debug(
-                    "EI correlations recomputed and saved to %s",
-                    saved_path)
+                saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
+                logger.debug("EI correlations recomputed and saved to %s", saved_path)
         else:
             # Compute from scratch
             logger.debug("Computing EI correlations")
-            full_corr = ei_corr(
-                sanitized_eis,
-                sanitized_eis,
-                method="full",
-                n_removed_channels=1)
-            space_corr = ei_corr(
-                sanitized_eis,
-                sanitized_eis,
-                method="space",
-                n_removed_channels=1)
-            power_corr = ei_corr(
-                sanitized_eis,
-                sanitized_eis,
-                method="power",
-                n_removed_channels=1)
+            full_corr = ei_corr(sanitized_eis, sanitized_eis, method="full", n_removed_channels=1)
+            space_corr = ei_corr(sanitized_eis, sanitized_eis, method="space", n_removed_channels=1)
+            power_corr = ei_corr(sanitized_eis, sanitized_eis, method="power", n_removed_channels=1)
             self.ei_corr_dict = {
                 "full": full_corr,
                 "space": space_corr,
                 "power": power_corr,
             }
-            saved_path = self._save_pickle_with_fallback(
-                self.ei_corr_dict, str_corr_pkl)
-            logger.debug(
-                "EI correlations computed and saved to %s",
-                saved_path)
+            saved_path = self._save_pickle_with_fallback(self.ei_corr_dict, str_corr_pkl)
+            logger.debug("EI correlations computed and saved to %s", saved_path)
 
-        # With correlation matrices available, update cluster_df
-        # duplicate-related columns
+        # With correlation matrices available, update cluster_df duplicate-related columns
         if not self.cluster_df.empty:
             cluster_ids = list(sanitized_eis.keys())
-            # Vision IDs are 1-based; convert to 0-based Kilosort cluster IDs
-            cluster_ids = np.array(cluster_ids) - 1
+            # Convert to 0-based ONLY if Kilosort is the boss
+            if not getattr(self, 'is_vision_only', False):
+                cluster_ids = np.array(cluster_ids) - 1
+            else:
+                cluster_ids = np.array(cluster_ids)
+                
             potential_dups_map = {}
             max_dup_r_map = {}
 
@@ -922,35 +1030,15 @@ class DataManager(QObject):
                     )
                     max_dup_r_map[cid] = max_r
 
-            self.cluster_df["potential_dups"] = (
-                self.cluster_df["cluster_id"]
-                .map(potential_dups_map)
-                .fillna(False)
-                .infer_objects(copy=False)
-            )
-            self.cluster_df["max_dup_r"] = (
-                self.cluster_df["cluster_id"]
-                .map(max_dup_r_map)
-                .fillna(0.0)
-                .infer_objects(copy=False)
-            )
+            # --- EMIT SIGNAL TO MAIN THREAD ---
+            if hasattr(self, 'ei_updates_ready'):
+                self.ei_updates_ready.emit(potential_dups_map, max_dup_r_map)
+                logger.debug("Emitted EI correlations to main thread.")
+            else:
+                logger.error("Signal ei_updates_ready is missing! Cannot update UI.")
 
-            # Sort in-place by max_dup_r
-            self.cluster_df = (
-                self.cluster_df.sort_values(by="max_dup_r", ascending=False)
-                .reset_index(drop=True)
-            )
-            # Format to 2 decimal places for display
-            self.cluster_df["max_dup_r"] = self.cluster_df["max_dup_r"].map(
-                lambda x: f"{x:.2f}"
-            )
-
-            logger.debug(
-                "Updated cluster_df with potential duplicates based on EI correlations"
-            )
         else:
-            logger.warning(
-                "cluster_df is empty; cannot update duplicate columns")
+            logger.warning("cluster_df is empty; cannot update duplicate columns")
 
     def load_cell_type_file(self, txt_file: str = None):
         logger.debug("Loading cell type file: %s", txt_file)
@@ -966,18 +1054,31 @@ class DataManager(QObject):
             d_result = {}
             with open(txt_file, 'r') as file:
                 for line in file:
-                    # Split each line into key and value using the specified
-                    # delimiter
-                    key, value = map(str.strip, line.split(' ', 1))
-                    sub_values = value.split('/')
+                    # Skip empty lines to prevent crashes
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    try:
+                        # Split each line into key and value using the specified delimiter
+                        key, value = map(str.strip, line.split(' ', 1))
+                        sub_values = value.split('/')
 
-                    # -1 for vision to KS IDs.
-                    ks_id = int(key) - 1
+                        # --- NEW LOGIC: Respect Native Vision IDs ---
+                        if getattr(self, 'is_vision_only', False):
+                            ks_id = int(key)      # Native Vision ID
+                        else:
+                            ks_id = int(key) - 1  # KS to Vision offset
+                        # --------------------------------------------
 
-                    for str_label in LS_CELL_TYPE_LABELS:
-                        if str_label in sub_values:
-                            d_result[ks_id] = str_label
-                            break
+                        for str_label in LS_CELL_TYPE_LABELS:
+                            if str_label in sub_values:
+                                d_result[ks_id] = str_label
+                                break
+                    except ValueError:
+                        # Catch lines that don't split perfectly so it doesn't crash
+                        logger.debug(f"Skipped unparseable line in text file: {line}")
+                        continue
 
             # Add to cluster_df
             self.cluster_df['cell_type'] = self.cluster_df['cluster_id'].map(
@@ -1353,7 +1454,7 @@ class DataManager(QObject):
         ellipticity = 0.0
         time_to_peak = 0
 
-        vid = cluster_id + 1  # Vision IDs are 1-indexed
+        vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
         if self.vision_stas and vid in self.vision_stas:
             sta_data = self.vision_stas[vid]
             
@@ -2495,7 +2596,7 @@ class DataManager(QObject):
         if not self.vision_stas or not self.vision_params:
             return pd.DataFrame([])
 
-        vision_cluster_id = cluster_id + 1  # Convert to vision's 1-based indexing
+        vision_cluster_id = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
 
         if vision_cluster_id not in self.vision_stas:
             return pd.DataFrame([])
@@ -2539,8 +2640,8 @@ class DataManager(QObject):
         set_list = []
 
         for vid, sim in sorted_sims:
-            # Convert vision ID back to cluster ID
-            cid = vid - 1
+            # Convert vision ID back to cluster ID ONLY if Kilosort is the boss
+            cid = vid if getattr(self, 'is_vision_only', False) else vid - 1
             cluster_ids.append(cid)
             sim_values.append(sim)
 
