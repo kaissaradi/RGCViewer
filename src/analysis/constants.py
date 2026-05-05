@@ -1,8 +1,6 @@
 # ISI refractory period in milliseconds
 ISI_REFRACTORY_PERIOD_MS = 1.0
 
-# Threshold for switching ISI display to density mode
-ISI_DENSITY_THRESHOLD = 5000
 
 # EI correlation threshold for considering duplicates
 EI_CORR_THRESHOLD = 0.8

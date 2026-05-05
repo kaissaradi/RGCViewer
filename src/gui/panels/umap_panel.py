@@ -14,7 +14,7 @@ import sklearn.cluster
 
 # --- Scientific Computing Imports ---
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import RobustScaler
 from scipy.ndimage import gaussian_filter1d
 
 from ...analysis import analysis_core
@@ -26,18 +26,8 @@ logger = logging.getLogger(__name__)
 # Shape (Polarity/Kinetics) > Pattern (Burstiness) > Geometry (Area)
 W_SHAPE = 2.0       
 W_PATTERN = 1.5     
-W_GEOMETRY = 1.0    
+W_GEOMETRY = 1.0
 
-
-def robust_polarity(trace):
-    """
-    Robust check for ON vs OFF based on absolute magnitude of peaks/troughs.
-    """
-    if trace is None or len(trace) == 0:
-        return "Unknown"
-    peak = np.max(trace)
-    trough = np.min(trace)
-    return "OFF" if abs(trough) > abs(peak) else "ON"
 
 def extract_features_from_datamanager(dm, cluster_ids):
     """
@@ -314,6 +304,41 @@ class UMAPPanel(QWidget):
             self.worker_thread.wait()
             self.worker_thread = None
             self.worker = None
+        if self.kmeans_worker_thread:
+            self.kmeans_worker_thread.quit()
+            self.kmeans_worker_thread.wait()
+            self.kmeans_worker_thread = None
+            self.kmeans_worker = None
+
+    def cleanup(self):
+        """Explicitly cleanup resources to prevent memory leaks."""
+        self._reset_workers()
+        
+        # Explicitly clear and delete selector
+        if hasattr(self, 'current_selector') and self.current_selector:
+            self.current_selector.set_active(False)
+            self.current_selector.disconnect_events()
+            self.current_selector = None
+
+        if hasattr(self, 'selector') and self.selector:
+            self.selector.set_active(False)
+            self.selector.disconnect_events()
+            self.selector = None
+
+        # Explicitly clear the Matplotlib figure
+        if hasattr(self, 'fig'):
+            self.fig.clf()
+            
+        # Delete the canvas
+        if hasattr(self, 'canvas'):
+            self.canvas.setParent(None)
+            self.canvas.deleteLater()
+            # self.canvas = None # Do not set to None here if we need to check it later, 
+            # but usually it's better to let GC handle it after deleteLater
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
     def get_selected_cluster_ids(self):
         """Get currently selected cluster IDs from the main window tree view."""
@@ -502,12 +527,6 @@ class UMAPPanel(QWidget):
 
         self.update_plot()
         
-        # Re-initialize selector (needs to be attached to the new axes)
-        if self.selector:
-            self.selector.disconnect_events()
-        self.selector = LassoSelector(self.ax, self.on_select)
-        self.selector.set_active(True)
-
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
         self.main_window.status_bar.showMessage(
@@ -803,7 +822,14 @@ class UMAPPanel(QWidget):
         # Clear existing selector safely
         if hasattr(self, 'current_selector') and self.current_selector is not None:
             self.current_selector.set_active(False)
+            self.current_selector.disconnect_events()
             self.current_selector = None
+
+        # Clean up legacy selector if it exists
+        if hasattr(self, 'selector') and self.selector is not None:
+            self.selector.set_active(False)
+            self.selector.disconnect_events()
+            self.selector = None
             
         if self.selector_combo.currentText() == "Lasso Tool":
             self.current_selector = LassoSelector(self.ax, onselect=self.on_select)
@@ -816,6 +842,12 @@ class UMAPPanel(QWidget):
 
     def on_select_rect(self, eclick, erelease):
         """Bridges RectangleSelector output into existing Lasso selection pipeline."""
+        if (
+            eclick.xdata is None or eclick.ydata is None or
+            erelease.xdata is None or erelease.ydata is None
+        ):
+            return
+
         x1, y1 = eclick.xdata, eclick.ydata
         x2, y2 = erelease.xdata, erelease.ydata
         
@@ -823,5 +855,4 @@ class UMAPPanel(QWidget):
         verts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
         
         # Pass directly into your existing lasso logic
-        if hasattr(self, 'on_select'):
-            self.on_select(verts)
+        self.on_select(verts)

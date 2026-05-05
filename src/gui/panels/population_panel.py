@@ -4,7 +4,6 @@ Population Panel for RGC Viewer
 This module contains population plotting functions that were previously in the plotting module.
 """
 
-import math
 import logging
 
 import numpy as np
@@ -236,7 +235,7 @@ def draw_population_rfs_plot(
         plot_population_rfs_background(
             ax,
             vision_params,
-            sta_width=main_window.data_manager.vision_sta_width,
+            main_window=main_window,
             sta_height=main_window.data_manager.vision_sta_height,
             subset_cell_ids=subset_cell_ids,
             colors=colors
@@ -279,7 +278,7 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
         patch.set_visible(False)
 
 
-def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height=None, subset_cell_ids=None, colors=None):
+def plot_population_rfs_background(ax, vision_params, main_window, sta_height=None, subset_cell_ids=None, colors=None):
     if colors is None:
         colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
 
@@ -315,6 +314,11 @@ def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height
                         angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=0.5, alpha=0.3)
             ax.add_patch(e)
 
+            # Add ID labels if enabled in the main window
+            if hasattr(main_window, 'standard_plots_panel') and main_window.standard_plots_panel.show_ids_checkbox.isChecked():
+                ax.text(stafit.center_x, adjusted_y, str(cell_id), 
+                        color=colors['text_secondary'], fontsize=7, ha='center', va='center', alpha=0.8)
+
             x_coords.append(stafit.center_x)
             y_coords.append(stafit.center_y)
         except: continue
@@ -332,7 +336,7 @@ def plot_population_rfs_background(ax, vision_params, sta_width=None, sta_height
     for spine in ax.spines.values(): spine.set_edgecolor(colors['border_subtle'])
 
 
-def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):
+def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):
     if colors is None:
         colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
 

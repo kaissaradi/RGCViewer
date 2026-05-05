@@ -208,7 +208,7 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
     n_timepoints = timecourse_matrix.shape[0]
 
     # Calculate time axis
-    if sta_data and hasattr(sta_data, 'refresh_time'):
+    if sta_data is not None and hasattr(sta_data, 'refresh_time'):
         refresh_ms = sta_data.refresh_time
     else:
         refresh_ms = 1000.0 / 60.0 # Default approx 60Hz

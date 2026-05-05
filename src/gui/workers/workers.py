@@ -164,62 +164,6 @@ class RefinementWorker(QObject):
                 f"Refinement failed for cluster {self.cluster_id}: {str(e)}")
 
 
-class RawTraceWorker(QObject):
-    """
-    Runs in a separate thread to load raw trace data without freezing the UI.
-    """
-    data_loaded = Signal(
-        int,
-        object,
-        float,
-        float)  # cluster_id, raw_trace_data, start_time, end_time
-    error = Signal(str)
-
-    def __init__(
-            self,
-            data_manager,
-            cluster_id,
-            nearest_channels,
-            start_time,
-            end_time):
-        super().__init__()
-        self.data_manager = data_manager
-        self.cluster_id = cluster_id
-        self.nearest_channels = nearest_channels
-        self.start_time = start_time
-        self.end_time = end_time
-
-    def run(self):
-        try:
-            # Convert time range from seconds to samples
-            start_sample = int(
-                self.start_time *
-                self.data_manager.sampling_rate)
-            end_sample = int(self.end_time * self.data_manager.sampling_rate)
-
-            # Ensure we stay within bounds
-            start_sample = max(0, start_sample)
-            end_sample = min(self.data_manager.n_samples, end_sample)
-
-            # Get the raw trace data for the nearest channels
-            raw_trace_data = self.data_manager.get_raw_trace_snippet(
-                self.nearest_channels, start_sample, end_sample
-            )
-
-            if raw_trace_data is not None and raw_trace_data.size > 0:
-                # Emit the loaded data
-                self.data_loaded.emit(
-                    self.cluster_id,
-                    raw_trace_data,
-                    self.start_time,
-                    self.end_time)
-            else:
-                self.error.emit(
-                    f"No raw trace data available for cluster {self.cluster_id}")
-        except Exception as e:
-            self.error.emit(
-                f"Raw trace loading failed for cluster {self.cluster_id}: {str(e)}")
-
 # Add this new class to gui/workers.py
 
 

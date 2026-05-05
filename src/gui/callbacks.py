@@ -557,6 +557,7 @@ def populate_tree_view(main_window: MainWindow, df=None):
     main_window.setup_table_model(main_window.main_cluster_model)
 
     # --- Populate Tree View ---
+    main_window.tree_view.setUpdatesEnabled(False)
     model = main_window.tree_model
     model.clear()  # Clear any previous data
 
@@ -569,8 +570,13 @@ def populate_tree_view(main_window: MainWindow, df=None):
     df_tree['KSLabel_str'] = df_tree['KSLabel'].astype(str)
     unique_labels = sorted(df_tree['KSLabel_str'].unique())
 
+    # Pre-fetch icons and font to avoid redundant Qt calls in the loop
+    dir_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+    file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+    
     # Create top-level nodes for each unique KSLabel
     groups = {}
+    group_cell_items = {} # To store lists of items for batch append
 
     for label in unique_labels:
         group_item = QStandardItem(label)
@@ -583,49 +589,45 @@ def populate_tree_view(main_window: MainWindow, df=None):
         group_item.setFont(font)
 
         # Set different background color for groups
-        # Dark gray background for groups
         group_item.setBackground(QColor('#3C3C3C'))
-
-        # Add folder icon for groups
-        group_item.setIcon(
-            main_window.style().standardIcon(
-                QStyle.StandardPixmap.SP_DirIcon))
+        group_item.setIcon(dir_icon)
 
         groups[label] = group_item
-        model.appendRow(group_item)
+        group_cell_items[label] = [] # Initialize list for batching
 
     # Add each cluster as a child item to its group
-    for _, row in df_tree.iterrows():
-        cluster_id = row['cluster_id']
-        label = row['KSLabel_str']  # Use pre-converted string
+    # itertuples is significantly faster than iterrows
+    for row in df_tree.itertuples():
+        cluster_id = row.cluster_id
+        label = row.KSLabel_str
 
         # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
-        item_text = f"Cluster {cluster_id} (n={row.get('n_spikes', '?')})"
+        n_spikes = getattr(row, 'n_spikes', '?')
+        item_text = f"Cluster {cluster_id} (n={n_spikes})"
         cell_item = QStandardItem(item_text)
         cell_item.setEditable(False)
-
-        # Add a special icon or style for cells to distinguish them
-        font = cell_item.font()
-        font.setItalic(False)
-        cell_item.setFont(font)
-
-        # Add file icon for cells
-        cell_item.setIcon(
-            main_window.style().standardIcon(
-                QStyle.StandardPixmap.SP_FileIcon))
+        cell_item.setIcon(file_icon)
 
         # IMPORTANT: Store the actual cluster ID in the item's data role.
-        # This is how we'll retrieve it when the item is clicked.
         cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
 
         # Prevent dropping items onto cells
         cell_item.setDropEnabled(False)
 
-        if label in groups:  # Use pre-converted label directly
-            groups[label].appendRow(cell_item)
+        if label in group_cell_items:
+            group_cell_items[label].append(cell_item)
+
+    # Now add all populated groups to the model in one pass
+    for label in unique_labels:
+        group_item = groups[label]
+        # Batch append items to the group
+        if group_cell_items[label]:
+            group_item.appendRows(group_cell_items[label])
+        model.appendRow(group_item)
 
     main_window.setup_tree_model(model)
     main_window.tree_view.collapseAll() 
+    main_window.tree_view.setUpdatesEnabled(True) 
 
 
 def add_new_group(main_window, name: str, parent_item=None):
