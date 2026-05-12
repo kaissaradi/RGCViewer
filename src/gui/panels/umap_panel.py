@@ -299,16 +299,45 @@ class UMAPPanel(QWidget):
 
     def _reset_workers(self):
         """Clean up any running workers."""
+        # --- UMAP Worker Cleanup ---
+        if self.worker:
+            # Disconnect all signals first to avoid deadlocks
+            try:
+                self.worker.finished.disconnect()
+                self.worker.error.disconnect()
+                self.worker.progress.disconnect()
+            except (TypeError, RuntimeError):
+                # Already disconnected or never connected
+                pass
+            self.worker = None
+        
         if self.worker_thread:
             self.worker_thread.quit()
-            self.worker_thread.wait()
+            # Use timeout to prevent indefinite hangs (positional argument, not keyword)
+            if not self.worker_thread.wait(1000):  # 1 second timeout in ms
+                logger.warning("UMAP worker thread did not stop gracefully, forcing termination")
+                self.worker_thread.terminate()
+                self.worker_thread.wait(500)
             self.worker_thread = None
-            self.worker = None
+        
+        # --- K-Means Worker Cleanup ---
+        if self.kmeans_worker:
+            # Disconnect all signals first
+            try:
+                self.kmeans_worker.finished.disconnect()
+                self.kmeans_worker.error.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self.kmeans_worker = None
+        
         if self.kmeans_worker_thread:
             self.kmeans_worker_thread.quit()
-            self.kmeans_worker_thread.wait()
+            # Use timeout to prevent indefinite hangs (positional argument, not keyword)
+            if not self.kmeans_worker_thread.wait(1000):  # 1 second timeout in ms
+                logger.warning("K-Means worker thread did not stop gracefully, forcing termination")
+                self.kmeans_worker_thread.terminate()
+                self.kmeans_worker_thread.wait(500)
             self.kmeans_worker_thread = None
-            self.kmeans_worker = None
 
     def cleanup(self):
         """Explicitly cleanup resources to prevent memory leaks."""
@@ -498,7 +527,13 @@ class UMAPPanel(QWidget):
         self.run_3d_btn.setEnabled(True)
         self.progress.hide()
         QMessageBox.critical(self, "Processing Error", msg)
-        self._reset_workers()
+        # Don't call _reset_workers() here since we're already in error state
+        # Just clean up the thread refs to be safe
+        if self.worker_thread:
+            self.worker_thread.quit()
+            self.worker_thread.wait(500)
+            self.worker_thread = None
+        self.worker = None
 
     def on_kmeans_error(self, msg):
         self.kmeans_btn.setEnabled(True)
@@ -523,7 +558,12 @@ class UMAPPanel(QWidget):
         self.show_ids_btn.setEnabled(True)
         self.kmeans_btn.setEnabled(True)
 
-        self._reset_workers()
+        # Clean up worker thread gracefully (don't reset here, just clean up the thread ref)
+        if self.worker_thread:
+            self.worker_thread.quit()
+            self.worker_thread.wait(500)
+            self.worker_thread = None
+        self.worker = None
 
         self.update_plot()
         

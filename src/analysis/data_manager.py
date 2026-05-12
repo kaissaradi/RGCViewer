@@ -492,7 +492,8 @@ class DataManager(QObject):
             templates_ind_path = ks / "templates_ind.npy"
             self.templates_ind = np.load(templates_ind_path, mmap_mode="r") if templates_ind_path.exists() else None
 
-            # --- spike amplitudes (optional) ------------------------------------            amplitudes_path = ks / "amplitudes.npy"
+            # --- spike amplitudes (optional) ------------------------------------
+            amplitudes_path = ks / "amplitudes.npy"
             self.spike_amplitudes = np.load(amplitudes_path, mmap_mode="r").ravel() if amplitudes_path.exists() else None
 
             # --- cluster info / fallback ----------------------------------------
