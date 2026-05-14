@@ -1,5 +1,7 @@
 # Specification: Physics Cache & Threading Fix
 
+## STATUS: DONE
+
 ## Metadata
 
 * **Status:** Ready for Dev

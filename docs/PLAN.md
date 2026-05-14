@@ -19,28 +19,31 @@ RGCViewer is a high-performance, PyQt/pyqtgraph-based GUI tailored for the analy
 * **Architecture Change:** Extract hardcoded colors (`DARK_COLORS` / `LIGHT_COLORS`) out of `main_window.py` and into a dedicated `src/gui/theme.py` file.
 * **Fixes:** Enable click-to-sort on Table View; remove "Good" view toggle and "Refine Selected Cluster" button.
 
-**Priority 2: Physics Cache Fix & Loading Optimization**
-
-* **Goal:** Fix the cache invalidation bug where physics precomputations are double-loading.
-* **Spec:** `docs/specs/physics_optimization.md`
-* **Focus:** Audit `DataManager.get_cell_physics` to ensure disk cache is properly checked *and* utilized before the background queue starts FFT/signal calculations.
-
-Notes:
-- Standard plot cache is restored on `DataManager` init (with corrupt-cache fallback).
-- Background standard-plot worker logs per-cluster failures and still emits progress signals so the queue can't hang.
-- `get_cell_physics()` always writes a `_computed` cache entry (safe defaults when Vision STA is missing) so UMAP readiness can reach `N/N`.
-
-**Priority 3: Standalone Vision Integration**
+**Priority 2: Standalone Vision Integration**
 
 * **Goal:** Solidify the new feature allowing users to load purely Vision files without requiring Kilosort data.
 * **Spec needed:** `docs/specs/vision_standalone_integration.md`
 
-**Priority 4: UMAP Selection Fix**
+---
+
+### 2. Completed Priorities (v1.1)
+
+**Physics Cache Fix & Loading Optimization**
+
+* **Goal:** Fix the cache invalidation bug where physics precomputations are double-loading.
+* **Spec:** `docs/specs/physics_optimization.md`
+* **Focus:** Audit `DataManager.get_cell_physics` to ensure disk cache is properly checked *and* utilized before the background queue starts FFT/signal calculations.
+* **Notes:**
+  * Standard plot cache is restored on `DataManager` init (with corrupt-cache fallback).
+  * Background standard-plot worker logs per-cluster failures and still emits progress signals so the queue can't hang.
+  * `get_cell_physics()` always writes a `_computed` cache entry (safe defaults when Vision STA is missing) so UMAP readiness can reach `N/N`.
+
+**UMAP Selection Fix**
 
 * **Goal:** Resolve conflicts between the Lasso and Rectangle selector tools.
 * **Spec:** `docs/specs/umap_selection_fix.md`
 
-**Priority 5: Autocorrelation (ACG) Fix**
+**Autocorrelation (ACG) Fix**
 
 * **Goal:** Ensure ACG computations utilize the entire recording duration.
 * **Spec:** `docs/specs/autocorrelation_fix.md`

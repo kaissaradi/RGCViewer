@@ -1,5 +1,7 @@
 # Specification: Autocorrelation Uses Full Recording
 
+## STATUS: DONE
+
 ## Objective
 Ensure autocorrelation data is computed from all spikes in a cluster, including
 spikes that occur late in long recordings.

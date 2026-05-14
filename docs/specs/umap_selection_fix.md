@@ -1,5 +1,7 @@
 # Specification: UMAP Selection Fix
 
+## STATUS: DONE
+
 ## Objective
 Fix the UMAP panel selection logic where multiple selectors might be active simultaneously, and ensure the Rectangle Selection tool correctly identifies clusters within its bounds.
 
