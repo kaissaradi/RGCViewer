@@ -7,3 +7,6 @@
 .pytest_cache/
 .benchmarks/
 htmlcov/
+
+# Editor
+.vscode/

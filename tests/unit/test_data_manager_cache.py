@@ -100,6 +100,23 @@ def test_disk_cache_bypasses_computation(tmp_path):
     dm._compute_standard_plots.assert_not_called()
 
 
+def test_cell_physics_marks_cluster_computed_without_vision_sta(tmp_path):
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.vision_stas = {}
+    dm.get_standard_plot_data = MagicMock(
+        return_value={"acg_norm": np.array([0.1, 0.2, 0.3])}
+    )
+
+    metrics = dm.get_cell_physics(26)
+
+    assert metrics["_computed"] is True
+    assert metrics["acg"].tolist() == [0.1, 0.2, 0.3]
+    assert metrics["timecourse"] is None
+    assert metrics["rf_area"] == 0.0
+    assert dm.feature_cache[26] == metrics
+    assert dm._physics_done_count == 1
+
+
 class FakeLitkeReader:
     length = 100
 

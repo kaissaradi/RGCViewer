@@ -1491,18 +1491,21 @@ class DataManager(QObject):
         vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
         if self.vision_stas and vid in self.vision_stas:
             sta_data = self.vision_stas[vid]
-            
+            stafit = None
+
             # Geometry (Extracting from Vision's pre-computed Gaussian fits)
             try:
-                stafit = self.vision_params.get_stafit_for_cell(vid)
-                if stafit:
-                    rf_area = np.pi * stafit.std_x * stafit.std_y
-                    if stafit.std_x > 0:
-                        ellipticity = stafit.std_y / stafit.std_x
+                if self.vision_params:
+                    stafit = self.vision_params.get_stafit_for_cell(vid)
+                    if stafit:
+                        rf_area = np.pi * stafit.std_x * stafit.std_y
+                        if stafit.std_x > 0:
+                            ellipticity = stafit.std_y / stafit.std_x
             except Exception:
-                stafit = None
+                logger.debug("Failed to extract STA geometry for cluster %s", cluster_id, exc_info=True)
 
-                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+            # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+            try:
                 time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
                     sta_data, stafit, self.vision_params, vid
                 )
@@ -1519,22 +1522,27 @@ class DataManager(QObject):
                         timecourse = dom_trace
 
                     time_to_peak = int(np.argmax(np.abs(timecourse)))
+            except Exception:
+                logger.debug("Failed to extract STA timecourse for cluster %s", cluster_id, exc_info=True)
 
-            metrics = {
-                '_computed': True,
-                'acg': acg_norm,
-                'timecourse': timecourse,
-                'rf_area': rf_area,
-                'ellipticity': ellipticity,
-                'time_to_peak': time_to_peak
-            }
+        metrics = {
+            '_computed': True,
+            'acg': acg_norm,
+            'timecourse': timecourse,
+            'rf_area': rf_area,
+            'ellipticity': ellipticity,
+            'time_to_peak': time_to_peak
+        }
 
-            # 4. Store in global cache safely
-            with self._feature_lock:
-                self.feature_cache[cluster_id] = metrics
+        # 4. Store in global cache safely, even when Vision STA is missing.
+        with self._feature_lock:
+            already_computed = self.feature_cache.get(cluster_id, {}).get('_computed')
+            self.feature_cache[cluster_id] = metrics
+            if not already_computed:
                 self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
-            return metrics
+        return metrics
+
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
         data = self.get_standard_plot_data(cluster_id)
