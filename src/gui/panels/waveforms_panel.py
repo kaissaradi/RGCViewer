@@ -39,11 +39,11 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot
-from qtpy.QtGui import QColor, QPen, QFont
+from qtpy.QtGui import QColor, QFont
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSplitter, QFrame, QGridLayout, QSizePolicy,
-    QGraphicsEllipseItem, QPushButton, QScrollArea,
+    QGraphicsEllipseItem, QPushButton,
 )
 
 if TYPE_CHECKING:
@@ -1439,7 +1439,7 @@ class WaveformPanel(QWidget):
     # -----------------------------------------------------------------------
     # Future hooks (stubs — fill in when DataManager.split_cluster is ready)
     # -----------------------------------------------------------------------
-    def _on_spike_clicked(self, scatter_item, points):
+    def _on_spike_clicked(self, _scatter_item, points):
         """
         HOOK: Called when user clicks a spike in the PCA scatter.
         Each point carries its global spike index in .data().

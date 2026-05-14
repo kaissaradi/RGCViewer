@@ -21,8 +21,12 @@ A high-performance GUI for refining and analyzing neural spike sorting clusters 
     pip install -r requirements.txt
     ```
 
+    For development and tests:
+    ```bash
+    pip install -r requirements-dev.txt
+    ```
+
 4.  **Run the application:**
     ```bash
     python main.py
     ```
-

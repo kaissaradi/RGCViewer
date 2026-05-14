@@ -113,8 +113,6 @@ LIGHT_COLORS = {
 PANEL_PADDING  = 8   # px — inner padding on all panels
 CTRL_SPACING   = 6   # px — gap between controls in a row
 ROW_HEIGHT     = 28  # px — standard table row height (was ~32px)
-HEADER_HEIGHT  = 36  # px — tab bar and control bar height
-STATUS_HEIGHT  = 24  # px — status bar
 
 logger = logging.getLogger(__name__)
 
@@ -1607,7 +1605,7 @@ class MainWindow(QMainWindow):
     def reset_views(self):
         callbacks.reset_views(self)
 
-    def select_sta_view(self, view_type, force_animation=False):
+    def select_sta_view(self, view_type, _force_animation=False):
         """Select the STA view to display."""
         self.current_sta_view = view_type
 

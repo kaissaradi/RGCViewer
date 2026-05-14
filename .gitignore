@@ -1,3 +1,9 @@
-# ignore pycache files
+# Python
 *__pycache__/
 *.pyc
+
+# Test and coverage output
+.coverage
+.pytest_cache/
+.benchmarks/
+htmlcov/

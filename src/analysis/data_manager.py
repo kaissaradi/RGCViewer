@@ -201,10 +201,8 @@ class DataManager(QObject):
         self.kilosort_dir = Path(kilosort_dir)
         self.exp_name = self.kilosort_dir.parent.parent.name
         self.datafile_name = self.kilosort_dir.parent.name
-        self.d_timing = {}
         logger.debug(
-            f"Initializing DataManager for experiment={self.exp_name}, datafile={self.datafile_name}")
-        # NOTE: load_stim_timing() is intentionally NOT called here.
+           f"Initializing DataManager for experiment={self.exp_name}, datafile={self.datafile_name}")        # NOTE: load_stim_timing() is intentionally NOT called here.
         # It makes a live DataJoint DB connection which can block for 30-120s
         # on a timeout. It is called inside load_kilosort_data() instead,
         # which runs on a background QThread.
@@ -248,9 +246,7 @@ class DataManager(QObject):
         self.status_df['set'] = self.status_df['set'].astype(object)
         self.status_csv = self.kilosort_dir / 'status.csv'
 
-        self.mea_sorted_indices = None  # Pre-sorted indices for each cluster (set by _load_kilosort_similarity)
         self.cluster_id_to_idx = None  # Map cluster_id -> row index
-
         # --- Vision Data ---
         self.vision_eis = None
         self.vision_stas = None
@@ -521,9 +517,6 @@ class DataManager(QObject):
             templates_ind_path = ks / "templates_ind.npy"
             self.templates_ind = np.load(templates_ind_path, mmap_mode="r") if templates_ind_path.exists() else None
 
-            whitening_path = ks / "whitening_mat_inv.npy"
-            self.whitening_mat_inv = np.load(whitening_path, mmap_mode="r") if whitening_path.exists() else None
-
             # --- spike amplitudes (optional) ------------------------------------
             amplitudes_path = ks / "amplitudes.npy"
             self.spike_amplitudes = np.load(amplitudes_path, mmap_mode="r").ravel() if amplitudes_path.exists() else None
@@ -614,10 +607,8 @@ class DataManager(QObject):
             sorted_cls = self.spike_clusters[order]
             sorted_t   = self.spike_times[order]
 
-            self._spk_sort_order = order
             self._spk_sorted_cls = sorted_cls
             self._spk_sorted_t   = sorted_t
-
             _, split_idxs   = np.unique(sorted_cls, return_index=True)
             grouped_indices = np.split(order, split_idxs[1:])
             unique_cls      = sorted_cls[split_idxs]
@@ -1119,11 +1110,6 @@ class DataManager(QObject):
         dat_path_str = params.get('dat_path', '')
         if isinstance(dat_path_str, (list, tuple)) and dat_path_str:
             dat_path_str = dat_path_str[0]
-        suggested_path = Path(dat_path_str)
-        if not suggested_path.is_absolute():
-            self.dat_path_suggestion = self.kilosort_dir.parent / suggested_path
-        else:
-            self.dat_path_suggestion = suggested_path
 
     def set_dat_path(self, dat_path):
         """
@@ -1348,18 +1334,36 @@ class DataManager(QObject):
             self.standard_plot_cache = {}
             self._standard_plot_lock = threading.Lock()
 
-        # Fast path: check cache under lock
+        # 1. Fast path: check cache under lock
         with self._standard_plot_lock:
             cached = self.standard_plot_cache.get(cluster_id)
-        if cached is not None:
-            return cached
+            if cached is not None:
+                return cached
 
-        # Compute outside the lock (expensive)
-        data = self._compute_standard_plots(cluster_id)
+        # 2. Per-cell in-flight lock to prevent redundant computation
+        # but ALLOW other clusters to be computed in parallel.
+        if not hasattr(self, '_std_plot_cell_locks'):
+            self._std_plot_cell_locks = {}
+            self._std_plot_cell_locks_lock = threading.Lock()
 
-        # Store back under lock
-        with self._standard_plot_lock:
-            self.standard_plot_cache[cluster_id] = data
+        with self._std_plot_cell_locks_lock:
+            if cluster_id not in self._std_plot_cell_locks:
+                self._std_plot_cell_locks[cluster_id] = threading.Lock()
+            cell_lock = self._std_plot_cell_locks[cluster_id]
+
+        with cell_lock:
+            # Re-check cache now that we have the per-cell lock
+            with self._standard_plot_lock:
+                cached = self.standard_plot_cache.get(cluster_id)
+                if cached is not None:
+                    return cached
+
+            # Compute OUTSIDE the global lock (expensive)
+            data = self._compute_standard_plots(cluster_id)
+
+            # Store back under global lock
+            with self._standard_plot_lock:
+                self.standard_plot_cache[cluster_id] = data
 
         return data
 
@@ -1432,7 +1436,7 @@ class DataManager(QObject):
     def get_cell_physics(self, cluster_id):
         """
         Single Source of Truth for a cell's physical metrics.
-        Assembles pre-calculated Vision data and caches it into a flat, 
+        Assembles pre-calculated Vision data and caches it into a flat,
         instantly accessible dictionary to prevent redundant UI processing loops.
         """
         # Ensure thread safety for background loading
@@ -1443,42 +1447,29 @@ class DataManager(QObject):
             self._physics_cell_locks_lock = threading.Lock()
 
         # 1. Fast path: check feature cache under lock.
-        # We use a '_computed' sentinel key to distinguish "cached and done"
-        # from "never cached" — this correctly handles cells where acg is
-        # legitimately None (too few spikes for ACG to compute).
         with self._feature_lock:
             cached = self.feature_cache.get(cluster_id)
             if cached is not None and cached.get('_computed'):
                 return cached
 
-        # 1b. Per-cell in-flight lock: if another thread is already computing
-        # this cell, wait for it to finish and then read its cached result
-        # instead of recomputing from scratch.  This prevents the double-pass
-        # race where FeatureAnalysisWorker and UmapColorWorker both miss the
-        # cache simultaneously and both enter _compute_standard_plots for the
-        # same cluster concurrently, causing the second writer to redo work
-        # and creating a race on feature_cache[cluster_id].
+        # 2. Per-cell in-flight lock to prevent redundant computation
         with self._physics_cell_locks_lock:
             if cluster_id not in self._physics_cell_locks:
                 self._physics_cell_locks[cluster_id] = threading.Lock()
             cell_lock = self._physics_cell_locks[cluster_id]
 
         with cell_lock:
-            # Re-check cache now that we hold the per-cell lock — the thread
-            # that was in-flight before us may have already populated it.
+            # Re-check cache now that we hold the per-cell lock
             with self._feature_lock:
                 cached = self.feature_cache.get(cluster_id)
                 if cached is not None and cached.get('_computed'):
                     return cached
 
-            # 2. Get standard plot data — use cache if warm, compute inline if cold.
-            # NOTE: we intentionally do NOT return None on a cold cache. UMAP and other
-            # callers iterate every cluster and cannot handle None in their feature matrix.
-            # get_standard_plot_data() checks the cache first and only computes if needed.
+            # 3. Assemble Metrics OUTSIDE the global lock
+            # This call might compute standard plot data if not cached
             std_data = self.get_standard_plot_data(cluster_id)
             acg_norm = std_data.get('acg_norm') if std_data else None
 
-            # 3. Assemble Pre-Calculated Vision/STA Features
             timecourse = None
             rf_area = 0.0
             ellipticity = 0.0
@@ -1504,23 +1495,20 @@ class DataManager(QObject):
                 )
 
                 if tc_matrix is not None and tc_matrix.size > 0:
-                    # Stack, find dominant channel by energy, and normalize just once
                     energies = np.sum(tc_matrix**2, axis=0)
                     dom_idx = np.argmax(energies)
                     dom_trace = tc_matrix[:, dom_idx]
-                    
-                    # Normalize the trace to -1 to 1 bounds for UI rendering
+
                     abs_max = np.max(np.abs(dom_trace))
                     if abs_max > 0:
                         timecourse = dom_trace / abs_max
                     else:
                         timecourse = dom_trace
-                    
+
                     time_to_peak = int(np.argmax(np.abs(timecourse)))
 
-            # 4. Package into our immutable physics dictionary
             metrics = {
-                '_computed': True,   # sentinel: marks entry as fully computed, not stale
+                '_computed': True,
                 'acg': acg_norm,
                 'timecourse': timecourse,
                 'rf_area': rf_area,
@@ -1528,49 +1516,16 @@ class DataManager(QObject):
                 'time_to_peak': time_to_peak
             }
 
-            # 5. Store in global cache safely
+            # 4. Store in global cache safely
             with self._feature_lock:
                 self.feature_cache[cluster_id] = metrics
                 self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
             return metrics
-
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
         data = self.get_standard_plot_data(cluster_id)
         return data.get('acg_time_lags'), data.get('acg_norm')
-
-    def get_isi_data(self, cluster_id):
-        """Convenience wrapper: return (isi_ms, hist_x, hist_y)."""
-        data = self.get_standard_plot_data(cluster_id)
-        return data.get('isi_ms'), data.get(
-            'isi_hist_x'), data.get('isi_hist_y')
-
-    def get_isi_vs_amplitude_data(self, cluster_id):
-        """Convenience wrapper for ISI vs amplitude scatter/density.
-
-        Returns (valid_isi_ms, valid_amplitudes_uV) or (None, None) if unavailable.
-        """
-        data = self.get_standard_plot_data(cluster_id)
-        return data.get('isi_vs_amp_valid_isi'), data.get(
-            'isi_vs_amp_valid_amplitudes')
-
-    def get_firing_rate_data(self, cluster_id):
-        """Convenience wrapper for firing-rate / amplitude plot.
-
-        Returns:
-            bin_centers_sec, rate_hz, amp_x_sec, amp_y_uV, amp_ymax, overlay_x_sec, overlay_y
-        """
-        data = self.get_standard_plot_data(cluster_id)
-        return (
-            data.get('fr_bin_centers'),
-            data.get('fr_rate'),
-            data.get('fr_amp_x'),
-            data.get('fr_amp_y'),
-            data.get('fr_amp_ymax'),
-            data.get('fr_overlay_x'),
-            data.get('fr_overlay_y'),
-        )
 
     def _compute_standard_plots(self, cluster_id):
         """Internal helper that actually computes all standard-plot data.
@@ -1655,58 +1610,38 @@ class DataManager(QObject):
                 data['isi_vs_amp_valid_isi'] = valid_isi
                 data['isi_vs_amp_valid_amplitudes'] = valid_amplitudes
 
-        # --- Autocorrelation (ACG) — FFT on capped-duration spike train ---
-        # The original bug: np.arange(first_ms, last_ms) → 3.6M bins for 1hr recording.
-        # Our previous fix (Python loop) was actually SLOWER for large clusters.
-        # Correct fix: cap the spike train at MAX_DURATION_MS, then use the fast
-        # FFT-based correlate on a small fixed-size array (~120K bins max = ~480KB).
-        # ACG statistics are stable after ~2 minutes of spikes, so capping is valid.
-        #
-        # Minimum spike threshold: ACG is meaningless (and very noisy) with fewer
-        # than ~50 spikes — we'd be correlating a handful of 1s in a long zero array.
-        # Raise the bar to MIN_SPIKES so the downstream PCA / UMAP features don't
-        # get driven by noise from low-count clusters.
+        # --- Autocorrelation (ACG) — Direct Lag Histogram on entire recording ---
+        # Instead of a memory-heavy FFT on a dense array, we use a sliding window
+        # approach with bincount. This is O(N * spikes_per_window) and uses the 
+        # FULL recording duration while remaining extremely fast for sparse spike trains.
         MIN_SPIKES = 50
         if spikes_ms.size > MIN_SPIKES:
-            from scipy.signal import fftconvolve
-            MAX_LAG       = 100    # ms — ±100 ms window, giving 201-sample ACG
-            MAX_DURATION  = 120_000  # ms — 2 minutes max, enough for stable ACG stats
+            MAX_LAG = 100    # ms — ±100 ms window, giving 201-sample ACG
 
             t = np.sort(spikes_ms).astype(np.int64)
-            t = t - t[0]  # shift to 0-based
+            
+            # Compute lags: for each spike, find neighbors within MAX_LAG.
+            # We iterate k neighbors away until the distance > MAX_LAG for all spikes.
+            lags_sum = np.zeros(MAX_LAG + 1, dtype=np.float64)
+            for k in range(1, 1000): # support up to 10kHz firing rate in window
+                if k >= len(t):
+                    break
+                diffs = t[k:] - t[:-k]
+                valid = diffs <= MAX_LAG
+                if not np.any(valid):
+                    break
+                lags_sum += np.bincount(diffs[valid], minlength=MAX_LAG + 1)
 
-            # Cap at MAX_DURATION to keep the FFT array small regardless of recording length
-            if t[-1] > MAX_DURATION:
-                t = t[t <= MAX_DURATION]
+            # Construct symmetric ACG: [reverse(lags), 0, lags]
+            # Index 0 of lags_sum is self-coincidence (distance 0), which we ignore for lag 0.
+            acg = np.concatenate([lags_sum[:0:-1], [0], lags_sum[1:]])
 
-            if t.size > MIN_SPIKES:
-                duration = int(t[-1]) + 1
-                bins_arr = np.zeros(duration, dtype=np.float32)
-                np.add.at(bins_arr, t, 1)
+            time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
+            n_spikes_f = float(spikes_ms.size)
+            acg_norm   = acg / n_spikes_f if n_spikes_f > 0 else acg
 
-                # FFT cross-correlation: O(N log N), pure C, <1ms for 120K bins
-                acg_full = fftconvolve(bins_arr, bins_arr[::-1], mode='full')
-                center   = len(acg_full) // 2
-
-                # Bug fix: if the spike train is shorter than 2*MAX_LAG ms (e.g. a
-                # low-count cluster whose entire spike history spans < 200 ms), numpy
-                # silently clips the slice and we get fewer than 201 elements, making
-                # acg[MAX_LAG] = 0.0 raise IndexError.  Clamp the half-window and
-                # zero-pad symmetrically so downstream PCA always sees a 201-sample
-                # vector regardless of recording duration.
-                half = min(MAX_LAG, center)
-                acg  = acg_full[center - half : center + half + 1].copy()
-                if len(acg) < 2 * MAX_LAG + 1:
-                    pad = MAX_LAG - half
-                    acg = np.pad(acg, (pad, pad), mode='constant')
-                acg[MAX_LAG] = 0.0  # zero self-coincidence at lag 0 — now always safe
-
-                time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
-                n_spikes_f = float(spikes_ms.size)
-                acg_norm   = acg / n_spikes_f if n_spikes_f > 0 else acg
-
-                data['acg_time_lags'] = time_lags
-                data['acg_norm']      = acg_norm
+            data['acg_time_lags'] = time_lags
+            data['acg_norm']      = acg_norm
 
         # --- Firing rate & amplitude over time ---
         if spikes_sec.size > 0:
@@ -1818,39 +1753,6 @@ class DataManager(QObject):
         if method == 'median':
             return float(np.median(amps))
         return float(np.mean(amps))
-
-    def get_cluster_spikes_in_window(self, cluster_id, start_time, end_time):
-        """
-        Efficiently get spikes for a cluster within a specific time window.
-
-        This optimized version first finds the time window in the master spike_times
-        array (which is sorted) and only then filters that small slice by cluster_id.
-        This avoids loading all spikes for a high-firing cluster into memory.
-        """
-        # Convert the time window (in seconds) to sample indices.
-        start_sample = int(start_time * self.sampling_rate)
-        end_sample = int(end_time * self.sampling_rate)
-
-        # Use np.searchsorted to find the start and end indices of our time window.
-        # This is extremely fast because spike_times is sorted.
-        start_idx = np.searchsorted(
-            self.spike_times, start_sample, side='left')
-        end_idx = np.searchsorted(self.spike_times, end_sample, side='right')
-
-        # If the window is empty or invalid, return an empty array.
-        if start_idx >= end_idx:
-            return np.array([])
-
-        # Get the small slice of cluster IDs corresponding to our time window.
-        window_cluster_ids = self.spike_clusters[start_idx:end_idx]
-
-        # Get the small slice of spike times for that same window.
-        window_spike_times = self.spike_times[start_idx:end_idx]
-
-        # Now, perform the final, fast filter on the small slice.
-        cluster_spikes_in_window = window_spike_times[window_cluster_ids == cluster_id]
-
-        return cluster_spikes_in_window
 
     def get_lightweight_features(self, cluster_id):
         """
@@ -2195,52 +2097,6 @@ class DataManager(QObject):
             finally:
                 self.raw_reader = None
 
-    def clear_caches(self):
-        """Clear large caches to free memory. Thread-safe for heavyweight_cache."""
-        try:
-            with self._heavyweight_lock:
-                self.heavyweight_cache.clear()
-        except Exception:
-            # If lock isn't present for any reason, fall back to clearing
-            # without lock
-            try:
-                self.heavyweight_cache.clear()
-            except Exception:
-                pass
-
-        # Clear similarity precomputation
-        self.mea_sorted_indices = None
-        self.cluster_id_to_idx = None
-        self.cluster_idx_to_id = None  # Added for reverse lookup
-
-        # Clear old caches
-        try:
-            self.mea_sim_cache.clear()
-        except Exception:
-            pass
-        try:
-            self.vision_sim_cache.clear()
-        except Exception:
-            pass
-
-        # Clear other caches
-        try:
-            self.ei_cache.clear()
-        except Exception:
-            pass
-        try:
-            self.isi_cache.clear()
-        except Exception:
-            pass
-
-        # Clear standard plots cache
-        if hasattr(self, 'standard_plot_cache'):
-            try:
-                with getattr(self, '_standard_plot_lock', threading.Lock()):
-                    self.standard_plot_cache.clear()
-            except Exception:
-                pass
-
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True
         parent_indices = np.where(self.spike_clusters == parent_id)[0]
@@ -2291,19 +2147,6 @@ class DataManager(QObject):
         # Cache the result
         self.isi_cache[cache_key] = isi_value
         return isi_value
-
-    def update_cluster_isi(self, cluster_id, isi_value):
-        """Update the ISI value for a single cluster in both dataframes."""
-        # Update the current cluster dataframe
-        mask = self.cluster_df['cluster_id'] == cluster_id
-        if mask.any():
-            self.cluster_df.loc[mask, 'isi_violations_pct'] = isi_value
-
-        # Update the original cluster dataframe
-        mask_orig = self.original_cluster_df['cluster_id'] == cluster_id
-        if mask_orig.any():
-            self.original_cluster_df.loc[mask_orig,
-                                         'isi_violations_pct'] = isi_value
 
     def save_tree_structure(self, file_path):
         """
@@ -2379,38 +2222,6 @@ class DataManager(QObject):
         # Set the model to the tree view
         self.main_window.setup_tree_model(self.main_window.tree_model)
         self.main_window.tree_view.expandAll()
-
-    def get_first_spike_time(self, cluster_id):
-        """
-        Efficiently finds the time of the very first spike for a given cluster.
-
-        Uses numpy.argmax for a highly optimized search, which is orders of
-        magnitude faster than iterating or filtering the entire spike array.
-
-        Returns:
-            float: The time of the first spike in seconds, or None if the cluster has no spikes.
-        """
-        try:
-            # Create a boolean mask for the selected cluster.
-            cluster_mask = (self.spike_clusters == cluster_id)
-
-            # Check if the cluster has any spikes at all.
-            if not np.any(cluster_mask):
-                return None
-
-            # np.argmax returns the index of the *first* True value. This is
-            # extremely fast.
-            first_spike_index = np.argmax(cluster_mask)
-
-            # Use that index to get the spike time (in samples) from the sorted
-            # times array.
-            first_spike_sample = self.spike_times[first_spike_index]
-
-            # Convert to seconds and return.
-            return first_spike_sample / self.sampling_rate
-        except (IndexError, TypeError):
-            # Return None if any error occurs (e.g., empty arrays).
-            return None
 
     def _compute_cluster_geometry(self):
         """
@@ -2541,13 +2352,11 @@ class DataManager(QObject):
             self.cluster_id_to_idx = {int(cid): int(i) for i, cid in enumerate(cluster_ids)}
 
             # DELETED the massive argsort here. We will do it lazily.
-            self.mea_sorted_indices = None
 
             logger.debug("Loaded similar_templates.npy shape=%s", self.similar_templates.shape)
         except FileNotFoundError:
             logger.warning("similar_templates.npy not found; MEA similarity disabled")
             self.similar_templates = None
-            self.mea_sorted_indices = None
             self.cluster_id_to_idx = None
 
     def get_similarity_table(self, cluster_id: int, source: str = "MEA"):

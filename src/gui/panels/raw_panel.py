@@ -40,8 +40,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFrame,
-    QToolButton,
-    QSpacerItem,
 )
 
 if TYPE_CHECKING:
@@ -87,21 +85,6 @@ _MINIMAP_FR_BINS = 500
 def _unit_color(index: int, alpha: int = 255) -> tuple[int, int, int, int]:
     r, g, b = _UNIT_PALETTE[index % len(_UNIT_PALETTE)]
     return (r, g, b, alpha)
-
-
-def _dim_color(rgba: tuple, factor: float = 0.45) -> tuple[int, int, int, int]:
-    """Return a dimmed / desaturated version of an RGBA colour."""
-    r, g, b, a = rgba
-    grey  = 0.299 * r + 0.587 * g + 0.114 * b
-    nr    = int(grey + (r - grey) * factor)
-    ng    = int(grey + (g - grey) * factor)
-    nb    = int(grey + (b - grey) * factor)
-    return (
-        max(0, min(255, nr)),
-        max(0, min(255, ng)),
-        max(0, min(255, nb)),
-        max(0, min(255, int(a * 0.6))),
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1127,7 +1110,10 @@ class RawPanel(QWidget):
     def _stop_worker(self) -> None:
         if self._worker_thread and self._worker_thread.isRunning():
             self._worker_thread.quit()
-            self._worker_thread.wait(300)
+            if not self._worker_thread.wait(2000):
+                logger.warning("RawPanel worker did not stop cleanly; terminating")
+                self._worker_thread.terminate()
+                self._worker_thread.wait(500)
         self._worker_thread = None
         self._worker        = None
 
@@ -1257,7 +1243,6 @@ class RawPanel(QWidget):
                 start_t, end_t,
                 y_min=plot_y_min, y_max=plot_y_max,
                 tick_bottom=self._tick_bottom,
-                tick_top=self._tick_top,
             )
 
             # ── Update label ──────────────────────────────────────────────────
@@ -1276,7 +1261,10 @@ class RawPanel(QWidget):
     def _cleanup_worker_thread(self) -> None:
         if self._worker_thread:
             self._worker_thread.quit()
-            self._worker_thread.wait(200)
+            if not self._worker_thread.wait(2000):
+                logger.warning("RawPanel worker cleanup timed out; terminating")
+                self._worker_thread.terminate()
+                self._worker_thread.wait(500)
             self._worker_thread = None
             self._worker        = None
 
@@ -1296,7 +1284,6 @@ class RawPanel(QWidget):
         y_min:   float,
         y_max:   float,
         tick_bottom: float,
-        tick_top:    float,
     ) -> None:
         """
         Draw:
@@ -1356,7 +1343,6 @@ class RawPanel(QWidget):
             start_t, end_t,
             y_min=self._y_min_plot, y_max=self._y_max_plot,
             tick_bottom=self._tick_bottom,
-            tick_top=self._tick_top,
         )
 
     @staticmethod
@@ -1546,6 +1532,11 @@ class RawPanel(QWidget):
     # Cleanup
     # ─────────────────────────────────────────────────────────────────────────
 
-    def closeEvent(self, event) -> None:
+    def cleanup(self) -> None:
+        self._nav_debounce.stop()
+        self._info_hide_timer.stop()
         self._stop_worker()
+
+    def closeEvent(self, event) -> None:
+        self.cleanup()
         super().closeEvent(event)
