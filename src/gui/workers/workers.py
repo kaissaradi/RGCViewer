@@ -265,10 +265,13 @@ class StandardPlotsWorker(QObject):
                 cluster_id = self.queue.popleft()
                 try:
                     self.data_manager.get_standard_plot_data(cluster_id)
-                    self.finished_cluster.emit(int(cluster_id))
                 except Exception as e:
+                    logger.exception(
+                        "Failed to compute standard plots for cluster %s", cluster_id)
                     self.error.emit(
                         f"Background precompute failed for cluster {cluster_id}: {e}")
+                finally:
+                    self.finished_cluster.emit(int(cluster_id))
             else:
                 QThread.msleep(100)
 

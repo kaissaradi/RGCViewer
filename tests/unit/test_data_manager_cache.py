@@ -1,4 +1,5 @@
 import threading
+import pickle
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -6,8 +7,8 @@ import numpy as np
 from src.analysis.data_manager import DataManager
 
 
-def test_standard_plot_cache_computes_same_cluster_once():
-    dm = DataManager(kilosort_dir="/tmp")
+def test_standard_plot_cache_computes_same_cluster_once(tmp_path):
+    dm = DataManager(kilosort_dir=str(tmp_path))
     compute_started = threading.Event()
     release_compute = threading.Event()
     results = []
@@ -38,8 +39,8 @@ def test_standard_plot_cache_computes_same_cluster_once():
     dm._compute_standard_plots.assert_called_once_with(7)
 
 
-def test_standard_plot_cache_allows_different_clusters_to_compute_concurrently():
-    dm = DataManager(kilosort_dir="/tmp")
+def test_standard_plot_cache_allows_different_clusters_to_compute_concurrently(tmp_path):
+    dm = DataManager(kilosort_dir=str(tmp_path))
     entered = []
     entered_lock = threading.Lock()
     both_entered = threading.Event()
@@ -71,6 +72,34 @@ def test_standard_plot_cache_allows_different_clusters_to_compute_concurrently()
     assert sorted(entered) == [1, 2]
 
 
+def test_disk_cache_bypasses_computation(tmp_path):
+    """
+    AC1: If a valid cache file exists on disk, DataManager loads it directly
+    without triggering the background FFT/math logic.
+    """
+    cluster_id = 99
+    fake_cache_data = {"cluster_id": cluster_id, "acg": [1, 2, 3], "from_disk": True}
+
+    # 1. Write the cache to disk BEFORE initializing DataManager
+    cache_file = tmp_path / "standard_plot_cache.pkl"
+    with open(cache_file, 'wb') as f:
+        pickle.dump({cluster_id: fake_cache_data}, f)
+
+    # 2. Initialize DataManager. It *should* load the cache from disk.
+    dm = DataManager(kilosort_dir=str(tmp_path))
+
+    # Mock the compute function so we can strictly verify it NEVER gets called
+    dm._compute_standard_plots = MagicMock(return_value={"cluster_id": cluster_id, "computed_live": True})
+
+    # 3. Fetch the data (DO NOT manually populate dm.standard_plot_cache)
+    result = dm.get_standard_plot_data(cluster_id)
+
+    # 4. Assert that it pulled our fake disk data and never touched the math function
+    assert result is not None, "DataManager returned None instead of cache data."
+    assert result.get("from_disk") is True, "DataManager bypassed the disk cache and computed live data."
+    dm._compute_standard_plots.assert_not_called()
+
+
 class FakeLitkeReader:
     length = 100
 
@@ -80,8 +109,8 @@ class FakeLitkeReader:
         return rows + cols
 
 
-def test_raw_trace_snippet_skips_litke_ttl_row():
-    dm = DataManager(kilosort_dir="/tmp")
+def test_raw_trace_snippet_skips_litke_ttl_row(tmp_path):
+    dm = DataManager(kilosort_dir=str(tmp_path))
     dm.raw_reader = FakeLitkeReader()
     dm.raw_data_memmap = None
     dm.n_samples = 100

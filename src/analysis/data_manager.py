@@ -219,6 +219,7 @@ class DataManager(QObject):
         # Cache + lock for standard plots (ISI / ACG / FR)
         self.standard_plot_cache = {}
         self._standard_plot_lock = threading.Lock()
+        self._load_standard_plot_cache_from_disk()
 
         # Per-cell in-flight locks for get_cell_physics.
         # Prevents two concurrent workers from both missing the cache and
@@ -1399,23 +1400,35 @@ class DataManager(QObject):
 
         t = threading.Thread(target=_save, daemon=True)
         t.start()
-    
+
+    def _load_standard_plot_cache_from_disk(self):
+        """Restore standard plot cache from disk, falling back to an empty cache."""
+        if not self.kilosort_dir:
+            return
+
+        cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
+        with self._standard_plot_lock:
+            if not cache_pkl.exists() or self.standard_plot_cache:
+                return
+
+            try:
+                with open(cache_pkl, 'rb') as f:
+                    cache = pickle.load(f)
+                if not isinstance(cache, dict):
+                    raise TypeError("standard_plot_cache.pkl did not contain a dict")
+                self.standard_plot_cache = cache
+                logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
+            except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
+                logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
+                self.standard_plot_cache = {}
+
     def load_persisted_caches(self):
         """Loads both standard plot and feature caches from disk.
         Designed to be called safely from a background thread."""
         if not self.kilosort_dir:
             return
 
-        cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
-        with self._standard_plot_lock:
-            if cache_pkl.exists() and not self.standard_plot_cache:
-                try:
-                    with open(cache_pkl, 'rb') as f:
-                        self.standard_plot_cache = pickle.load(f)
-                    logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
-                except Exception:
-                    logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
-                    self.standard_plot_cache = {}
+        self._load_standard_plot_cache_from_disk()
 
         feat_pkl = self.kilosort_dir / 'feature_cache.pkl'
         with self._feature_lock:
