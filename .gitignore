@@ -10,3 +10,5 @@ htmlcov/
 
 # Editor
 .vscode/
+
+.codex_artifacts
