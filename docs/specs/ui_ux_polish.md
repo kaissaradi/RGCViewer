@@ -1,4 +1,5 @@
-Specification: Light Mode Polish & UI Cleanup
+# Specification: Light Mode Polish & UI Cleanup
+## STATUS: DONE
 
 ## Metadata
 

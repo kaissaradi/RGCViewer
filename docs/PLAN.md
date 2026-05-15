@@ -2,55 +2,54 @@
 
 ## Project Vision
 
-RGCViewer is a high-performance, PyQt/pyqtgraph-based GUI tailored for the analysis, curation, and visualization of Retinal Ganglion Cell (RGC) data. It supports dual pipelines: hybrid Kilosort + Vision datasets, and Standalone Vision-native datasets. This document outlines the strategic roadmap and active priorities for development, adhering strictly to Spec-Driven Development (SDD).
+RGCViewer is a high-performance, PyQt/pyqtgraph-based GUI tailored for the analysis, curation, and visualization of Retinal Ganglion Cell (RGC) data. It supports dual pipelines: hybrid Kilosort + Vision datasets, and Standalone Vision-native datasets. [cite_start]This document outlines the strategic roadmap and active priorities for development, adhering strictly to Spec-Driven Development [SDD](cite: 9).
 
 ---
 
 ## Current Milestone: v1.1 - Reliability, Vision Native, & Accessibility
 
-*The focus of this milestone is solidifying the existing feature set, expanding accessibility for new users, stripping out obsolete UI clutter, and ensuring our caching and test suites handle edge cases robustly.*
+[cite_start]*The focus of this milestone is solidifying the existing feature set, expanding accessibility for new users, stripping out obsolete UI clutter, and ensuring our caching and test suites handle edge cases robustly[cite: 9].*
 
 ### 1. Active Priorities (In Order of Execution)
 
-**Priority 1: Light Mode Polish & UI Cleanup**
+**Priority 1: Standalone Vision Integration**
 
-* **Goal:** Ensure a flawless Light Mode, fix core table interactions, and remove dead UI weight.
-* **Spec needed:** `docs/specs/ui_ux_polish.md`
-* **Architecture Change:** Extract hardcoded colors (`DARK_COLORS` / `LIGHT_COLORS`) out of `main_window.py` and into a dedicated `src/gui/theme.py` file.
-* **Fixes:** Enable click-to-sort on Table View; remove "Good" view toggle and "Refine Selected Cluster" button.
-
-**Priority 2: Standalone Vision Integration**
-
-* **Goal:** Solidify the new feature allowing users to load purely Vision files without requiring Kilosort data.
-* **Spec needed:** `docs/specs/vision_standalone_integration.md`
+* [cite_start]**Goal:** Solidify the ability to load purely Vision-sorted datasets without requiring any Kilosort data[cite: 9, 21].
+* [cite_start]**Spec:** `docs/specs/vision_standalone.md` [cite: 21]
+* **Key Tasks:**
+  * [cite_start]Resolve the bug causing only a random subset of cells to appear in UMAP[cite: 21].
+  * [cite_start]Integrate array geometry and waveform templates from `.ei` and `.globals` files into the Standard Plots panel[cite: 21].
+  * [cite_start]Ensure the `DataManager` correctly maps Vision IDs to `cluster_id` without metadata crashes[cite: 21].
+  * [cite_start]Implement graceful fallbacks for missing `.sta` or `.ei` files[cite: 21].
 
 ---
 
 ### 2. Completed Priorities (v1.1)
 
+**Light Mode Polish & UI Cleanup**
+
+* [cite_start]**Summary:** Implemented a centralized "first-principles" color theme architecture and removed legacy UI elements[cite: 10, 19].
+* [cite_start]**Outcome:** Created `src/gui/theme.py` to manage semantic color roles[cite: 19]. [cite_start]Toggling Light Mode now correctly updates stylesheets and plots (including the Population Panel) for universal legibility[cite: 19]. [cite_start]The "Good" view toggle and "Refine Selected Cluster" buttons have been removed, and the cluster table now supports click-to-sort functionality[cite: 19].
+
 **Physics Cache Fix & Loading Optimization**
 
-* **Goal:** Fix the cache invalidation bug where physics precomputations are double-loading.
-* **Spec:** `docs/specs/physics_optimization.md`
-* **Focus:** Audit `DataManager.get_cell_physics` to ensure disk cache is properly checked *and* utilized before the background queue starts FFT/signal calculations.
-* **Notes:**
-  * Standard plot cache is restored on `DataManager` init (with corrupt-cache fallback).
-  * Background standard-plot worker logs per-cluster failures and still emits progress signals so the queue can't hang.
-  * `get_cell_physics()` always writes a `_computed` cache entry (safe defaults when Vision STA is missing) so UMAP readiness can reach `N/N`.
+* [cite_start]**Goal:** Fix the cache invalidation bug where physics precomputations were double-loading[cite: 9, 11].
+* [cite_start]**Outcome:** `DataManager` now performs a non-blocking check for existing `.pkl` caches on initialization[cite: 9, 11]. [cite_start]Background workers log failures without hanging the queue, and cells without Vision STA data are marked as `_computed` with safe defaults to ensure UMAP readiness reaches 100%[cite: 9, 11].
 
 **UMAP Selection Fix**
 
-* **Goal:** Resolve conflicts between the Lasso and Rectangle selector tools.
-* **Spec:** `docs/specs/umap_selection_fix.md`
+* [cite_start]**Goal:** Resolve tool conflicts between the Lasso and Rectangle selector tools[cite: 9, 13].
+* [cite_start]**Outcome:** Ensured only one selector is active at a time and fixed selection logic to correctly identify clusters in both 2D and 3D projections[cite: 13].
 
 **Autocorrelation (ACG) Fix**
 
-* **Goal:** Ensure ACG computations utilize the entire recording duration.
-* **Spec:** `docs/specs/autocorrelation_fix.md`
+* [cite_start]**Goal:** Ensure ACG computations utilize the entire recording duration rather than just the first two minutes[cite: 9, 12].
+* [cite_start]**Outcome:** Refactored the algorithm to include spikes across the full session while maintaining memory efficiency and avoiding dense arrays[cite: 12].
 
 ---
 
 ## Testing & Infrastructure Initiatives
 
-* **Real Data Integration:** Shift away from pure mock testing where possible. Utilize the existing datasets in `/mnt/lab/Array-data/` to test edge cases in real-world scenarios.
-* **Strict Cache Invalidation in CI:** Ensure the test suite explicitly clears or bypasses the `.pkl` cache when verifying math/physics logic to prevent false positives.
+* **Real Data Integration:** Shift away from pure mock testing where possible. [cite_start]Utilize existing datasets in `/mnt/lab/Array-data/` to test edge cases in real-world scenarios[cite: 9].
+* [cite_start]**Strict Cache Invalidation in CI:** Ensure the test suite explicitly clears or bypasses the `.pkl` cache when verifying math/physics logic to prevent false positives[cite: 9].
+* [cite_start]**Advanced Performance Testing:** Implement stress tests for UI responsiveness, visual regression testing for standard plots using `pytest-mpl`, and memory leak protection[cite: 14].
