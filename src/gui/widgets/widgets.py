@@ -5,6 +5,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import QTableView
 
+from ..theme import DARK_COLORS
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,8 @@ class PandasModel(QAbstractTableModel):
         self._dataframe.sort_values(colname, ascending=(
             order == Qt.SortOrder.AscendingOrder), inplace=True)
         self._dataframe.reset_index(inplace=True, drop=True)
+        if hasattr(self, "refresh_view"):
+            self.refresh_view()
         self.layoutChanged.emit()
 
 
@@ -87,7 +91,7 @@ class MplCanvas(FigureCanvas):
                 width,
                 height),
             dpi=dpi,
-            facecolor='#18191C')
+            facecolor=DARK_COLORS['bg_panel'])
         super().__init__(self.fig)
 
         # Enable mouse tracking and set cursor
@@ -110,12 +114,12 @@ class HighlightStatusPandasModel(PandasModel):
     """Optimized model with role-based caching for faster scrolling."""
     
     STATUS_COLORS = {
-        "Clean":    "#6EE7B7",
-        "Edge":     "#F0C060",
-        "Duplicate":"#F08080",
-        "Noise":    "#F08080",
-        "Unsure":   "#7EB8F7",
-        "Original": "#9B9DA6",
+        "Clean": DARK_COLORS["status_good_text"],
+        "Edge": DARK_COLORS["status_mua_text"],
+        "Duplicate": DARK_COLORS["status_noise_text"],
+        "Noise": DARK_COLORS["status_noise_text"],
+        "Unsure": DARK_COLORS["status_unsort_text"],
+        "Original": DARK_COLORS["text_primary"],
     }
 
     def __init__(self, dataframe: pd.DataFrame, parent=None):
@@ -128,12 +132,12 @@ class HighlightStatusPandasModel(PandasModel):
     def update_colors(self, colors):
         """Updates status colors based on the current theme."""
         self.STATUS_COLORS = {
-            "Clean":     colors.get("status_good_text", "#6EE7B7"),
-            "Edge":      colors.get("status_mua_text", "#F0C060"),
-            "Duplicate": colors.get("status_noise_text", "#F08080"),
-            "Noise":     colors.get("status_noise_text", "#F08080"),
-            "Unsure":    colors.get("status_unsort_text", "#7EB8F7"),
-            "Original":  colors.get("text_secondary", "#9B9DA6"),
+            "Clean": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
+            "Edge": colors.get("status_mua_text", DARK_COLORS["status_mua_text"]),
+            "Duplicate": colors.get("status_noise_text", DARK_COLORS["status_noise_text"]),
+            "Noise": colors.get("status_noise_text", DARK_COLORS["status_noise_text"]),
+            "Unsure": colors.get("status_unsort_text", DARK_COLORS["status_unsort_text"]),
+            "Original": colors.get("text_primary", DARK_COLORS["text_primary"]),
         }
         self.refresh_view()
 
@@ -155,6 +159,9 @@ class HighlightStatusPandasModel(PandasModel):
         # Notify views
         if row_indices is None:
             row_indices = range(len(self._dataframe))
+        row_indices = list(row_indices)
+        if not row_indices:
+            return
         top_left = self.index(min(row_indices), 0)
         bottom_right = self.index(max(row_indices), self.columnCount() - 1)
         self.dataChanged.emit(
@@ -209,11 +216,10 @@ class HighlightStatusPandasModel(PandasModel):
 
             if role == Qt.ForegroundRole:
                 if col_name == 'status':
-                    color = self.STATUS_COLORS.get(status_value, "#9B9DA6")
+                    color = self.STATUS_COLORS.get(status_value, DARK_COLORS["text_primary"])
                     return QColor(color)
                 
-                # Default text color for other columns
-                return QColor("#9B9DA6")
+                return QColor(self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"]))
 
             if role == Qt.BackgroundRole:
                 # Background handled by alternatingRowColors and QSS

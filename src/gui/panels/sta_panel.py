@@ -9,23 +9,16 @@ from qtpy.QtCore import Qt, QTimer
 import numpy as np
 from ...analysis import analysis_core
 from ..widgets.widgets import MplCanvas
+from ..theme import DARK_COLORS
 
 logger = logging.getLogger(__name__)
-
-# Dark theme colors (defined locally to avoid circular imports)
-DARK_COLORS = {
-    "bg_surface": "#1E2025",
-    "border_subtle": "#2E3038",
-    "text_primary": "#F0F0F2",
-    "text_secondary": "#9B9DA6",
-    "accent": "#2E6DD4",
-}
 
 
 class STAPanel(QWidget):
     def restyle_plots(self, colors):
         """Updates plot styling based on the provided color scheme."""
         self.rf_canvas.setBackground(colors['bg_panel'])
+        self.rf_ellipse_item.setPen(pg.mkPen(colors['text_primary'], width=2, style=Qt.DashLine))
         self.timecourse_canvas.restyle(colors)
         self.temporal_filter_canvas.restyle(colors)
 
@@ -61,6 +54,7 @@ class STAPanel(QWidget):
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets for STA panel."""
+        colors = self.main_window.get_current_colors()
         layout = QVBoxLayout(self)
 
         # Control buttons layout
@@ -109,7 +103,7 @@ class STAPanel(QWidget):
         self.rf_view.invertY(True) # Optional: match typical image coordinate orientation
         self._pg_image_item = pg.ImageItem()
         self.rf_view.addItem(self._pg_image_item)
-        self.rf_ellipse_item = pg.PlotCurveItem(pen=pg.mkPen('w', width=2, style=Qt.DashLine))
+        self.rf_ellipse_item = pg.PlotCurveItem(pen=pg.mkPen(colors['text_primary'], width=2, style=Qt.DashLine))
         self.rf_view.addItem(self.rf_ellipse_item)
         self.rf_canvas.setToolTip("RF view and animation")
 
@@ -120,7 +114,7 @@ class STAPanel(QWidget):
             "No STA data selected",
             ha='center',
             va='center',
-            color='gray')
+            color=colors['text_secondary'])
         self.timecourse_canvas.draw()
 
         self.sta_metrics_text = QTextEdit()
@@ -147,7 +141,7 @@ class STAPanel(QWidget):
             "Temporal Analysis",
             ha='center',
             va='center',
-            color='gray')
+            color=colors['text_secondary'])
         self.temporal_filter_canvas.draw()
 
         # --- Layout Assembly ---
@@ -228,6 +222,7 @@ class STAPanel(QWidget):
                     self.plot_sta_animation(cluster_id)
         else:
             # No Vision STA data available
+            colors = self.main_window.get_current_colors()
             self._pg_image_item.clear()
             self.timecourse_canvas.fig.clear()
             self.timecourse_canvas.fig.text(
@@ -236,7 +231,7 @@ class STAPanel(QWidget):
                 "No Vision STA data available",
                 ha='center',
                 va='center',
-                color='gray')
+                color=colors['text_secondary'])
             self.timecourse_canvas.draw()
             self.sta_frame_slider.setEnabled(False)
 
@@ -450,6 +445,7 @@ class STAPanel(QWidget):
             )
             self.timecourse_canvas.draw()
         else:
+            colors = self.main_window.get_current_colors()
             self.timecourse_canvas.fig.clear()
             self.timecourse_canvas.fig.text(
                 0.5,
@@ -457,7 +453,7 @@ class STAPanel(QWidget):
                 "No Vision STA data available",
                 ha='center',
                 va='center',
-                color='gray')
+                color=colors['text_secondary'])
             self.timecourse_canvas.draw()
 
     def plot_sta_animation(self, cluster_id):
@@ -523,7 +519,7 @@ class STAPanel(QWidget):
                 .subsection {{ font-weight: bold; color: {colors['accent_positive']}; margin-top: 8px; display: block; }}
                 .metric-name {{ font-weight: 600; color: {colors['text_secondary']}; }}
                 .metric-value {{ color: {colors['text_primary']}; }}
-                .highlight {{ background-color: rgba(46, 109, 212, 0.1); }}
+                .highlight {{ background-color: {colors['selection_bg']}; }}
             </style>
             """
 
@@ -586,8 +582,9 @@ class STAPanel(QWidget):
 
             self.sta_metrics_text.setHtml(html)
         else:
+            colors = self.main_window.get_current_colors()
             self.sta_metrics_text.setHtml(
-                "<div style='color:gray; text-align:center; padding:20px;'>No STA Data Available</div>")
+                f"<div style='color:{colors['text_secondary']}; text-align:center; padding:20px;'>No STA Data Available</div>")
 
     def plot_temporal_filter(self, cluster_id):
         """
@@ -609,9 +606,10 @@ class STAPanel(QWidget):
                 vision_cluster_id)
             self.temporal_filter_canvas.draw()
         else:
+            colors = self.main_window.get_current_colors()
             self.temporal_filter_canvas.fig.clear()
             self.temporal_filter_canvas.fig.text(
-                0.5, 0.5, "No Data", ha='center', va='center', color='gray')
+                0.5, 0.5, "No Data", ha='center', va='center', color=colors['text_secondary'])
             self.temporal_filter_canvas.draw()
 
     def plot_sta_timecourse_internal(
@@ -668,13 +666,7 @@ class STAPanel(QWidget):
                 # Get theme colors from main window
                 theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
                 if not theme_colors:
-                    # Fallback to dark theme defaults
-                    theme_colors = {
-                        'bg_panel': '#1f1f1f',
-                        'text_primary': 'white',
-                        'text_secondary': 'gray',
-                        'border_default': 'gray',
-                    }
+                    theme_colors = DARK_COLORS
 
                 for i in range(n_channels_to_plot):
                     ax.plot(
@@ -763,12 +755,7 @@ class STAPanel(QWidget):
         # Get theme colors from main window
         theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
         if not theme_colors:
-            theme_colors = {
-                'bg_panel': '#1f1f1f',
-                'text_primary': 'white',
-                'text_secondary': 'gray',
-                'border_default': 'gray',
-            }
+            theme_colors = DARK_COLORS
 
         ax.set_title("STA Timecourse (Recalculated)", color=theme_colors['text_primary'])
         ax.set_xlabel("Time (ms)", color=theme_colors['text_secondary'])
@@ -791,6 +778,9 @@ class STAPanel(QWidget):
         """
         fig.clear()
         ax = fig.add_subplot(111)
+        theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
+        if not theme_colors:
+            theme_colors = DARK_COLORS
 
         time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
             sta_data, stafit, vision_params, cell_id)
@@ -802,7 +792,7 @@ class STAPanel(QWidget):
                 "No temporal data",
                 ha='center',
                 va='center',
-                color='gray')
+                color=theme_colors['text_secondary'])
             return
 
         # Dominant channel
@@ -831,12 +821,12 @@ class STAPanel(QWidget):
         peak_val = norm_trace[peak_idx]
 
         # Annotate Peak
-        ax.scatter([peak_time], [peak_val], color='white', s=50, zorder=5)
+        ax.scatter([peak_time], [peak_val], color=theme_colors['plot_peak'], s=50, zorder=5)
         ax.annotate(f"Peak: {peak_time:.1f}ms",
                     xy=(peak_time, peak_val),
                     xytext=(0, 10 if peak_val > 0 else -15),
                     textcoords='offset points',
-                    ha='center', color='white', fontsize=9)
+                    ha='center', color=theme_colors['plot_peak'], fontsize=9)
 
         # FWHM
         try:
@@ -861,25 +851,15 @@ class STAPanel(QWidget):
                     h,
                     start_time,
                     end_time,
-                    colors='yellow',
+                    colors=theme_colors['plot_peak'],
                     linestyles='-',
                     linewidth=2)
                 ax.annotate(f"FWHM: {width * sample_interval:.1f}ms",
                             xy=((start_time + end_time) / 2, h),
                             xytext=(0, 5), textcoords='offset points',
-                            ha='center', color='yellow', fontsize=8)
+                            ha='center', color=theme_colors['plot_peak'], fontsize=8)
         except Exception:
             pass
-
-        # Get theme colors from main window
-        theme_colors = getattr(self.main_window, 'get_current_colors', lambda: {})()
-        if not theme_colors:
-            theme_colors = {
-                'bg_panel': '#1f1f1f',
-                'text_primary': 'white',
-                'text_secondary': 'gray',
-                'border_default': 'gray',
-            }
 
         ax.set_title("Temporal Dynamics Analysis", color=theme_colors['text_primary'])
         ax.set_xlabel("Time (ms)", color=theme_colors['text_secondary'])

@@ -15,6 +15,7 @@ from matplotlib.collections import LineCollection
 from PyQt5.QtGui import QColor
 
 from ...analysis import analysis_core
+from ..theme import DARK_COLORS
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
 matplotlib_logger = logging.getLogger('matplotlib.font_manager')
@@ -138,12 +139,12 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax.add_collection(shadow_lines)
 
         # 3. Solid Mean Trace
-        mean_line, = ax.plot(t_axis, mean_tc, color='#00e6a0', linewidth=2.5, zorder=4)
+        mean_line, = ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4)
 
         # 4. Highlight the Peak Feature
-        peak_marker, = ax.plot([peak_time], [peak_val], 'o', color='#ffeb3b', markersize=6, zorder=5)
+        peak_marker, = ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5)
         peak_text = ax.text(peak_time, peak_val + (np.max(mean_tc)*0.1), 
-                            f" Peak\n Frame {peak_time}", color='#ffeb3b', 
+                            f" Peak\n Frame {peak_time}", color=colors['plot_peak'], 
                             fontsize=8, ha='center', va='bottom')
 
         # Aesthetics
@@ -241,9 +242,10 @@ def draw_population_rfs_plot(
             colors=colors
         )
 
+        highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
         highlight_patch = Ellipse(
             xy=(0, 0), width=1, height=1, angle=0,
-            edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
+            edgecolor=colors['plot_highlight'], facecolor=(*highlight_rgb, 0.3),
             lw=2.0, zorder=10, visible=False
         )
         ax.add_patch(highlight_patch)
@@ -280,7 +282,7 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
 
 def plot_population_rfs_background(ax, vision_params, main_window, sta_height=None, subset_cell_ids=None, colors=None):
     if colors is None:
-        colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
+        colors = DARK_COLORS
 
     try:
         all_cell_ids = vision_params.get_cell_ids()
@@ -338,7 +340,7 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
 
 def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):
     if colors is None:
-        colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
+        colors = DARK_COLORS
 
     fig.clear()
     fig.set_facecolor(colors['bg_panel'])
@@ -431,8 +433,9 @@ def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=No
         try:
             stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+            highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
             highlight_ellipse = Ellipse(xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                                        angle=np.rad2deg(stafit.rot), edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
+                                        angle=np.rad2deg(stafit.rot), edgecolor=colors['plot_highlight'], facecolor=(*highlight_rgb, 0.3),
                                         lw=2.0, zorder=10)
             ax.add_patch(highlight_ellipse)
         except Exception as e:
@@ -455,7 +458,7 @@ def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _p
     Plots the electrical image (EI) on the electrode array.
     """
     if colors is None:
-        colors = {'bg_panel': '#111214', 'text_primary': '#F0F0F2', 'text_secondary': '#9B9DA6', 'border_subtle': '#2E3038'}
+        colors = DARK_COLORS
 
     fig.clear()
     fig.set_facecolor(colors['bg_panel'])
@@ -580,9 +583,9 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.axhline(0, color=colors['text_primary'], linestyle='--', linewidth=1.0, alpha=0.2, zorder=1)
         ax.axvline(0, color=colors['text_primary'], linestyle='--', linewidth=1.0, alpha=0.3, zorder=1)
 
-        shadow_lines = LineCollection(segments, color='#9b59b6', linewidth=0.8, alpha=0.15, zorder=2)
+        shadow_lines = LineCollection(segments, color=colors['plot_acg'], linewidth=0.8, alpha=0.18, zorder=2)
         ax.add_collection(shadow_lines)
-        mean_line, = ax.plot(t_axis, mean_acg, color='#ff9800', linewidth=2.5, zorder=4)
+        mean_line, = ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4)
 
         ax.set_xlabel("Time lag (ms)", color=colors['text_secondary'], fontsize=9)
         ax.set_ylabel("Autocorrelation", color=colors['text_secondary'], fontsize=9)

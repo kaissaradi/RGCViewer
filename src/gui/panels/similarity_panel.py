@@ -148,6 +148,7 @@ class SimilarityPanel(QWidget):
     def set_data(self, similarity_df):
         """Set the DataFrame for the similarity table and format it."""
         self.similarity_model = HighlightStatusPandasModel(similarity_df)
+        self.similarity_model.update_colors(self.main_window.get_current_colors())
         
         # --- Monkey-patch pretty header labels onto the model ---
         HEADER_LABELS = {

@@ -6,6 +6,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import correlate
 from scipy.interpolate import interp1d
 from ...analysis.constants import ISI_REFRACTORY_PERIOD_MS
+from ..theme import resolve_theme_colors
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class StandardPlotsPanel(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -80,7 +82,7 @@ class StandardPlotsPanel(QWidget):
         self.grid_widget = pg.GraphicsLayoutWidget()
         self.grid_plot = self.grid_widget.addPlot()
         self.grid_plot.setTitle(
-            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
         )
         self.grid_plot.setAspectLocked(True)
         self.grid_plot.hideAxis('bottom')
@@ -94,7 +96,7 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         self.acg_plot = pg.PlotWidget()
         self.acg_plot.setTitle(
-            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
         )
         self.acg_plot.setLabel('bottom', "Time lag (ms)")
         self.acg_plot.setLabel('left', "Autocorrelation")
@@ -102,15 +104,15 @@ class StandardPlotsPanel(QWidget):
         
         # --- PERSISTENT ACG/CCG ITEMS ---
         # 1. ACG Line (Purple) - positive lags only
-        self._acg_line = self.acg_plot.plot([], [], pen=pg.mkPen('#9933FF', width=2))
+        self._acg_line = self.acg_plot.plot([], [], pen=pg.mkPen(colors['plot_acg'], width=2))
 
         # 2. CCG Bar (Orange) - Hidden by default
-        self._ccg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=(255, 152, 0, 100), pen=pg.mkPen('#ff9800', width=1))
+        self._ccg_bar = pg.BarGraphItem(x=[], height=[], width=0.8, brush=pg.mkBrush(colors['plot_compare']), pen=pg.mkPen(colors['plot_compare'], width=1))
         self.acg_plot.addItem(self._ccg_bar)
         self._ccg_bar.setVisible(False)
 
         # 3. Zero Line (only shown during CCG)
-        self._acg_zero_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#ffffff', width=2, style=Qt.DashLine))
+        self._acg_zero_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen(colors['text_primary'], width=2, style=Qt.DashLine))
         self.acg_plot.addItem(self._acg_zero_line)
         self._acg_zero_line.setVisible(False)
 
@@ -125,9 +127,6 @@ class StandardPlotsPanel(QWidget):
         
         isi_controls = QHBoxLayout()
         isi_controls.setSpacing(4)
-
-        # Get colors for styling
-        colors = self.main_window.get_current_colors()
 
         # Group 1: View type
         self.isi_view_combo = QComboBox()
@@ -153,7 +152,7 @@ class StandardPlotsPanel(QWidget):
         self.refractory_spinbox.setSuffix(' ms')
         self.update_refractory_btn = QPushButton('Set')
         self.update_refractory_btn.setFixedHeight(24)
-        self.update_refractory_btn.setFixedWidth(32)
+        self.update_refractory_btn.setFixedWidth(44)
 
         isi_controls.addWidget(self.show_refractory_line_checkbox)
         isi_controls.addWidget(self.refractory_spinbox)
@@ -165,7 +164,7 @@ class StandardPlotsPanel(QWidget):
 
         self.isi_plot = pg.PlotWidget()
         self.isi_plot.setTitle(
-            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>ISI DISTRIBUTION</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>ISI DISTRIBUTION</span>"
         )
         self.isi_plot.setLabel('bottom', "ISI (ms)")
         self._style_plot(self.isi_plot)
@@ -173,7 +172,7 @@ class StandardPlotsPanel(QWidget):
         # --- PERSISTENT ISI ITEMS ---
         # 1. Histogram (filled line, bin centers)
         self._isi_curve = self.isi_plot.plot([], [], stepMode=False, fillLevel=0,
-                                             brush=(0, 163, 224, 80), pen=pg.mkPen('#33b5e5', width=2))
+                                             brush=pg.mkBrush(colors['plot_isi']), pen=pg.mkPen(colors['plot_isi'], width=2))
         
         # 2. Scatter
         self._isi_scatter = pg.ScatterPlotItem(size=5, pen=None, brush=pg.mkBrush(255, 165, 0, 150))
@@ -203,18 +202,18 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         self.fr_plot = pg.PlotWidget()
         self.fr_plot.setTitle(
-            "<span style='color:#5A5C65; font-size:10px; letter-spacing:0.06em;'>SIGNAL HEALTH</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>SIGNAL HEALTH</span>"
         )
         self.fr_plot.setLabel('bottom', "Time (s)")
-        self.fr_plot.setLabel('left', "Firing Rate (Hz)", color='#ffeb3b')
+        self.fr_plot.setLabel('left', "Firing Rate (Hz)", color=colors['plot_fr'])
         self._style_plot(self.fr_plot)
 
         # --- PERSISTENT FR ITEMS ---
         # 1. Yellow Rate Curve
-        self._fr_rate_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#ffeb3b', width=2), name='fr')
+        self._fr_rate_curve = self.fr_plot.plot([], [], pen=pg.mkPen(colors['plot_fr'], width=2), name='fr')
         
         # 2. Green Overlay Curve
-        self._fr_overlay_curve = self.fr_plot.plot([], [], pen=pg.mkPen('#00FF00', width=0.5), name='Averaged Amplitude')
+        self._fr_overlay_curve = self.fr_plot.plot([], [], pen=pg.mkPen(colors['plot_overlay'], width=0.5), name='Averaged Amplitude')
 
         self.bottom_splitter.addWidget(self.fr_plot)
 
@@ -250,14 +249,24 @@ class StandardPlotsPanel(QWidget):
         )
 
         # Update specific items
-        self._acg_line.setPen(pg.mkPen('#9933FF', width=2))
+        self._acg_line.setPen(pg.mkPen(colors['plot_acg'], width=2))
+        self._ccg_bar.setOpts(brush=pg.mkBrush(colors['plot_compare']), pen=pg.mkPen(colors['plot_compare'], width=1))
+        self._acg_zero_line.setPen(pg.mkPen(colors['text_primary'], width=2, style=Qt.DashLine))
+        self._isi_curve.setPen(pg.mkPen(colors['plot_isi'], width=2))
+        if hasattr(self._isi_curve, "curve") and hasattr(self._isi_curve.curve, "setBrush"):
+            self._isi_curve.curve.setBrush(pg.mkBrush(colors['plot_isi']))
+        self._fr_rate_curve.setPen(pg.mkPen(colors['plot_fr'], width=2))
+        self._fr_overlay_curve.setPen(pg.mkPen(colors['plot_overlay'], width=0.5))
+        self.fr_plot.setLabel('left', "Firing Rate (Hz)", color=colors['plot_fr'])
 
         # Refresh widgets
         self.grid_widget.setBackground(colors['bg_panel'])
 
     def _style_plot(self, plot_widget, colors=None):
         if colors is None:
-            colors = self.main_window.get_current_colors()
+            colors = resolve_theme_colors(self.main_window.get_current_colors())
+        else:
+            colors = resolve_theme_colors(colors)
 
         # Handle both PlotWidget and PlotItem (for GraphicsLayoutWidget)
         if isinstance(plot_widget, pg.PlotWidget):
@@ -396,6 +405,7 @@ class StandardPlotsPanel(QWidget):
         dm = self.main_window.data_manager
         if dm is None:
             return
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
 
         # Disable auto-range for batch rendering (prevents multiple render passes)
         plots_to_update = [self.grid_plot, self.acg_plot, self.isi_plot, self.fr_plot]
@@ -480,7 +490,7 @@ class StandardPlotsPanel(QWidget):
                         
                         # Add Cell ID labels if enabled
                         if self.show_ids_checkbox.isChecked():
-                            label = pg.TextItem(str(ch), color=(255, 255, 255, 200), anchor=(0.5, 0.5))
+                            label = pg.TextItem(str(ch), color=colors['text_primary'], anchor=(0.5, 0.5))
                             label.setPos(x * x_scale, y * y_scale)
                             label.setZValue(10) # Ensure labels are on top
                             self.grid_plot.addItem(label)
@@ -498,12 +508,12 @@ class StandardPlotsPanel(QWidget):
                         trace = template[:, ch]
                         trace_scaled = (trace / max_ptp) * 20 if max_ptp > 0 else trace
                         t_offset = np.linspace(-10, 10, len(trace))
-                        self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen('#00331f', width=2.5), alpha=0.6)
-                        self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen('#00e6a0', width=1.2))
+                        self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen(colors['plot_waveform_shadow'], width=2.5), alpha=0.6)
+                        self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen(colors['plot_line'], width=1.2))
 
                     if current_mode == 'Main Channel' and waveform_channels and main_channel_idx < len(pos):
                         _, main_y = pos[main_channel_idx]
-                        self.grid_plot.addItem(pg.InfiniteLine(pos=main_y * y_scale, angle=0, pen=pg.mkPen('#ffffff', width=1, style=Qt.DashLine)))
+                        self.grid_plot.addItem(pg.InfiniteLine(pos=main_y * y_scale, angle=0, pen=pg.mkPen(colors['text_primary'], width=1, style=Qt.DashLine)))
 
                 sim_panel = getattr(self.main_window, 'similarity_panel', None)
                 selected_similar = []
@@ -528,7 +538,7 @@ class StandardPlotsPanel(QWidget):
                                     trace = sim_template[:, ch]
                                     trace_scaled = (trace / max_ptp) * 20 if max_ptp > 0 else trace
                                     t_offset = np.linspace(-10, 10, len(trace))
-                                    self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen('#ff9800', width=1.5))
+                                    self.grid_plot.plot(x * x_scale + t_offset, y * y_scale + trace_scaled, pen=pg.mkPen(colors['plot_compare'], width=1.5))
 
                 # --- Lock the zoom to perfectly frame the electrodes ---
                 if current_mode in ('Whole Array', 'Array Image'):

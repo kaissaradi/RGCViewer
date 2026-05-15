@@ -18,6 +18,7 @@ from sklearn.preprocessing import RobustScaler
 from scipy.ndimage import gaussian_filter1d
 
 from ...analysis import analysis_core
+from ..theme import resolve_theme_colors
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +218,11 @@ class UMAPPanel(QWidget):
 
         self.layout = QVBoxLayout(self)
 
-        # Define dark theme colors for initialization (will be updated by restyle_plots)
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
         self._umap_colors = {
-            "accent": "#2E6DD4",
-            "accent_positive": "#1A5C3A",
-            "bg_panel": "#18191C",
+            "accent": colors['accent'],
+            "accent_positive": colors['accent_positive'],
+            "bg_panel": colors['bg_panel'],
         }
 
         # --- Controls Row 1 ---
@@ -664,7 +665,7 @@ class UMAPPanel(QWidget):
         if self.embedding is None:
             return
             
-        colors = self.main_window.get_current_colors()
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
 
         # Clean up old plot
         if getattr(self, "cbar", None):
@@ -692,7 +693,7 @@ class UMAPPanel(QWidget):
         # ... (rest of update_plot, updating hardcoded colors) ...
         # Determine Colors
         mode = self.color_combo.currentText()
-        c = 'cyan'
+        c = colors['plot_highlight']
         cmap = None
         is_discrete = False
 
@@ -738,7 +739,7 @@ class UMAPPanel(QWidget):
                 cmap = 'tab20'
                 is_discrete = True
             else:
-                c = 'gray'
+                c = colors['text_secondary']
 
         # Draw Scatter
         if self.is_3d:

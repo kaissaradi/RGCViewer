@@ -10,7 +10,6 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel
-import pyqtgraph as pg
 from ..analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
@@ -32,87 +31,19 @@ from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
 from PyQt5.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
+from .theme import (
+    DARK_COLORS,
+    PANEL_PADDING,
+    CTRL_SPACING,
+    ROW_HEIGHT,
+    configure_pyqtgraph_theme,
+    get_theme_colors,
+)
 # Array calibration dialog
 from .panels.array_calibration_panel import ArrayCalibrationDialog
 
 # Global pyqtgraph configuration
-pg.setConfigOption('background', '#18191C')   # Matches --bg-panel
-pg.setConfigOption('foreground', '#9B9DA6')   # Matches --text-secondary
-pg.setConfigOptions(antialias=True)
-
-DARK_COLORS = {
-    # Surfaces
-    "bg_base":     "#111214",   # Window / app background
-    "bg_panel":    "#18191C",   # Left and right panes, plot backgrounds
-    "bg_surface":  "#1E2025",   # Table rows, cards
-    "bg_elevated": "#282A30",   # Hover states, alternating table rows
-
-    # Accents
-    "accent":          "#2E6DD4",   # Active tabs, selected rows, links
-    "accent_hover":    "#4A8BEF",   # Hover on accent elements
-    "accent_positive": "#1A5C3A",   # Refine button, "good" status
-    "accent_pos_text": "#6EE7B7",   # Text on positive background
-
-    # Text hierarchy
-    "text_primary":   "#F0F0F2",   # Main data, labels
-    "text_secondary": "#9B9DA6",   # Supporting text, axis labels
-    "text_tertiary":  "#5A5C65",   # Placeholder text, column headers
-    "text_disabled":  "#3A3C44",   # Disabled controls
-
-    # Borders
-    "border_subtle":   "#2E3038",   # Table dividers, panel edges
-    "border_default":  "#3D3F48",   # Button borders, input outlines
-    "border_strong":   "#5A5C65",   # Focused inputs, hover borders
-
-    # Status badges
-    "status_good_bg":   "rgba(26,  92,  58,  0.20)",
-    "status_good_text": "#6EE7B7",
-    "status_mua_bg":    "rgba(186, 117,  23, 0.20)",
-    "status_mua_text":  "#F0C060",
-    "status_noise_bg":  "rgba(163,  45,  45, 0.20)",
-    "status_noise_text":"#F08080",
-    "status_unsort_bg": "rgba(46,  109, 212, 0.20)",
-    "status_unsort_text":"#7EB8F7",
-}
-
-LIGHT_COLORS = {
-    # Surfaces
-    "bg_base":     "#F0F2F5",   # Window / app background
-    "bg_panel":    "#FFFFFF",   # Left and right panes, plot backgrounds
-    "bg_surface":  "#F8F9FA",   # Table rows, cards
-    "bg_elevated": "#E9ECEF",   # Hover states, alternating table rows
-
-    # Accents
-    "accent":          "#2E6DD4",   # Active tabs, selected rows, links
-    "accent_hover":    "#1A4A9E",   # Hover on accent elements
-    "accent_positive": "#6EE7B7",   # Refine button, "good" status
-    "accent_pos_text": "#1A5C3A",   # Text on positive background
-
-    # Text hierarchy
-    "text_primary":   "#111214",   # Main data, labels
-    "text_secondary": "#495057",   # Supporting text, axis labels
-    "text_tertiary":  "#6C757D",   # Placeholder text, column headers
-    "text_disabled":  "#ADB5BD",   # Disabled controls
-
-    # Borders
-    "border_subtle":   "#DEE2E6",   # Table dividers, panel edges
-    "border_default":  "#CED4DA",   # Button borders, input outlines
-    "border_strong":   "#ADB5BD",   # Focused inputs, hover borders
-
-    # Status badges
-    "status_good_bg":   "rgba(110, 231, 183, 0.20)",
-    "status_good_text": "#065F46",
-    "status_mua_bg":    "rgba(240, 192, 96, 0.20)",
-    "status_mua_text":  "#92400E",
-    "status_noise_bg":  "rgba(240, 128, 128, 0.20)",
-    "status_noise_text":"#991B1B",
-    "status_unsort_bg": "rgba(46, 109, 212, 0.20)",
-    "status_unsort_text":"#1E40AF",
-}
-
-PANEL_PADDING  = 8   # px — inner padding on all panels
-CTRL_SPACING   = 6   # px — gap between controls in a row
-ROW_HEIGHT     = 28  # px — standard table row height (was ~32px)
+configure_pyqtgraph_theme(DARK_COLORS)
 
 logger = logging.getLogger(__name__)
 
@@ -255,9 +186,10 @@ class MainWindow(QMainWindow):
             QTableView {{
                 background-color: {colors['bg_panel']};
                 alternate-background-color: {colors['bg_surface']};
+                color: {colors['text_primary']};
                 gridline-color: transparent;
                 border: none;
-                selection-background-color: rgba(46, 109, 212, 0.18);
+                selection-background-color: {colors['selection_bg']};
                 selection-color: {colors['text_primary']};
             }}
             QTableView::item {{
@@ -265,7 +197,7 @@ class MainWindow(QMainWindow):
                 padding: 0 8px;
             }}
             QTableView::item:selected {{
-                background-color: rgba(46, 109, 212, 0.18);
+                background-color: {colors['selection_bg']};
             }}
             QHeaderView::section {{
                 background-color: {colors['bg_panel']};
@@ -304,7 +236,7 @@ class MainWindow(QMainWindow):
                 background-color: {colors['bg_elevated']};
             }}
             QPushButton:checked {{
-                background-color: rgba(46, 109, 212, 0.20);
+                background-color: {colors['status_unsort_bg']};
                 border-color: {colors['accent']};
                 color: {colors['accent_hover']};
             }}
@@ -357,7 +289,7 @@ class MainWindow(QMainWindow):
             QComboBox QAbstractItemView {{
                 background-color: {colors['bg_surface']};
                 border: 0.5px solid {colors['border_default']};
-                selection-background-color: rgba(46, 109, 212, 0.25);
+                selection-background-color: {colors['selection_bg_strong']};
                 color: {colors['text_primary']};
             }}
             QDoubleSpinBox, QSpinBox {{
@@ -436,12 +368,14 @@ class MainWindow(QMainWindow):
             /* ── Tree View ───────────────────────── */
             QTreeView {{
                 background-color: {colors['bg_panel']};
+                color: {colors['text_primary']};
                 border: none;
                 alternate-background-color: {colors['bg_surface']};
-                selection-background-color: rgba(46, 109, 212, 0.18);
+                selection-background-color: {colors['selection_bg']};
             }}
-            QTreeView::item:hover {{ background: {colors['bg_surface']}; }}
-            QTreeView::item:selected {{ background: rgba(46, 109, 212, 0.18); }}
+            QTreeView::item {{ color: {colors['text_primary']}; }}
+            QTreeView::item:hover {{ background: {colors['bg_surface']}; color: {colors['text_primary']}; }}
+            QTreeView::item:selected {{ background: {colors['selection_bg']}; color: {colors['text_primary']}; }}
             QTreeView::branch {{ background: {colors['bg_panel']}; }}
 
             /* ── Status bar ──────────────────────── */
@@ -467,7 +401,7 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 font-size: 12px;
             }}
-            QMenu::item:selected {{ background: rgba(46, 109, 212, 0.25); }}
+            QMenu::item:selected {{ background: {colors['selection_bg_strong']}; }}
             QMenu::separator {{
                 height: 1px;
                 background: {colors['border_subtle']};
@@ -502,7 +436,7 @@ class MainWindow(QMainWindow):
 
     def get_current_colors(self):
         """Returns the color dictionary for the current theme."""
-        return LIGHT_COLORS if self.theme == "light" else DARK_COLORS
+        return get_theme_colors(self.theme)
 
     def toggle_theme(self):
         """Toggles between light and dark themes."""
@@ -511,10 +445,10 @@ class MainWindow(QMainWindow):
         
         # 1. Update Application-wide Stylesheet
         self._setup_style(colors)
+        self._apply_theme_widget_styles(colors)
         
         # 2. Update Global pyqtgraph options
-        pg.setConfigOption('background', colors['bg_panel'])
-        pg.setConfigOption('foreground', colors['text_secondary'])
+        configure_pyqtgraph_theme(colors)
         
         # 3. Notify all panels to restyle their internal plots
         panels = [
@@ -552,6 +486,77 @@ class MainWindow(QMainWindow):
             self.on_tab_changed(self.analysis_tabs.currentIndex())
             
         self.status_bar.showMessage(f"Switched to {self.theme} mode.")
+
+    def _apply_theme_widget_styles(self, colors):
+        """Refresh inline styles that cannot be fully expressed in global QSS."""
+        if hasattr(self, "reset_button"):
+            self.reset_button.setStyleSheet(f"""
+                QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+                QPushButton:hover {{ color: {colors['text_primary']}; }}
+            """)
+
+        if hasattr(self, "pop_view_btn"):
+            self.pop_view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 0.5px solid {colors['border_default']};
+                    border-radius: 5px;
+                    color: {colors['text_secondary']};
+                    background: transparent;
+                }}
+                QPushButton:checked {{
+                    background: {colors['status_unsort_bg']};
+                    border-color: {colors['accent']};
+                    color: {colors['accent_hover']};
+                }}
+                QPushButton:hover:!checked {{
+                    background: {colors['bg_surface']};
+                    color: {colors['text_primary']};
+                }}
+            """)
+
+        if hasattr(self, "pop_expand_btn"):
+            bg = colors['accent_positive'] if self.pop_expand_btn.isChecked() else colors['accent']
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: bold; background-color: {bg}; padding: 4px 10px;"
+            )
+
+        if hasattr(self, "pop_tc_label"):
+            self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        if hasattr(self, "pop_acg_label"):
+            self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+
+        if hasattr(self, "tree_model"):
+            self._apply_tree_item_theme(colors)
+
+    def _apply_tree_item_theme(self, colors):
+        """Apply readable item brushes for the current palette across the tree."""
+        if self.tree_model is None:
+            return
+
+        group_bg = QColor(colors['bg_elevated'])
+        group_fg = QColor(colors['text_primary'])
+        cell_fg = QColor(colors['text_primary'])
+
+        def visit(item):
+            is_group = item.data(Qt.ItemDataRole.UserRole) is None
+            item.setForeground(group_fg if is_group else cell_fg)
+            if is_group:
+                item.setBackground(group_bg)
+            else:
+                item.setBackground(QColor(colors['bg_panel']))
+
+            for row in range(item.rowCount()):
+                child = item.child(row)
+                if child is not None:
+                    visit(child)
+
+        root = self.tree_model.invisibleRootItem()
+        for row in range(root.rowCount()):
+            item = root.child(row)
+            if item is not None:
+                visit(item)
 
     def update_cluster_views(self, cluster_id):
         """
@@ -800,24 +805,14 @@ class MainWindow(QMainWindow):
         top_ctrl_layout = QHBoxLayout()
         top_ctrl_layout.setSpacing(4)
 
-        # Segmented filter toggle
-        self.filter_group = QButtonGroup(self)
-        self.filter_all_btn  = QPushButton("All")
-        self.filter_good_btn = QPushButton("Good")
-        self.filter_group.addButton(self.filter_all_btn)
-        self.filter_group.addButton(self.filter_good_btn)
-        self.filter_group.setExclusive(True)
-        
-        for btn in (self.filter_all_btn, self.filter_good_btn):
-            btn.setCheckable(True)
-            btn.setFixedHeight(26)
-            btn.setStyleSheet("QPushButton { border-radius: 0; }")
+        colors = self.get_current_colors()
+
+        self.filter_all_btn = QPushButton("All")
+        self.filter_all_btn.setCheckable(True)
+        self.filter_all_btn.setFixedHeight(26)
         self.filter_all_btn.setChecked(True)
         self.filter_all_btn.setStyleSheet(
-            "border-radius: 0; border-top-left-radius: 5px; border-bottom-left-radius: 5px;"
-        )
-        self.filter_good_btn.setStyleSheet(
-            "border-radius: 0; border-top-right-radius: 5px; border-bottom-right-radius: 5px;"
+            "border-radius: 5px;"
         )
 
         # Segmented view toggle
@@ -837,13 +832,12 @@ class MainWindow(QMainWindow):
         self.reset_button = QPushButton("↺")
         self.reset_button.setToolTip("Reset View")
         self.reset_button.setFixedSize(26, 26)
-        self.reset_button.setStyleSheet(
-            "QPushButton { border: none; color: #5A5C65; font-size: 14px; }"
-            "QPushButton:hover { color: #F0F0F2; }"
-        )
+        self.reset_button.setStyleSheet(f"""
+            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+            QPushButton:hover {{ color: {colors['text_primary']}; }}
+        """)
 
         top_ctrl_layout.addWidget(self.filter_all_btn)
-        top_ctrl_layout.addWidget(self.filter_good_btn)
         top_ctrl_layout.addSpacing(8)
         top_ctrl_layout.addWidget(self.table_view_button)
         top_ctrl_layout.addWidget(self.tree_view_button)
@@ -878,29 +872,8 @@ class MainWindow(QMainWindow):
         # Default to table view
         self.view_stack.setCurrentIndex(1)
 
-        self.refine_button = QPushButton("Refine Selected Cluster")
-        self.refine_button.setFixedHeight(32)
-        self.refine_button.setStyleSheet("""
-            QPushButton {
-                font-size: 12px;
-                font-weight: 500;
-                color: #6EE7B7;
-                background-color: #1A5C3A;
-                border: none;
-                border-radius: 6px;
-                padding: 0 12px;
-            }
-            QPushButton:hover  { background-color: #226B46; }
-            QPushButton:pressed { background-color: #14452C; }
-            QPushButton:disabled {
-                background-color: #1E2025;
-                color: #3A3C44;
-            }
-        """)
-
         left_content_layout.addLayout(top_ctrl_layout)
         left_content_layout.addWidget(self.view_stack)
-        left_content_layout.addWidget(self.refine_button)
 
         # --- Similarity Panel ---
         self.similarity_panel = SimilarityPanel(self)
@@ -928,24 +901,24 @@ class MainWindow(QMainWindow):
         self.pop_view_btn = QPushButton("⊞  Population")
         self.pop_view_btn.setCheckable(True)
         self.pop_view_btn.setFixedHeight(28)
-        self.pop_view_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11px;
-                padding: 0 10px;
-                border: 0.5px solid #3D3F48;
+        self.pop_view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 0.5px solid {colors['border_default']};
                 border-radius: 5px;
-                color: #9B9DA6;
-                background: transparent;
-            }
-            QPushButton:checked {
-                background: rgba(46, 109, 212, 0.20);
-                border-color: #2E6DD4;
-                color: #4A8BEF;
-            }
-            QPushButton:hover:!checked {
-                background: #1E2025;
-                color: #F0F0F2;
-            }
+                    color: {colors['text_secondary']};
+                    background: transparent;
+                }}
+                QPushButton:checked {{
+                    background: {colors['status_unsort_bg']};
+                    border-color: {colors['accent']};
+                    color: {colors['accent_hover']};
+                }}
+                QPushButton:hover:!checked {{
+                    background: {colors['bg_surface']};
+                    color: {colors['text_primary']};
+                }}
         """)
         self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
         self.analysis_tabs.setCornerWidget(self.pop_view_btn, Qt.TopRightCorner)
@@ -962,7 +935,7 @@ class MainWindow(QMainWindow):
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
         self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
-        self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {DARK_COLORS['accent']}; padding: 4px 10px;")
+        self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;")
         pop_ctrl_layout.addStretch()
         pop_ctrl_layout.addWidget(self.pop_expand_btn)
         pop_layout.addLayout(pop_ctrl_layout)
@@ -984,7 +957,7 @@ class MainWindow(QMainWindow):
         tc_layout.setContentsMargins(0, 0, 0, 0)
         tc_hdr = QHBoxLayout()
         self.pop_tc_label = QLabel("Population Dynamics")
-        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {DARK_COLORS['text_primary']};")
+        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
         tc_hdr.addWidget(self.pop_tc_label)
         tc_hdr.addStretch()
@@ -1000,7 +973,7 @@ class MainWindow(QMainWindow):
         acg_layout.setContentsMargins(0, 0, 0, 0)
         acg_hdr = QHBoxLayout()
         self.pop_acg_label = QLabel("Population Autocorrelation")
-        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {DARK_COLORS['text_primary']};")
+        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         self.pop_acg_summary = QLabel("n=0")
         acg_hdr.addWidget(self.pop_acg_label)
         acg_hdr.addStretch()
@@ -1107,12 +1080,10 @@ class MainWindow(QMainWindow):
 
         # Connect New Left Panel Buttons
         self.filter_all_btn.clicked.connect(self.reset_views)
-        self.filter_good_btn.clicked.connect(self.apply_good_filter)
         self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
         self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
         
         self.reset_button.clicked.connect(self.reset_views)
-        self.refine_button.clicked.connect(self.on_refine_cluster)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
         # Connect the raw panel's status and error messages to the status bar
@@ -1183,11 +1154,14 @@ class MainWindow(QMainWindow):
 
         # Case 1: Tree View is active
         if current_view_index == 0:
-            if not self.tree_view.selectionModel().hasSelection():
+            selection_model = self.tree_view.selectionModel()
+            if selection_model is None or not selection_model.hasSelection():
                 return None
 
-            index = self.tree_view.selectionModel().selectedIndexes()[0]
+            index = selection_model.selectedIndexes()[0]
             item = self.tree_model.itemFromIndex(index)
+            if item is None:
+                return None
 
             # Only leaf nodes (cells) have a cluster ID stored. Groups will
             # return None.
@@ -1196,12 +1170,11 @@ class MainWindow(QMainWindow):
 
         # Case 2: Table View is active
         elif current_view_index == 1:
-            if not self.table_view.selectionModel(
-            ).hasSelection() or self.main_cluster_model is None:
+            selection_model = self.table_view.selectionModel()
+            if selection_model is None or not selection_model.hasSelection() or self.main_cluster_model is None:
                 return None
 
-            selected_row = self.table_view.selectionModel().selectedIndexes()[
-                0].row()
+            selected_row = selection_model.selectedIndexes()[0].row()
 
             # Check if the model has mapToSource method (for proxy models)
             model = self.table_view.model()
@@ -1274,6 +1247,8 @@ class MainWindow(QMainWindow):
 
     def setup_table_model(self, model):
         """Sets up the table view model and connects the selection changed signal."""
+        if hasattr(model, 'update_colors'):
+            model.update_colors(self.get_current_colors())
         self.table_view.setModel(model)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table_view.verticalHeader().setVisible(False)
@@ -1391,6 +1366,7 @@ class MainWindow(QMainWindow):
             old_visual_order = None
 
         model = HighlightStatusPandasModel(df)
+        model.update_colors(self.get_current_colors())
         self.main_cluster_model = model
         self.table_view.setModel(model)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
@@ -1462,6 +1438,7 @@ class MainWindow(QMainWindow):
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
+        self._apply_tree_item_theme(self.get_current_colors())
         try:
             self.tree_view.selectionModel().selectionChanged.disconnect(
                 self.on_view_selection_changed)
@@ -1568,18 +1545,26 @@ class MainWindow(QMainWindow):
 
     def _update_tree_view_duplicate_highlight(self):
         # Collect all duplicate IDs
+        colors = self.get_current_colors()
         sdf = self.data_manager.status_df
         duplicate_ids = sdf[sdf['status'] ==
                             'Duplicate']['cluster_id'].tolist()
         duplicate_ids = set(duplicate_ids)
+        self._apply_tree_item_theme(colors)
+
+        def visit(item):
+            cluster_id = item.data(Qt.ItemDataRole.UserRole)
+            if cluster_id in duplicate_ids:
+                item.setForeground(QColor(colors['status_noise_text']))
+            for child_row in range(item.rowCount()):
+                child_item = item.child(child_row)
+                if child_item is not None:
+                    visit(child_item)
+
         for row in range(self.tree_model.rowCount()):
             group_item = self.tree_model.item(row)
-            for child_row in range(group_item.rowCount()):
-                child_item = group_item.child(child_row)
-                if child_item.data(Qt.ItemDataRole.UserRole) in duplicate_ids:
-                    child_item.setForeground(QColor('#FF2222'))  # Red text
-                else:
-                    child_item.setForeground(QColor('white'))
+            if group_item is not None:
+                visit(group_item)
 
     def on_cluster_selection_changed(self, *args):
         callbacks.on_cluster_selection_changed(self)
