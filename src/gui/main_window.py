@@ -931,6 +931,9 @@ class MainWindow(QMainWindow):
 
         # Top Control Bar (with Expand Button)
         pop_ctrl_layout = QHBoxLayout()
+        self.pop_show_ids_checkbox = QCheckBox("Show IDs")
+        self.pop_show_ids_checkbox.setChecked(False)
+        pop_ctrl_layout.addWidget(self.pop_show_ids_checkbox)
         self.pop_expand_btn = QPushButton("⛶ Full Screen")
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
@@ -949,6 +952,11 @@ class MainWindow(QMainWindow):
         mosaic_layout.setContentsMargins(0, 0, 0, 0)
         self.pop_mosaic_canvas = MplCanvas(width=6, height=4, dpi=100)
         mosaic_layout.addWidget(self.pop_mosaic_canvas)
+        # AC4: Zoom & Pan toolbar for the RF mosaic
+        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+        self.pop_mosaic_toolbar = NavigationToolbar2QT(self.pop_mosaic_canvas, self.pop_mosaic_widget)
+        self.pop_mosaic_toolbar.setMaximumHeight(28)
+        mosaic_layout.addWidget(self.pop_mosaic_toolbar)
         self.pop_master_splitter.addWidget(self.pop_mosaic_widget)
 
         # 2. Timecourse Panel
