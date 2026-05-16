@@ -55,12 +55,6 @@ class StandardPlotsPanel(QWidget):
         self.channel_mode_combo.currentTextChanged.connect(
             self._on_control_changed)
 
-        # Show IDs Toggle
-        self.show_ids_checkbox = QCheckBox('Show IDs')
-        self.show_ids_checkbox.setChecked(False)
-        self.show_ids_checkbox.stateChanged.connect(self._on_control_changed)
-        ctrl_bar.addWidget(self.show_ids_checkbox)
-
         layout.addWidget(ctrl_bar_widget)
 
         # 2x2 Layout using Splitters
@@ -487,13 +481,6 @@ class StandardPlotsPanel(QWidget):
                         
                         spots.append({'pos': (x * x_scale, y * y_scale), 'size': size, 
                                       'brush': pg.mkBrush(r, g, b, alpha), 'pen': pg.mkPen(None)})
-                        
-                        # Add Cell ID labels if enabled
-                        if self.show_ids_checkbox.isChecked():
-                            label = pg.TextItem(str(ch), color=colors['text_primary'], anchor=(0.5, 0.5))
-                            label.setPos(x * x_scale, y * y_scale)
-                            label.setZValue(10) # Ensure labels are on top
-                            self.grid_plot.addItem(label)
                         
                     if spots:
                         scatter = pg.ScatterPlotItem(size=8)
