@@ -316,8 +316,8 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
                         angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=1.0, alpha=0.55)
             ax.add_patch(e)
 
-            # Add ID labels if enabled in the main window
-            if hasattr(main_window, 'standard_plots_panel') and main_window.standard_plots_panel.show_ids_checkbox.isChecked():
+            # Add ID labels if enabled via population panel checkbox (AC3)
+            if hasattr(main_window, 'pop_show_ids_checkbox') and main_window.pop_show_ids_checkbox.isChecked():
                 ax.text(stafit.center_x, adjusted_y, str(cell_id), 
                         color=colors['text_secondary'], fontsize=7, ha='center', va='center', alpha=0.8)
 
