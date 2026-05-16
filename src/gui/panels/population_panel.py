@@ -245,8 +245,8 @@ def draw_population_rfs_plot(
         highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
         highlight_patch = Ellipse(
             xy=(0, 0), width=1, height=1, angle=0,
-            edgecolor=colors['plot_highlight'], facecolor=(*highlight_rgb, 0.3),
-            lw=2.0, zorder=10, visible=False
+            edgecolor=colors['plot_highlight'], facecolor=(*highlight_rgb, 0.42),
+            lw=1.75, zorder=10, visible=False
         )
         ax.add_patch(highlight_patch)
         _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
@@ -303,7 +303,7 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
                 stafit = vision_params.get_stafit_for_cell(cell_id)
                 adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
                 e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                            angle=np.rad2deg(stafit.rot), edgecolor=colors['text_secondary'], facecolor='none', lw=0.5, alpha=0.05)
+                            angle=np.rad2deg(stafit.rot), edgecolor=colors['text_secondary'], facecolor='none', lw=0.75, alpha=0.15)
                 ax.add_patch(e)
             except: continue
 
@@ -313,7 +313,7 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
 
             e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                        angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=0.5, alpha=0.3)
+                        angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=1.0, alpha=0.55)
             ax.add_patch(e)
 
             # Add ID labels if enabled in the main window
