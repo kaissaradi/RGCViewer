@@ -72,33 +72,24 @@ def standard_plots_panel(qtbot):
     qtbot.addWidget(panel)
     return panel
 
-def test_cell_id_toggle_exists(standard_plots_panel):
+def test_standard_plots_panel_has_no_show_ids_toggle(standard_plots_panel):
     """
-    SPEC: The StandardPlotsPanel should have a 'Show IDs' checkbox.
+    SPEC: The StandardPlotsPanel should NO LONGER have a 'Show IDs' checkbox.
     """
-    # This test will fail initially because the checkbox doesn't exist yet
-    assert hasattr(standard_plots_panel, 'show_ids_checkbox')
-    assert isinstance(standard_plots_panel.show_ids_checkbox, QCheckBox)
-    assert standard_plots_panel.show_ids_checkbox.text() == "Show IDs"
+    assert not hasattr(standard_plots_panel, 'show_ids_checkbox')
 
-def test_cell_id_toggle_defaults_to_unchecked(standard_plots_panel):
+def test_standard_plots_panel_does_not_draw_channel_labels(standard_plots_panel):
     """
-    SPEC: The 'Show IDs' toggle should be unchecked by default.
-    """
-    assert standard_plots_panel.show_ids_checkbox.isChecked() is False
-
-def test_show_ids_toggle_draws_labels_above_channel_dots(standard_plots_panel):
-    """
-    SPEC: When enabled, channel labels are added above the array scatter items.
+    SPEC: The StandardPlotsPanel template grid no longer displays channel-number labels.
     """
     standard_plots_panel.channel_mode_combo.setCurrentText("Whole Array")
-    standard_plots_panel.show_ids_checkbox.setChecked(True)
-
+    
+    # We shouldn't need to check any checkbox since it doesn't exist.
+    # Just update the plot and verify no pg.TextItem are added for labels.
     standard_plots_panel.update_all(0)
 
     labels = [
         item for item in standard_plots_panel.grid_plot.items
         if isinstance(item, pg.TextItem)
     ]
-    assert labels, "Expected channel ID labels to be drawn"
-    assert all(label.zValue() == 10 for label in labels)
+    assert not labels, "Expected NO channel ID labels to be drawn on the grid plot"
