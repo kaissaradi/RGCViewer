@@ -158,7 +158,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         for spine in ax.spines.values():
             spine.set_edgecolor(colors['border_subtle'])
             
-        ax.grid(True, color=colors['text_primary'], alpha=0.05, linestyle='-', linewidth=0.5)
+        ax.grid(False)
 
         # Save to state
         canvas._timecourse_state = {
@@ -187,7 +187,7 @@ def draw_population_rfs_plot(
         else:
             canvas = main_window.rf_canvas
 
-    if selected_cell_id is not None and subset_cell_ids is None:
+    if subset_cell_ids is None:
         try:
             subset_cell_ids = main_window._get_pop_subset_ids()
         except Exception:
@@ -336,6 +336,7 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
     ax.set_aspect('equal', adjustable='box')
     ax.tick_params(colors=colors['text_secondary'])
     for spine in ax.spines.values(): spine.set_edgecolor(colors['border_subtle'])
+    ax.grid(False)
 
 
 def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):

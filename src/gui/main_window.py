@@ -933,6 +933,7 @@ class MainWindow(QMainWindow):
         pop_ctrl_layout = QHBoxLayout()
         self.pop_show_ids_checkbox = QCheckBox("Show IDs")
         self.pop_show_ids_checkbox.setChecked(False)
+        self.pop_show_ids_checkbox.stateChanged.connect(self._on_pop_show_ids_toggled)
         pop_ctrl_layout.addWidget(self.pop_show_ids_checkbox)
         self.pop_expand_btn = QPushButton("⛶ Full Screen")
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
@@ -958,6 +959,32 @@ class MainWindow(QMainWindow):
         self.pop_mosaic_toolbar.setMaximumHeight(28)
         mosaic_layout.addWidget(self.pop_mosaic_toolbar)
         self.pop_master_splitter.addWidget(self.pop_mosaic_widget)
+        
+        # Default to Pan tool and implement mouse-wheel zoom
+        self.pop_mosaic_toolbar.pan()
+        
+        def on_mosaic_scroll(event):
+            if not event.inaxes: return
+            ax = event.inaxes
+            base_scale = 1.2
+            cur_xlim = ax.get_xlim()
+            cur_ylim = ax.get_ylim()
+            xdata, ydata = event.xdata, event.ydata
+            if event.button == 'up':
+                scale_factor = 1 / base_scale
+            elif event.button == 'down':
+                scale_factor = base_scale
+            else:
+                scale_factor = 1
+            new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+            new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+            relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+            rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+            ax.set_xlim([xdata - new_width * (1-relx), xdata + new_width * (relx)])
+            ax.set_ylim([ydata - new_height * (1-rely), ydata + new_height * (rely)])
+            ax.figure.canvas.draw_idle()
+            
+        self.pop_mosaic_canvas.mpl_connect('scroll_event', on_mosaic_scroll)
 
         # 2. Timecourse Panel
         self.pop_timecourse_widget = QWidget()
@@ -1150,6 +1177,25 @@ class MainWindow(QMainWindow):
             self.pop_context_widget.hide()
             # collapse the right column completely
             self.right_splitter.setSizes([sum(self.right_splitter.sizes()), 0])
+
+    def _on_pop_show_ids_toggled(self, state):
+        """Force a redraw of the population mosaic when Show IDs is toggled."""
+        if hasattr(self, 'pop_mosaic_canvas'):
+            # Invalidate the hot-swap cache to force a full background rebuild
+            if hasattr(self.pop_mosaic_canvas, '_pop_plot_state'):
+                del self.pop_mosaic_canvas._pop_plot_state
+            
+            selected = None
+            try:
+                selected = self._get_selected_cluster_id()
+            except Exception:
+                pass
+                
+            draw_population_rfs_plot(
+                main_window=self,
+                selected_cell_id=selected,
+                canvas=self.pop_mosaic_canvas
+            )
 
     def _switch_left_view(self, index):
         """Switches between the tree and table views in the left pane."""

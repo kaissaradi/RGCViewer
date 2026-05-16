@@ -94,9 +94,10 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
 
 def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     """Callback triggered on the UI thread when KilosortLoadWorker finishes."""
-    # Clean up thread
-    main_window.ks_load_thread.quit()
-    main_window.ks_load_thread.wait()
+    if getattr(main_window, 'ks_load_thread', None):
+        main_window.ks_load_thread.quit()
+        main_window.ks_load_thread.wait()
+        main_window.ks_load_thread = None
 
     if not success:
         QMessageBox.critical(main_window, "Loading Error", message)

@@ -6,7 +6,7 @@ Here is the updated spec with your refinements applied:
 
 ## Metadata
 
-* **Status:** Draft
+* **Status:** Completed
 * **Target Release:** v1.1
 * **Primary Developer/Agent:** [Agent Name]
 
@@ -28,7 +28,9 @@ Improve the legibility and interactivity of the Population Receptive Field (RF) 
 * **AC2 (Show IDs Relocation):** The `QCheckBox("Show IDs")` is removed from `StandardPlotsPanel`'s top control bar. A new `QCheckBox("Show IDs")` is added to the population panel's top control bar (`pop_ctrl_layout`).
 * **AC3 (Show IDs Wiring — Modest Labels):** When the population-panel "Show IDs" checkbox is checked, cell ID labels appear at the center of each target ellipse in the RF mosaic using a font size of **7–8 px** and `color: text_secondary` (not `text_primary`, to avoid visual shouting). When unchecked, labels are hidden. The `StandardPlotsPanel` template grid **no longer** displays channel-number labels. The checkbox state is read from `main_window.pop_show_ids_checkbox`.
 * **AC4 (Zoom & Pan):** The population RF mosaic canvas (`pop_mosaic_canvas`) supports mouse-wheel zoom and click-drag pan via a compact `NavigationToolbar2QT` attached to the mosaic canvas widget. The toolbar may be rendered icon-only or with hidden text labels, but zoom/pan/home/save tools must be active.
-* **AC5 (No Side Effects):** `StandardPlotsPanel` no longer references `show_ids_checkbox` or draws channel labels. All other standard plots (ACG, ISI, FR, Template Grid layout, channel modes) remain unchanged. `population_panel.py` functions other than `plot_population_rfs_background`, `draw_population_rfs_plot`, and `_update_highlight_patch` are untouched.
+* **AC5 (No Gridlines):** The population RF mosaic plot must not display any background gridlines to maintain a clean aesthetic.
+* **AC6 (Context-Aware Checkbox Update):** Toggling the "Show IDs" checkbox must instantly update the plot using the currently selected group subset, rather than resetting to show all cells in the recording when a folder is selected instead of a single cell.
+* **AC7 (No Side Effects):** `StandardPlotsPanel` no longer references `show_ids_checkbox` or draws channel labels. All other standard plots (ACG, ISI, FR, Template Grid layout, channel modes) remain unchanged. `population_panel.py` functions other than `plot_population_rfs_background`, `draw_population_rfs_plot`, and `_update_highlight_patch` are untouched.
 
 ## Architecture & Technical Constraints
 

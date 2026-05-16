@@ -46,6 +46,11 @@ RGCViewer is a high-performance, PyQt/pyqtgraph-based GUI tailored for the analy
 * [cite_start]**Goal:** Ensure ACG computations utilize the entire recording duration rather than just the first two minutes[cite: 9, 12].
 * [cite_start]**Outcome:** Refactored the algorithm to include spikes across the full session while maintaining memory efficiency and avoiding dense arrays[cite: 12].
 
+**Population Mosaic UI Refinements**
+
+* **Goal:** Resolve UI responsiveness bugs, relocate "Show IDs" to population panel, remove gridlines, and implement mouse-wheel zoom / click-drag panning on the RF mosaic.
+* **Outcome:** The `Show IDs` checkbox now instantly invalidates the caching to trigger redraws while preserving the selected group subset context. Gridlines were removed for a cleaner aesthetic, and interactive zoom and panning have been added via `NavigationToolbar2QT`. Verified with integration tests on real-world datasets.
+
 ---
 
 ## Testing & Infrastructure Initiatives
