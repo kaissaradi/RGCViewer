@@ -7,7 +7,7 @@ from qtpy.QtWidgets import (
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
     QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame,
-    QLineEdit, QShortcut, QToolButton,
+    QLineEdit, QShortcut,
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer, QSortFilterProxyModel
 from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
@@ -923,11 +923,10 @@ class MainWindow(QMainWindow):
         left_pane_layout.addWidget(left_content, stretch=1)
 
         # Collapse/expand control on the right edge of the cluster sidebar
-        self.sidebar_toggle_btn = QToolButton()
-        self.sidebar_toggle_btn.setText("\u2212")
+        self.sidebar_toggle_btn = QPushButton("\u2212")
         self.sidebar_toggle_btn.setToolTip("Collapse cluster sidebar")
         self.sidebar_toggle_btn.setFixedWidth(20)
-        self.sidebar_toggle_btn.setAutoRaise(True)
+        self.sidebar_toggle_btn.setFlat(True)
         self.sidebar_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
         self._style_sidebar_toggle_btn(colors)
@@ -1897,7 +1896,7 @@ class MainWindow(QMainWindow):
     def _style_sidebar_toggle_btn(self, colors):
         """Theme-aware styling for the left sidebar collapse control."""
         self.sidebar_toggle_btn.setStyleSheet(f"""
-            QToolButton {{
+            QPushButton {{
                 border: none;
                 border-left: 0.5px solid {colors['border_subtle']};
                 color: {colors['text_secondary']};
@@ -1906,7 +1905,7 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
                 padding: 0;
             }}
-            QToolButton:hover {{
+            QPushButton:hover {{
                 color: {colors['text_primary']};
                 background: {colors['bg_surface']};
             }}
