@@ -1,5 +1,5 @@
 # Specification: GUI Polish — UMAP Layout Bug, Sidebar Search & Tree Branch Styling
-
+# STATUS : DONE
 ## Metadata
 
 * **Status:** Ready for Dev
