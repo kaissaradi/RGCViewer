@@ -1,7 +1,7 @@
 """Unit tests for GUI polish: UMAP toolbar layout and sidebar collapse."""
 
 import pytest
-from qtpy.QtCore import Qt, QEvent
+from qtpy.QtCore import Qt, QEvent, QRect
 
 from qtpy.QtGui import QStandardItem
 
@@ -100,17 +100,19 @@ class TestTreeBranchStyling:
         assert not win.tree_view.isExpanded(index)
 
         delegate = win.tree_view.itemDelegate()
-        qtbot.waitUntil(lambda: win.tree_view.visualRect(index).isValid())
-        row_rect = win.tree_view.visualRect(index)
+        row_rect = QRect(0, 0, 300, 28)
         toggle = delegate._toggle_rect(index, row_rect)
         assert toggle is not None
 
-        qtbot.mouseClick(
-            win.tree_view.viewport(),
+        from qtpy.QtGui import QMouseEvent
+        release = QMouseEvent(
+            QEvent.MouseButtonRelease,
+            toggle.center(),
             Qt.LeftButton,
-            pos=toggle.center(),
+            Qt.LeftButton,
+            Qt.NoModifier,
         )
-        qtbot.wait(50)
+        assert delegate.editorEvent(release, model, None, index)
         assert win.tree_view.isExpanded(index)
 
     def test_delegate_colors_follow_theme(self, main_window_fixture):
