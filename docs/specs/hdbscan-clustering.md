@@ -2,10 +2,9 @@
 
 ## Metadata
 
-* **Status:** Ready for Dev
+* **Status:** Completed
 * **Target Release:** v1.1
-* **Primary Developer/Agent:** TBD
-* **Branch:** `feat/hdbscan-clustering`
+* **Branch:** `feat/hdbscan-clustering` (merged to `main`)
 
 ---
 
@@ -60,119 +59,22 @@ data structure rather than an arbitrary `k`."
 
 ---
 
-## Architecture & Technical Constraints
+## Implementation Summary
 
 ### Files Modified
 
-* `src/gui/panels/umap_panel.py` — all changes are isolated here.
+* `src/gui/panels/umap_panel.py` — all changes isolated here
+* `tests/unit/test_hdbscan_clustering.py` — unit tests (T1–T4)
+* `tests/integration/test_umap_panel_clustering.py` — integration tests (T5–T7)
+* `requirements.txt` — `hdbscan>=0.8.0`
 
-### Widgets Removed
+### Key Components
 
-* `self.k_spin` (QSpinBox, range 2–20)
-* `self.kmeans_btn` (QPushButton "Run K-Means")
-
-### Widgets Added / Renamed
-
-```
-self.cluster_method_combo  QComboBox       ["HDBSCAN", "K-Means"]
-self.cluster_param_spin    QSpinBox        label/range swaps on method change
-self.cluster_btn           QPushButton     "Run Clustering"
-```
-
-`cluster_layout` row becomes:
-```
-[Label: "Clustering:"] [cluster_method_combo] [cluster_param_spin] [cluster_btn]
-[auto_group_chk] [show_ids_btn] [project_3d_chk] [stretch]
-```
-
-### ClusterWorker (replaces KMeansWorker)
-
-```python
-class ClusterWorker(QObject):
-    finished = Signal(object, str)  # (labels_array, method_name)
-    error = Signal(str)
-
-    def __init__(self, embedding, method, param):
-        # method: "HDBSCAN" | "K-Means"
-        # param:  min_cluster_size (HDBSCAN) | k (K-Means)
-        ...
-
-    def run(self):
-        if self.method == "HDBSCAN":
-            import hdbscan
-            clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=self.param,
-                min_samples=None,          # defaults to min_cluster_size
-                cluster_selection_method='eom',
-                core_dist_n_jobs=-1
-            )
-            labels = clusterer.fit_predict(self.embedding)
-            self.finished.emit(labels, "HDBSCAN")
-        else:
-            # existing KMeans path unchanged
-            ...
-            self.finished.emit(labels, "K-Means")
-```
-
-### on_cluster_finished handler
-
-Receives `(labels, method_name)`. Stores result in `metadata_df[method_name]`.
-Sets `color_combo` to `method_name`. Calls `update_plot()`. If `auto_group_chk` is
-checked, skips cells where `label == -1` before creating tree groups.
-
-### update_plot noise override
-
-In the `"HDBSCAN"` branch of `update_plot()`:
-
-```python
-elif mode == "HDBSCAN":
-    if 'HDBSCAN' in self.metadata_df:
-        raw_labels = self.metadata_df['HDBSCAN'].values
-        # Build per-point color array; noise → grey
-        unique_non_noise = np.unique(raw_labels[raw_labels >= 0])
-        n_types = max(len(unique_non_noise), 1)
-        cmap_fn = plt.cm.get_cmap('tab20', n_types)
-        color_array = []
-        for lbl in raw_labels:
-            if lbl == -1:
-                color_array.append('#888888')
-            else:
-                idx = np.searchsorted(unique_non_noise, lbl)
-                color_array.append(cmap_fn(idx % n_types))
-        c = color_array
-        is_discrete = True
-```
-
-Pass `c` as a list of RGBA/hex values directly to `scatter(..., c=c)`. No colorbar
-for discrete modes (consistent with existing KSLabel / K-Means behavior).
-
-### show_group_ids compatibility
-
-`show_group_ids()` already checks `mode not in ["KSLabel", "K-Means", "Polarity"]`
-and returns early. Extend this guard to also allow `"HDBSCAN"`. The groupby logic is
-identical; noise cells (label -1) will naturally form a group named `-1` in the
-dialog — this is acceptable and informative.
-
-### Threading rules
-
-* Identical to the existing `KMeansWorker` pattern: `QThread` + `moveToThread`.
-* Worker refs renamed: `self.cluster_worker`, `self.cluster_worker_thread`.
-* `_reset_workers()` updated to clean up the new refs.
-
-### Dependency guard
-
-```python
-try:
-    import hdbscan
-    HDBSCAN_AVAILABLE = True
-except ImportError:
-    HDBSCAN_AVAILABLE = False
-    logger.warning("hdbscan not installed; HDBSCAN clustering disabled")
-```
-
-On `__init__`, if `not HDBSCAN_AVAILABLE`, set
-`self.cluster_method_combo.model().item(0).setEnabled(False)` (index 0 = HDBSCAN)
-and default selection to K-Means.
+* `ClusterWorker` — unified background worker for HDBSCAN and K-Means; emits
+  `(labels, method_name)` on `finished`
+* `HDBSCAN_AVAILABLE` — module-level import guard; disables HDBSCAN combo entry when false
+* `run_clustering` / `on_cluster_finished` — QThread wiring; noise labels skipped in auto-group
+* `update_plot` — HDBSCAN branch assigns `#888888` to label `-1`, `tab20` for clusters
 
 ---
 
@@ -180,34 +82,18 @@ and default selection to K-Means.
 
 ### Unit — `tests/unit/test_hdbscan_clustering.py`
 
-* **T1:** `ClusterWorker` with method=`"HDBSCAN"`, param=15, synthetic 2D embedding
-  (300 pts, 3 obvious blobs) → `labels` contains ≥ 2 unique non-noise clusters,
-  no exception raised.
-* **T2:** `ClusterWorker` with method=`"K-Means"`, param=5 → labels shape matches
-  input, values in `[0, 4]`, no label `-1` present.
-* **T3:** Noise point handling — embed with one obvious outlier cluster; confirm at
-  least one point gets label `-1` under tight `min_cluster_size`.
-* **T4:** `ClusterWorker` with `HDBSCAN_AVAILABLE=False` patched → `error` signal
-  emitted, no crash.
+* **T1:** HDBSCAN on 3-blob synthetic data → ≥ 2 non-noise clusters
+* **T2:** K-Means → labels in `[0, k-1]`, no `-1`
+* **T3:** Outliers → labeled `-1`
+* **T4:** `HDBSCAN_AVAILABLE=False` patched → `error` signal, no crash
 
 ### Integration — `tests/integration/test_umap_panel_clustering.py`
 
-* **T5 (qtbot):** Instantiate `UMAPPanel`, inject a synthetic embedding + metadata_df,
-  select HDBSCAN in `cluster_method_combo`, click `cluster_btn` → `metadata_df`
-  contains `'HDBSCAN'` column after worker finishes.
-* **T6 (qtbot):** Switch method combo K-Means → HDBSCAN → verify `cluster_param_spin`
-  prefix, range, and default value update correctly.
-* **T7 (regression):** Run K-Means via the new UI path → `metadata_df['K-Means']`
-  populated, auto-group tree still works.
+* **T5:** HDBSCAN button click → `metadata_df['HDBSCAN']` populated, color combo updated
+* **T6:** Method combo swap → spinbox prefix, range, default update
+* **T7:** K-Means + auto-group regression
 
-### Screenshot Verification
-
-1. Launch app, load any dataset, run UMAP 2D.
-2. Select HDBSCAN, `min_cluster_size=15`, click "Run Clustering".
-3. Verify: scatter recolors, noise points appear grey, status bar shows cluster count.
-4. Open Show IDs dialog → confirm `-1` group is present and non-noise groups are
-   numbered sequentially from 0.
-5. Switch `color_combo` back to KSLabel → HDBSCAN coloring clears without error.
+All tests pass via `conda run -n rgcviewer python -m pytest tests/unit/test_hdbscan_clustering.py tests/integration/test_umap_panel_clustering.py`.
 
 ---
 

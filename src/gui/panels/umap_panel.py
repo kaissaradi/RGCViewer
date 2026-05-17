@@ -11,6 +11,15 @@ from matplotlib.path import Path as MplPath
 from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
 import sklearn.cluster
+import matplotlib.pyplot as plt
+
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("hdbscan not installed; HDBSCAN clustering disabled")
 
 # --- Scientific Computing Imports ---
 from sklearn.decomposition import PCA
@@ -120,26 +129,41 @@ def extract_features_from_datamanager(dm, cluster_ids):
 
     return final_features, valid_ids, metadata
 
-class KMeansWorker(QObject):
-    """Background worker for K-Means clustering."""
-    finished = Signal(object)  # labels
+class ClusterWorker(QObject):
+    """Background worker for clustering (HDBSCAN or K-Means)."""
+    finished = Signal(object, str)  # labels, method
     error = Signal(str)
 
-    def __init__(self, embedding, k):
+    def __init__(self, embedding, method, param):
         super().__init__()
         # Ensure contiguous array for thread safety
         self.embedding = np.array(embedding, copy=True)
-        self.k = k
+        self.method = method
+        self.param = param
 
     def run(self):
         try:
-            # Run K-Means
-            kmeans = sklearn.cluster.KMeans(
-                n_clusters=self.k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(self.embedding)
-            self.finished.emit(labels)
+            if self.method == "HDBSCAN":
+                if not HDBSCAN_AVAILABLE:
+                    self.error.emit("HDBSCAN is not available (hdbscan not installed)")
+                    return
+                import hdbscan
+                clusterer = hdbscan.HDBSCAN(
+                    min_cluster_size=self.param,
+                    min_samples=None,
+                    cluster_selection_method='eom',
+                    core_dist_n_jobs=-1
+                )
+                labels = clusterer.fit_predict(self.embedding)
+                self.finished.emit(labels, "HDBSCAN")
+            else:
+                # K-Means
+                kmeans = sklearn.cluster.KMeans(
+                    n_clusters=self.param, random_state=42, n_init=10)
+                labels = kmeans.fit_predict(self.embedding)
+                self.finished.emit(labels, "K-Means")
         except Exception as e:
-            logger.exception("K-Means failed")
+            logger.exception("Clustering failed")
             self.error.emit(str(e))
 
 
@@ -239,7 +263,7 @@ class UMAPPanel(QWidget):
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
-            ["KSLabel", "Polarity", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
+            ["KSLabel", "Polarity", "HDBSCAN", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
         self.color_combo.currentTextChanged.connect(
             lambda: self.update_plot())
 
@@ -263,15 +287,26 @@ class UMAPPanel(QWidget):
         # --- Controls Row 2 (Clustering & Options) ---
         cluster_layout = QHBoxLayout()
 
-        # K-Means controls
-        self.k_spin = QSpinBox()
-        self.k_spin.setRange(2, 20)
-        self.k_spin.setValue(5)
-        self.k_spin.setPrefix("k=")
-        self.k_spin.setToolTip("Number of clusters for K-Means")
+        # Clustering controls
+        self.cluster_method_combo = QComboBox()
+        self.cluster_method_combo.addItems(["HDBSCAN", "K-Means"])
+        if not HDBSCAN_AVAILABLE:
+            self.cluster_method_combo.model().item(0).setEnabled(False)
+            self.cluster_method_combo.setCurrentIndex(1)
+            
+        self.cluster_param_spin = QSpinBox()
+        if self.cluster_method_combo.currentText() == "HDBSCAN":
+            self.cluster_param_spin.setRange(2, 200)
+            self.cluster_param_spin.setValue(15)
+        else:
+            self.cluster_param_spin.setRange(2, 100)
+            self.cluster_param_spin.setValue(5)
+            self.cluster_param_spin.setPrefix("k=")
+            
+        self.cluster_method_combo.currentIndexChanged.connect(self._on_cluster_method_changed)
 
-        self.kmeans_btn = QPushButton("Run K-Means")
-        self.kmeans_btn.clicked.connect(self.run_kmeans)
+        self.cluster_btn = QPushButton("Run Clustering")
+        self.cluster_btn.clicked.connect(self.run_clustering)
 
         # Auto-Group Checkbox
         self.auto_group_chk = QCheckBox("Auto-Group Tree")
@@ -290,8 +325,9 @@ class UMAPPanel(QWidget):
         self.project_3d_chk.setChecked(True)
 
         cluster_layout.addWidget(QLabel("Clustering:"))
-        cluster_layout.addWidget(self.k_spin)
-        cluster_layout.addWidget(self.kmeans_btn)
+        cluster_layout.addWidget(self.cluster_method_combo)
+        cluster_layout.addWidget(self.cluster_param_spin)
+        cluster_layout.addWidget(self.cluster_btn)
         cluster_layout.addWidget(self.auto_group_chk)
         cluster_layout.addWidget(self.show_ids_btn)
         cluster_layout.addWidget(self.project_3d_chk)
@@ -315,8 +351,8 @@ class UMAPPanel(QWidget):
         # Worker refs
         self.worker_thread = None
         self.worker = None
-        self.kmeans_worker_thread = None
-        self.kmeans_worker = None
+        self.cluster_worker_thread = None
+        self.cluster_worker = None
 
     def _reset_workers(self):
         """Clean up any running workers."""
@@ -341,24 +377,24 @@ class UMAPPanel(QWidget):
                 self.worker_thread.wait(500)
             self.worker_thread = None
         
-        # --- K-Means Worker Cleanup ---
-        if self.kmeans_worker:
+        # --- Cluster Worker Cleanup ---
+        if self.cluster_worker:
             # Disconnect all signals first
             try:
-                self.kmeans_worker.finished.disconnect()
-                self.kmeans_worker.error.disconnect()
+                self.cluster_worker.finished.disconnect()
+                self.cluster_worker.error.disconnect()
             except (TypeError, RuntimeError):
                 pass
-            self.kmeans_worker = None
+            self.cluster_worker = None
         
-        if self.kmeans_worker_thread:
-            self.kmeans_worker_thread.quit()
+        if self.cluster_worker_thread:
+            self.cluster_worker_thread.quit()
             # Use timeout to prevent indefinite hangs (positional argument, not keyword)
-            if not self.kmeans_worker_thread.wait(1000):  # 1 second timeout in ms
-                logger.warning("K-Means worker thread did not stop gracefully, forcing termination")
-                self.kmeans_worker_thread.terminate()
-                self.kmeans_worker_thread.wait(500)
-            self.kmeans_worker_thread = None
+            if not self.cluster_worker_thread.wait(1000):  # 1 second timeout in ms
+                logger.warning("Cluster worker thread did not stop gracefully, forcing termination")
+                self.cluster_worker_thread.terminate()
+                self.cluster_worker_thread.wait(500)
+            self.cluster_worker_thread = None
 
     def cleanup(self):
         """Explicitly cleanup resources to prevent memory leaks."""
@@ -519,26 +555,37 @@ class UMAPPanel(QWidget):
 
         self.worker_thread.start()
 
-    def run_kmeans(self):
+    def _on_cluster_method_changed(self):
+        if self.cluster_method_combo.currentText() == "HDBSCAN":
+            self.cluster_param_spin.setPrefix("")
+            self.cluster_param_spin.setRange(2, 200)
+            self.cluster_param_spin.setValue(15)
+        else:
+            self.cluster_param_spin.setRange(2, 100)
+            self.cluster_param_spin.setValue(5)
+            self.cluster_param_spin.setPrefix("k=")
+
+    def run_clustering(self):
         if self.embedding is None:
             QMessageBox.warning(self, "No Data", "Please run UMAP first.")
             return
 
-        self.kmeans_btn.setEnabled(False)
+        self.cluster_btn.setEnabled(False)
         self.progress.show()
         self.progress.setRange(0, 0)
 
-        k = self.k_spin.value()
+        method = self.cluster_method_combo.currentText()
+        param = self.cluster_param_spin.value()
 
-        self.kmeans_worker_thread = QThread()
-        self.kmeans_worker = KMeansWorker(self.embedding, k)
-        self.kmeans_worker.moveToThread(self.kmeans_worker_thread)
+        self.cluster_worker_thread = QThread()
+        self.cluster_worker = ClusterWorker(self.embedding, method, param)
+        self.cluster_worker.moveToThread(self.cluster_worker_thread)
 
-        self.kmeans_worker_thread.started.connect(self.kmeans_worker.run)
-        self.kmeans_worker.error.connect(self.on_kmeans_error)
-        self.kmeans_worker.finished.connect(self.on_kmeans_finished)
+        self.cluster_worker_thread.started.connect(self.cluster_worker.run)
+        self.cluster_worker.error.connect(self.on_cluster_error)
+        self.cluster_worker.finished.connect(self.on_cluster_finished)
 
-        self.kmeans_worker_thread.start()
+        self.cluster_worker_thread.start()
 
     def update_status(self, msg):
         self.main_window.status_bar.showMessage(msg)
@@ -556,14 +603,15 @@ class UMAPPanel(QWidget):
             self.worker_thread = None
         self.worker = None
 
-    def on_kmeans_error(self, msg):
-        self.kmeans_btn.setEnabled(True)
+    def on_cluster_error(self, msg):
+        self.cluster_btn.setEnabled(True)
         self.progress.hide()
-        QMessageBox.critical(self, "K-Means Error", msg)
-        if self.kmeans_worker_thread:
-            self.kmeans_worker_thread.quit()
-            self.kmeans_worker_thread.wait()
-            self.kmeans_worker_thread = None
+        QMessageBox.critical(self, "Clustering Error", msg)
+        if self.cluster_worker_thread:
+            self.cluster_worker_thread.quit()
+            self.cluster_worker_thread.wait()
+            self.cluster_worker_thread = None
+        self.cluster_worker = None
 
     def on_processing_finished(self, embedding, ids, metadata):
         self.embedding = np.asarray(embedding)
@@ -578,7 +626,7 @@ class UMAPPanel(QWidget):
         self.run_3d_btn.setEnabled(True)
         self.progress.hide()
         self.show_ids_btn.setEnabled(True)
-        self.kmeans_btn.setEnabled(True)
+        self.cluster_btn.setEnabled(True)
 
         # Clean up worker thread gracefully (don't reset here, just clean up the thread ref)
         if self.worker_thread:
@@ -594,43 +642,49 @@ class UMAPPanel(QWidget):
         self.main_window.status_bar.showMessage(
             f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells. (Shape={W_SHAPE}, Pattern={W_PATTERN}, Geo={W_GEOMETRY})")
 
-    def on_kmeans_finished(self, labels):
-        self.metadata_df['K-Means'] = labels
-        self.kmeans_btn.setEnabled(True)
+    def on_cluster_finished(self, labels, method_name):
+        self.metadata_df[method_name] = labels
+        self.cluster_btn.setEnabled(True)
         self.progress.hide()
-        if self.kmeans_worker_thread:
-            self.kmeans_worker_thread.quit()
-            self.kmeans_worker_thread.wait()
-            self.kmeans_worker_thread = None
+        if self.cluster_worker_thread:
+            self.cluster_worker_thread.quit()
+            self.cluster_worker_thread.wait()
+            self.cluster_worker_thread = None
+        self.cluster_worker = None
 
-        self.color_combo.setCurrentText("K-Means")
+        self.color_combo.setCurrentText(method_name)
         self.update_plot()
-        self.main_window.status_bar.showMessage("K-Means clustering complete.")
+        self.main_window.status_bar.showMessage(f"{method_name} clustering complete.")
 
         # --- AUTO-GROUP LOGIC ---
         if self.auto_group_chk.isChecked():
-            self.apply_kmeans_grouping(labels)
+            # Skip noise points (-1)
+            valid_labels = labels[labels >= 0]
+            if len(valid_labels) > 0:
+                self.apply_grouping(labels, method_name)
 
-    def apply_kmeans_grouping(self, labels):
+    def apply_grouping(self, labels, method_name):
         try:
             from ..callbacks import group_clusters_in_tree
             unique_labels = np.unique(labels)
             count = 0
             
             for lbl in unique_labels:
+                if lbl == -1:
+                    continue  # Skip noise points
                 subset_indices = np.where(labels == lbl)[0]
                 group_cluster_ids = self.cluster_ids[subset_indices]
-                group_name = f"Type_{lbl+1}"
+                group_name = f"Type_{lbl+1}" if method_name == "K-Means" else f"Cluster_{lbl}"
                 
                 # Use our safe, in-place tree modifier!
                 group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
                 count += 1
             
             self.main_window.status_bar.showMessage(
-                f"Auto-Group: created {count} groups (Type_1 … Type_{count})."
+                f"Auto-Group: created {count} groups."
             )
             
-            # Force the main tree view to collapse all groups after K-Means auto-grouping
+            # Force the main tree view to collapse all groups after auto-grouping
             if hasattr(self.main_window, 'tree_view'):
                 self.main_window.tree_view.collapseAll()
             
@@ -740,6 +794,23 @@ class UMAPPanel(QWidget):
                 is_discrete = True
             else:
                 c = colors['text_secondary']
+        elif mode == "HDBSCAN":
+            if 'HDBSCAN' in self.metadata_df:
+                raw_labels = self.metadata_df['HDBSCAN'].values
+                unique_non_noise = np.unique(raw_labels[raw_labels >= 0])
+                n_types = max(len(unique_non_noise), 1)
+                cmap_fn = plt.cm.get_cmap('tab20', n_types)
+                color_array = []
+                for lbl in raw_labels:
+                    if lbl == -1:
+                        color_array.append('#888888')
+                    else:
+                        idx = np.searchsorted(unique_non_noise, lbl)
+                        color_array.append(cmap_fn(idx % n_types))
+                c = color_array
+                is_discrete = True
+            else:
+                c = colors['text_secondary']
 
         # Draw Scatter
         if self.is_3d:
@@ -771,7 +842,7 @@ class UMAPPanel(QWidget):
                 edgecolors='none'
             )
 
-        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete):
+        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "HDBSCAN" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
             # Style colorbar ticks
             if self.cbar:
@@ -797,11 +868,11 @@ class UMAPPanel(QWidget):
             return
 
         mode = self.color_combo.currentText()
-        if mode not in ["KSLabel", "K-Means", "Polarity"]:
+        if mode not in ["KSLabel", "K-Means", "Polarity", "HDBSCAN"]:
             QMessageBox.information(
                 self,
                 "Info",
-                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity).")
+                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, HDBSCAN).")
             return
 
         if mode not in self.metadata_df:
