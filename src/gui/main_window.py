@@ -928,6 +928,7 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_btn.setToolTip("Collapse cluster sidebar")
         self.sidebar_toggle_btn.setFixedWidth(20)
         self.sidebar_toggle_btn.setAutoRaise(True)
+        self.sidebar_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
         self._style_sidebar_toggle_btn(colors)
         left_pane_layout.addWidget(self.sidebar_toggle_btn)
