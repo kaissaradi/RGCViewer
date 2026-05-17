@@ -1,9 +1,9 @@
 import pandas as pd
-from PyQt5.QtGui import QColor
-from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal
+from PyQt5.QtGui import QColor, QPainter, QPen
+from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal, QRect, QEvent
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from qtpy.QtWidgets import QTableView
+from qtpy.QtWidgets import QTableView, QStyledItemDelegate, QTreeView
 
 from ..theme import DARK_COLORS
 
@@ -229,3 +229,109 @@ class HighlightStatusPandasModel(PandasModel):
             logger.exception("HighlightStatusPandasModel.data error")
 
         return value
+
+
+class ClusterTreeDelegate(QStyledItemDelegate):
+    """
+    Paints +/- expand toggles and hierarchy guide lines for folder rows in the
+    cluster tree. Qt stylesheet ::branch rules are unreliable across platforms,
+    so this delegate draws directly in the tree indent/branch area.
+    """
+
+    TOGGLE_SIZE = 14
+
+    def __init__(self, tree_view: QTreeView, colors=None):
+        super().__init__(tree_view)
+        self._tree = tree_view
+        self._colors = dict(colors or DARK_COLORS)
+
+    def update_colors(self, colors):
+        self._colors = dict(colors)
+
+    @staticmethod
+    def _depth(index: QModelIndex) -> int:
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        return depth
+
+    def _ancestor_at_level(self, index: QModelIndex, level: int) -> QModelIndex:
+        depth = self._depth(index)
+        anc = index
+        for _ in range(depth - level):
+            anc = anc.parent()
+        return anc
+
+    def _toggle_rect(self, index: QModelIndex, row_rect: QRect):
+        if not index.model().hasChildren(index):
+            return None
+        depth = self._depth(index)
+        indent = self._tree.indentation()
+        x = depth * indent + (indent - self.TOGGLE_SIZE) // 2
+        y = row_rect.center().y() - self.TOGGLE_SIZE // 2
+        return QRect(x, y, self.TOGGLE_SIZE, self.TOGGLE_SIZE)
+
+    def _draw_guides(self, painter: QPainter, index: QModelIndex, row_rect: QRect):
+        depth = self._depth(index)
+        if depth == 0:
+            return
+
+        indent = self._tree.indentation()
+        model = index.model()
+        line = QColor(self._colors['border_default'])
+        painter.setPen(QPen(line, 1))
+
+        for level in range(depth):
+            anc = self._ancestor_at_level(index, level)
+            parent = anc.parent()
+            last_child = anc.row() == model.rowCount(parent) - 1
+            x = level * indent + indent // 2
+            if last_child:
+                painter.drawLine(x, row_rect.top(), x, row_rect.center().y())
+            else:
+                painter.drawLine(x, row_rect.top(), x, row_rect.bottom())
+
+        parent_level = depth - 1
+        x = parent_level * indent + indent // 2
+        painter.drawLine(x, row_rect.center().y(), row_rect.left(), row_rect.center().y())
+
+    def _draw_toggle(self, painter: QPainter, rect: QRect, expanded: bool):
+        accent = QColor(self._colors['text_secondary'])
+        painter.setPen(QPen(accent, 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 2, 2)
+        cx, cy = rect.center().x(), rect.center().y()
+        painter.setPen(QPen(accent, 1.5))
+        painter.drawLine(cx - 3, cy, cx + 3, cy)
+        if not expanded:
+            painter.drawLine(cx, cy - 3, cx, cy + 3)
+
+    def paint(self, painter, option, index):
+        tree = self._tree
+        row_rect = tree.visualRect(index)
+        if row_rect.isValid():
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing)
+            self._draw_guides(painter, index, row_rect)
+            toggle = self._toggle_rect(index, row_rect)
+            if toggle is not None:
+                self._draw_toggle(painter, toggle, tree.isExpanded(index))
+            painter.restore()
+
+        super().paint(painter, option, index)
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            row_rect = self._tree.visualRect(index)
+            toggle = self._toggle_rect(index, row_rect)
+            if toggle is not None:
+                pos = event.pos()
+                if hasattr(event, "position"):
+                    pos = event.position().toPoint()
+                hit = toggle.adjusted(-2, -2, 2, 2)
+                if hit.contains(pos):
+                    self._tree.setExpanded(index, not self._tree.isExpanded(index))
+                    return True
+        return super().editorEvent(event, model, option, index)

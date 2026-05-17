@@ -1,9 +1,12 @@
 """Unit tests for GUI polish: UMAP toolbar layout and sidebar collapse."""
 
 import pytest
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QEvent
+
+from qtpy.QtGui import QStandardItem
 
 from src.gui.main_window import MainWindow, SIDEBAR_COLLAPSED_WIDTH
+from src.gui.widgets.widgets import ClusterTreeDelegate
 
 
 @pytest.fixture
@@ -82,17 +85,38 @@ class TestSidebarCollapse:
 
 
 class TestTreeBranchStyling:
-    def test_branch_css_has_plus_minus_and_lines(self, main_window_fixture):
-        qss = main_window_fixture.styleSheet()
-        assert "branch:has-children" in qss
-        assert "branch:open" in qss
-        assert "has-siblings:adjoins-item" in qss
-        assert "x1='4' y1='7' x2='10' y2='7'" in qss  # minus / plus bar
-
-    def test_branch_color_changes_on_theme_toggle(self, main_window_fixture):
+    def test_tree_uses_cluster_delegate(self, main_window_fixture):
         win = main_window_fixture
-        dark_qss = win.styleSheet()
+        assert isinstance(win.tree_view.itemDelegate(), ClusterTreeDelegate)
+
+    def test_delegate_toggle_expands_folder(self, qtbot, main_window_fixture):
+        win = main_window_fixture
+        model = win.tree_model
+        folder = QStandardItem("TestGroup")
+        folder.appendRow(QStandardItem("Cluster 1 (n=10)"))
+        model.appendRow(folder)
+        win._switch_left_view(0)
+        index = model.indexFromItem(folder)
+        assert not win.tree_view.isExpanded(index)
+
+        delegate = win.tree_view.itemDelegate()
+        qtbot.waitUntil(lambda: win.tree_view.visualRect(index).isValid())
+        row_rect = win.tree_view.visualRect(index)
+        toggle = delegate._toggle_rect(index, row_rect)
+        assert toggle is not None
+
+        qtbot.mouseClick(
+            win.tree_view.viewport(),
+            Qt.LeftButton,
+            pos=toggle.center(),
+        )
+        qtbot.wait(50)
+        assert win.tree_view.isExpanded(index)
+
+    def test_delegate_colors_follow_theme(self, main_window_fixture):
+        win = main_window_fixture
+        delegate = win._cluster_tree_delegate
+        dark = delegate._colors['text_secondary']
         win.toggle_theme()
-        light_qss = win.styleSheet()
-        assert dark_qss != light_qss
+        assert delegate._colors['text_secondary'] != dark
         win.toggle_theme()

@@ -14,7 +14,9 @@ from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
 from ..analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
-from .widgets.widgets import MplCanvas, HighlightStatusPandasModel, CustomTableView
+from .widgets.widgets import (
+    MplCanvas, HighlightStatusPandasModel, CustomTableView, ClusterTreeDelegate,
+)
 from . import callbacks
 from .panels.population_panel import (
     draw_population_timecourse_panel,
@@ -158,10 +160,6 @@ class MainWindow(QMainWindow):
 
     def _setup_style(self, colors):
         self.setFont(QFont("Inter", 11))
-
-        # Strip leading '#' so it can be URL-encoded as %23 inside SVG data URIs
-        _arrow = colors['text_secondary'].lstrip('#')
-        _line = colors['border_default'].lstrip('#')
 
         self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
@@ -381,35 +379,7 @@ class MainWindow(QMainWindow):
                 alternate-background-color: {colors['bg_surface']};
                 selection-background-color: {colors['selection_bg']};
             }}
-            QTreeView::item {{ color: {colors['text_primary']}; }}
-            QTreeView::item:hover {{ background: {colors['bg_surface']}; color: {colors['text_primary']}; }}
-            QTreeView::item:selected {{ background: {colors['selection_bg']}; color: {colors['text_primary']}; }}
-            QTreeView::branch {{
-                background: {colors['bg_panel']};
-            }}
-
-            /* Hierarchy connector lines */
-            QTreeView::branch:has-siblings:!adjoins-item {{
-                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='20' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
-            }}
-            QTreeView::branch:has-siblings:adjoins-item {{
-                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='20' stroke='%23{_line}' stroke-width='1'/><line x1='10' y1='10' x2='20' y2='10' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
-            }}
-            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
-                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='10' stroke='%23{_line}' stroke-width='1'/><line x1='10' y1='10' x2='20' y2='10' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
-            }}
-
-            /* Collapsed folder: + in rounded box */
-            QTreeView::branch:has-children:!has-siblings:closed,
-            QTreeView::branch:closed:has-children:has-siblings {{
-                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><rect x='1' y='1' width='12' height='12' rx='2' fill='none' stroke='%23{_arrow}' stroke-width='1'/><line x1='7' y1='4' x2='7' y2='10' stroke='%23{_arrow}' stroke-width='1.2'/><line x1='4' y1='7' x2='10' y2='7' stroke='%23{_arrow}' stroke-width='1.2'/></svg>");
-            }}
-
-            /* Expanded folder: − in rounded box */
-            QTreeView::branch:open:has-children:!has-siblings,
-            QTreeView::branch:open:has-children:has-siblings {{
-                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><rect x='1' y='1' width='12' height='12' rx='2' fill='none' stroke='%23{_arrow}' stroke-width='1'/><line x1='4' y1='7' x2='10' y2='7' stroke='%23{_arrow}' stroke-width='1.2'/></svg>");
-            }}
+            /* Tree item colors handled on tree_view + ClusterTreeDelegate */
 
             /* ── Status bar ──────────────────────── */
             QStatusBar {{
@@ -566,8 +536,38 @@ class MainWindow(QMainWindow):
         if hasattr(self, "tree_model"):
             self._apply_tree_item_theme(colors)
 
+    def _apply_tree_view_style(self, colors):
+        """Per-tree stylesheet; branch chrome is drawn by ClusterTreeDelegate."""
+        self.tree_view.setStyleSheet(f"""
+            QTreeView {{
+                background-color: {colors['bg_panel']};
+                color: {colors['text_primary']};
+                border: none;
+                alternate-background-color: {colors['bg_surface']};
+                selection-background-color: {colors['selection_bg']};
+            }}
+            QTreeView::item {{
+                color: {colors['text_primary']};
+                padding: 2px 0;
+            }}
+            QTreeView::item:hover {{
+                background: {colors['bg_surface']};
+            }}
+            QTreeView::item:selected {{
+                background: {colors['selection_bg']};
+            }}
+            QTreeView::branch {{
+                background: transparent;
+                border: none;
+                image: none;
+            }}
+        """)
+        if hasattr(self, '_cluster_tree_delegate'):
+            self._cluster_tree_delegate.update_colors(colors)
+
     def _apply_tree_item_theme(self, colors):
         """Apply readable item brushes for the current palette across the tree."""
+        self._apply_tree_view_style(colors)
         if self.tree_model is None:
             return
 
@@ -887,9 +887,13 @@ class MainWindow(QMainWindow):
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
         self.tree_view.setRootIsDecorated(True)
-        self.tree_view.setIndentation(20)
+        self.tree_view.setIndentation(24)
         self.tree_view.setAnimated(True)
         self.tree_view.setUniformRowHeights(True)
+        self._cluster_tree_delegate = ClusterTreeDelegate(
+            self.tree_view, self.get_current_colors())
+        self.tree_view.setItemDelegate(self._cluster_tree_delegate)
+        self._apply_tree_view_style(self.get_current_colors())
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
