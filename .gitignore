@@ -1,5 +1,5 @@
 # Python
-*__pycache__/
+__pycache__/
 *.pyc
 
 # Test and coverage output
@@ -9,7 +9,14 @@
 htmlcov/
 tests/test_outputs/
 
-# Editor
-.vscode/
+# Development Folders & Configs (Excluded from Production Main)
+docs/
+tests/
+conftest.py
+test_population_panel.py
+pytest.ini
+requirements-dev.txt
 
+# Editor & Tooling
+.vscode/
 .codex_artifacts
