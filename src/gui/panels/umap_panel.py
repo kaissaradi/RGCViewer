@@ -3,7 +3,7 @@ import pandas as pd
 from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                             QComboBox, QLabel, QProgressBar, QMessageBox,
                             QSpinBox, QDialog, QTextEdit, QCheckBox)
-from qtpy.QtCore import QThread, Signal, QObject
+from qtpy.QtCore import QThread, Signal, QObject, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.widgets import LassoSelector, RectangleSelector
@@ -353,6 +353,22 @@ class UMAPPanel(QWidget):
         self.worker = None
         self.cluster_worker_thread = None
         self.cluster_worker = None
+
+    def showEvent(self, event):
+        """
+        Qt defers geometry computation for widgets inside QTabWidget until they
+        are first shown. On the initial visit the first paint can fire before
+        the layout pass has committed sizes, causing the two toolbar rows to
+        overlap. singleShot(0) defers the layout activation until after the
+        event loop processes the show, guaranteeing geometry is committed
+        before first paint.
+        """
+        super().showEvent(event)
+        QTimer.singleShot(0, self._refresh_layout)
+
+    def _refresh_layout(self):
+        self.layout.activate()
+        self.updateGeometry()
 
     def _reset_workers(self):
         """Clean up any running workers."""

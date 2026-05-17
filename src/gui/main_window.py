@@ -6,10 +6,11 @@ from qtpy.QtWidgets import (
     QHeaderView, QMessageBox, QTabWidget,
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
-    QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame
+    QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame,
+    QLineEdit, QShortcut,
 )
-from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
-from qtpy.QtGui import QFont, QStandardItemModel
+from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer, QSortFilterProxyModel
+from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
 from ..analysis.data_manager import DataManager
 from typing import Optional
 # Custom GUI Modules
@@ -154,6 +155,9 @@ class MainWindow(QMainWindow):
 
     def _setup_style(self, colors):
         self.setFont(QFont("Inter", 11))
+
+        # Strip leading '#' so it can be URL-encoded as %23 inside the SVG data URI
+        _arrow = colors['text_secondary'].lstrip('#')
 
         self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
@@ -377,6 +381,26 @@ class MainWindow(QMainWindow):
             QTreeView::item:hover {{ background: {colors['bg_surface']}; color: {colors['text_primary']}; }}
             QTreeView::item:selected {{ background: {colors['selection_bg']}; color: {colors['text_primary']}; }}
             QTreeView::branch {{ background: {colors['bg_panel']}; }}
+
+            /* Collapsed group row: right-pointing triangle */
+            QTreeView::branch:has-children:!has-siblings:closed,
+            QTreeView::branch:closed:has-children:has-siblings {{
+                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><polygon points='3,2 8,5 3,8' fill='%23{_arrow}'/></svg>");
+            }}
+
+            /* Expanded group row: down-pointing triangle */
+            QTreeView::branch:open:has-children:!has-siblings,
+            QTreeView::branch:open:has-children:has-siblings {{
+                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><polygon points='2,3 5,8 8,3' fill='%23{_arrow}'/></svg>");
+            }}
+
+            /* Remove all 90s connector lines */
+            QTreeView::branch:has-siblings:!adjoins-item,
+            QTreeView::branch:has-siblings:adjoins-item,
+            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
+                border-image: none;
+                image: none;
+            }}
 
             /* ── Status bar ──────────────────────── */
             QStatusBar {{
@@ -873,6 +897,15 @@ class MainWindow(QMainWindow):
         self.view_stack.setCurrentIndex(1)
 
         left_content_layout.addLayout(top_ctrl_layout)
+
+        # --- Sidebar Search Bar ---
+        self.cluster_search_bar = QLineEdit()
+        self.cluster_search_bar.setPlaceholderText("Search clusters...")
+        self.cluster_search_bar.setClearButtonEnabled(True)
+        self.cluster_search_bar.setFixedHeight(28)
+        self.cluster_search_bar.textChanged.connect(self._filter_sidebar)
+        left_content_layout.addWidget(self.cluster_search_bar)
+
         left_content_layout.addWidget(self.view_stack)
 
         # --- Similarity Panel ---
@@ -1121,6 +1154,10 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.reset_views)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
+        # Ctrl+F: focus the sidebar search bar
+        self.search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.search_shortcut.activated.connect(self._focus_search_bar)
+
         # Connect the raw panel's status and error messages to the status bar
         self.raw_panel.status_message.connect(
             lambda msg: self.status_bar.showMessage(msg, 3000))
@@ -1198,8 +1235,11 @@ class MainWindow(QMainWindow):
             )
 
     def _switch_left_view(self, index):
-        """Switches between the tree and table views in the left pane."""
+        """Switches between the tree (0) and table (1) views in the left pane."""
         self.view_stack.setCurrentIndex(index)
+        # Re-apply any active search query to whichever view just became active
+        if hasattr(self, 'cluster_search_bar'):
+            self._filter_sidebar(self.cluster_search_bar.text())
 
     # --- Helper Method ---
     def _get_selected_cluster_id(self):
@@ -1233,13 +1273,12 @@ class MainWindow(QMainWindow):
             # Check if the model has mapToSource method (for proxy models)
             model = self.table_view.model()
             if hasattr(model, 'mapToSource'):
-                # The pandas model can be sorted, so we must map the view's row
-                # to the model's row
+                # Map the view's sorted/filtered row back to the source model row
                 source_index = model.mapToSource(model.index(selected_row, 0))
-                cluster_id = model._dataframe.iloc[source_index.row(
-                )]['cluster_id']
+                cluster_id = model.sourceModel()._dataframe.iloc[
+                    source_index.row()]['cluster_id']
             else:
-                # If no proxy model, use the row directly
+                # Bare model (no proxy), use the row directly
                 cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
             return cluster_id
 
@@ -1300,10 +1339,16 @@ class MainWindow(QMainWindow):
         return []
 
     def setup_table_model(self, model):
-        """Sets up the table view model and connects the selection changed signal."""
+        """Sets up the table view model, wrapping it in a search proxy."""
         if hasattr(model, 'update_colors'):
             model.update_colors(self.get_current_colors())
-        self.table_view.setModel(model)
+
+        proxy = QSortFilterProxyModel(self)
+        proxy.setSourceModel(model)
+        proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        proxy.setFilterKeyColumn(-1)  # search all columns
+
+        self.table_view.setModel(proxy)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table_view.verticalHeader().setVisible(False)
         try:
@@ -1313,6 +1358,10 @@ class MainWindow(QMainWindow):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed)
+
+        # Re-apply any active search query to the new proxy
+        if hasattr(self, 'cluster_search_bar') and self.cluster_search_bar.text():
+            proxy.setFilterFixedString(self.cluster_search_bar.text())
 
         # Column header labels override (keeps internal df names intact)
         HEADER_LABELS = {
@@ -1405,24 +1454,38 @@ class MainWindow(QMainWindow):
         if self.data_manager is None:
             return
         df = self.data_manager.cluster_df
-        # Preserve the user's current visual column order across the rebuild
+        # Preserve the user's current visual column order across the rebuild.
+        # The view may have a proxy installed, so unwrap to the source model.
         header = self.table_view.horizontalHeader()
-        old_model = self.table_view.model()
-        if old_model is not None and hasattr(old_model, '_dataframe'):
-            old_cols = list(old_model._dataframe.columns)
-            # Build logical→visual map from the old header state
-            old_visual_order = [
-                old_cols[header.logicalIndex(v)]
-                for v in range(header.count())
-                if header.logicalIndex(v) < len(old_cols)
-            ]
+        old_view_model = self.table_view.model()
+        if old_view_model is not None:
+            # Unwrap proxy if present
+            old_source = (old_view_model.sourceModel()
+                          if hasattr(old_view_model, 'sourceModel')
+                          else old_view_model)
+            if hasattr(old_source, '_dataframe'):
+                old_cols = list(old_source._dataframe.columns)
+                old_visual_order = [
+                    old_cols[header.logicalIndex(v)]
+                    for v in range(header.count())
+                    if header.logicalIndex(v) < len(old_cols)
+                ]
+            else:
+                old_visual_order = None
         else:
             old_visual_order = None
 
         model = HighlightStatusPandasModel(df)
         model.update_colors(self.get_current_colors())
         self.main_cluster_model = model
-        self.table_view.setModel(model)
+
+        # Wrap in proxy for search filtering, then install on the view
+        proxy = QSortFilterProxyModel(self)
+        proxy.setSourceModel(model)
+        proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        proxy.setFilterKeyColumn(-1)
+
+        self.table_view.setModel(proxy)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table_view.verticalHeader().setVisible(False)
         try:
@@ -1432,6 +1495,10 @@ class MainWindow(QMainWindow):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed)
+
+        # Re-apply any active search filter to the new proxy
+        if hasattr(self, 'cluster_search_bar') and self.cluster_search_bar.text():
+            proxy.setFilterFixedString(self.cluster_search_bar.text())
 
         # Re-apply header labels
         new_df_cols = list(df.columns)
@@ -1500,6 +1567,77 @@ class MainWindow(QMainWindow):
             pass
         self.tree_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed)
+
+    # ── Sidebar Search ────────────────────────────────────────────────────────
+
+    def _focus_search_bar(self):
+        """Ctrl+F: move focus to the sidebar search bar and select all text."""
+        self.cluster_search_bar.setFocus()
+        self.cluster_search_bar.selectAll()
+
+    def _filter_sidebar(self, text: str):
+        """
+        Dispatch the current search query to whichever view is active.
+        Also called from _switch_left_view so a pending query is applied
+        immediately when the user toggles between Tree and Table.
+        """
+        query = text.strip()
+        if self.view_stack.currentIndex() == 0:
+            self._filter_tree(query)
+        else:
+            self._filter_table(query)
+
+    def _filter_tree(self, query: str):
+        """
+        Show only tree leaf items whose display text contains `query`
+        (case-insensitive substring). Clears to collapsed default when empty.
+        """
+        root = self.tree_model.invisibleRootItem()
+        self._apply_tree_filter_recursive(root, query.lower())
+        if not query:
+            # Empty query: restore all items then collapse to default state
+            self.tree_view.collapseAll()
+
+    def _apply_tree_filter_recursive(self, parent_item, query: str) -> bool:
+        """
+        Recursively show/hide tree items. Returns True if any child is visible.
+        Group nodes are visible iff at least one descendant leaf matches.
+        """
+        any_visible = False
+        for row in range(parent_item.rowCount()):
+            child = parent_item.child(row)
+            index = self.tree_model.indexFromItem(child)
+
+            if child.rowCount() == 0:
+                # Leaf node: match against display text
+                visible = (not query) or (query in child.text().lower())
+                self.tree_view.setRowHidden(index.row(), index.parent(), not visible)
+                if visible:
+                    any_visible = True
+            else:
+                # Group node: recurse first, then decide own visibility
+                child_matched = self._apply_tree_filter_recursive(child, query)
+                self.tree_view.setRowHidden(index.row(), index.parent(), not child_matched)
+                if child_matched:
+                    self.tree_view.setExpanded(index, True)
+                    any_visible = True
+
+        return any_visible
+
+    def _filter_table(self, query: str):
+        """
+        Apply a substring filter to the table's QSortFilterProxyModel.
+        filterKeyColumn=-1 means all columns are searched.
+        setFilterFixedString does a case-insensitive substring match
+        (respecting the proxy's filterCaseSensitivity setting).
+        """
+        model = self.table_view.model()
+        if model is None or not hasattr(model, 'setFilterFixedString'):
+            # Proxy not yet installed (before first data load) — nothing to do
+            return
+        model.setFilterFixedString(query)
+
+    # ── End Sidebar Search ────────────────────────────────────────────────────
 
     # --- Methods to bridge UI signals to callback functions ---
     def load_directory(self, kilosort_dir=None, dat_file=None):
