@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
 from unittest.mock import patch
-from PyQt5.QtCore import QEventLoop
 
 # We will import ClusterWorker from umap_panel when we implement it.
 # For now, we assume it will exist in src.gui.panels.umap_panel

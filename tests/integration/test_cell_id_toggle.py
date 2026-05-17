@@ -1,9 +1,8 @@
 import pytest
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtWidgets import QMainWindow, QCheckBox
+from qtpy.QtWidgets import QMainWindow
 from src.gui.panels.standard_plots_panel import StandardPlotsPanel
-from unittest.mock import MagicMock
 
 class SyntheticStandardPlotDataManager:
     def __init__(self):

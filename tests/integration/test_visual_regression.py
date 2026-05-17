@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from src.gui.panels.umap_panel import UMAPPanel
 from unittest.mock import MagicMock
 from qtpy.QtWidgets import QMainWindow

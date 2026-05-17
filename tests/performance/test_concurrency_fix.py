@@ -3,7 +3,6 @@ import threading
 import time
 import pandas as pd
 from src.analysis.data_manager import DataManager
-from unittest.mock import MagicMock
 import numpy as np
 
 pytestmark = pytest.mark.performance

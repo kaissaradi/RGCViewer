@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 import numpy as np
-from qtpy.QtWidgets import QMainWindow, QStyle, QTreeView
+from qtpy.QtWidgets import QMainWindow, QTreeView
 from qtpy.QtGui import QStandardItemModel
 from src.gui.callbacks import populate_tree_view
 from unittest.mock import MagicMock

@@ -32,18 +32,16 @@ Future hooks
 from __future__ import annotations
 
 import logging
-import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt, QRunnable, QThreadPool, QObject, Signal, Slot
-from qtpy.QtGui import QColor, QFont
+from qtpy.QtGui import QFont
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QSplitter, QFrame, QGridLayout, QSizePolicy,
-    QGraphicsEllipseItem, QPushButton,
+    QSplitter, QFrame, QGridLayout, QPushButton,
 )
 
 if TYPE_CHECKING:
@@ -900,7 +898,7 @@ class WaveformPanel(QWidget):
 
     def _make_stats_panel(self) -> QWidget:
         container = QWidget()
-        container.setStyleSheet(f"background: transparent;")
+        container.setStyleSheet("background: transparent;")
         grid = QGridLayout(container)
         grid.setContentsMargins(0, 4, 0, 0)
         grid.setHorizontalSpacing(8)
@@ -962,7 +960,6 @@ class WaveformPanel(QWidget):
 
     def restyle_plots(self, colors: dict):
         """Legacy compatibility — theme colours are applied on next update_all."""
-        pass
 
     # -----------------------------------------------------------------------
     # Tier 1 — synchronous, median + basic stats (< 5 ms)
@@ -1029,7 +1026,7 @@ class WaveformPanel(QWidget):
     def _populate_stats_tier1(self, cluster_id: int, median_trace: np.ndarray,
                               t_ms: np.ndarray, n_spikes: int, dm):
         sr = float(getattr(dm, "sampling_rate", 30_000))
-        dt = float(t_ms[1] - t_ms[0]) if len(t_ms) > 1 else 1.0 / sr * 1000
+        float(t_ms[1] - t_ms[0]) if len(t_ms) > 1 else 1.0 / sr * 1000
 
         # Spike count
         self._set_stat("n_spikes", n_spikes, None)

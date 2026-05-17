@@ -2,7 +2,6 @@ from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
 from ...analysis import analysis_core
 import numpy as np
-import os
 import logging
 from pathlib import Path
 

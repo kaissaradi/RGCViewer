@@ -5,9 +5,8 @@ Written BEFORE implementation changes (TDD Red phase).
 These tests encode the acceptance criteria from the spec.
 """
 
-import pytest
 import numpy as np
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock
 from matplotlib.patches import Ellipse
 from matplotlib.figure import Figure
 
@@ -218,7 +217,7 @@ class TestShowIdsCheckboxRelocation:
 
     def test_standard_plots_panel_has_no_show_ids(self, qtbot):
         """StandardPlotsPanel must NOT have a show_ids_checkbox attribute."""
-        from qtpy.QtWidgets import QMainWindow, QCheckBox
+        from qtpy.QtWidgets import QMainWindow
         from src.gui.panels.standard_plots_panel import StandardPlotsPanel
 
         # Minimal main_window mock for StandardPlotsPanel constructor
@@ -241,7 +240,6 @@ class TestShowIdsCheckboxRelocation:
 
     def test_main_window_has_pop_show_ids_checkbox(self, qtbot):
         """main_window must have pop_show_ids_checkbox (QCheckBox)."""
-        from qtpy.QtWidgets import QCheckBox
 
         # We can't easily instantiate the real MainWindow without data,
         # so we verify the attribute exists structurally via the mock.

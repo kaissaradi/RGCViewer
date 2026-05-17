@@ -1,9 +1,7 @@
 import pytest
 import numpy as np
-import pandas as pd
 from src.analysis.data_manager import DataManager
 from unittest.mock import MagicMock
-import time
 
 pytestmark = pytest.mark.performance
 

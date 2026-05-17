@@ -9,12 +9,9 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from scipy.signal import peak_widths
-from qtpy.QtCore import QTimer
 from matplotlib.collections import LineCollection
 from PyQt5.QtGui import QColor
 
-from ...analysis import analysis_core
 from ..theme import DARK_COLORS
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
@@ -525,7 +522,6 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             del canvas._acg_state
         return
 
-    from matplotlib.collections import LineCollection
     import numpy as np
 
     traces = []

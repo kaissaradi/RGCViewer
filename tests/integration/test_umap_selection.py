@@ -4,7 +4,7 @@ import pandas as pd
 from qtpy.QtWidgets import QMainWindow
 from unittest.mock import MagicMock
 from src.gui.panels.umap_panel import UMAPPanel
-from matplotlib.widgets import LassoSelector, RectangleSelector
+from matplotlib.widgets import RectangleSelector
 from qtpy.QtWidgets import QMessageBox
 
 class MockMainWindow(QMainWindow):

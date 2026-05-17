@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import QThread, QTimer, Qt, Signal
-from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,10 +35,8 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
-    QFrame,
 )
 
 if TYPE_CHECKING:
@@ -1136,7 +1133,7 @@ class RawPanel(QWidget):
 
         try:
             dm  = self.main_window.data_manager
-            sr  = dm.sampling_rate
+            dm.sampling_rate
             n   = raw_data.shape[1]
             t   = np.linspace(start_t, end_t, n)
 
@@ -1290,7 +1287,7 @@ class RawPanel(QWidget):
           1. Selected-unit full-height vertical markers
           2. Other-unit tick marks in the strip below the trace
         """
-        dm = self.main_window.data_manager
+        self.main_window.data_manager
 
         # ── Selected-unit spikes ──────────────────────────────────────────────
         sel_in_win = self.spike_times_sec[
@@ -1390,7 +1387,7 @@ class RawPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        dm = self.main_window.data_manager
+        self.main_window.data_manager
 
         def _ks_badge(label: str) -> str:
             """Return a small inline HTML badge for a KSLabel."""

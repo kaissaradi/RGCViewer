@@ -3,7 +3,7 @@ from PyQt5.QtGui import QColor, QPainter, QPen
 from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal, QRect, QEvent
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from qtpy.QtWidgets import QTableView, QStyledItemDelegate, QTreeView
+from qtpy.QtWidgets import QTableView, QStyledItemDelegate, QTreeView, QStyleOptionViewItem
 
 from ..theme import DARK_COLORS
 
@@ -14,20 +14,6 @@ logger = logging.getLogger(__name__)
 class CustomTableView(QTableView):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    # def paintEvent(self, event):
-    #     painter = QPainter(self.viewport())
-    #     for row in range(self.model().rowCount()):
-    #         for column in range(self.model().columnCount()):
-    #             index = self.model().index(row, column)
-    #             if index.isValid():
-    #                 # Draw the background color
-    #                 background_color = self.model().data(index, Qt.BackgroundRole)
-    #                 if background_color:
-    #                     painter.fillRect(self.visualRect(index), background_color)
-
-    #     # Call the base class implementation to handle the default painting
-    #     super().paintEvent(event)
 
 
 class PandasModel(QAbstractTableModel):
@@ -81,23 +67,15 @@ class PandasModel(QAbstractTableModel):
 
 class MplCanvas(FigureCanvas):
     """A canvas that displays a matplotlib figure."""
-    # Add a signal for mouse clicks
     clicked = Signal()
 
     def __init__(self, parent=None, width=5, height=4, dpi=100):
-        # Default to dark theme background - will be updated by restyle() if needed
         self.fig = Figure(
-            figsize=(
-                width,
-                height),
+            figsize=(width, height),
             dpi=dpi,
             facecolor=DARK_COLORS['bg_panel'])
         super().__init__(self.fig)
-
-        # Enable mouse tracking and set cursor
         self.setCursor(Qt.PointingHandCursor)
-
-        # Connect matplotlib mouse press event
         self.mpl_connect('button_press_event', self._on_click)
 
     def restyle(self, colors):
@@ -112,7 +90,7 @@ class MplCanvas(FigureCanvas):
 
 class HighlightStatusPandasModel(PandasModel):
     """Optimized model with role-based caching for faster scrolling."""
-    
+
     STATUS_COLORS = {
         "Clean": DARK_COLORS["status_good_text"],
         "Edge": DARK_COLORS["status_mua_text"],
@@ -124,7 +102,6 @@ class HighlightStatusPandasModel(PandasModel):
 
     def __init__(self, dataframe: pd.DataFrame, parent=None):
         super().__init__(dataframe, parent)
-        # Caching dictionaries for faster data() lookups
         self._background_cache = {}
         self._foreground_cache = {}
         self._display_cache = {}
@@ -144,19 +121,16 @@ class HighlightStatusPandasModel(PandasModel):
     def refresh_view(self, row_indices=None):
         """Invalidate cache on data change."""
         if row_indices is None:
-            # Full refresh
             self._background_cache.clear()
             self._foreground_cache.clear()
             self._display_cache.clear()
         else:
-            # Partial refresh
             for row in row_indices:
                 for cache in [self._background_cache, self._foreground_cache, self._display_cache]:
                     keys_to_remove = [k for k in cache if k[0] == row]
                     for k in keys_to_remove:
                         cache.pop(k, None)
 
-        # Notify views
         if row_indices is None:
             row_indices = range(len(self._dataframe))
         row_indices = list(row_indices)
@@ -165,8 +139,8 @@ class HighlightStatusPandasModel(PandasModel):
         top_left = self.index(min(row_indices), 0)
         bottom_right = self.index(max(row_indices), self.columnCount() - 1)
         self.dataChanged.emit(
-            top_left, bottom_right, [
-                Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole])
+            top_left, bottom_right,
+            [Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole])
 
     def data(self, index, role=Qt.DisplayRole):
         """Return cached data if available, otherwise compute and cache."""
@@ -176,7 +150,6 @@ class HighlightStatusPandasModel(PandasModel):
         row = index.row()
         cache_key = (row, index.column())
 
-        # Check appropriate cache first
         if role == Qt.BackgroundRole:
             if cache_key in self._background_cache:
                 return self._background_cache[cache_key]
@@ -187,10 +160,8 @@ class HighlightStatusPandasModel(PandasModel):
             if cache_key in self._display_cache:
                 return self._display_cache[cache_key]
 
-        # Compute if not cached
         result = self._compute_data(index, role)
 
-        # Cache the result
         if role == Qt.BackgroundRole:
             self._background_cache[cache_key] = result
         elif role == Qt.ForegroundRole:
@@ -218,11 +189,9 @@ class HighlightStatusPandasModel(PandasModel):
                 if col_name == 'status':
                     color = self.STATUS_COLORS.get(status_value, DARK_COLORS["text_primary"])
                     return QColor(color)
-                
                 return QColor(self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"]))
 
             if role == Qt.BackgroundRole:
-                # Background handled by alternatingRowColors and QSS
                 return None
 
         except Exception:
@@ -319,12 +288,17 @@ class ClusterTreeDelegate(QStyledItemDelegate):
             if toggle is not None:
                 self._draw_toggle(painter, toggle, tree.isExpanded(index))
             painter.restore()
-
         super().paint(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
         if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            # In headless/test environments visualRect may return a null rect.
+            # Fall back to a synthetic row_rect derived from the event position
+            # so that _toggle_rect produces coords in the same space as event.pos().
             row_rect = self._tree.visualRect(index)
+            if not row_rect.isValid() or row_rect.isEmpty():
+                pos = event.pos() if not hasattr(event, "position") else event.position().toPoint()
+                row_rect = QRect(0, pos.y() - 14, 300, 28)
             toggle = self._toggle_rect(index, row_rect)
             if toggle is not None:
                 pos = event.pos()
@@ -334,4 +308,8 @@ class ClusterTreeDelegate(QStyledItemDelegate):
                 if hit.contains(pos):
                     self._tree.setExpanded(index, not self._tree.isExpanded(index))
                     return True
-        return super().editorEvent(event, model, option, index)
+        return super().editorEvent(
+            event, model,
+            option if option is not None else QStyleOptionViewItem(),
+            index
+        )

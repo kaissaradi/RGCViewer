@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import QMainWindow
@@ -39,7 +38,7 @@ class SyntheticRawDataManager:
 
     def get_raw_trace_snippet(self, channel_indices, start_sample, end_sample):
         self.raw_calls += 1
-        n_samples = end_sample - start_sample
+        end_sample - start_sample
         t = np.arange(start_sample, end_sample, dtype=np.float32)
         traces = []
         for channel in channel_indices:

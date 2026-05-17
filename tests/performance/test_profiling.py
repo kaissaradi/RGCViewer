@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
 import pandas as pd
-import time
 import cProfile
 import pstats
 import io

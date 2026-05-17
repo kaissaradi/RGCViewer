@@ -1,10 +1,7 @@
 import os
 import pytest
-from PyQt5.QtWidgets import QApplication
-from qtpy.QtCore import Qt
 
 from src.gui.main_window import MainWindow
-from src.analysis.data_manager import DataManager
 
 # The path requested by user for this test
 TEST_DATA_PATH = "/home/kais/Documents/Development/data/sorted/20251015A/chunk20/kilosort4"

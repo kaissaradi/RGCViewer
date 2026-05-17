@@ -4,7 +4,6 @@ from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
 from qtpy.QtCore import QThread, Qt, QObject
 from qtpy.QtGui import QStandardItem, QColor
-from src.gui import main_window
 
 from ..analysis.data_manager import DataManager
 from .workers.workers import (
@@ -38,11 +37,9 @@ def update_cache_progress(main_window):
     if physics_done > 0:
         val = int(physics_done / total * 100)
         done = physics_done
-        label = "Physics"
     else:
         val = int(std_done / total * 100)
         done = std_done
-        label = "Standard plots"
 
     main_window.cache_progress.setValue(min(val, 100))
 
@@ -240,7 +237,7 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     main_window.physics_thread.started.connect(run_physics)
     main_window.physics_thread.start()
 
-    main_window.status_bar.showMessage(f"Successfully loaded Vision dataset.", 5000)
+    main_window.status_bar.showMessage("Successfully loaded Vision dataset.", 5000)
 
 
 def load_vision_directory(main_window):
@@ -376,7 +373,7 @@ def redraw_population_panels(main_window: MainWindow):
     subset = main_window._get_pop_subset_ids()  # reuse helper in main_window
     
     # Import and call both population plots
-    from .panels.population_panel import draw_population_timecourse_panel, draw_population_acg_panel
+    from .panels.population_panel import draw_population_acg_panel
     draw_population_timecourse_panel(main_window, subset_ids=subset)
     draw_population_acg_panel(main_window, subset_ids=subset)
 
@@ -542,7 +539,7 @@ def save_results(main_window, output_path):
         with open(txt_output_path, 'w') as f:
             f.write("\n".join(lines_to_write))
 
-        main_window.status_bar.showMessage(f"Saved: .tsv, .json, and Vision .txt", 5000)
+        main_window.status_bar.showMessage("Saved: .tsv, .json, and Vision .txt", 5000)
     except Exception as e:
         QMessageBox.critical(main_window, "Save Error", f"Could not save files: {e}")
 
@@ -1241,7 +1238,7 @@ def load_raw_data(main_window):
     choice.setWindowTitle("Select Raw Data Format")
     choice.setText("Which raw data format would you like to load?")
     btn_litke  = choice.addButton("Litke .bin folder",  QMessageBox.ButtonRole.AcceptRole)
-    btn_flat   = choice.addButton("Flat .dat / .bin file", QMessageBox.ButtonRole.AcceptRole)
+    choice.addButton("Flat .dat / .bin file", QMessageBox.ButtonRole.AcceptRole)
     btn_cancel = choice.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
     choice.exec()
 

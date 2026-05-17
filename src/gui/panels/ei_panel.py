@@ -427,7 +427,7 @@ class EIPanel(QWidget):
 
     def _show_loading_state(self, message="Loading..."):
         self.clear()
-        colors = self.main_window.get_current_colors()
+        self.main_window.get_current_colors()
         self.spatial_canvas.fig.text(
             0.5, 0.5, message,
             ha='center', va='center', color='cyan', fontsize=14

@@ -222,7 +222,6 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
 def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
     """Compute scalar metrics from STA for RGC classification."""
     from scipy.ndimage import gaussian_filter1d
-    from scipy.signal import peak_widths
     from scipy.stats import skew
 
     metrics = {}

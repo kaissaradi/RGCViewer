@@ -4,7 +4,6 @@ import pandas as pd
 import time
 import threading
 from src.analysis.data_manager import DataManager
-from unittest.mock import MagicMock
 
 @pytest.fixture
 def large_mock_dm():

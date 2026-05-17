@@ -1,4 +1,3 @@
-import pytest
 from qtpy import QtCore
 from qtpy.QtWidgets import QPushButton, QWidget, QVBoxLayout
 

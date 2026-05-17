@@ -9,7 +9,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from sklearn.decomposition import PCA
 from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QMenu, QLabel,
-    QApplication, QProgressBar, QSizePolicy, QWidget, QPushButton, QButtonGroup
+    QProgressBar, QSizePolicy, QWidget, QPushButton
 )
 from qtpy.QtGui import QCursor, QColor, QPalette
 from qtpy.QtCore import QThread, Signal, Qt

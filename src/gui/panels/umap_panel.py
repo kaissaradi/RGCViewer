@@ -14,7 +14,6 @@ import sklearn.cluster
 import matplotlib.pyplot as plt
 
 try:
-    import hdbscan
     HDBSCAN_AVAILABLE = True
 except ImportError:
     HDBSCAN_AVAILABLE = False
@@ -24,9 +23,7 @@ except ImportError:
 # --- Scientific Computing Imports ---
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler
-from scipy.ndimage import gaussian_filter1d
 
-from ...analysis import analysis_core
 from ..theme import resolve_theme_colors
 
 logger = logging.getLogger(__name__)

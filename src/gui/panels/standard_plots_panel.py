@@ -2,10 +2,6 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QCheckBox, QComboBox, QLabel, QPushButton, QDoubleSpinBox, QFrame
 from qtpy.QtCore import Qt
-from scipy.ndimage import gaussian_filter1d
-from scipy.signal import correlate
-from scipy.interpolate import interp1d
-from ...analysis.constants import ISI_REFRACTORY_PERIOD_MS
 from ..theme import resolve_theme_colors
 import logging
 

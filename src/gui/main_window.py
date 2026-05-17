@@ -4,10 +4,9 @@ from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
     QHeaderView, QMessageBox, QTabWidget,
-    QTreeView, QAbstractItemView, QSlider, QLabel,
+    QTreeView, QAbstractItemView, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
-    QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame,
-    QLineEdit, QShortcut,
+    QCheckBox, QProgressBar, QButtonGroup, QLineEdit, QShortcut,
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer, QSortFilterProxyModel
 from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
@@ -19,10 +18,7 @@ from .widgets.widgets import (
 )
 from . import callbacks
 from .panels.population_panel import (
-    draw_population_timecourse_panel,
-    draw_population_rfs_plot,
-    plot_population_rfs,
-    plot_rich_ei
+    draw_population_rfs_plot
 )
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
@@ -1943,6 +1939,9 @@ class MainWindow(QMainWindow):
         step = [0]
 
         def tick():
+            import sip
+            if sip.isdeleted(self.main_splitter):
+                return
             step[0] += 1
             left = int(start_left + delta * step[0])
             if step[0] >= steps:
@@ -1956,7 +1955,7 @@ class MainWindow(QMainWindow):
     def toggle_sidebar(self):
         """Collapses or expands the left cluster sidebar (tree/table pane)."""
         widths = self.main_splitter.sizes()
-        total_width = sum(widths) or self.width()
+        sum(widths) or self.width()
 
         if self.sidebar_collapsed:
             self.left_content.show()
