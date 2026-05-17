@@ -79,3 +79,20 @@ class TestSidebarCollapse:
             lambda: win.main_splitter.sizes()[0] > SIDEBAR_COLLAPSED_WIDTH + 50,
             timeout=1000,
         )
+
+
+class TestTreeBranchStyling:
+    def test_branch_css_has_plus_minus_and_lines(self, main_window_fixture):
+        qss = main_window_fixture.styleSheet()
+        assert "branch:has-children" in qss
+        assert "branch:open" in qss
+        assert "has-siblings:adjoins-item" in qss
+        assert "x1='4' y1='7' x2='10' y2='7'" in qss  # minus / plus bar
+
+    def test_branch_color_changes_on_theme_toggle(self, main_window_fixture):
+        win = main_window_fixture
+        dark_qss = win.styleSheet()
+        win.toggle_theme()
+        light_qss = win.styleSheet()
+        assert dark_qss != light_qss
+        win.toggle_theme()

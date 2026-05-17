@@ -159,8 +159,9 @@ class MainWindow(QMainWindow):
     def _setup_style(self, colors):
         self.setFont(QFont("Inter", 11))
 
-        # Strip leading '#' so it can be URL-encoded as %23 inside the SVG data URI
+        # Strip leading '#' so it can be URL-encoded as %23 inside SVG data URIs
         _arrow = colors['text_secondary'].lstrip('#')
+        _line = colors['border_default'].lstrip('#')
 
         self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
@@ -383,26 +384,31 @@ class MainWindow(QMainWindow):
             QTreeView::item {{ color: {colors['text_primary']}; }}
             QTreeView::item:hover {{ background: {colors['bg_surface']}; color: {colors['text_primary']}; }}
             QTreeView::item:selected {{ background: {colors['selection_bg']}; color: {colors['text_primary']}; }}
-            QTreeView::branch {{ background: {colors['bg_panel']}; }}
+            QTreeView::branch {{
+                background: {colors['bg_panel']};
+            }}
 
-            /* Collapsed group row: right-pointing triangle */
+            /* Hierarchy connector lines */
+            QTreeView::branch:has-siblings:!adjoins-item {{
+                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='20' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
+            }}
+            QTreeView::branch:has-siblings:adjoins-item {{
+                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='20' stroke='%23{_line}' stroke-width='1'/><line x1='10' y1='10' x2='20' y2='10' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
+            }}
+            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
+                border-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><line x1='10' y1='0' x2='10' y2='10' stroke='%23{_line}' stroke-width='1'/><line x1='10' y1='10' x2='20' y2='10' stroke='%23{_line}' stroke-width='1'/></svg>") 0;
+            }}
+
+            /* Collapsed folder: + in rounded box */
             QTreeView::branch:has-children:!has-siblings:closed,
             QTreeView::branch:closed:has-children:has-siblings {{
-                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><polygon points='3,2 8,5 3,8' fill='%23{_arrow}'/></svg>");
+                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><rect x='1' y='1' width='12' height='12' rx='2' fill='none' stroke='%23{_arrow}' stroke-width='1'/><line x1='7' y1='4' x2='7' y2='10' stroke='%23{_arrow}' stroke-width='1.2'/><line x1='4' y1='7' x2='10' y2='7' stroke='%23{_arrow}' stroke-width='1.2'/></svg>");
             }}
 
-            /* Expanded group row: down-pointing triangle */
+            /* Expanded folder: − in rounded box */
             QTreeView::branch:open:has-children:!has-siblings,
             QTreeView::branch:open:has-children:has-siblings {{
-                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><polygon points='2,3 5,8 8,3' fill='%23{_arrow}'/></svg>");
-            }}
-
-            /* Remove all 90s connector lines */
-            QTreeView::branch:has-siblings:!adjoins-item,
-            QTreeView::branch:has-siblings:adjoins-item,
-            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
-                border-image: none;
-                image: none;
+                image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><rect x='1' y='1' width='12' height='12' rx='2' fill='none' stroke='%23{_arrow}' stroke-width='1'/><line x1='4' y1='7' x2='10' y2='7' stroke='%23{_arrow}' stroke-width='1.2'/></svg>");
             }}
 
             /* ── Status bar ──────────────────────── */
@@ -880,6 +886,10 @@ class MainWindow(QMainWindow):
         # Tree View
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
+        self.tree_view.setRootIsDecorated(True)
+        self.tree_view.setIndentation(20)
+        self.tree_view.setAnimated(True)
+        self.tree_view.setUniformRowHeights(True)
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
