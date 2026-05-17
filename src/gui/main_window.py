@@ -7,7 +7,7 @@ from qtpy.QtWidgets import (
     QTreeView, QAbstractItemView, QSlider, QLabel,
     QMenu, QInputDialog, QStackedWidget, QApplication,
     QTextEdit, QCheckBox, QProgressBar, QButtonGroup, QFrame,
-    QLineEdit, QShortcut,
+    QLineEdit, QShortcut, QToolButton,
 )
 from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer, QSortFilterProxyModel
 from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
@@ -48,6 +48,8 @@ configure_pyqtgraph_theme(DARK_COLORS)
 
 logger = logging.getLogger(__name__)
 
+SIDEBAR_COLLAPSED_WIDTH = 22
+
 
 class MainWindow(QMainWindow):
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self.current_sta_view = "rf"  # Default to RF plot
         self._is_syncing = False
         self.last_left_width = 450
+        self.sidebar_collapsed = False
         self.feature_worker_thread = None
         self.population_view_enabled = False
 
@@ -500,6 +503,9 @@ class MainWindow(QMainWindow):
         self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         
+        if hasattr(self, 'sidebar_toggle_btn'):
+            self._style_sidebar_toggle_btn(colors)
+
         # 5. Refresh data models if they use custom colors
         if self.table_view.model() and hasattr(self.table_view.model(), 'update_colors'):
             self.table_view.model().update_colors(colors)
@@ -815,9 +821,9 @@ class MainWindow(QMainWindow):
 
         # --- Left Pane ---
         self.left_pane = QWidget()
-        left_layout = QVBoxLayout(self.left_pane)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
+        left_pane_layout = QHBoxLayout(self.left_pane)
+        left_pane_layout.setContentsMargins(0, 0, 0, 0)
+        left_pane_layout.setSpacing(0)
 
         # Create a widget to contain the filter box and views
         left_content = QWidget()
@@ -914,8 +920,18 @@ class MainWindow(QMainWindow):
         self.similarity_panel.selection_changed.connect(
             self.on_similarity_selection_changed)
 
-        # Add the content to the left pane
-        left_layout.addWidget(left_content)
+        left_pane_layout.addWidget(left_content, stretch=1)
+
+        # Collapse/expand control on the right edge of the cluster sidebar
+        self.sidebar_toggle_btn = QToolButton()
+        self.sidebar_toggle_btn.setText("\u2212")
+        self.sidebar_toggle_btn.setToolTip("Collapse cluster sidebar")
+        self.sidebar_toggle_btn.setFixedWidth(20)
+        self.sidebar_toggle_btn.setAutoRaise(True)
+        self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
+        self._style_sidebar_toggle_btn(colors)
+        left_pane_layout.addWidget(self.sidebar_toggle_btn)
+
         # Store reference to content widget for collapsing/expanding
         self.left_content = left_content
 
@@ -1877,21 +1893,70 @@ class MainWindow(QMainWindow):
         # Delegate to the STAPanel
         self.sta_panel.stop_animation()
 
-    def toggle_sidebar(self):
-        """Collapses or expands the left sidebar by manipulating the main splitter."""
+    def _style_sidebar_toggle_btn(self, colors):
+        """Theme-aware styling for the left sidebar collapse control."""
+        self.sidebar_toggle_btn.setStyleSheet(f"""
+            QToolButton {{
+                border: none;
+                border-left: 0.5px solid {colors['border_subtle']};
+                color: {colors['text_secondary']};
+                background: {colors['bg_panel']};
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0;
+            }}
+            QToolButton:hover {{
+                color: {colors['text_primary']};
+                background: {colors['bg_surface']};
+            }}
+        """)
+
+    def _update_sidebar_toggle_btn(self):
+        """Sync −/+ label and tooltip with collapsed state."""
+        if self.sidebar_collapsed:
+            self.sidebar_toggle_btn.setText("+")
+            self.sidebar_toggle_btn.setToolTip("Expand cluster sidebar")
+        else:
+            self.sidebar_toggle_btn.setText("\u2212")
+            self.sidebar_toggle_btn.setToolTip("Collapse cluster sidebar")
+
+    def _animate_splitter_sizes(self, target_left, steps=5, interval_ms=25):
+        """Step main_splitter sizes toward target for a snappy collapse/expand."""
         widths = self.main_splitter.sizes()
-        if widths[0] < 50:
-            # --- EXPAND ---
-            total_width = sum(widths)
-            self.main_splitter.setSizes(
-                [self.last_left_width, total_width - self.last_left_width])
+        total = sum(widths) or 1
+        start_left = widths[0]
+        delta = (target_left - start_left) / steps
+        step = [0]
+
+        def tick():
+            step[0] += 1
+            left = int(start_left + delta * step[0])
+            if step[0] >= steps:
+                left = target_left
+            self.main_splitter.setSizes([left, total - left])
+            if step[0] < steps:
+                QTimer.singleShot(interval_ms, tick)
+
+        tick()
+
+    def toggle_sidebar(self):
+        """Collapses or expands the left cluster sidebar (tree/table pane)."""
+        widths = self.main_splitter.sizes()
+        total_width = sum(widths) or self.width()
+
+        if self.sidebar_collapsed:
+            self.left_content.show()
+            target_left = self.last_left_width
             self.sidebar_collapsed = False
         else:
-            # --- COLLAPSE ---
-            self.last_left_width = widths[0]
-            total_width = sum(widths)
-            self.main_splitter.setSizes([0, total_width])
+            if widths[0] >= SIDEBAR_COLLAPSED_WIDTH:
+                self.last_left_width = max(widths[0], 180)
+            self.left_content.hide()
+            target_left = SIDEBAR_COLLAPSED_WIDTH
             self.sidebar_collapsed = True
+
+        self._update_sidebar_toggle_btn()
+        self._animate_splitter_sizes(target_left)
 
     def toggle_population_fullscreen(self, checked):
         """Toggles the Population panel to take up 100% of the right pane."""
