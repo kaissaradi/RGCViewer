@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                             QComboBox, QLabel, QProgressBar, QMessageBox,
-                            QSpinBox, QDialog, QTextEdit, QCheckBox)
+                            QSpinBox, QDialog, QTextEdit, QCheckBox, QSizePolicy)
 from qtpy.QtCore import QThread, Signal, QObject, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -333,8 +333,17 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
 
-        self.layout.addLayout(ctrl_layout)
-        self.layout.addLayout(cluster_layout)
+        # Wrap both toolbar rows in a fixed-height container so QTabWidget
+        # first-show layout cannot collapse row 2 onto row 1.
+        self.controls_widget = QWidget(self)
+        controls_layout = QVBoxLayout(self.controls_widget)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        controls_layout.addLayout(ctrl_layout)
+        controls_layout.addLayout(cluster_layout)
+        self.controls_widget.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.layout.addWidget(self.controls_widget)
 
         # Plot Initialization
         self.fig = Figure(facecolor=self._umap_colors['bg_panel'])
@@ -365,8 +374,13 @@ class UMAPPanel(QWidget):
         """
         super().showEvent(event)
         QTimer.singleShot(0, self._refresh_layout)
+        QTimer.singleShot(50, self._refresh_layout)
 
     def _refresh_layout(self):
+        self.controls_widget.adjustSize()
+        hint_h = self.controls_widget.sizeHint().height()
+        if hint_h > 0:
+            self.controls_widget.setMinimumHeight(hint_h)
         self.layout.activate()
         self.updateGeometry()
 
