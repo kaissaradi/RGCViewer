@@ -13,6 +13,7 @@ import pickle
 import os
 import tempfile
 import logging
+import ast
 try:
     import bin2py
     _BIN2PY_AVAILABLE = True
@@ -1103,8 +1104,10 @@ class DataManager(QObject):
                 if '=' in line:
                     key, val = map(str.strip, line.split('=', 1))
                     try:
-                        params[key] = eval(val)
-                    except (NameError, SyntaxError):
+                        # Use ast.literal_eval for safe parsing of literals
+                        params[key] = ast.literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        # Fallback: treat as a plain string (remove surrounding quotes if present)
                         params[key] = val.strip("'\"")
         self.sampling_rate = params.get('fs', 30000)
         self.n_channels = params.get('n_channels_dat', 512)
@@ -1402,25 +1405,43 @@ class DataManager(QObject):
         t.start()
 
     def _load_standard_plot_cache_from_disk(self):
-        """Restore standard plot cache from disk, falling back to an empty cache."""
+        """Restore standard plot cache from disk, falling back to an empty cache.
+
+        The lock is NOT held during pickle.load() so that concurrent
+        get_standard_plot_data() callers are never blocked on disk I/O.
+        Double-checked locking pattern:
+          1. Acquire → guard check → release.
+          2. Deserialise outside the lock.
+          3. Acquire → re-check → assign → release.
+        """
         if not self.kilosort_dir:
             return
 
         cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
+
+        # --- Step 1: cheap guard under lock ---
         with self._standard_plot_lock:
             if not cache_pkl.exists() or self.standard_plot_cache:
                 return
 
-            try:
-                with open(cache_pkl, 'rb') as f:
-                    cache = pickle.load(f)
-                if not isinstance(cache, dict):
-                    raise TypeError("standard_plot_cache.pkl did not contain a dict")
+        # --- Step 2: slow I/O outside the lock ---
+        try:
+            with open(cache_pkl, 'rb') as f:
+                cache = pickle.load(f)
+            if not isinstance(cache, dict):
+                raise TypeError("standard_plot_cache.pkl did not contain a dict")
+        except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
+            logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
+            cache = {}
+
+        # --- Step 3: assign under lock, double-checking no one beat us ---
+        with self._standard_plot_lock:
+            if not self.standard_plot_cache:   # another thread may have loaded first
                 self.standard_plot_cache = cache
-                logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
-            except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
-                logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
-                self.standard_plot_cache = {}
+                logger.debug(
+                    "Restored standard_plot_cache (%d entries) from disk",
+                    len(self.standard_plot_cache),
+                )
 
     def load_persisted_caches(self):
         """Loads both standard plot and feature caches from disk.
@@ -1472,14 +1493,16 @@ class DataManager(QObject):
             cell_lock = self._physics_cell_locks[cluster_id]
 
         with cell_lock:
-            # Re-check cache now that we hold the per-cell lock
+            # 3. Re-check cache now that we hold the per-cell lock (double-check idiom)
             with self._feature_lock:
                 cached = self.feature_cache.get(cluster_id)
                 if cached is not None and cached.get('_computed'):
                     return cached
 
-            # 3. Assemble Metrics OUTSIDE the global lock
-            # This call might compute standard plot data if not cached
+            # --- Everything below stays inside cell_lock so a second thread that
+            #     also passed the fast-path miss cannot enter this block until the
+            #     first thread has written to feature_cache. ---
+
             std_data = self.get_standard_plot_data(cluster_id)
             acg_norm = std_data.get('acg_norm') if std_data else None
 
@@ -1488,60 +1511,60 @@ class DataManager(QObject):
             ellipticity = 0.0
             time_to_peak = 0
 
-        vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
-        if self.vision_stas and vid in self.vision_stas:
-            sta_data = self.vision_stas[vid]
-            stafit = None
+            vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
+            if self.vision_stas and vid in self.vision_stas:
+                sta_data = self.vision_stas[vid]
+                stafit = None
 
-            # Geometry (Extracting from Vision's pre-computed Gaussian fits)
-            try:
-                if self.vision_params:
-                    stafit = self.vision_params.get_stafit_for_cell(vid)
-                    if stafit:
-                        rf_area = np.pi * stafit.std_x * stafit.std_y
-                        if stafit.std_x > 0:
-                            ellipticity = stafit.std_y / stafit.std_x
-            except Exception:
-                logger.debug("Failed to extract STA geometry for cluster %s", cluster_id, exc_info=True)
+                # Geometry (Extracting from Vision's pre-computed Gaussian fits)
+                try:
+                    if self.vision_params:
+                        stafit = self.vision_params.get_stafit_for_cell(vid)
+                        if stafit:
+                            rf_area = np.pi * stafit.std_x * stafit.std_y
+                            if stafit.std_x > 0:
+                                ellipticity = stafit.std_y / stafit.std_x
+                except Exception:
+                    logger.debug("Failed to extract STA geometry for cluster %s", cluster_id, exc_info=True)
 
-            # Timecourse (Pulls pre-computed 1D arrays from Vision params)
-            try:
-                time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                    sta_data, stafit, self.vision_params, vid
-                )
+                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+                try:
+                    time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        sta_data, stafit, self.vision_params, vid
+                    )
 
-                if tc_matrix is not None and tc_matrix.size > 0:
-                    energies = np.sum(tc_matrix**2, axis=0)
-                    dom_idx = np.argmax(energies)
-                    dom_trace = tc_matrix[:, dom_idx]
+                    if tc_matrix is not None and tc_matrix.size > 0:
+                        energies = np.sum(tc_matrix**2, axis=0)
+                        dom_idx = np.argmax(energies)
+                        dom_trace = tc_matrix[:, dom_idx]
 
-                    abs_max = np.max(np.abs(dom_trace))
-                    if abs_max > 0:
-                        timecourse = dom_trace / abs_max
-                    else:
-                        timecourse = dom_trace
+                        abs_max = np.max(np.abs(dom_trace))
+                        if abs_max > 0:
+                            timecourse = dom_trace / abs_max
+                        else:
+                            timecourse = dom_trace
 
-                    time_to_peak = int(np.argmax(np.abs(timecourse)))
-            except Exception:
-                logger.debug("Failed to extract STA timecourse for cluster %s", cluster_id, exc_info=True)
+                        time_to_peak = int(np.argmax(np.abs(timecourse)))
+                except Exception:
+                    logger.debug("Failed to extract STA timecourse for cluster %s", cluster_id, exc_info=True)
 
-        metrics = {
-            '_computed': True,
-            'acg': acg_norm,
-            'timecourse': timecourse,
-            'rf_area': rf_area,
-            'ellipticity': ellipticity,
-            'time_to_peak': time_to_peak
-        }
+            metrics = {
+                '_computed': True,
+                'acg': acg_norm,
+                'timecourse': timecourse,
+                'rf_area': rf_area,
+                'ellipticity': ellipticity,
+                'time_to_peak': time_to_peak
+            }
 
-        # 4. Store in global cache safely, even when Vision STA is missing.
-        with self._feature_lock:
-            already_computed = self.feature_cache.get(cluster_id, {}).get('_computed')
-            self.feature_cache[cluster_id] = metrics
-            if not already_computed:
-                self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
+            # 4. Store in global cache safely, even when Vision STA is missing.
+            with self._feature_lock:
+                already_computed = self.feature_cache.get(cluster_id, {}).get('_computed')
+                self.feature_cache[cluster_id] = metrics
+                if not already_computed:
+                    self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
-        return metrics
+            return metrics
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
@@ -2396,6 +2419,11 @@ class DataManager(QObject):
         import numpy as np
         import pandas as pd
 
+        cache_key = int(cluster_id)
+        cached = self.mea_sim_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
         if self.similar_templates is None:
             return pd.DataFrame([])
 
@@ -2463,12 +2491,19 @@ class DataManager(QObject):
             set_vals = set_col.values
             rows["set"] = [set_vals[i] for i in top_idx]
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+        self.mea_sim_cache[cache_key] = result_df
+        return result_df.copy()
 
     def _get_vision_similarity_table(self, cluster_id: int, top_n: int = 50):
         """Get vision-based similarity table for cluster_id using STA correlations."""
         import numpy as np
         import pandas as pd
+
+        cache_key = int(cluster_id)
+        cached = self.vision_sim_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
 
         if not self.vision_stas or not self.vision_params:
             return pd.DataFrame([])
@@ -2478,53 +2513,39 @@ class DataManager(QObject):
         if vision_cluster_id not in self.vision_stas:
             return pd.DataFrame([])
 
-        # Get the source STA data
         source_sta = self.vision_stas[vision_cluster_id]
         if not hasattr(source_sta, 'red') or source_sta.red is None:
             return pd.DataFrame([])
 
-        # Compute similarity between source and all other vision clusters
+        source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis=0).flatten()
+        source_std = np.std(source_flat)
+        if source_std == 0:
+            return pd.DataFrame([])
+
         similarities = {}
-        for vid in self.vision_stas.keys_list:
-            sta_data = self.vision_stas[vid]
+        for vid in self.vision_stas.keys():
             if vid == vision_cluster_id:
                 continue
-
+            sta_data = self.vision_stas[vid]
             if not hasattr(sta_data, 'red') or sta_data.red is None:
                 continue
-
-            # Compute correlation-based similarity using flattened STA frames
-            # Stack channels and compute correlation
-            source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis = 0).flatten()
-            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis = 0).flatten()
-
-            # Pearson correlation
-            if np.std(source_flat) > 0 and np.std(target_flat) > 0:
-                corr = np.corrcoef(source_flat, target_flat)[0, 1]
-                if not np.isnan(corr):
-                    similarities[vid] = corr
-
+            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=0).flatten()
+            if np.std(target_flat) == 0:
+                continue
+            corr = np.corrcoef(source_flat, target_flat)[0, 1]
+            if not np.isnan(corr):
+                similarities[vid] = corr
 
         if not similarities:
             return pd.DataFrame([])
 
-        # Sort by similarity and get top N
         sorted_sims = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
-        # Build DataFrame
-        cluster_ids = []
-        sim_values = []
-        n_spikes_list = []
-        status_list = []
-        set_list = []
-
+        cluster_ids, sim_values, n_spikes_list, status_list, set_list = [], [], [], [], []
         for vid, sim in sorted_sims:
-            # Convert vision ID back to cluster ID ONLY if Kilosort is the boss
             cid = vid if getattr(self, 'is_vision_only', False) else vid - 1
             cluster_ids.append(cid)
             sim_values.append(sim)
-
-            # Get metadata from cluster_df if available
             row = self.cluster_df[self.cluster_df['cluster_id'] == cid]
             if not row.empty:
                 n_spikes_list.append(row['n_spikes'].values[0] if 'n_spikes' in row.columns else 0)
@@ -2535,10 +2556,13 @@ class DataManager(QObject):
                 status_list.append('')
                 set_list.append('')
 
-        return pd.DataFrame({
+        result_df = pd.DataFrame({
             'cluster_id': cluster_ids,
             'n_spikes': n_spikes_list,
             'status': status_list,
             'set': set_list,
             'template_sim': sim_values
         })
+
+        self.vision_sim_cache[cache_key] = result_df
+        return result_df.copy()

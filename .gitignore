@@ -7,16 +7,6 @@ __pycache__/
 .pytest_cache/
 .benchmarks/
 htmlcov/
-tests/test_outputs/
-
-# Development Folders & Configs (Excluded from Production Main)
-docs/
-tests/
-conftest.py
-test_population_panel.py
-pytest.ini
-requirements-dev.txt
-
 # Editor & Tooling
 .vscode/
 .codex_artifacts
