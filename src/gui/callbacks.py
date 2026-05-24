@@ -11,7 +11,11 @@ from .workers.workers import (
     KilosortLoadWorker, VisionLoadWorker
 )
 from .widgets.widgets import HighlightStatusPandasModel
-from .panels.population_panel import draw_population_timecourse_panel, draw_population_rfs_plot
+from .panels.population_panel import (
+    draw_population_timecourse_panel,
+    draw_population_rfs_plot,
+    invalidate_population_caches,
+)
 from .panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
 import logging
@@ -324,8 +328,10 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     main_window.central_widget.setEnabled(True)
 
     if success and not is_partial:
+        invalidate_population_caches()
         main_window.status_bar.showMessage(message, 5000)
     elif is_partial:
+        invalidate_population_caches()
         main_window.status_bar.showMessage(f"Loaded partial Vision data: {message}", 5000)
         QMessageBox.warning(main_window, "Vision Loading Warning",
                             f"Could not load all Vision data, but some files were found.\n{message}")
@@ -490,6 +496,7 @@ def handle_refinement_results(
         f"Refinement of C{parent_id} complete. Found {len(new_clusters)} sub-clusters.",
         5000)
     main_window.data_manager.update_after_refinement(parent_id, new_clusters)
+    invalidate_population_caches()
     # Refresh the tree view to show updated cluster information
     populate_tree_view(main_window)
     main_window.refine_button.setEnabled(True)

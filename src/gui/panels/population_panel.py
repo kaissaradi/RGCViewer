@@ -19,6 +19,20 @@ matplotlib_logger = logging.getLogger('matplotlib.font_manager')
 matplotlib_logger.setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+_group_timecourse_cache = {}
+_group_acg_cache = {}
+_rf_background_cache = {}
+_rf_background_cache_order = []
+_RF_CACHE_MAX = 10
+
+
+def invalidate_population_caches():
+    """Clear population-panel caches after source data or membership changes."""
+    _group_timecourse_cache.clear()
+    _group_acg_cache.clear()
+    _rf_background_cache.clear()
+    _rf_background_cache_order.clear()
+
 
 def draw_population_timecourse_panel(main_window, subset_ids=None):
     """
