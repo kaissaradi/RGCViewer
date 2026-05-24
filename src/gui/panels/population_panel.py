@@ -34,6 +34,137 @@ def invalidate_population_caches():
     _rf_background_cache_order.clear()
 
 
+def _first_plot_artist(plot_result):
+    if isinstance(plot_result, (list, tuple)):
+        return plot_result[0] if plot_result else None
+    try:
+        return plot_result[0]
+    except Exception:
+        return plot_result
+
+
+def _safe_axis_limits(get_limits):
+    try:
+        limits = tuple(float(v) for v in get_limits())
+    except Exception:
+        return None
+    return limits if len(limits) == 2 else None
+
+
+def _show_population_ids(main_window):
+    return (
+        hasattr(main_window, 'pop_show_ids_checkbox') and
+        main_window.pop_show_ids_checkbox.isChecked()
+    )
+
+
+def _snapshot_rf_background(ax, colors, show_ids):
+    patches = []
+    for patch in ax.patches:
+        if not isinstance(patch, Ellipse):
+            continue
+        patches.append({
+            'center': tuple(patch.center),
+            'width': patch.width,
+            'height': patch.height,
+            'angle': patch.angle,
+            'edgecolor': patch.get_edgecolor(),
+            'facecolor': patch.get_facecolor(),
+            'alpha': patch.get_alpha(),
+            'linewidth': patch.get_linewidth(),
+            'zorder': patch.get_zorder(),
+        })
+
+    texts = []
+    for text in getattr(ax, 'texts', []):
+        texts.append({
+            'position': text.get_position(),
+            'text': text.get_text(),
+            'color': text.get_color(),
+            'fontsize': text.get_fontsize(),
+            'ha': text.get_ha(),
+            'va': text.get_va(),
+            'alpha': text.get_alpha(),
+        })
+
+    title = ax.get_title()
+    if not isinstance(title, str):
+        title = None
+
+    return {
+        'colors': dict(colors),
+        'show_ids': show_ids,
+        'patches': patches,
+        'texts': texts,
+        'xlim': _safe_axis_limits(ax.get_xlim),
+        'ylim': _safe_axis_limits(ax.get_ylim),
+        'title': title,
+    }
+
+
+def _apply_rf_axes_style(ax, colors, title=None):
+    if title:
+        ax.set_title(title, color=colors['text_primary'])
+    ax.set_facecolor(colors['bg_panel'])
+    ax.set_aspect('equal', adjustable='box')
+    ax.tick_params(colors=colors['text_secondary'])
+    for spine in ax.spines.values():
+        spine.set_edgecolor(colors['border_subtle'])
+    ax.grid(False)
+
+
+def _draw_cached_rf_background(ax, cache_entry, colors):
+    for patch_data in cache_entry['patches']:
+        patch = Ellipse(
+            xy=patch_data['center'],
+            width=patch_data['width'],
+            height=patch_data['height'],
+            angle=patch_data['angle'],
+            edgecolor=patch_data['edgecolor'],
+            facecolor=patch_data['facecolor'],
+            lw=patch_data['linewidth'],
+            alpha=patch_data['alpha'],
+            zorder=patch_data['zorder'],
+        )
+        ax.add_patch(patch)
+
+    for text_data in cache_entry['texts']:
+        ax.text(
+            text_data['position'][0],
+            text_data['position'][1],
+            text_data['text'],
+            color=text_data['color'],
+            fontsize=text_data['fontsize'],
+            ha=text_data['ha'],
+            va=text_data['va'],
+            alpha=text_data['alpha'],
+        )
+
+    if cache_entry['xlim'] is not None:
+        ax.set_xlim(*cache_entry['xlim'])
+    if cache_entry['ylim'] is not None:
+        ax.set_ylim(*cache_entry['ylim'])
+    _apply_rf_axes_style(ax, colors, cache_entry.get('title'))
+
+
+def _rf_cache_entry_matches(cache_entry, colors, show_ids):
+    return (
+        isinstance(cache_entry, dict) and
+        cache_entry.get('colors') == colors and
+        cache_entry.get('show_ids') == show_ids
+    )
+
+
+def _store_rf_cache_entry(cache_key, cache_entry):
+    _rf_background_cache[cache_key] = cache_entry
+    if cache_key in _rf_background_cache_order:
+        _rf_background_cache_order.remove(cache_key)
+    _rf_background_cache_order.append(cache_key)
+    while len(_rf_background_cache_order) > _RF_CACHE_MAX:
+        evicted = _rf_background_cache_order.pop(0)
+        _rf_background_cache.pop(evicted, None)
+
+
 def draw_population_timecourse_panel(main_window, subset_ids=None):
     """
     Draw population average timecourse with futuristic "shadow traces".
@@ -61,37 +192,54 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         return
 
     # --- 1. Fast Data Extraction via Physics Cache ---
-    traces = []
-    for cid in subset_ids:
-        physics = main_window.data_manager.get_cell_physics(cid)
-        tc = physics.get('timecourse')
-        if tc is not None:
-            traces.append(tc)
+    cache_key = frozenset(subset_ids)
+    cached = _group_timecourse_cache.get(cache_key)
+    if cached is not None:
+        arr = cached['arr']
+        mean_tc = cached['mean_tc']
+        t_axis = cached['t_axis']
+        peak_idx = cached['peak_idx']
+        mean_fwhm = cached['mean_fwhm']
+    else:
+        traces = []
+        for cid in subset_ids:
+            physics = main_window.data_manager.get_cell_physics(cid)
+            tc = physics.get('timecourse')
+            if tc is not None:
+                traces.append(tc)
 
-    if not traces:
-        canvas.fig.clear()
-        canvas.fig.set_facecolor(colors['bg_panel'])
-        canvas.fig.text(0.5, 0.5, "No valid timecourses", ha='center', color=colors['text_secondary'], fontsize=10)
-        canvas.draw_idle()
-        return
+        if not traces:
+            canvas.fig.clear()
+            canvas.fig.set_facecolor(colors['bg_panel'])
+            canvas.fig.text(0.5, 0.5, "No valid timecourses", ha='center', color=colors['text_secondary'], fontsize=10)
+            canvas.draw_idle()
+            return
 
-    minlen = min(len(t) for t in traces)
-    arr = np.vstack([t[:minlen] for t in traces])
-    mean_tc = np.nanmean(arr, axis=0)
-    t_axis = np.arange(minlen)
-    
-    peak_idx = int(np.argmax(np.abs(mean_tc)))
+        minlen = min(len(t) for t in traces)
+        arr = np.vstack([t[:minlen] for t in traces])
+        mean_tc = np.nanmean(arr, axis=0)
+        t_axis = np.arange(minlen)
+        peak_idx = int(np.argmax(np.abs(mean_tc)))
+
+        mean_fwhm = float("nan")
+        try:
+            from scipy.signal import peak_widths
+            widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
+            if len(widths) > 0:
+                mean_fwhm = widths[0]
+        except Exception:
+            pass
+
+        _group_timecourse_cache[cache_key] = {
+            'arr': arr,
+            'mean_tc': mean_tc,
+            't_axis': t_axis,
+            'peak_idx': peak_idx,
+            'mean_fwhm': mean_fwhm,
+        }
+
     peak_time = t_axis[peak_idx]
     peak_val = mean_tc[peak_idx]
-    
-    mean_fwhm = float("nan")
-    try:
-        from scipy.signal import peak_widths
-        widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
-        if len(widths) > 0:
-            mean_fwhm = widths[0]
-    except Exception:
-        pass
 
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
@@ -150,10 +298,10 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax.add_collection(shadow_lines)
 
         # 3. Solid Mean Trace
-        mean_line, = ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4)
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4))
 
         # 4. Highlight the Peak Feature
-        peak_marker, = ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5)
+        peak_marker = _first_plot_artist(ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5))
         peak_text = ax.text(peak_time, peak_val + (np.max(mean_tc)*0.1), 
                             f" Peak\n Frame {peak_time}", color=colors['plot_peak'], 
                             fontsize=8, ha='center', va='bottom')
@@ -243,15 +391,25 @@ def draw_population_rfs_plot(
         canvas.fig.set_facecolor(colors['bg_panel'])
         ax = canvas.fig.add_subplot(111)
         ax.set_facecolor(colors['bg_panel'])
+        show_ids = _show_population_ids(main_window)
+        cache_entry = _rf_background_cache.get(current_subset_hash)
 
-        plot_population_rfs_background(
-            ax,
-            vision_params,
-            main_window=main_window,
-            sta_height=main_window.data_manager.vision_sta_height,
-            subset_cell_ids=subset_cell_ids,
-            colors=colors
-        )
+        if _rf_cache_entry_matches(cache_entry, colors, show_ids):
+            _draw_cached_rf_background(ax, cache_entry, colors)
+            _store_rf_cache_entry(current_subset_hash, cache_entry)
+        else:
+            plot_population_rfs_background(
+                ax,
+                vision_params,
+                main_window=main_window,
+                sta_height=main_window.data_manager.vision_sta_height,
+                subset_cell_ids=subset_cell_ids,
+                colors=colors
+            )
+            _store_rf_cache_entry(
+                current_subset_hash,
+                _snapshot_rf_background(ax, colors, show_ids)
+            )
 
         highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
         highlight_patch = Ellipse(
@@ -538,26 +696,39 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
     import numpy as np
 
-    traces = []
-    t_axis = None
+    cache_key = frozenset(subset_ids)
+    cached = _group_acg_cache.get(cache_key)
+    if cached is not None:
+        arr = cached['arr']
+        mean_acg = cached['mean_acg']
+        t_axis = cached['t_axis']
+    else:
+        traces = []
+        t_axis = None
 
-    for cid in subset_ids:
-        try:
-            time_lags, acg_norm = main_window.data_manager.get_acg_data(cid)
-            if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
-                if t_axis is None: t_axis = time_lags
-                if len(acg_norm) == len(t_axis): traces.append(acg_norm)
-        except Exception: continue
+        for cid in subset_ids:
+            try:
+                time_lags, acg_norm = main_window.data_manager.get_acg_data(cid)
+                if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
+                    if t_axis is None: t_axis = time_lags
+                    if len(acg_norm) == len(t_axis): traces.append(acg_norm)
+            except Exception: continue
 
-    if not traces:
-        canvas.fig.clear()
-        canvas.fig.set_facecolor(colors['bg_panel'])
-        canvas.fig.text(0.5, 0.5, "No valid ACG data", ha='center', color=colors['text_secondary'], fontsize=10)
-        canvas.draw_idle()
-        return
+        if not traces:
+            canvas.fig.clear()
+            canvas.fig.set_facecolor(colors['bg_panel'])
+            canvas.fig.text(0.5, 0.5, "No valid ACG data", ha='center', color=colors['text_secondary'], fontsize=10)
+            canvas.draw_idle()
+            return
 
-    arr = np.vstack(traces)
-    mean_acg = np.nanmean(arr, axis=0)
+        arr = np.vstack(traces)
+        mean_acg = np.nanmean(arr, axis=0)
+        _group_acg_cache[cache_key] = {
+            'arr': arr,
+            'mean_acg': mean_acg,
+            't_axis': t_axis,
+        }
+
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
     y_min, y_max = np.min(arr), np.max(arr)
@@ -596,7 +767,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         shadow_lines = LineCollection(segments, color=colors['plot_acg'], linewidth=0.8, alpha=0.18, zorder=2)
         ax.add_collection(shadow_lines)
-        mean_line, = ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4)
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4))
 
         ax.set_xlabel("Time lag (ms)", color=colors['text_secondary'], fontsize=9)
         ax.set_ylabel("Autocorrelation", color=colors['text_secondary'], fontsize=9)
