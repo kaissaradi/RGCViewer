@@ -182,62 +182,85 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         
 def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     """Cleanup and GUI update after StandaloneVisionWorker finishes."""
-    main_window.vision_load_thread.quit()
-    main_window.vision_load_thread.wait()
+
+    # --- Safe thread/worker cleanup (mirrors _on_vision_loaded pattern) ---
+    if hasattr(main_window, 'vision_load_thread') and main_window.vision_load_thread:
+        main_window.vision_load_thread.quit()
+        if not main_window.vision_load_thread.wait(2000):
+            logger.warning("Vision native load thread didn't exit cleanly, terminating")
+            main_window.vision_load_thread.terminate()
+            main_window.vision_load_thread.wait(500)
+        main_window.vision_load_thread = None
+
+    if hasattr(main_window, 'vision_load_worker') and main_window.vision_load_worker:
+        main_window.vision_load_worker.deleteLater()
+        main_window.vision_load_worker = None
+
+    # --- Always re-enable UI, even on failure ---
+    main_window.central_widget.setEnabled(True)
 
     if not success:
         QMessageBox.critical(main_window, "Loading Error", message)
         main_window.status_bar.showMessage("Loading failed.", 5000)
-        main_window.central_widget.setEnabled(True)
         return
 
-    # Disable raw tab since we don't have .bin data
+    # --- Disable raw tab: no .bin data in Vision-native mode ---
     main_window.analysis_tabs.setTabEnabled(
         main_window.analysis_tabs.indexOf(main_window.raw_panel), False)
 
-    # Populate Tree and Tables
+    # --- Populate tree and tables ---
     populate_tree_view(main_window)
     main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
 
-    # Enable UI
-    main_window.central_widget.setEnabled(True)
-    main_window.load_raw_action.setEnabled(True) 
+    # --- Enable actions ---
+    main_window.load_raw_action.setEnabled(True)
     main_window.save_action.setEnabled(True)
     main_window.save_classification_action.setEnabled(True)
 
+    # --- Show STA panel if data is available ---
     if main_window.data_manager.vision_stas:
         main_window.sta_panel.show()
 
-    # Start standard plots background worker
+    # --- Start standard plots background worker ---
     start_worker(main_window)
-    
-    # Precompute EI correlations directly (bypassing auto-load since we just loaded it)
+
+    # --- Kick off EI correlation precompute on background thread ---
     if main_window.data_manager.vision_eis is not None:
         main_window.data_manager.precompute_ei_correlations_background()
-        
-    # Manually trigger the physics extraction thread
-    all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
-    
-    main_window.physics_thread = QThread()
-    main_window.physics_worker = QObject()
-    main_window.physics_worker.moveToThread(main_window.physics_thread)
+        main_window.status_bar.showMessage(
+            "Vision loaded. Computing EI correlations in background...", 4000)
 
-    def run_physics():
+    # --- Physics extraction pass (needs Vision STA data, so runs here not in start_worker) ---
+    all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+
+    main_window.cache_progress_count = 0
+    main_window.cache_progress.setValue(0)
+    main_window.cache_progress.show()
+
+    def _compute_physics():
         for cid in all_ids:
             try:
                 main_window.data_manager.get_cell_physics(cid)
-                # Notify the standard plot worker that physics are ready for this cell
                 if getattr(main_window, 'standard_plots_worker', None):
                     main_window.standard_plots_worker.finished_cluster.emit(int(cid))
-            except Exception as e:
-                logger.warning(f"Physics failed for cluster {cid}: {e}")
+            except Exception:
+                logger.warning("Physics failed for cluster %s", cid, exc_info=True)
         main_window.physics_thread.quit()
 
-    main_window.physics_thread.started.connect(run_physics)
+    # Attach to main_window so GC doesn't destroy the thread while the OS
+    # thread is still running ("QThread: Destroyed while thread is still running").
+    main_window.physics_thread = QThread()
+    main_window.physics_worker = QObject()
+    main_window.physics_worker.moveToThread(main_window.physics_thread)
+    main_window.physics_thread.started.connect(_compute_physics)
+    # deleteLater connections ensure Qt cleans up both objects after the thread exits.
+    main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
+    main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
     main_window.physics_thread.start()
 
-    main_window.status_bar.showMessage("Successfully loaded Vision dataset.", 5000)
+    main_window.status_bar.showMessage(
+        f"Vision dataset loaded. Computing physics for {len(all_ids)} cells...", 5000)
 
 
 def load_vision_directory(main_window):
