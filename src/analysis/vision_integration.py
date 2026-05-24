@@ -11,6 +11,8 @@ except Exception:
     VISION_LOADER_AVAILABLE = False
     logger.info("'visionloader' not available; vision integration disabled")
 
+MAX_STA_CACHE_CELLS = 500
+
 
 class LazySTADict:
     """
@@ -25,7 +27,7 @@ class LazySTADict:
         # --- NEW: LRU Cache to fix UI Scrolling lag ---
         self._cache = {}
         self._cache_keys = []
-        self._max_cache = 40  # Keep the last 40 STAs in RAM
+        self._max_cache = min(MAX_STA_CACHE_CELLS, max(200, len(self.keys_list)))
         
     def __contains__(self, key):
         return key in self.keys_list
