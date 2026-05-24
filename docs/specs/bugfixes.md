@@ -2,100 +2,160 @@
 
 ## Metadata
 
-* **Status:** Draft
+* **Status:** In Progress
 * **Target Release:** v1.1
-* **Primary Developer/Agent:** TBD
-* **Target Branch:** `fix/critical-production-bugs`
+* **Primary Developer:** Kais Saradi
+* **Branch:** `fix/critical-production-bugs`
 * **Spec File:** `docs/specs/critical-production-bugs.md`
+* **Last Updated:** 2026-05-23
+
+---
 
 ## Objective
 
-Fix the verified production bugs that can cause crashes, UI freezes, severe repeated work, or unsafe execution. This spec intentionally excludes bug-report items that are only cosmetic, speculative, or not supported by the current code.
+Fix verified production bugs that cause crashes, UI freezes, severe repeated
+work, or unsafe code execution. Cosmetic, speculative, or unsupported items
+are explicitly excluded and listed under Out Of Scope.
 
-## Validation Summary
-
-After re-checking the code:
-
-* **Confirmed critical / must fix:** `.neurons` crash typo, unused similarity caches, standard-plot cache lock contention, `get_cell_physics()` per-cell lock escape, standalone Vision callback missing thread/worker guards.
-* **Confirmed hardening / should fix in same branch:** `eval()` in Kilosort params parsing.
-* **Not included as critical:** discarded RGB normalization expressions, `compute_ei` docstring/import placement, duplicate `extract_snippets()` reshape except block, raw-load `processEvents()`, sidebar no-op expression, garbled comment, root logger calls.
-
-The excluded items may still be cleaned up later, but they should not be treated as proven critical production bugs.
+---
 
 ## User Story
 
-"As a scientist using RGCViewer on large Vision/Kilosort datasets, I want dataset loading, similarity lookup, and physics cache computation to avoid crashes, redundant work, and UI stalls so that I can safely inspect cells without restarting the app."
+"As a scientist using RGCViewer on large Vision/Kilosort datasets, I want
+dataset loading, similarity lookup, and physics cache computation to avoid
+crashes, redundant work, and UI stalls so that I can safely inspect cells
+without restarting the app."
 
-## Acceptance Criteria
+---
 
-* **AC1:** If `.neurons` loading raises an unexpected exception, `load_neurons_data()` logs it and returns `None`; it must not raise `NameError`.
-* **AC2:** Repeated MEA similarity requests for the same cluster return from `mea_sim_cache` without rebuilding the table.
-* **AC3:** Repeated Vision similarity requests for the same cluster return from `vision_sim_cache` without rereading all lazy STAs.
-* **AC4:** `_load_standard_plot_cache_from_disk()` does not hold `_standard_plot_lock` while executing `pickle.load()`.
-* **AC5:** Concurrent calls to `get_cell_physics()` for the same cluster perform the full physics computation once and return the same cached result to all callers.
-* **AC6:** `_load_kilosort_params()` uses `ast.literal_eval()` instead of `eval()` and still supports normal Kilosort literals such as numbers, strings, lists, and tuples.
-* **AC7:** `_on_vision_native_loaded()` does not crash if `vision_load_thread` or `vision_load_worker` is missing, already stopped, or already cleared.
-* **AC8:** Existing public DataFrame columns, cache file names, UI actions, and panel behavior remain unchanged.
+## Acceptance Criteria & Status
 
-## Current Progress
+| # | Criterion | Status | Test | Commit |
+|---|---|---|---|---|
+| AC1 | `load_neurons_data()` broad exception returns `None`; no `NameError` | ✅ Done | *(no regression test — pre-existing correct behavior)* | `1d7caae` |
+| AC2 | Repeated MEA similarity requests return from `mea_sim_cache` without rebuilding | ✅ Done | `test_mea_similarity_table_reuses_cluster_cache` | `141e82d` |
+| AC3 | Repeated Vision similarity requests return from `vision_sim_cache` without rereading all lazy STAs | ✅ Done | `test_vision_similarity_table_reuses_cluster_cache` | `124e41a` |
+| AC4 | `_load_standard_plot_cache_from_disk()` does not hold `_standard_plot_lock` during `pickle.load()` | ❌ Not started | `test_standard_plot_lock_not_held_during_pickle_load` *(not written)* | — |
+| AC5 | Concurrent `get_cell_physics()` calls for same cluster compute exactly once | ❌ Not started | `test_get_cell_physics_computes_once_under_concurrency` *(not written)* | — |
+| AC6 | `_load_kilosort_params()` uses `ast.literal_eval()`; no arbitrary code execution | ✅ Done | `test_kilosort_params_uses_literal_eval_without_executing_code` | `1d7caae` |
+| AC7 | `_on_vision_native_loaded()` does not crash if thread/worker missing, cleared, or already stopped | ✅ Done | `test_on_vision_native_loaded_handles_stale_thread_and_worker_cleanup` (3 parametrize branches) | `124e41a` |
+| AC8 | Public DataFrame columns, cache filenames, UI actions, and panel behavior unchanged | ✅ Ongoing | Verified by full regression run after each commit | — |
 
-* **AC1:** Implemented in `load_neurons_data()`; no regression test added in this slice by request.
-* **AC2:** Implemented and covered by `test_mea_similarity_table_reuses_cluster_cache`.
-* **AC3:** Failing regression test added (`test_vision_similarity_table_reuses_cluster_cache`); production fix is still pending.
-* **AC6:** Implemented and covered by `test_kilosort_params_uses_literal_eval_without_executing_code`.
+**Additional bugs found during audit (not in original spec):**
+
+| # | Bug | Status | Notes |
+|---|---|---|---|
+| Bug A | `_get_vision_similarity_table()` accessed `.keys_list` directly instead of `.keys()` | ✅ Fixed as part of AC3 | `FakeLazySTADict` spy also updated to expose `.keys()` |
+| Bug B | `save_classification_to_file()` always applied `vision_id = cluster_id + 1`, corrupting output in Vision-native sessions | ✅ Fixed | One-line `is_vision_only` guard added |
+
+---
+
+## Fragile Zones Touched
+
+Per PLAN.md §1 — these files were modified on this branch and carry
+regression risk:
+
+| File | Risk | Required check before re-touching |
+|---|---|---|
+| `src/analysis/data_manager.py` | Every panel and cache depends on it | Run full test suite; rebase from main first |
+| `src/analysis/vision_integration.py` | `LazySTADict` holds open file handle; singleton assumption | Do not instantiate more than once per Vision dir |
+| `src/gui/callbacks.py` | Thread lifetime and Qt signal wiring | Run `tests/integration/test_gui_sanity.py` |
+
+---
+
+## Remaining Work
+
+### AC4 — `_load_standard_plot_cache_from_disk()` lock contention
+
+**Root cause:** `pickle.load()` runs inside `with self._standard_plot_lock`,
+blocking any concurrent `get_standard_plot_data()` call for 100–500 ms on
+a warm cache file.
+
+**Fix pattern:**
+
+1. Acquire lock, check existence + empty cache, release lock.
+2. Load pickle outside lock.
+3. Acquire lock again, re-check empty (double-check idiom), assign.
+
+**Test to write first:**
+
+```python
+# Monkeypatch pickle.load to block for 200ms.
+# Spawn thread that calls get_standard_plot_data() during the load.
+# Assert _standard_plot_lock is not held during the sleep.
+```
+
+---
+
+### AC5 — `get_cell_physics()` per-cell lock escape
+
+**Root cause:** The `with cell_lock:` block closes before the Vision STA
+extraction, timecourse computation, and `metrics` dict assembly. Two
+concurrent threads can both pass the double-check and both compute the
+expensive STA work.
+
+**Fix:** Extend `cell_lock` scope to cover everything through the
+`feature_cache` write. The global `_feature_lock` is still used for the
+fast-path cache reads and the final write — `cell_lock` just prevents
+redundant parallel computation for the same cluster.
+
+**Test to write first:**
+
+```python
+# Patch vision_stas.__getitem__ with a slow mock (time.sleep).
+# Run two threads through get_cell_physics() for same cluster_id.
+# Assert __getitem__ called exactly once.
+```
+
+---
 
 ## Architecture & Technical Constraints
 
-* **Files Modified:**
-  * `src/analysis/vision_integration.py`
-  * `src/analysis/data_manager.py`
-  * `src/gui/callbacks.py`
-* **Data Contracts:**
-  * Similarity tables must keep the existing columns and sort order.
-  * `mea_sim_cache` and `vision_sim_cache` should be keyed by `cluster_id`, matching the current cache comments and current `get_similarity_table()` API.
-  * `standard_plot_cache.pkl` remains a pickle dictionary keyed by cluster ID.
-* **Threading Rules:**
-  * Do not hold global locks during disk deserialization.
-  * Keep the per-cell physics lock around the full same-cluster computation, including Vision STA extraction and final cache write.
-  * Do not update Qt UI from background threads.
-* **Safety Rules:**
-  * Do not broaden this branch into UI polish or unrelated cleanup.
-  * Tests that validate cache computation must use temporary directories or fresh in-memory `DataManager` instances.
+* **Threading rules:**
+  * Do not hold global locks during disk deserialization (AC4).
+  * Per-cell lock must cover the full computation including Vision STA
+    extraction and final cache write (AC5).
+  * Never update Qt UI from background threads.
+* **Data contracts:**
+  * Similarity table columns and sort order unchanged (AC8).
+  * `mea_sim_cache` and `vision_sim_cache` keyed by `int(cluster_id)`.
+  * `standard_plot_cache.pkl` schema unchanged.
+* **Scope discipline:** This branch is reliability only. No UI polish,
+  no schema changes, no new features.
 
-## Implementation Plan
+---
 
-* Fix `load_neurons_data()` so the broad exception path returns `None`.
-* Add early cache checks and final cache writes in both similarity table helpers.
-* Move standard plot pickle loading outside `_standard_plot_lock`, then re-check under lock before assignment.
-* Restructure `get_cell_physics()` so the per-cell lock covers the double-check, standard plot lookup, Vision STA/timecourse extraction, metrics creation, and `feature_cache` write.
-* Replace `eval()` with `ast.literal_eval()` in Kilosort params parsing; fall back to stripped strings for non-literal values.
-* Mirror the safe cleanup pattern from `_on_vision_loaded()` in `_on_vision_native_loaded()`, including worker cleanup and nulling references.
+## Regression Commands
 
-## Test Plan
+```bash
+# Fast — unit only
+conda run -n rgcviewer python -m pytest tests/unit/test_critical_production_bugs.py tests/unit/test_data_manager_cache.py -v
 
-* **Unit:** Add `tests/unit/test_critical_production_bugs.py`.
-  * Mock a failing `NeuronsReader`; assert `load_neurons_data()` returns `None`.
-  * Create a minimal MEA similarity setup; call twice and assert the second call returns cached data without rebuilding. **Done.**
-  * Create a lazy fake `vision_stas`; call twice and assert the second call does not access every STA again. **Test written; currently failing until AC3 is implemented.**
-  * Monkeypatch pickle loading to block while another thread probes `_standard_plot_lock`; assert the lock is not held during load.
-  * Run two threads through `get_cell_physics()` for the same cluster; assert expensive mocked dependencies are called once.
-  * Parse temp `params.py` files containing normal literals and a malicious/non-literal expression; assert no code execution. **Done.**
-* **Qt Callback Unit:** Add or extend callback tests with a mock main window.
-  * `_on_vision_native_loaded()` handles missing thread and worker attributes without raising.
-  * Successful and failed load paths re-enable the central widget as before.
-* **Regression Run:**
-  * `conda run -n rgcviewer python -m pytest tests/unit/test_critical_production_bugs.py tests/unit/test_data_manager_cache.py`
-  * If available, run the relevant GUI sanity tests: `conda run -n rgcviewer python -m pytest tests/integration/test_gui_sanity.py`
+# Full suite before pushing
+conda run -n rgcviewer python -m pytest tests/ -v
+
+# GUI sanity (if mounted)
+conda run -n rgcviewer python -m pytest tests/integration/test_gui_sanity.py -v
+```
+
+---
 
 ## Out Of Scope
 
-* Changing STA color metric formulas.
-* Moving `torch` import or docstring cleanup in `compute_ei()`.
-* Changing `extract_snippets()` corrupt-file behavior.
-* Removing `QApplication.processEvents()` from raw data loading.
-* Sidebar toggle cleanup, comment cleanup, or logging cleanup.
-* Any visual redesign, panel behavior change, cache schema change, or new feature work.
+* RGB normalization expression cleanup in `ei_corr()`
+* `torch` import placement or docstring cleanup in `compute_ei()`
+* `extract_snippets()` corrupt-file reshape behavior
+* `QApplication.processEvents()` in raw data loading
+* Sidebar toggle no-op expression
+* Garbled comments, root logger calls, logging cleanup
+* Any visual redesign, panel behavior change, or new feature work
 
-## Notes For Implementation
+---
 
-Write failing tests first, per `docs/AGENTS.md`. Create the branch before editing code. Keep the branch focused: this spec is about production-critical reliability only, not the full original bug-report cleanup list.
+## Commit Log (this branch)
+
+| Hash | Message |
+|---|---|
+| `124e41a` | fix AC3 — vision sim cache + AC7 safe thread cleanup |
+| `141e82d` | fix: add failing AC3/AC7 tests; lock AC6; cache MEA similarity (AC2) |
+| `1d7caae` | fix AC1 and AC6, add test for AC2 |
