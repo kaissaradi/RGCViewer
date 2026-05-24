@@ -37,6 +37,13 @@ The excluded items may still be cleaned up later, but they should not be treated
 * **AC7:** `_on_vision_native_loaded()` does not crash if `vision_load_thread` or `vision_load_worker` is missing, already stopped, or already cleared.
 * **AC8:** Existing public DataFrame columns, cache file names, UI actions, and panel behavior remain unchanged.
 
+## Current Progress
+
+* **AC1:** Implemented in `load_neurons_data()`; no regression test added in this slice by request.
+* **AC2:** Implemented and covered by `test_mea_similarity_table_reuses_cluster_cache`.
+* **AC3:** Failing regression test added (`test_vision_similarity_table_reuses_cluster_cache`); production fix is still pending.
+* **AC6:** Implemented and covered by `test_kilosort_params_uses_literal_eval_without_executing_code`.
+
 ## Architecture & Technical Constraints
 
 * **Files Modified:**
@@ -68,11 +75,11 @@ The excluded items may still be cleaned up later, but they should not be treated
 
 * **Unit:** Add `tests/unit/test_critical_production_bugs.py`.
   * Mock a failing `NeuronsReader`; assert `load_neurons_data()` returns `None`.
-  * Create a minimal MEA similarity setup; call twice and assert the second call returns cached data without rebuilding.
-  * Create a lazy fake `vision_stas`; call twice and assert the second call does not access every STA again.
+  * Create a minimal MEA similarity setup; call twice and assert the second call returns cached data without rebuilding. **Done.**
+  * Create a lazy fake `vision_stas`; call twice and assert the second call does not access every STA again. **Test written; currently failing until AC3 is implemented.**
   * Monkeypatch pickle loading to block while another thread probes `_standard_plot_lock`; assert the lock is not held during load.
   * Run two threads through `get_cell_physics()` for the same cluster; assert expensive mocked dependencies are called once.
-  * Parse temp `params.py` files containing normal literals and a malicious/non-literal expression; assert no code execution.
+  * Parse temp `params.py` files containing normal literals and a malicious/non-literal expression; assert no code execution. **Done.**
 * **Qt Callback Unit:** Add or extend callback tests with a mock main window.
   * `_on_vision_native_loaded()` handles missing thread and worker attributes without raising.
   * Successful and failed load paths re-enable the central widget as before.

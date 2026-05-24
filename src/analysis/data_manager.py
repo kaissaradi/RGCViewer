@@ -2480,6 +2480,11 @@ class DataManager(QObject):
         import numpy as np
         import pandas as pd
 
+        cache_key = int(cluster_id)
+        cached = self.vision_sim_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
         if not self.vision_stas or not self.vision_params:
             return pd.DataFrame([])
 
@@ -2488,53 +2493,39 @@ class DataManager(QObject):
         if vision_cluster_id not in self.vision_stas:
             return pd.DataFrame([])
 
-        # Get the source STA data
         source_sta = self.vision_stas[vision_cluster_id]
         if not hasattr(source_sta, 'red') or source_sta.red is None:
             return pd.DataFrame([])
 
-        # Compute similarity between source and all other vision clusters
+        source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis=0).flatten()
+        source_std = np.std(source_flat)
+        if source_std == 0:
+            return pd.DataFrame([])
+
         similarities = {}
-        for vid in self.vision_stas.keys_list:
-            sta_data = self.vision_stas[vid]
+        for vid in self.vision_stas.keys():
             if vid == vision_cluster_id:
                 continue
-
+            sta_data = self.vision_stas[vid]
             if not hasattr(sta_data, 'red') or sta_data.red is None:
                 continue
-
-            # Compute correlation-based similarity using flattened STA frames
-            # Stack channels and compute correlation
-            source_flat = np.stack([source_sta.red, source_sta.green, source_sta.blue], axis = 0).flatten()
-            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis = 0).flatten()
-
-            # Pearson correlation
-            if np.std(source_flat) > 0 and np.std(target_flat) > 0:
-                corr = np.corrcoef(source_flat, target_flat)[0, 1]
-                if not np.isnan(corr):
-                    similarities[vid] = corr
-
+            target_flat = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=0).flatten()
+            if np.std(target_flat) == 0:
+                continue
+            corr = np.corrcoef(source_flat, target_flat)[0, 1]
+            if not np.isnan(corr):
+                similarities[vid] = corr
 
         if not similarities:
             return pd.DataFrame([])
 
-        # Sort by similarity and get top N
         sorted_sims = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
-        # Build DataFrame
-        cluster_ids = []
-        sim_values = []
-        n_spikes_list = []
-        status_list = []
-        set_list = []
-
+        cluster_ids, sim_values, n_spikes_list, status_list, set_list = [], [], [], [], []
         for vid, sim in sorted_sims:
-            # Convert vision ID back to cluster ID ONLY if Kilosort is the boss
             cid = vid if getattr(self, 'is_vision_only', False) else vid - 1
             cluster_ids.append(cid)
             sim_values.append(sim)
-
-            # Get metadata from cluster_df if available
             row = self.cluster_df[self.cluster_df['cluster_id'] == cid]
             if not row.empty:
                 n_spikes_list.append(row['n_spikes'].values[0] if 'n_spikes' in row.columns else 0)
@@ -2545,10 +2536,13 @@ class DataManager(QObject):
                 status_list.append('')
                 set_list.append('')
 
-        return pd.DataFrame({
+        result_df = pd.DataFrame({
             'cluster_id': cluster_ids,
             'n_spikes': n_spikes_list,
             'status': status_list,
             'set': set_list,
             'template_sim': sim_values
         })
+
+        self.vision_sim_cache[cache_key] = result_df
+        return result_df.copy()

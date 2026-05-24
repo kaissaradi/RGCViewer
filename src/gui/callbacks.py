@@ -1173,7 +1173,7 @@ def save_classification_to_file(main_window: MainWindow):
             if cluster_id is not None:
                 # Leaf Node (Cluster) -> Write ID and Path
                 # Vision ID is cluster_id + 1
-                vision_id = cluster_id + 1
+                vision_id = cluster_id if getattr(main_window.data_manager, 'is_vision_only', False) else cluster_id + 1
 
                 # Ensure path starts with "All/"
                 final_path = current_path
