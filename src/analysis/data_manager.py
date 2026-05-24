@@ -1405,25 +1405,43 @@ class DataManager(QObject):
         t.start()
 
     def _load_standard_plot_cache_from_disk(self):
-        """Restore standard plot cache from disk, falling back to an empty cache."""
+        """Restore standard plot cache from disk, falling back to an empty cache.
+
+        The lock is NOT held during pickle.load() so that concurrent
+        get_standard_plot_data() callers are never blocked on disk I/O.
+        Double-checked locking pattern:
+          1. Acquire → guard check → release.
+          2. Deserialise outside the lock.
+          3. Acquire → re-check → assign → release.
+        """
         if not self.kilosort_dir:
             return
 
         cache_pkl = self.kilosort_dir / 'standard_plot_cache.pkl'
+
+        # --- Step 1: cheap guard under lock ---
         with self._standard_plot_lock:
             if not cache_pkl.exists() or self.standard_plot_cache:
                 return
 
-            try:
-                with open(cache_pkl, 'rb') as f:
-                    cache = pickle.load(f)
-                if not isinstance(cache, dict):
-                    raise TypeError("standard_plot_cache.pkl did not contain a dict")
+        # --- Step 2: slow I/O outside the lock ---
+        try:
+            with open(cache_pkl, 'rb') as f:
+                cache = pickle.load(f)
+            if not isinstance(cache, dict):
+                raise TypeError("standard_plot_cache.pkl did not contain a dict")
+        except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
+            logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
+            cache = {}
+
+        # --- Step 3: assign under lock, double-checking no one beat us ---
+        with self._standard_plot_lock:
+            if not self.standard_plot_cache:   # another thread may have loaded first
                 self.standard_plot_cache = cache
-                logger.debug("Restored standard_plot_cache (%d entries) from disk", len(self.standard_plot_cache))
-            except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
-                logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
-                self.standard_plot_cache = {}
+                logger.debug(
+                    "Restored standard_plot_cache (%d entries) from disk",
+                    len(self.standard_plot_cache),
+                )
 
     def load_persisted_caches(self):
         """Loads both standard plot and feature caches from disk.
@@ -1475,14 +1493,16 @@ class DataManager(QObject):
             cell_lock = self._physics_cell_locks[cluster_id]
 
         with cell_lock:
-            # Re-check cache now that we hold the per-cell lock
+            # 3. Re-check cache now that we hold the per-cell lock (double-check idiom)
             with self._feature_lock:
                 cached = self.feature_cache.get(cluster_id)
                 if cached is not None and cached.get('_computed'):
                     return cached
 
-            # 3. Assemble Metrics OUTSIDE the global lock
-            # This call might compute standard plot data if not cached
+            # --- Everything below stays inside cell_lock so a second thread that
+            #     also passed the fast-path miss cannot enter this block until the
+            #     first thread has written to feature_cache. ---
+
             std_data = self.get_standard_plot_data(cluster_id)
             acg_norm = std_data.get('acg_norm') if std_data else None
 
@@ -1491,60 +1511,60 @@ class DataManager(QObject):
             ellipticity = 0.0
             time_to_peak = 0
 
-        vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
-        if self.vision_stas and vid in self.vision_stas:
-            sta_data = self.vision_stas[vid]
-            stafit = None
+            vid = cluster_id if getattr(self, 'is_vision_only', False) else cluster_id + 1
+            if self.vision_stas and vid in self.vision_stas:
+                sta_data = self.vision_stas[vid]
+                stafit = None
 
-            # Geometry (Extracting from Vision's pre-computed Gaussian fits)
-            try:
-                if self.vision_params:
-                    stafit = self.vision_params.get_stafit_for_cell(vid)
-                    if stafit:
-                        rf_area = np.pi * stafit.std_x * stafit.std_y
-                        if stafit.std_x > 0:
-                            ellipticity = stafit.std_y / stafit.std_x
-            except Exception:
-                logger.debug("Failed to extract STA geometry for cluster %s", cluster_id, exc_info=True)
+                # Geometry (Extracting from Vision's pre-computed Gaussian fits)
+                try:
+                    if self.vision_params:
+                        stafit = self.vision_params.get_stafit_for_cell(vid)
+                        if stafit:
+                            rf_area = np.pi * stafit.std_x * stafit.std_y
+                            if stafit.std_x > 0:
+                                ellipticity = stafit.std_y / stafit.std_x
+                except Exception:
+                    logger.debug("Failed to extract STA geometry for cluster %s", cluster_id, exc_info=True)
 
-            # Timecourse (Pulls pre-computed 1D arrays from Vision params)
-            try:
-                time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                    sta_data, stafit, self.vision_params, vid
-                )
+                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
+                try:
+                    time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        sta_data, stafit, self.vision_params, vid
+                    )
 
-                if tc_matrix is not None and tc_matrix.size > 0:
-                    energies = np.sum(tc_matrix**2, axis=0)
-                    dom_idx = np.argmax(energies)
-                    dom_trace = tc_matrix[:, dom_idx]
+                    if tc_matrix is not None and tc_matrix.size > 0:
+                        energies = np.sum(tc_matrix**2, axis=0)
+                        dom_idx = np.argmax(energies)
+                        dom_trace = tc_matrix[:, dom_idx]
 
-                    abs_max = np.max(np.abs(dom_trace))
-                    if abs_max > 0:
-                        timecourse = dom_trace / abs_max
-                    else:
-                        timecourse = dom_trace
+                        abs_max = np.max(np.abs(dom_trace))
+                        if abs_max > 0:
+                            timecourse = dom_trace / abs_max
+                        else:
+                            timecourse = dom_trace
 
-                    time_to_peak = int(np.argmax(np.abs(timecourse)))
-            except Exception:
-                logger.debug("Failed to extract STA timecourse for cluster %s", cluster_id, exc_info=True)
+                        time_to_peak = int(np.argmax(np.abs(timecourse)))
+                except Exception:
+                    logger.debug("Failed to extract STA timecourse for cluster %s", cluster_id, exc_info=True)
 
-        metrics = {
-            '_computed': True,
-            'acg': acg_norm,
-            'timecourse': timecourse,
-            'rf_area': rf_area,
-            'ellipticity': ellipticity,
-            'time_to_peak': time_to_peak
-        }
+            metrics = {
+                '_computed': True,
+                'acg': acg_norm,
+                'timecourse': timecourse,
+                'rf_area': rf_area,
+                'ellipticity': ellipticity,
+                'time_to_peak': time_to_peak
+            }
 
-        # 4. Store in global cache safely, even when Vision STA is missing.
-        with self._feature_lock:
-            already_computed = self.feature_cache.get(cluster_id, {}).get('_computed')
-            self.feature_cache[cluster_id] = metrics
-            if not already_computed:
-                self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
+            # 4. Store in global cache safely, even when Vision STA is missing.
+            with self._feature_lock:
+                already_computed = self.feature_cache.get(cluster_id, {}).get('_computed')
+                self.feature_cache[cluster_id] = metrics
+                if not already_computed:
+                    self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
-        return metrics
+            return metrics
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
