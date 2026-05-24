@@ -1,71 +1,139 @@
-# RGCViewer Master Development Plan
+```markdown
+# PLAN.md — RGCViewer Master Development Plan
 
-## Project Vision
-
-RGCViewer is a high-performance, PyQt/pyqtgraph-based GUI tailored for the analysis, curation, and visualization of Retinal Ganglion Cell (RGC) data. It supports dual pipelines: hybrid Kilosort + Vision datasets, and Standalone Vision-native datasets. This document outlines the strategic roadmap and active priorities for development, adhering strictly to Spec-Driven Development [SDD].
+> Read AGENTS.md before this document.
+> This is a **snapshot of the current codebase state**, not a roadmap narrative.
+> Update this file every time a spec completes or a new untested behavior is discovered.
+> Last updated: 2026-05-22 | Branch: main
 
 ---
 
-## Current Milestone: v1.1 - Reliability, Vision Native, & Accessibility
+## 1. Fragile Zones
 
-*The focus of this milestone is solidifying the existing feature set, expanding accessibility for new users, stripping out obsolete UI clutter, and ensuring our caching and test suites handle edge cases robustly.*
+These files and functions will silently break something if modified carelessly.
+Read the "failure mechanism" column before touching anything in the "what" column.
 
-### 1. Active Priorities (In Order of Execution)
+| What | Failure mechanism | Required action before modifying |
+|---|---|---|
+| `data_manager.py` (whole file) | Every panel and cache depends on it. Concurrent write bugs are timing-dependent and hard to reproduce. | `git fetch && git rebase origin/main` before every push. Run full test suite after. |
+| `get_cell_physics()` | Vision ID offset lives here. `vision_id = cluster_id + 1` in hybrid mode. Accessing wrong key returns wrong cell's STA silently. | Run `test_get_cell_physics_vision_id_offset` — both parametrize branches — after any change. |
+| `build_cluster_dataframe()` | Runs a single `np.unique` scan that produces `_spk_unique_cls`, `_counts`. Three downstream functions consume these. A second scan breaks count assumptions and doubles load time. | Never add a second `np.unique` or `np.argsort` on the full spike arrays inside this function. |
+| `update_cluster_views()` / `_process_selection()` | The Tier 1 / Tier 2 boundary. Any heavy operation added to Tier 1 freezes the UI during keypress scrolling. | Classify every new operation as Tier 1 or Tier 2 explicitly before writing code. See AGENTS.md §1 Law 2. |
+| `LazySTADict` in `vision_integration.py` | FIFO eviction uses `list.pop(0)` — O(n). Holds an open file handle for the session lifetime. Instantiating more than one per dataset leaks the handle. | Do not refactor without profiling. Do not instantiate more than once per Vision directory. |
+| `_save_pickle_with_fallback()` | Uses `tempfile + os.replace()` for atomicity. Replacing with a direct `pickle.dump(open(path))` would leave a corrupt truncated file if the process crashes mid-write. | Never simplify this function. The verbosity is intentional. |
+| `_compute_ei_correlations_if_needed()` | The `is_vision_only` guard prevents building a 512×512 correlation matrix that exhausts RAM on large Vision-native datasets. | The guard must never be removed or conditioned on anything else. |
+| `get_cluster_spike_indices()` | Returns pre-built index arrays from `_cluster_spike_indices` dict. Callers assume O(1). Replacing with `np.where(spike_clusters == id)` inside any loop causes O(N × n_clusters) runtime. | Never bypass this method. Never call `np.where` on the full spike arrays in a hot path. |
 
-**Priority 1: Standalone Vision Integration**
+---
 
-- **Goal:** Solidify the ability to load purely Vision-sorted datasets without requiring any Kilosort data.
+## 2. Test Coverage Map
+
+### Tested — do not regress
+
+| Behavior | Test function | File |
+|---|---|---|
+| ACG uses full recording, not first 2 min | `test_acg_includes_late_spike_trains` | `tests/unit/test_autocorrelation.py` |
+| Too-few-spike clusters return `None` ACG | `test_acg_not_computed_for_too_few_spikes` | `tests/unit/test_autocorrelation.py` |
+| Same cluster computed exactly once under concurrency | `test_standard_plot_cache_computes_same_cluster_once` | `tests/unit/test_data_manager_cache.py` |
+| Different clusters can compute in parallel (no cross-lock) | `test_standard_plot_cache_allows_different_clusters_to_compute_concurrently` | `tests/unit/test_data_manager_cache.py` |
+| Disk `.pkl` cache bypasses `_compute_standard_plots()` | `test_disk_cache_bypasses_computation` | `tests/unit/test_data_manager_cache.py` |
+| Cell without Vision STA marked `_computed` with safe defaults | `test_cell_physics_marks_cluster_computed_without_vision_sta` | `tests/unit/test_data_manager_cache.py` |
+| Raw trace snippet skips Litke TTL row | `test_raw_trace_snippet_skips_litke_ttl_row` | `tests/unit/test_data_manager_cache.py` |
+| HDBSCAN runs as default, K-means as fallback (7 tests) | `tests/unit/test_hdbscan_clustering.py` | `tests/unit/test_hdbscan_clustering.py` |
+
+### Untested — add these before touching the corresponding code paths
+
+| Behavior | Where to add | Priority | Notes |
+|---|---|---|---|
+| Vision ID offset — hybrid branch (`cluster_id + 1`) | `tests/unit/test_data_manager_cache.py` | **HIGH** | Parametrize over `is_vision_only=True/False` |
+| Vision ID offset — vision-only branch (`cluster_id`) | `tests/unit/test_data_manager_cache.py` | **HIGH** | Same test, both branches |
+| `on_features_ready()` discards result when cluster changed | `tests/integration/test_main_window.py` | **HIGH** | Use `qtbot` + `threading.Event` |
+| Stale `standard_plot_cache` entries pruned after cluster refinement | `tests/unit/test_data_manager_cache.py` | **HIGH** | Inject stale key, call rebuild, assert key gone |
+| Atomic pkl write: failure leaves original file intact | `tests/unit/test_data_manager_cache.py` | **HIGH** | `patch('os.replace', side_effect=OSError)` |
+| `LazySTADict` evicts oldest key after `_max_cache` exceeded | `tests/unit/test_vision_integration.py` | MEDIUM | Mock `STAReader`, fill past limit, assert oldest gone |
+| `LazySTADict` closes file handle on `__del__` | `tests/unit/test_vision_integration.py` | MEDIUM | Assert `reader.close()` called |
+| `ei_corr()` with zero-std EI returns zeros, not `NaN` | `tests/unit/test_data_manager_cache.py` | MEDIUM | `np.ones((512, 201))` input |
+| `_apply_ei_updates()` is called via signal, never directly | `tests/integration/test_data_manager_signals.py` | MEDIUM | Emit signal, assert `cluster_df` updated on main thread |
+| Population mosaic `Show IDs` toggle invalidates hot-swap cache | `tests/integration/test_population_panel.py` | LOW | |
+
+---
+
+## 3. Completed Fix Registry
+
+Every completed fix is listed here with the exact test that would catch a regression.
+Before modifying any file in the "changed files" column, run the corresponding test first.
+
+| Fix | Changed files | Regression test | Regression risk |
+|---|---|---|---|
+| ACG uses full recording (not first 2 min) | `data_manager.py::_compute_standard_plots()` | `test_acg_includes_late_spike_trains` | HIGH — any change to `_compute_standard_plots` |
+| Physics cache double-load on init | `data_manager.py::__init__`, `_load_standard_plot_cache_from_disk()` | `test_standard_plot_cache_computes_same_cluster_once` | MEDIUM |
+| Vision-only subset-of-cells UMAP bug | `data_manager.py::load_vision_native_data()` | `real_data_manager` fixture — assert all cells in `cluster_df` | HIGH — any change to vision loading |
+| UMAP toolbar overlap on first render | `panels/umap_panel.py` | Visual AC — navigate directly to UMAP tab on cold launch | LOW |
+| UMAP lasso/rect selector conflict | `panels/umap_panel.py` | Manual — activate both selectors in sequence | LOW |
+| HDBSCAN as default clustering | `panels/umap_panel.py`, `workers/workers.py` | `tests/unit/test_hdbscan_clustering.py` (7 tests) | LOW |
+| Population mosaic gridlines, zoom/pan, Show IDs cache | `main_window.py`, `panels/population_panel.py` | Integration tests on real dataset | MEDIUM |
+| Light mode theme system | `src/gui/theme.py`, `main_window.py::_setup_style()` | Visual AC — toggle theme, check all panels | LOW |
+| Sidebar live search (`Ctrl+F`) | `main_window.py` | Manual | LOW |
+
+---
+
+## 4. Active Work
+
+### Priority 1 — Standalone Vision Integration
 - **Spec:** `docs/specs/vision_standalone.md`
-- **Key Tasks:**
-  - Resolve the bug causing only a random subset of cells to appear in UMAP.
-  - Integrate array geometry and waveform templates from `.ei` and `.globals` files into the Standard Plots panel.
-  - Ensure the `DataManager` correctly maps Vision IDs to `cluster_id` without metadata crashes.
-  - Implement graceful fallbacks for missing `.sta` or `.ei` files.
+- **Branch:** `feat/vision-standalone`
+- **Status:** In progress
+- **What is done:** Basic `load_vision_native_data()` path exists. `is_vision_only` flag set correctly.
+- **What remains:**
+  - Subset-of-cells UMAP bug — not all Vision cells appearing. Root cause not yet confirmed.
+  - EI waveform templates from `.ei` + `.globals` not yet integrated into Standard Plots panel.
+  - Graceful fallback when `.sta` is missing — `STAPanel` currently crashes.
+  - Graceful fallback when `.ei` is missing — `EIPanel` currently crashes.
+- **Open architectural question:** When Vision-only, `cluster_id` is used directly as `vision_id`. The `cluster_df` index must be built from `neurons_data['spikes_by_id'].keys()` — confirm this is happening in `build_cluster_dataframe()` before adding any panel code.
+- **Fragile zone overlap:** Touches `data_manager.py`. Rebase from main before every push.
 
 ---
 
-### 2. Completed Priorities (v1.1)
+## 5. Infrastructure
 
-**Light Mode Polish & UI Cleanup**
+### Running tests
 
-- **Summary:** Implemented a centralized "first-principles" color theme architecture and removed legacy UI elements.
-- **Outcome:** Created `src/gui/theme.py` to manage semantic color roles. Toggling Light Mode now correctly updates stylesheets and plots (including the Population Panel) for universal legibility. The "Good" view toggle and "Refine Selected Cluster" buttons have been removed, and the cluster table now supports click-to-sort functionality.
+```bash
+# Full suite — always run before pushing
+conda run -n rgcviewer python -m pytest tests/ -v
 
-**UX/UI Polish – UMAP Layout, Sidebar Search & Tree Branch Styling**
+# Unit tests only — fast, no real data
+conda run -n rgcviewer python -m pytest tests/unit/ -v
 
-- **Summary:** Fixed a classic Qt geometry bug causing UMAP toolbar overlap on first render, added a persistent live search bar to the cluster sidebar (filtering both Tree and Table views), and replaced the default branch indicators with clean inline SVG triangles.
-- **Outcome:** UMAP panel now renders correctly on first visit without requiring a tab switch. Users can type a cluster ID or label to instantly filter the left panel (case‑insensitive substring). The tree view uses modern `▶`/`▼` arrows that are theme‑aware (light/dark mode). `Ctrl+F` focuses the search bar. All changes are purely cosmetic with zero data or analysis logic modifications.
+# Single test
+conda run -n rgcviewer python -m pytest tests/unit/test_autocorrelation.py::test_acg_includes_late_spike_trains -v
 
-**Physics Cache Fix & Loading Optimization**
+# Stop on first failure
+conda run -n rgcviewer python -m pytest tests/ -x -v
+```
 
-- **Goal:** Fix the cache invalidation bug where physics precomputations were double-loading.
-- **Outcome:** `DataManager` now performs a non-blocking check for existing `.pkl` caches on initialization. Background workers log failures without hanging the queue, and cells without Vision STA data are marked as `_computed` with safe defaults to ensure UMAP readiness reaches 100%.
+### Real data paths
 
-**UMAP Selection Fix**
+```
+Raw Litke:     /mnt/lab/Array-data/raw/20260506A/data009
+Sorted/Vision: /mnt/lab/Array-data/sorted/20260506A/chunk10/kilosort2.5
+```
 
-- **Goal:** Resolve tool conflicts between the Lasso and Rectangle selector tools.
-- **Outcome:** Ensured only one selector is active at a time and fixed selection logic to correctly identify clusters in both 2D and 3D projections.
+Tests using `real_data_manager` automatically skip if these paths are unmounted.
 
-**Autocorrelation (ACG) Fix**
+### Cache invalidation rule
 
-- **Goal:** Ensure ACG computations utilize the entire recording duration rather than just the first two minutes.
-- **Outcome:** Refactored the algorithm to include spikes across the full session while maintaining memory efficiency and avoiding dense arrays.
+Any test that verifies computation logic (ACG, ISI, physics, EI correlation) must use `tmp_path` or `cache_cleared_data_manager`. Using a real data path risks loading a warm `.pkl` and skipping all math. See AGENTS.md §1 Law 3.
 
-**Population Mosaic UI Refinements**
+### Screenshot storage
 
-- **Goal:** Resolve UI responsiveness bugs, relocate "Show IDs" to population panel, remove gridlines, and implement mouse-wheel zoom / click-drag panning on the RF mosaic.
-- **Outcome:** The `Show IDs` checkbox now instantly invalidates the caching to trigger redraws while preserving the selected group subset context. Gridlines were removed for a cleaner aesthetic, and interactive zoom and panning have been added via `NavigationToolbar2QT`. Verified with integration tests on real-world datasets.
+| Type | Location | Git-tracked? |
+|---|---|---|
+| Visual AC verification | `tests/screenshots/` | No — gitignored, auto-deleted |
+| Visual regression baselines | `tests/baseline_images/` | Yes — generate with `--mpl-generate-path` |
 
-**HDBSCAN Clustering in UMAP Panel**
+Filename format: `ac{N}_{feature_name}_{dark|light}.png`
+Default capture window size: 1800 × 1000px
+Always capture both light and dark mode for any visual AC.
 
-- **Goal:** Replace fixed-k K-Means with density-based HDBSCAN as the default UMAP clustering method, while retaining K-Means as a fallback.
-- **Spec:** `docs/specs/hdbscan-clustering.md`
-- **Outcome:** Unified `ClusterWorker` runs HDBSCAN or K-Means in a background thread. New clustering UI (method combo, parameter spinbox, Run Clustering button). Noise points (`-1`) render grey and are excluded from auto-group. Seven unit/integration tests added. Dependency: `hdbscan>=0.8.0`.
-
----
-
-## Testing & Infrastructure Initiatives
-
-- **Real Data Integration:** Shift away from pure mock testing where possible. Utilize existing datasets in `/mnt/lab/Array-data/` to test edge cases in real-world scenarios.
-- **Strict Cache Invalidation in CI:** Ensure the test suite explicitly clears or bypasses the `.pkl` cache when verifying math/physics logic to prevent false positives.
-- **Advanced Performance Testing:** Implement stress tests for UI responsiveness, visual regression testing for standard plots using `pytest-mpl`, and memory leak protection.
+```
