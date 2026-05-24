@@ -13,6 +13,7 @@ import pickle
 import os
 import tempfile
 import logging
+import ast
 try:
     import bin2py
     _BIN2PY_AVAILABLE = True
@@ -1103,8 +1104,10 @@ class DataManager(QObject):
                 if '=' in line:
                     key, val = map(str.strip, line.split('=', 1))
                     try:
-                        params[key] = eval(val)
-                    except (NameError, SyntaxError):
+                        # Use ast.literal_eval for safe parsing of literals
+                        params[key] = ast.literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        # Fallback: treat as a plain string (remove surrounding quotes if present)
                         params[key] = val.strip("'\"")
         self.sampling_rate = params.get('fs', 30000)
         self.n_channels = params.get('n_channels_dat', 512)
@@ -2396,6 +2399,11 @@ class DataManager(QObject):
         import numpy as np
         import pandas as pd
 
+        cache_key = int(cluster_id)
+        cached = self.mea_sim_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
         if self.similar_templates is None:
             return pd.DataFrame([])
 
@@ -2463,7 +2471,9 @@ class DataManager(QObject):
             set_vals = set_col.values
             rows["set"] = [set_vals[i] for i in top_idx]
 
-        return pd.DataFrame(rows)
+        result_df = pd.DataFrame(rows)
+        self.mea_sim_cache[cache_key] = result_df
+        return result_df.copy()
 
     def _get_vision_similarity_table(self, cluster_id: int, top_n: int = 50):
         """Get vision-based similarity table for cluster_id using STA correlations."""

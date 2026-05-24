@@ -196,4 +196,4 @@ def load_neurons_data(vision_dir: Path, dataset_name: str):
         return None
     except Exception:
         logger.exception("Unexpected error loading Neurons data")
-        return Nones
+        return None
