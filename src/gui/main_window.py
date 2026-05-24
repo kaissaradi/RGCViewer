@@ -1244,25 +1244,26 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
 
-            # If a cluster/cell is selected, draw its population mosaic
-            # immediately
-            selected = None
-            try:
-                selected = self._get_selected_cluster_id()  # adapt to your selector fun
-            except Exception:
-                selected = None
-
-            # Call plotting routine with explicit canvas
-            draw_population_rfs_plot(
-                main_window=self,
-                selected_cell_id=selected,
-                canvas=self.pop_mosaic_canvas)
-            callbacks.redraw_population_panels(self)
+            QTimer.singleShot(0, self._draw_population_panel_initial)
         else:
             # hide it
             self.pop_context_widget.hide()
             # collapse the right column completely
             self.right_splitter.setSizes([sum(self.right_splitter.sizes()), 0])
+
+    def _draw_population_panel_initial(self):
+        """Draw population context after Qt has laid out the newly shown pane."""
+        selected = None
+        try:
+            selected = self._get_selected_cluster_id()
+        except Exception:
+            selected = None
+
+        draw_population_rfs_plot(
+            main_window=self,
+            selected_cell_id=selected,
+            canvas=self.pop_mosaic_canvas)
+        callbacks.redraw_population_panels(self)
 
     def _on_pop_show_ids_toggled(self, state):
         """Force a redraw of the population mosaic when Show IDs is toggled."""
