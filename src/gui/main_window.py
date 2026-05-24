@@ -104,6 +104,12 @@ class MainWindow(QMainWindow):
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
 
+        self.folder_selection_timer = QTimer(self)
+        self.folder_selection_timer.setSingleShot(True)
+        self.folder_selection_timer.setInterval(25)
+        self.folder_selection_timer.timeout.connect(self._process_folder_selection)
+        self._pending_folder_item = None
+
         # Auto-load if default paths are provided
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
             self.load_directory(default_kilosort_dir, default_dat_file)
@@ -684,6 +690,23 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 "Raw data file not loaded: waveform plot disabled.", 4000)
             self._draw_plots(cluster_id, None)
+
+    def _process_folder_selection(self):
+        """Draw the selected population folder after folder navigation settles."""
+        item = self._pending_folder_item
+        if item is None or not self.population_view_enabled:
+            return
+
+        group_ids = self._get_group_cluster_ids(item)
+        if not group_ids:
+            return
+
+        draw_population_rfs_plot(
+            main_window=self,
+            subset_cell_ids=group_ids,
+            canvas=self.pop_mosaic_canvas,
+        )
+        callbacks.redraw_population_panels(self)
 
     def on_features_ready(self, cluster_id, features):
         """

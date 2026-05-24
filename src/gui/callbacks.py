@@ -425,7 +425,6 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
     else:
         # Group Folder selected (Tree View)
-        # Groups are not subject to rapid scrolling lag, so immediate update is fine here.
         if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
@@ -434,14 +433,9 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
                 # Check if it is a group (groups store None in UserRole)
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:
-                    group_ids = main_window._get_group_cluster_ids(item)
-
-                    if group_ids and main_window.population_view_enabled:
-                        draw_population_rfs_plot(
-                            main_window=main_window,
-                            subset_cell_ids=group_ids,
-                            canvas=main_window.pop_mosaic_canvas)
-                        redraw_population_panels(main_window)
+                    main_window._pending_folder_item = item
+                    main_window.folder_selection_timer.start()
+                    return
 
 
 def on_spatial_data_ready(
