@@ -345,6 +345,87 @@ def test_ensure_physics_cache_noop_when_warm():
     assert call_counter['n'] == 0
 
 
+def test_ensure_physics_cache_respects_max_workers():
+    """Pool size is configurable; default must not be overridden silently."""
+    from unittest.mock import patch
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._feature_lock = threading.Lock()
+    dm.feature_cache = {}
+    dm.get_cell_physics = lambda cid: None
+
+    with patch('src.analysis.data_manager.ThreadPoolExecutor') as mock_tp:
+        mock_ctx = mock_tp.return_value.__enter__.return_value
+        fut = MagicMock()
+        fut.result.return_value = None
+        mock_ctx.submit.return_value = fut
+        DataManager.ensure_physics_cache(dm, [0, 1], max_workers=2)
+
+    mock_tp.assert_called_once_with(max_workers=2)
+
+
+def test_ensure_physics_cache_limits_parallel_sta_work():
+    """Mock: 8 workers must not run unbounded concurrent get_cell_physics calls."""
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._feature_lock = threading.Lock()
+    dm._physics_cell_locks = {}
+    dm._physics_cell_locks_lock = threading.Lock()
+    dm._physics_done_count = 0
+    dm.feature_cache = {}
+
+    max_inflight = {'peak': 0}
+    inflight = {'n': 0}
+    lock = threading.Lock()
+
+    def slow_physics(cid):
+        with lock:
+            inflight['n'] += 1
+            max_inflight['peak'] = max(max_inflight['peak'], inflight['n'])
+        time.sleep(0.02)
+        with dm._feature_lock:
+            dm.feature_cache[int(cid)] = {'_computed': True}
+            dm._physics_done_count += 1
+        with lock:
+            inflight['n'] -= 1
+
+    dm.get_cell_physics = slow_physics
+
+    with patch('src.analysis.data_manager.ThreadPoolExecutor', ThreadPoolExecutor):
+        DataManager.ensure_physics_cache(dm, list(range(20)), max_workers=4)
+
+    assert max_inflight['peak'] <= 4
+
+
+def test_update_cache_progress_uses_physics_after_vision_without_finished_cluster():
+    """
+    Regression: ensure_physics_cache does not emit finished_cluster.
+    Progress must track _physics_done_count when vision_stas is loaded.
+
+    Full Qt progress-bar polling is not exercised here (no event loop).
+    """
+    import pandas as pd
+    from unittest.mock import MagicMock
+    from src.gui.callbacks import update_cache_progress
+
+    mw = MagicMock()
+    dm = MagicMock()
+    dm.cluster_df = pd.DataFrame({'cluster_id': range(100)})
+    dm._physics_done_count = 35
+    dm.standard_plot_cache = {i: {} for i in range(90)}
+    dm.vision_stas = object()
+    mw.data_manager = dm
+    mw._cache_save_triggered = False
+
+    update_cache_progress(mw)
+
+    mw.cache_progress.setValue.assert_called_once_with(35)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AC7 — get_physics_feature_matrix matches old extract_features_from_datamanager
 # ─────────────────────────────────────────────────────────────────────────────

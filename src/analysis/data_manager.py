@@ -1645,15 +1645,11 @@ class DataManager(QObject):
         if scalars_mat.shape[0] > 0:
             scalars_mat = RobustScaler().fit_transform(scalars_mat)
 
-        n_comp = min(3, len(valid_ids))
-        tc_pca = (
-            PCA(n_components=n_comp).fit_transform(tc_mat)
-            if n_comp > 0 else np.zeros((len(valid_ids), 0))
-        )
-        acg_pca = (
-            PCA(n_components=n_comp).fit_transform(acg_mat)
-            if n_comp > 0 else np.zeros((len(valid_ids), 0))
-        )
+        n_comp_tc = min(3, len(valid_ids), tc_mat.shape[1])
+        n_comp_acg = min(3, len(valid_ids), acg_mat.shape[1])
+
+        tc_pca  = PCA(n_components=n_comp_tc).fit_transform(tc_mat) if n_comp_tc > 0 else np.zeros((len(valid_ids), 0))
+        acg_pca = PCA(n_components=n_comp_acg).fit_transform(acg_mat) if n_comp_acg > 0 else np.zeros((len(valid_ids), 0))
 
         feature_matrix = np.hstack([
             tc_pca * w_shape,

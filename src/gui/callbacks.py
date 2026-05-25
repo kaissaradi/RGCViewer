@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread, Qt, QObject
+from qtpy.QtCore import QThread, Qt, QObject, QTimer
 from qtpy.QtGui import QStandardItem, QColor
 
 from ..analysis.data_manager import DataManager
@@ -25,6 +25,28 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
+def _ensure_cache_progress_timer(main_window):
+    """Main-thread timer: physics warm-up no longer emits finished_cluster."""
+    timer = getattr(main_window, '_cache_progress_timer', None)
+    if timer is None:
+        timer = QTimer(main_window)
+        timer.setInterval(250)
+        timer.timeout.connect(lambda: update_cache_progress(main_window))
+        main_window._cache_progress_timer = timer
+    return timer
+
+
+def start_cache_progress_polling(main_window):
+    """Poll cache counters on the UI thread while the progress bar is visible."""
+    _ensure_cache_progress_timer(main_window).start()
+
+
+def stop_cache_progress_polling(main_window):
+    timer = getattr(main_window, '_cache_progress_timer', None)
+    if timer is not None:
+        timer.stop()
+
+
 def update_cache_progress(main_window):
     """Updates the main window progress bar based on actual cache state."""
     if not main_window.data_manager or main_window.data_manager.cluster_df.empty:
@@ -32,24 +54,28 @@ def update_cache_progress(main_window):
 
     dm = main_window.data_manager
     total = len(dm.cluster_df)
+    if total <= 0:
+        return
 
-    # Count truly complete feature_cache entries (have _computed sentinel).
-    # Falls back to standard_plot_cache count if physics pass hasn't started.
     physics_done = getattr(dm, '_physics_done_count', 0)
-    std_done     = len(dm.standard_plot_cache)
+    std_done = len(dm.standard_plot_cache)
+    vision_loaded = bool(getattr(dm, 'vision_stas', None))
 
-    # Show whichever pass is currently active
-    if physics_done > 0:
-        val = int(physics_done / total * 100)
+    # StandardPlotsWorker drives finished_cluster; physics warm-up does not.
+    if vision_loaded:
         done = physics_done
+        val = int(physics_done / total * 100)
+        ready = physics_done >= total
     else:
-        val = int(std_done / total * 100)
         done = std_done
+        val = int(std_done / total * 100)
+        ready = std_done >= total
 
     main_window.cache_progress.setValue(min(val, 100))
 
-    if done >= total and not getattr(main_window, '_cache_save_triggered', False):
+    if ready and not getattr(main_window, '_cache_save_triggered', False):
         main_window._cache_save_triggered = True
+        stop_cache_progress_polling(main_window)
         main_window.cache_progress.hide()
         main_window.status_bar.showMessage(
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000)
@@ -131,6 +157,7 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.cache_progress_count = 0
     main_window.cache_progress.setValue(0)
     main_window.cache_progress.show()
+    start_cache_progress_polling(main_window)
 
     # Start the worker — handles signal wiring AND queueing all clusters internally
     start_worker(main_window)
@@ -238,12 +265,6 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
 
     _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
 
-    def _warm_physics():
-        main_window.data_manager.ensure_physics_cache(_all_ids)
-
-    threading.Thread(target=_warm_physics, daemon=True).start()
-
-
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
     vision_dir_name = QFileDialog.getExistingDirectory(
@@ -333,11 +354,6 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # never produce stale timecourse=None entries before Vision is ready.
     if success:
         _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
-
-        def _warm_physics():
-            main_window.data_manager.ensure_physics_cache(_all_ids)
-
-        threading.Thread(target=_warm_physics, daemon=True).start()
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
