@@ -1,6 +1,7 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -14,6 +15,8 @@ import os
 import tempfile
 import logging
 import ast
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import RobustScaler
 try:
     import bin2py
     _BIN2PY_AVAILABLE = True
@@ -1570,6 +1573,127 @@ class DataManager(QObject):
                     self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
 
             return metrics
+
+    def get_physics_feature_matrix(self, cluster_ids, w_shape=2.0, w_pattern=1.5, w_geometry=1.0):
+        """
+        Build the weighted PCA feature matrix used by UMAPWorker and FeatureAnalysisWorker.
+
+        Reads pre-computed physics from feature_cache via get_cell_physics() — O(1)
+        cache hit if the background pass has run; triggers on-demand computation otherwise.
+        """
+        valid_ids = []
+        tc_list = []
+        acg_list = []
+        scalars_list = []
+        metadata = {'Time to Peak': [], 'RF Area': [], 'Ellipticity': []}
+
+        for cid in cluster_ids:
+            metrics = self.get_cell_physics(int(cid))
+            tc = metrics.get('timecourse')
+            acg = metrics.get('acg')
+            if tc is None or acg is None:
+                continue
+
+            valid_ids.append(cid)
+            tc_list.append(tc)
+            acg_list.append(acg)
+
+            area = metrics.get('rf_area') or 0.0
+            ellip = metrics.get('ellipticity') or 0.0
+            t2p = metrics.get('time_to_peak') or 0
+            scalars_list.append([area, ellip])
+            metadata['Time to Peak'].append(t2p)
+            metadata['RF Area'].append(area)
+            metadata['Ellipticity'].append(ellip)
+
+        if not valid_ids:
+            return np.array([]), [], {}
+
+        max_tc = max(len(t) for t in tc_list)
+        tc_mat = np.array([
+            np.pad(t, (0, max_tc - len(t))) if len(t) < max_tc else t[:max_tc]
+            for t in tc_list
+        ])
+        max_acg = max(len(a) for a in acg_list)
+        acg_mat = np.array([
+            np.pad(a, (0, max_acg - len(a))) if len(a) < max_acg else a[:max_acg]
+            for a in acg_list
+        ])
+        scalars_mat = np.array(scalars_list, dtype=np.float64)
+
+        nan_mask = (
+            np.any(np.isnan(tc_mat), axis=1) |
+            np.any(np.isnan(acg_mat), axis=1) |
+            np.any(np.isnan(scalars_mat), axis=1)
+        )
+        if np.any(nan_mask):
+            logger.warning(
+                "get_physics_feature_matrix: dropping %d unit(s) with NaN features",
+                int(nan_mask.sum()),
+            )
+            keep = ~nan_mask
+            valid_ids = [v for v, k in zip(valid_ids, keep) if k]
+            tc_mat = tc_mat[keep]
+            acg_mat = acg_mat[keep]
+            scalars_mat = scalars_mat[keep]
+            for key in metadata:
+                metadata[key] = [v for v, k in zip(metadata[key], keep) if k]
+
+        if not valid_ids:
+            return np.array([]), [], {}
+
+        if scalars_mat.shape[0] > 0:
+            scalars_mat = RobustScaler().fit_transform(scalars_mat)
+
+        n_comp = min(3, len(valid_ids))
+        tc_pca = (
+            PCA(n_components=n_comp).fit_transform(tc_mat)
+            if n_comp > 0 else np.zeros((len(valid_ids), 0))
+        )
+        acg_pca = (
+            PCA(n_components=n_comp).fit_transform(acg_mat)
+            if n_comp > 0 else np.zeros((len(valid_ids), 0))
+        )
+
+        feature_matrix = np.hstack([
+            tc_pca * w_shape,
+            acg_pca * w_pattern,
+            scalars_mat * w_geometry,
+        ])
+
+        return feature_matrix, valid_ids, metadata
+
+    def ensure_physics_cache(self, cluster_ids, max_workers=8):
+        """
+        Guarantee that all cluster_ids have a fully-computed feature_cache entry
+        (_computed == True) before returning.
+        """
+        with self._feature_lock:
+            missing = [
+                int(cid) for cid in cluster_ids
+                if not self.feature_cache.get(int(cid), {}).get('_computed')
+            ]
+
+        if not missing:
+            return
+
+        logger.debug(
+            "ensure_physics_cache: %d cells not yet computed, filling now",
+            len(missing),
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.get_cell_physics, cid): cid for cid in missing}
+            for future in as_completed(futures):
+                cid = futures[future]
+                try:
+                    future.result()
+                except Exception:
+                    logger.warning(
+                        "ensure_physics_cache: failed for cluster %d",
+                        cid,
+                        exc_info=True,
+                    )
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
