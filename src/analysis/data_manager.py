@@ -1503,8 +1503,13 @@ class DataManager(QObject):
             #     also passed the fast-path miss cannot enter this block until the
             #     first thread has written to feature_cache. ---
 
-            std_data = self.get_standard_plot_data(cluster_id)
-            acg_norm = std_data.get('acg_norm') if std_data else None
+            with self._feature_lock:
+                _partial = self.feature_cache.get(cluster_id, {})
+                acg_norm = _partial.get('acg')
+
+            if acg_norm is None:
+                std_data = self.get_standard_plot_data(cluster_id)
+                acg_norm = std_data.get('acg_norm') if std_data else None
 
             timecourse = None
             rf_area = 0.0
@@ -1662,7 +1667,8 @@ class DataManager(QObject):
         if spikes_ms.size > MIN_SPIKES:
             MAX_LAG = 100    # ms — ±100 ms window, giving 201-sample ACG
 
-            t = np.sort(spikes_ms).astype(np.int64)
+            # spike_times.npy from Kilosort is written in ascending order; np.sort() is a no-op.
+            t = spikes_ms.astype(np.int64)
             
             # Compute lags: for each spike, find neighbors within MAX_LAG.
             # We iterate k neighbors away until the distance > MAX_LAG for all spikes.
@@ -1686,6 +1692,15 @@ class DataManager(QObject):
 
             data['acg_time_lags'] = time_lags
             data['acg_norm']      = acg_norm
+
+            # Write ACG into feature_cache immediately so get_cell_physics()
+            # does not need to recompute it. Partial entry — no _computed key.
+            with self._feature_lock:
+                existing = self.feature_cache.get(cluster_id)
+                if existing is None:
+                    self.feature_cache[cluster_id] = {'acg': acg_norm}
+                elif not existing.get('_computed'):
+                    existing['acg'] = acg_norm
 
         # --- Firing rate & amplitude over time ---
         if spikes_sec.size > 0:
