@@ -2182,7 +2182,8 @@ class DataManager(QObject):
         if len(spike_times_cluster) < 2:
             isi_value = 0.0
         else:
-            isis = np.diff(np.sort(spike_times_cluster))
+            # spike_times_cluster comes from get_cluster_spikes() which reads the sorted Kilosort memmap.
+            isis = np.diff(spike_times_cluster)
             refractory_period_samples = (
                 refractory_period_ms / 1000.0) * self.sampling_rate
             violations = np.sum(isis < refractory_period_samples)
