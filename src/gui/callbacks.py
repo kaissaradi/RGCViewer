@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import threading
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
 from qtpy.QtCore import QThread, Qt, QObject
@@ -235,36 +236,12 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
         main_window.status_bar.showMessage(
             "Vision loaded. Computing EI correlations in background...", 4000)
 
-    # --- Physics extraction pass (needs Vision STA data, so runs here not in start_worker) ---
-    all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+    _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
 
-    main_window.cache_progress_count = 0
-    main_window.cache_progress.setValue(0)
-    main_window.cache_progress.show()
+    def _warm_physics():
+        main_window.data_manager.ensure_physics_cache(_all_ids)
 
-    def _compute_physics():
-        for cid in all_ids:
-            try:
-                main_window.data_manager.get_cell_physics(cid)
-                if getattr(main_window, 'standard_plots_worker', None):
-                    main_window.standard_plots_worker.finished_cluster.emit(int(cid))
-            except Exception:
-                logger.warning("Physics failed for cluster %s", cid, exc_info=True)
-        main_window.physics_thread.quit()
-
-    # Attach to main_window so GC doesn't destroy the thread while the OS
-    # thread is still running ("QThread: Destroyed while thread is still running").
-    main_window.physics_thread = QThread()
-    main_window.physics_worker = QObject()
-    main_window.physics_worker.moveToThread(main_window.physics_thread)
-    main_window.physics_thread.started.connect(_compute_physics)
-    # deleteLater connections ensure Qt cleans up both objects after the thread exits.
-    main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
-    main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
-    main_window.physics_thread.start()
-
-    main_window.status_bar.showMessage(
-        f"Vision dataset loaded. Computing physics for {len(all_ids)} cells...", 5000)
+    threading.Thread(target=_warm_physics, daemon=True).start()
 
 
 def load_vision_directory(main_window):
@@ -355,42 +332,12 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # clusters. The StandardPlotsWorker deliberately skips this so it can
     # never produce stale timecourse=None entries before Vision is ready.
     if success:
-        dm = main_window.data_manager
-        all_ids = dm.cluster_df['cluster_id'].astype(int).tolist()
+        _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
 
-        # Reset progress bar to show the physics recompute pass
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
+        def _warm_physics():
+            main_window.data_manager.ensure_physics_cache(_all_ids)
 
-        def _compute_physics():
-            for cid in all_ids:
-                try:
-                    dm.get_cell_physics(cid)
-                    if getattr(main_window, 'standard_plots_worker', None):
-                        main_window.standard_plots_worker.finished_cluster.emit(int(cid))
-                except Exception:
-                    pass
-
-        # Use QThread instead of threading.Thread to avoid Numba/TBB fork issues.
-        # Attach to main_window (not local variables) so Python's GC doesn't
-        # destroy the thread object while the OS thread is still running, which
-        # would cause: "QThread: Destroyed while thread is still running" + abort.
-        main_window.physics_thread = QThread()
-        main_window.physics_worker = QObject()
-        main_window.physics_worker.moveToThread(main_window.physics_thread)
-
-        def run_physics():
-            _compute_physics()
-            main_window.physics_thread.quit()
-
-        main_window.physics_thread.started.connect(run_physics)
-        main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
-        main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
-        main_window.physics_thread.start()
-
-        main_window.status_bar.showMessage(
-            f"Vision loaded. Computing physics for {len(all_ids)} cells...", 5000)
+        threading.Thread(target=_warm_physics, daemon=True).start()
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
