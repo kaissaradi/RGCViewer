@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import threading
 logger = logging.getLogger(__name__)
 
 # Guard import of visionloader so the app can run without it installed
@@ -28,6 +29,7 @@ class LazySTADict:
         self._cache = {}
         self._cache_keys = []
         self._max_cache = min(MAX_STA_CACHE_CELLS, max(200, len(self.keys_list)))
+        self._cache_lock = threading.Lock()
         
     def __contains__(self, key):
         return key in self.keys_list
@@ -39,24 +41,21 @@ class LazySTADict:
         return default
         
     def __getitem__(self, key):
-        # 1. Check RAM cache first (Instant)
-        if key in self._cache:
-            return self._cache[key]
-            
-        # 2. Read from SSD (Slow)
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+
         sta_data = self.reader.get_sta_for_cell_id(key)
-        
-        # 3. Store in Cache
-        self._cache[key] = sta_data
-        self._cache_keys.append(key)
-        
-        # 4. Evict oldest if we exceed limit to save RAM
-        if len(self._cache_keys) > self._max_cache:
-            oldest_key = self._cache_keys.pop(0)
-            if oldest_key in self._cache:
-                del self._cache[oldest_key]
-                
-        return sta_data
+
+        with self._cache_lock:
+            if key not in self._cache:
+                self._cache[key] = sta_data
+                self._cache_keys.append(key)
+                if len(self._cache_keys) > self._max_cache:
+                    oldest = self._cache_keys.pop(0)
+                    self._cache.pop(oldest, None)
+
+        return self._cache[key]
         
     def __iter__(self):
         return iter(self.keys_list)
