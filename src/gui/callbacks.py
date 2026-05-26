@@ -263,18 +263,27 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
         main_window.status_bar.showMessage(
             "Vision loaded. Computing EI correlations in background...", 4000)
 
+    # In _on_vision_loaded, REPLACE the _warm_physics block with:
     if success:
         _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
-        
+
         def _warm_physics():
             main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
-            
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
-        start_cache_progress_polling(main_window)
-        
-        threading.Thread(target=_warm_physics, daemon=True).start()
+
+        def _on_standard_plots_done():
+            # StandardPlotsWorker has finished — feature_cache has all ACGs.
+            # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
+            main_window.cache_progress_count = 0
+            main_window.cache_progress.setValue(0)
+            main_window.cache_progress.show()
+            start_cache_progress_polling(main_window)
+            threading.Thread(target=_warm_physics, daemon=True).start()
+
+        # Connect once — Qt.SingleShotConnection so it doesn't fire again if
+        # Vision reloads in the same session.
+        main_window.standard_plots_worker.all_done.connect(
+            _on_standard_plots_done, Qt.ConnectionType.SingleShotConnection
+        )
 
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
@@ -363,18 +372,27 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # Now that Vision STA data is loaded, compute get_cell_physics for all
     # clusters. The StandardPlotsWorker deliberately skips this so it can
     # never produce stale timecourse=None entries before Vision is ready.
+    # In _on_vision_loaded, REPLACE the _warm_physics block with:
     if success:
         _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
-        
+
         def _warm_physics():
             main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
-            
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
-        start_cache_progress_polling(main_window)
-        
-        threading.Thread(target=_warm_physics, daemon=True).start()
+
+        def _on_standard_plots_done():
+            # Disconnect immediately so Vision reload in the same session
+            # doesn't fire a second _warm_physics thread.
+            try:
+                main_window.standard_plots_worker.all_done.disconnect(_on_standard_plots_done)
+            except RuntimeError:
+                pass  # already disconnected, fine
+            main_window.cache_progress_count = 0
+            main_window.cache_progress.setValue(0)
+            main_window.cache_progress.show()
+            start_cache_progress_polling(main_window)
+            threading.Thread(target=_warm_physics, daemon=True).start()
+
+        main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:

@@ -236,11 +236,8 @@ class FeatureWorker(QObject):
 
 
 class StandardPlotsWorker(QObject):
-    """
-    Background worker that pre-computes and caches standard plots (ISI/ACG/FR)
-    for clusters so that UI tab switches are nearly instant.
-    """
     finished_cluster = Signal(int)
+    all_done = Signal()          # ← NEW: fires once when queue is empty
     error = Signal(str)
 
     def __init__(self, data_manager):
@@ -248,31 +245,27 @@ class StandardPlotsWorker(QObject):
         self.data_manager = data_manager
         self.queue = deque()
         self.is_running = True
+        self._all_done_emitted = False   # ← NEW
 
     def run(self):
-        """
-        Computes and caches standard plot data (ISI/ACG/FR) for all clusters.
-        Deliberately does NOT call get_cell_physics — that requires Vision STA
-        data which may not be loaded yet. get_cell_physics is triggered after
-        Vision loads in _on_vision_loaded.
-        """
         if hasattr(self.data_manager, 'load_persisted_caches'):
             self.data_manager.load_persisted_caches()
 
         while self.is_running:
             if self.queue:
+                self._all_done_emitted = False   # ← reset if new work arrives
                 cluster_id = self.queue.popleft()
                 try:
                     self.data_manager.get_standard_plot_data(cluster_id)
                 except Exception as e:
-                    logger.exception(
-                        "Failed to compute standard plots for cluster %s", cluster_id)
-                    self.error.emit(
-                        f"Background precompute failed for cluster {cluster_id}: {e}")
+                    self.error.emit(f"Background precompute failed for cluster {cluster_id}: {e}")
                 finally:
                     self.finished_cluster.emit(int(cluster_id))
                     QThread.msleep(20)
             else:
+                if not self._all_done_emitted:   # ← NEW
+                    self.all_done.emit()          # ← NEW
+                    self._all_done_emitted = True # ← NEW
                 QThread.msleep(100)
 
     def add_to_queue(self, cluster_id, high_priority=False):

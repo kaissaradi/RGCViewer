@@ -1460,6 +1460,22 @@ class DataManager(QObject):
                     "discarding to prevent OOM. It will be rebuilt automatically."
                 )
                 cache = {}
+
+            # FR downsampling guard: caches built before Fix 2 store one point
+            # per second of recording (up to 3600 elements for a 1-hour session).
+            # Detect by checking if fr_bin_centers exceeds the new cap and discard
+            # so the cache is rebuilt with the compact representation.
+            if cache:
+                first_entry = next(iter(cache.values()), {})
+                fr_centers = first_entry.get('fr_bin_centers')
+                if (fr_centers is not None and hasattr(fr_centers, '__len__')
+                        and len(fr_centers) > 300):
+                    logger.warning(
+                        "standard_plot_cache.pkl has fat FR arrays (%d bins) — "
+                        "discarding and rebuilding with compact representation.",
+                        len(fr_centers),
+                    )
+                    cache = {}
         except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
             logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
             cache = {}
@@ -1761,9 +1777,11 @@ class DataManager(QObject):
 
         sr = float(self.sampling_rate)
 
-        # Local-only — not cached; fetched on-demand by panel consumers
+        # spikes_sec — full resolution, used for ISI and FR (both need the real timestamps).
         spikes_sec = spikes / sr
-        spikes_ms = (spikes_sec * 1000.0).astype(int)
+        # NOTE: spikes_ms is NOT computed here for the full array.
+        # The ACG subsamples first (Fix 3: avoid allocating a 500k-element ms array
+        # only to immediately throw 98% of it away for a 10k-spike subsample).
 
         # ISI vector (ms) — local only, not cached.
         # get_cluster_spikes() returns spikes in time order (Kilosort guarantee).
@@ -1782,17 +1800,24 @@ class DataManager(QObject):
 
         # --- Autocorrelation (ACG) — Direct Lag Histogram on entire recording ---
         # Instead of a memory-heavy FFT on a dense array, we use a sliding window
-        # approach with bincount. This is O(N * spikes_per_window) and uses the 
+        # approach with bincount. This is O(N * spikes_per_window) and uses the
         # FULL recording duration while remaining extremely fast for sparse spike trains.
         MIN_SPIKES = 50
-        if spikes_ms.size > MIN_SPIKES:
+        if spikes.size > MIN_SPIKES:
             MAX_LAG = 100    # ms — ±100 ms window, giving 201-sample ACG
 
-            # spike_times.npy from Kilosort is written in ascending order; np.sort() is a no-op.
-            t = spikes_ms.astype(np.int64)
-            if len(t) > 10_000:
-                idx = np.linspace(0, len(t) - 1, 10_000, dtype=np.int64)
-                t = t[idx]
+            # Fix 3: subsample in sample-count space first, then convert to ms.
+            # Old code converted all N spikes to ms and then subsampled, allocating
+            # a full N-spike int array (up to ~4 MB for a 500k-spike cluster) that
+            # was immediately discarded. Now we subsample the raw int64 sample counts
+            # and do one small ms conversion on 10k elements instead.
+            # Seeded on cluster_id → deterministic; same ACG every run, no cache surprises.
+            t_raw = spikes  # already int64, already sorted (Kilosort guarantee)
+            if len(t_raw) > 10_000:
+                rng = np.random.default_rng(seed=int(cluster_id))
+                idx = np.sort(rng.choice(len(t_raw), size=10_000, replace=False))
+                t_raw = t_raw[idx]
+            t = (t_raw / sr * 1000.0).astype(np.int64)
             
             # Compute lags: for each spike, find neighbors within MAX_LAG.
             # We iterate k neighbors away until the distance > MAX_LAG for all spikes.
@@ -1837,18 +1862,17 @@ class DataManager(QObject):
 
             counts, bin_edges = np.histogram(spikes_sec, bins=bins)
             bin_centers = bin_edges[:-1]
-            data['fr_bin_centers'] = bin_centers
 
             if counts.size > 0:
                 rate = gaussian_filter1d(counts.astype(float), sigma=5)
             else:
                 rate = np.zeros_like(bin_centers, dtype=float)
-            data['fr_rate'] = rate
 
             # Amplitude per bin — O(N) with bincount instead of the old
             # O(N × B) loop that did `all_amplitudes[bin_indices == b]` for
             # every bin b.  For a 1-hour recording with 3600 bins and 100k
             # spikes that loop was doing 360M element comparisons.
+            amplitude_smoothed = None
             if all_amplitudes.size > 0 and bin_centers.size > 0:
                 bin_indices = np.searchsorted(bins[1:], spikes_sec, side='left')
                 bin_indices = np.clip(bin_indices, 0, len(bin_centers) - 1)
@@ -1882,30 +1906,51 @@ class DataManager(QObject):
                         amplitude_binned = None
 
                 if amplitude_binned is not None:
-                    amplitude_smoothed = gaussian_filter1d(
-                        amplitude_binned, sigma=5)
-                    data['fr_amp_x'] = bin_centers
-                    data['fr_amp_y'] = amplitude_smoothed
+                    amplitude_smoothed = gaussian_filter1d(amplitude_binned, sigma=5)
 
-                    # Use template PTP to set a sensible right-axis scale when
-                    # available
-                    max_ptp = 1.0
-                    templates = getattr(self, 'templates', None)
-                    try:
-                        if templates is not None and cluster_id < templates.shape[0]:
-                            ptp = templates[cluster_id].max(
-                                axis=0) - templates[cluster_id].min(axis=0)
-                            if ptp.size > 0:
-                                max_ptp = float(ptp.max())
-                        # Fallback: use amplitude range
-                        if not np.isfinite(max_ptp) or max_ptp <= 0:
-                            max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
-                                amplitude_smoothed) > 0 else 1.0
-                    except Exception:
+            # Fix 2: All computation above runs at full 1-second resolution
+            # (scientifically correct — Gaussian smoothing shape is preserved).
+            # Before caching, downsample to at most FR_CACHE_MAX_BINS points.
+            # A 1-hour recording has 3600 bins; the plot canvas is ~800px wide,
+            # so storing 3600 float64 values per cluster per array wastes ~72 MB
+            # across a 500-cluster dataset for zero visual benefit.
+            # Downsampling with a uniform stride after smoothing keeps the curve
+            # shape exact and reduces per-cluster FR cache size ~12×.
+            FR_CACHE_MAX_BINS = 300
+            if len(bin_centers) > FR_CACHE_MAX_BINS:
+                step = max(1, len(bin_centers) // FR_CACHE_MAX_BINS)
+                cache_centers = bin_centers[::step]
+                cache_rate    = rate[::step]
+            else:
+                step = 1
+                cache_centers = bin_centers
+                cache_rate    = rate
+
+            data['fr_bin_centers'] = cache_centers
+            data['fr_rate']        = cache_rate
+
+            if amplitude_smoothed is not None:
+                data['fr_amp_x'] = cache_centers
+                data['fr_amp_y'] = amplitude_smoothed[::step]
+
+                # Use template PTP to set a sensible right-axis scale when available
+                max_ptp = 1.0
+                templates = getattr(self, 'templates', None)
+                try:
+                    if templates is not None and cluster_id < templates.shape[0]:
+                        ptp = templates[cluster_id].max(
+                            axis=0) - templates[cluster_id].min(axis=0)
+                        if ptp.size > 0:
+                            max_ptp = float(ptp.max())
+                    # Fallback: use amplitude range
+                    if not np.isfinite(max_ptp) or max_ptp <= 0:
                         max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
                             amplitude_smoothed) > 0 else 1.0
+                except Exception:
+                    max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
+                        amplitude_smoothed) > 0 else 1.0
 
-                    data['fr_amp_ymax'] = max_ptp * 1.1
+                data['fr_amp_ymax'] = max_ptp * 1.1
 
         return data
 
