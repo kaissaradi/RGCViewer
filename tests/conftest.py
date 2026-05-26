@@ -17,31 +17,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 matplotlib.use("Agg", force=True)
 
 # -----------------------------------------------------------------------------
-# Stub Qt BEFORE any src.* import touches it.
-# data_manager.py has `from qtpy.QtCore import QObject` at module level —
-# without this every test collection spin-initialises a Qt application.
-# -----------------------------------------------------------------------------
-for _mod in (
-    "qtpy",
-    "qtpy.QtCore",
-    "qtpy.QtGui",
-    "qtpy.QtWidgets",
-):
-    sys.modules.setdefault(_mod, MagicMock())
-
-# QObject needs to behave like a real base class (DataManager inherits it).
-# A plain MagicMock is not usable as a base class, so we give it a real one.
-_QtCore = sys.modules["qtpy.QtCore"]
-if not isinstance(_QtCore.QObject, type):
-    class _QObjectStub:
-        def __init__(self, *a, **kw): pass
-        def __init_subclass__(cls, **kw): super().__init_subclass__(**kw)
-    _QtCore.QObject = _QObjectStub
-    _QtCore.Signal  = lambda *a, **kw: None
-    _QtCore.Qt      = MagicMock()
-
-
-# -----------------------------------------------------------------------------
 # Common fixtures
 # -----------------------------------------------------------------------------
 
@@ -149,3 +124,15 @@ def cache_cleared_data_manager(tmp_path):
             p.unlink()
 
     return DataManager(kilosort_dir=str(tmp_path))
+
+@pytest.fixture
+def main_window_with_vision_data(make_main_window, mock_dm):
+    """Provides a main window pre-loaded with mock Vision data."""
+    # Give the mock DM some fake vision data so the UI thinks it loaded
+    mock_dm.vision_stas = {1: "fake_sta_data"}
+    mock_dm.vision_eis = {1: "fake_ei_data"}
+    mock_dm.vision_available = True
+    mock_dm.is_vision_only = False
+    
+    window = make_main_window(data_manager=mock_dm)
+    return window

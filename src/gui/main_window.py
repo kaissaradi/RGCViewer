@@ -701,6 +701,13 @@ class MainWindow(QMainWindow):
         if not group_ids:
             return
 
+        # Skip if Qt fired a duplicate selectionChanged for the same folder
+        # (happens on focus changes and arrow-key repeats landing on the same item).
+        current_sig = frozenset(group_ids)
+        if getattr(self, '_last_pop_folder_sig', None) == current_sig:
+            return
+        self._last_pop_folder_sig = current_sig
+
         draw_population_rfs_plot(
             main_window=self,
             subset_cell_ids=group_ids,

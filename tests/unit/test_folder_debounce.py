@@ -13,8 +13,8 @@ All tests run with a real QApplication (pytest-qt). No disk I/O.
 
 import pytest
 from unittest.mock import MagicMock, patch, call
-from qtpy.QtCore import Qt, QTimer
-from qtpy.QtWidgets import QApplication
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import QApplication
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ def _make_minimal_main_window(qtbot, population_view_enabled=True):
     We attach the timer and helpers directly so the tests verify the contract
     without coupling to the full constructor.
     """
-    from qtpy.QtWidgets import QMainWindow
+    from PyQt5.QtWidgets import QMainWindow
 
     class _TestWindow(QMainWindow):
         def __init__(self):

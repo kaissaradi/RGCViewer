@@ -9,7 +9,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, EllipseCollection
 from PyQt5.QtGui import QColor
 
 from ..theme import DARK_COLORS
@@ -59,20 +59,28 @@ def _show_population_ids(main_window):
 
 
 def _snapshot_rf_background(ax, colors, show_ids):
-    patches = []
-    for patch in ax.patches:
-        if not isinstance(patch, Ellipse):
+    """
+    Store the geometry arrays from EllipseCollections on the axes, not individual
+    patch objects. Replay via _draw_cached_rf_background is then two add_collection
+    calls instead of N add_patch calls.
+    """
+    collections_data = []
+    for coll in ax.collections:
+        if not isinstance(coll, EllipseCollection):
             continue
-        patches.append({
-            'center': tuple(patch.center),
-            'width': patch.width,
-            'height': patch.height,
-            'angle': patch.angle,
-            'edgecolor': patch.get_edgecolor(),
-            'facecolor': patch.get_facecolor(),
-            'alpha': patch.get_alpha(),
-            'linewidth': patch.get_linewidth(),
-            'zorder': patch.get_zorder(),
+        offsets = coll.get_offsets()          # (N, 2) array
+        widths  = coll._widths                # stored internally
+        heights = coll._heights
+        angles  = coll._angles
+        collections_data.append({
+            'offsets': np.array(offsets),
+            'widths':  np.array(widths),
+            'heights': np.array(heights),
+            'angles':  np.array(angles),
+            'edgecolor': coll.get_edgecolor()[0],   # RGBA tuple
+            'alpha':   coll.get_alpha(),
+            'lw':      coll.get_linewidth()[0] if hasattr(coll.get_linewidth(), '__len__') else coll.get_linewidth(),
+            'zorder':  coll.get_zorder(),
         })
 
     texts = []
@@ -94,7 +102,7 @@ def _snapshot_rf_background(ax, colors, show_ids):
     return {
         'colors': dict(colors),
         'show_ids': show_ids,
-        'patches': patches,
+        'collections': collections_data,
         'texts': texts,
         'xlim': _safe_axis_limits(ax.get_xlim),
         'ylim': _safe_axis_limits(ax.get_ylim),
@@ -114,19 +122,15 @@ def _apply_rf_axes_style(ax, colors, title=None):
 
 
 def _draw_cached_rf_background(ax, cache_entry, colors):
-    for patch_data in cache_entry['patches']:
-        patch = Ellipse(
-            xy=patch_data['center'],
-            width=patch_data['width'],
-            height=patch_data['height'],
-            angle=patch_data['angle'],
-            edgecolor=patch_data['edgecolor'],
-            facecolor=patch_data['facecolor'],
-            lw=patch_data['linewidth'],
-            alpha=patch_data['alpha'],
-            zorder=patch_data['zorder'],
+    """Replay cached EllipseCollections — 2 add_collection calls, not N add_patch."""
+    for cd in cache_entry.get('collections', []):
+        ec = EllipseCollection(
+            widths=cd['widths'], heights=cd['heights'], angles=cd['angles'],
+            units='x', offsets=cd['offsets'], offset_transform=ax.transData,
+            edgecolors=cd['edgecolor'], facecolors='none',
+            linewidths=cd['lw'], alpha=cd['alpha'], zorder=cd['zorder'],
         )
-        ax.add_patch(patch)
+        ax.add_collection(ec)
 
     for text_data in cache_entry['texts']:
         ax.text(
@@ -150,6 +154,7 @@ def _draw_cached_rf_background(ax, cache_entry, colors):
 def _rf_cache_entry_matches(cache_entry, colors, show_ids):
     return (
         isinstance(cache_entry, dict) and
+        'collections' in cache_entry and
         cache_entry.get('colors') == colors and
         cache_entry.get('show_ids') == show_ids
     )
@@ -449,6 +454,31 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
         patch.set_visible(False)
 
 
+def _build_ellipse_collection(xyw_angle_list, edgecolor, alpha, lw, zorder):
+    """
+    Build a single EllipseCollection from a list of (x, y, w, h, angle_deg) tuples.
+    One draw call replaces N individual add_patch() calls.
+    EllipseCollection expects widths/heights as full diameters, angles in degrees.
+    """
+    if not xyw_angle_list:
+        return None
+    arr = np.array(xyw_angle_list, dtype=float)  # (N, 5): x y w h angle
+    ec = EllipseCollection(
+        widths=arr[:, 2],
+        heights=arr[:, 3],
+        angles=arr[:, 4],
+        units='x',
+        offsets=arr[:, :2],
+        offset_transform=None,  # set below after add_collection
+        edgecolors=edgecolor,
+        facecolors='none',
+        linewidths=lw,
+        alpha=alpha,
+        zorder=zorder,
+    )
+    return ec
+
+
 def plot_population_rfs_background(ax, vision_params, main_window, sta_height=None, subset_cell_ids=None, colors=None):
     if colors is None:
         colors = DARK_COLORS
@@ -459,52 +489,84 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height=No
     except Exception as e:
         logger.error(f"Failed to get cell IDs from vision_params: {e}")
         return
-    
-    vision_subset_ids = [cid + 1 for cid in subset_cell_ids] if subset_cell_ids is not None else None
 
-    x_coords, y_coords = [], []
-    target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
+    vision_subset_ids_set = set()
+    if subset_cell_ids is not None:
+        vision_subset_ids_set = {cid + 1 for cid in subset_cell_ids}
 
-    if vision_subset_ids is not None:
+    target_ids = [cid for cid in all_cell_ids if cid in vision_subset_ids_set] \
+        if vision_subset_ids_set else list(all_cell_ids)
+
+    # --- Collect geometry for background (grey) cells ---
+    bg_geom = []
+    if vision_subset_ids_set:
         for cell_id in all_cell_ids:
-            if cell_id in vision_subset_ids: continue
+            if cell_id in vision_subset_ids_set:
+                continue
             try:
                 stafit = vision_params.get_stafit_for_cell(cell_id)
                 adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-                e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                            angle=np.rad2deg(stafit.rot), edgecolor=colors['text_secondary'], facecolor='none', lw=0.75, alpha=0.15)
-                ax.add_patch(e)
-            except: continue
+                bg_geom.append((stafit.center_x, adjusted_y,
+                                2 * stafit.std_x, 2 * stafit.std_y,
+                                np.rad2deg(stafit.rot)))
+            except Exception:
+                continue
+
+    # --- Collect geometry for subset (foreground) cells ---
+    fg_geom = []
+    x_coords, y_coords = [], []
+    show_ids = hasattr(main_window, 'pop_show_ids_checkbox') and main_window.pop_show_ids_checkbox.isChecked()
 
     for cell_id in target_ids:
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-
-            e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                        angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=1.0, alpha=0.55)
-            ax.add_patch(e)
-
-            # Add ID labels if enabled via population panel checkbox (AC3)
-            if hasattr(main_window, 'pop_show_ids_checkbox') and main_window.pop_show_ids_checkbox.isChecked():
-                ax.text(stafit.center_x, adjusted_y, str(cell_id), 
-                        color=colors['text_secondary'], fontsize=7, ha='center', va='center', alpha=0.8)
-
+            fg_geom.append((stafit.center_x, adjusted_y,
+                            2 * stafit.std_x, 2 * stafit.std_y,
+                            np.rad2deg(stafit.rot)))
             x_coords.append(stafit.center_x)
             y_coords.append(stafit.center_y)
-        except: continue
+            if show_ids:
+                ax.text(stafit.center_x, adjusted_y, str(cell_id),
+                        color=colors['text_secondary'], fontsize=7,
+                        ha='center', va='center', alpha=0.8)
+        except Exception:
+            continue
+
+    # --- Two collection draw calls instead of N add_patch calls ---
+    if bg_geom:
+        bg_arr = np.array(bg_geom, dtype=float)
+        bg_ec = EllipseCollection(
+            widths=bg_arr[:, 2], heights=bg_arr[:, 3], angles=bg_arr[:, 4],
+            units='x', offsets=bg_arr[:, :2], offset_transform=ax.transData,
+            edgecolors=colors['text_secondary'], facecolors='none',
+            linewidths=0.75, alpha=0.15, zorder=1,
+        )
+        ax.add_collection(bg_ec)
+
+    if fg_geom:
+        fg_arr = np.array(fg_geom, dtype=float)
+        fg_ec = EllipseCollection(
+            widths=fg_arr[:, 2], heights=fg_arr[:, 3], angles=fg_arr[:, 4],
+            units='x', offsets=fg_arr[:, :2], offset_transform=ax.transData,
+            edgecolors=colors['text_primary'], facecolors='none',
+            linewidths=1.0, alpha=0.55, zorder=2,
+        )
+        ax.add_collection(fg_ec)
 
     if x_coords:
-        ax.set_xlim(min(x_coords)-20, max(x_coords)+20)
-        ax.set_ylim(max(y_coords)+20, min(y_coords)-20)
+        ax.set_xlim(min(x_coords) - 20, max(x_coords) + 20)
+        ax.set_ylim(max(y_coords) + 20, min(y_coords) - 20)
     else:
-        ax.set_xlim(0, 100); ax.set_ylim(100, 0)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(100, 0)
 
     ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color=colors['text_primary'])
     ax.set_facecolor(colors['bg_panel'])
     ax.set_aspect('equal', adjustable='box')
     ax.tick_params(colors=colors['text_secondary'])
-    for spine in ax.spines.values(): spine.set_edgecolor(colors['border_subtle'])
+    for spine in ax.spines.values():
+        spine.set_edgecolor(colors['border_subtle'])
     ax.grid(False)
 
 
