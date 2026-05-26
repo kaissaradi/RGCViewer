@@ -838,6 +838,19 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Ready.", 2000)
 
+    def on_standard_plot_ready(self, cluster_id):
+        """Called when StandardPlotsWorker finishes caching a cluster.
+
+        If the user is still viewing this cluster on the Standard tab,
+        refresh the panel so the plots appear without needing another click.
+        """
+        current_id = self._get_selected_cluster_id()
+        if current_id is None or current_id != cluster_id:
+            return
+        current_tab = self.analysis_tabs.currentWidget()
+        if current_tab == self.standard_plots_panel:
+            self.standard_plots_panel.update_all(cluster_id)
+
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
         self.central_widget = QWidget()

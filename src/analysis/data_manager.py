@@ -491,8 +491,8 @@ class DataManager(QObject):
             # cluster_spike_indices does a single fancy-index copy of only that
             # cluster's spikes, so UI scrolling is unaffected; the OS page
             # cache keeps hot pages warm across accesses.
-            self.spike_times    = np.load(st_path,  mmap_mode="r").ravel()
-            self.spike_clusters = np.load(sc_path, mmap_mode="r").ravel()
+            self.spike_times    = np.load(st_path).ravel()
+            self.spike_clusters = np.load(sc_path).ravel()
 
             # --- channel positions / map -----------------------------------------
             chan_pos_path = ks / "channel_positions.npy"
@@ -524,7 +524,7 @@ class DataManager(QObject):
 
             # --- spike amplitudes (optional) ------------------------------------
             amplitudes_path = ks / "amplitudes.npy"
-            self.spike_amplitudes = np.load(amplitudes_path, mmap_mode="r").ravel() if amplitudes_path.exists() else None
+            self.spike_amplitudes = np.load(amplitudes_path).ravel() if amplitudes_path.exists() else None
 
             # --- cluster info / fallback ----------------------------------------
             info_path = ks / "cluster_info.tsv"
@@ -1374,6 +1374,17 @@ class DataManager(QObject):
 
         return data
 
+    def try_get_standard_plot_data(self, cluster_id):
+        """Non-blocking cache lookup — returns cached data or None.
+
+        Unlike get_standard_plot_data(), this NEVER triggers computation.
+        Safe to call from the UI/main thread without risking a freeze.
+        """
+        if not hasattr(self, 'standard_plot_cache'):
+            return None
+        with self._standard_plot_lock:
+            return self.standard_plot_cache.get(cluster_id)
+
     def save_standard_plot_cache(self):
         """Persist the full standard-plot and feature caches to disk in a background thread."""
         if not self.kilosort_dir:
@@ -1433,6 +1444,22 @@ class DataManager(QObject):
                 cache = pickle.load(f)
             if not isinstance(cache, dict):
                 raise TypeError("standard_plot_cache.pkl did not contain a dict")
+
+            # Bloat guard: pre-fix caches stored spike-length raw arrays
+            # ('spikes', 'spikes_sec', etc.) which caused OOM kills at ~68%
+            # warm-up on large datasets.  Detect by inspecting the first entry
+            # and discard the whole file if any bloated key is present.
+            _BLOATED_KEYS = ('spikes', 'spikes_sec', 'spikes_ms', 'isi_ms',
+                             'isi_vs_amp_valid_isi', 'isi_vs_amp_valid_amplitudes',
+                             'fr_overlay_x', 'fr_overlay_y')
+            first_entry = next(iter(cache.values()), {}) if cache else {}
+            if any(k in first_entry and first_entry[k] is not None
+                   for k in _BLOATED_KEYS):
+                logger.warning(
+                    "standard_plot_cache.pkl contains pre-fix bloated arrays — "
+                    "discarding to prevent OOM. It will be rebuilt automatically."
+                )
+                cache = {}
         except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
             logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
             cache = {}
@@ -1659,7 +1686,7 @@ class DataManager(QObject):
 
         return feature_matrix, valid_ids, metadata
 
-    def ensure_physics_cache(self, cluster_ids, max_workers=8):
+    def ensure_physics_cache(self, cluster_ids, max_workers=1):
         """
         Guarantee that all cluster_ids have a fully-computed feature_cache entry
         (_computed == True) before returning.
@@ -1706,10 +1733,6 @@ class DataManager(QObject):
         and packs the numeric results into a dict.
         """
         data = {
-            'spikes': None,
-            'spikes_sec': None,
-            'spikes_ms': None,
-            'isi_ms': None,
             'isi_hist_x': None,
             'isi_hist_y': None,
             'acg_time_lags': None,
@@ -1719,10 +1742,6 @@ class DataManager(QObject):
             'fr_amp_x': None,
             'fr_amp_y': None,
             'fr_amp_ymax': None,
-            'fr_overlay_x': None,
-            'fr_overlay_y': None,
-            'isi_vs_amp_valid_isi': None,
-            'isi_vs_amp_valid_amplitudes': None,
         }
 
         # Basic safety checks
@@ -1736,28 +1755,20 @@ class DataManager(QObject):
         # --- Gather spikes & amplitudes for this cluster ---
         spikes = self.get_cluster_spikes(cluster_id)
         spikes = np.asarray(spikes)
-        data['spikes'] = spikes
 
         if spikes.size == 0:
             return data
 
         sr = float(self.sampling_rate)
 
-        # Convert to seconds and milliseconds
+        # Local-only — not cached; fetched on-demand by panel consumers
         spikes_sec = spikes / sr
         spikes_ms = (spikes_sec * 1000.0).astype(int)
-        data['spikes_sec'] = spikes_sec
-        data['spikes_ms'] = spikes_ms
 
-        # ISI vector (ms) and histogram.
-        # get_cluster_spikes() returns spike_times[cluster_spike_indices[cid]].
-        # cluster_spike_indices was built from argsort(spike_clusters) which
-        # preserves the original spike_times order — and spike_times is already
-        # monotonically increasing (Kilosort writes spikes in time order).
-        # So `spikes` is already sorted; np.sort() is unnecessary.
+        # ISI vector (ms) — local only, not cached.
+        # get_cluster_spikes() returns spikes in time order (Kilosort guarantee).
         if spikes.size > 1:
             isi_ms = np.diff(spikes) / sr * 1000.0
-            data['isi_ms'] = isi_ms
 
             if isi_ms.size > 0:
                 hist_y, hist_x = np.histogram(
@@ -1769,16 +1780,6 @@ class DataManager(QObject):
         all_amplitudes = self.get_cluster_spike_amplitudes(cluster_id)
         all_amplitudes = np.asarray(all_amplitudes)
 
-        # ISI vs amplitude alignment (for scatter/density)
-        if data['isi_ms'] is not None and all_amplitudes.size > 1:
-            isi_ms = data['isi_ms']
-            min_len = min(len(isi_ms), all_amplitudes.size - 1)
-            if min_len > 0:
-                valid_isi = isi_ms[:min_len]
-                valid_amplitudes = all_amplitudes[1:min_len + 1]
-                data['isi_vs_amp_valid_isi'] = valid_isi
-                data['isi_vs_amp_valid_amplitudes'] = valid_amplitudes
-
         # --- Autocorrelation (ACG) — Direct Lag Histogram on entire recording ---
         # Instead of a memory-heavy FFT on a dense array, we use a sliding window
         # approach with bincount. This is O(N * spikes_per_window) and uses the 
@@ -1789,6 +1790,9 @@ class DataManager(QObject):
 
             # spike_times.npy from Kilosort is written in ascending order; np.sort() is a no-op.
             t = spikes_ms.astype(np.int64)
+            if len(t) > 10_000:
+                idx = np.linspace(0, len(t) - 1, 10_000, dtype=np.int64)
+                t = t[idx]
             
             # Compute lags: for each spike, find neighbors within MAX_LAG.
             # We iterate k neighbors away until the distance > MAX_LAG for all spikes.
@@ -1807,7 +1811,7 @@ class DataManager(QObject):
             acg = np.concatenate([lags_sum[:0:-1], [0], lags_sum[1:]])
 
             time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
-            n_spikes_f = float(spikes_ms.size)
+            n_spikes_f = float(len(t))
             acg_norm   = acg / n_spikes_f if n_spikes_f > 0 else acg
 
             data['acg_time_lags'] = time_lags
@@ -1902,25 +1906,6 @@ class DataManager(QObject):
                             amplitude_smoothed) > 0 else 1.0
 
                     data['fr_amp_ymax'] = max_ptp * 1.1
-
-            # Overlay averaged amplitude on firing-rate trace (left axis)
-            if all_amplitudes.size > 0 and rate.size > 0 and spikes_sec.size > 10:
-                max_amp = float(np.max(all_amplitudes))
-                if max_amp > 0:
-                    normalized_amplitudes = all_amplitudes / max_amp
-                else:
-                    normalized_amplitudes = all_amplitudes.astype(float)
-
-                if normalized_amplitudes.size > 10:
-                    avg_amplitude = np.convolve(
-                        normalized_amplitudes, np.ones(10) / 10.0, mode='valid')
-                    scaled_amplitude = avg_amplitude * \
-                        0.8 * float(np.max(rate))
-
-                    overlay_len = min(len(scaled_amplitude), len(spikes_sec))
-                    if overlay_len > 0:
-                        data['fr_overlay_x'] = spikes_sec[:overlay_len]
-                        data['fr_overlay_y'] = scaled_amplitude[:overlay_len]
 
         return data
 

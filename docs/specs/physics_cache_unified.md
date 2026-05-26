@@ -9,11 +9,11 @@
 | Field | Value |
 |---|---|
 | **Date created** | 2026-05-24 |
-| **Last updated** | 2026-05-24 |
-| **Commit hash when spec was written** | `git rev-parse --short HEAD` — paste result here |
+| **Last updated** | 2026-05-25 |
+| **Commit hash when spec was written** | `1183384` |
 | **Branch** | `fix/physics-cache-unified` |
 | **Author** | Kais |
-| **Spec status** | Final |
+| **Spec status** | In Progress / Under Diagnostic Review |
 
 ---
 
@@ -1128,3 +1128,92 @@ def test_isi_violations_sort_removed_output_unchanged():
 - Does **not** change `precompute_ei_correlations_background` — already on its own daemon thread.
 - Does **not** add or change any persisted cache file format — `feature_cache.pkl` and `standard_plot_cache.pkl` are unchanged.
 - Does **not** change the `vl.STAReader` object or assume anything about its internal locking.
+
+---
+
+## Block 12 — Current Status & Diagnosis (OOM-Kill)
+
+### Current Progress of Implemented Optimizations
+We have implemented several critical optimizations in the `fix/physics-cache-unified` branch to address the initial main-thread UI freezing issues:
+1. **Non-blocking Standard Plots UI Switch:**
+   - Introduced `try_get_standard_plot_data(cluster_id)` which does a fast cache lookup. If the data is missing, it returns `None` immediately instead of calculating it on the main thread.
+   - `StandardPlotsPanel` uses this non-blocking lookup. On a cache miss, it shows a "computing..." placeholder and priority-queues the cluster to the background `StandardPlotsWorker` thread.
+   - Wired an auto-refresh connection `on_standard_plot_ready` in `MainWindow` to immediately update the standard plots if the user is still viewing the cluster when caching completes.
+2. **Reduced GIL and CPU Starvation:**
+   - Capped the autocorrelation (ACG) calculation at 10,000 spikes per cluster inside `_compute_standard_plots()`. This eliminates huge computation spikes for highly active neurons while keeping the normalized ACG shapes exact.
+   - Reduced `max_workers` in `ensure_physics_cache` from 4 to 2 (inside callbacks) to prevent threading contention and CPU starvation.
+   - Added a `QThread.msleep(20)` yield inside the `StandardPlotsWorker` loop so the background worker releases the GIL and allows the UI thread to run smoothly.
+3. **Robust Unit Tests:**
+   - Added test coverage in `test_physics_cache_unified.py` verifying that:
+     - `try_get_standard_plot_data` returns cached data on hits, `None` on misses, and never blocks the UI.
+     - ACG capping logic works and correctly scales the normalized ACG density.
+
+---
+
+### Diagnosis of the 68% OOM-Kill ("Killed")
+During a test run on real data (`/media/kais/Kais/data/sorted/20260501A/chunk1/kilosort2.5`), with zero screen interaction, the physics cache and standard plots cache warm-up reached ~68% progress before the process was **"killed"** and closed by the OS.
+
+#### 1. Why did the process get killed?
+This is a textbook **Out-Of-Memory (OOM) Kill** by the Linux kernel. The kernel detected that the RGCViewer process exceeded the available system RAM and terminated it.
+- **Redundant Raw NumPy Arrays in Cache (The Main Culprit):**
+  The `_compute_standard_plots()` helper packs a massive dict of results, including:
+  - `spikes`: The raw array of all spike times in samples (typically `int64` or `uint64`).
+  - `spikes_sec` and `spikes_ms`: Direct duplicate arrays of all spike times converted to seconds and milliseconds.
+  - `isi_ms`: An array of all individual inter-spike intervals.
+  - `isi_vs_amp_valid_isi` & `isi_vs_amp_valid_amplitudes`: Aligned arrays of all valid ISIs and spike amplitudes.
+  For a large Kilosort dataset with hundreds of active clusters and millions of total spikes, keeping all these raw arrays in memory for *every single cluster* is extremely expensive. RAM usage scales linearly with the number of cached clusters and total spikes.
+- **Operating System Memory Mapping Faults:**
+  As the background worker reads through the memmapped Kilosort `spike_times.npy` and `amplitudes.npy` files to compute standard plots for every cluster, the OS faults those file blocks into physical RAM. This, combined with the cached duplicate arrays, causes memory usage to bloat exponentially.
+
+#### 2. Action Plan to Resolve the OOM-Kill
+To prevent the application from being OOM-killed during warm-up:
+1. **Strip Raw Arrays from Caches:**
+   - Modify the cached dictionary in `standard_plot_cache` so that it **only** stores aggregated/binned/plotted results (e.g., `isi_hist_y`, `isi_hist_x`, `acg_norm`, `fr_rate`, `fr_bin_centers`, and smoothed amplitude curves).
+   - These aggregated arrays have fixed, extremely small dimensions (e.g., 100 or 201 elements) and use practically zero memory.
+   - Completely remove large raw arrays like `spikes`, `spikes_sec`, `spikes_ms`, `isi_ms`, `isi_vs_amp_valid_isi`, and `isi_vs_amp_valid_amplitudes` from the global `standard_plot_cache` dict.
+2. **On-Demand Plotting / Slice Retrieval:**
+   - If the UI needs to display a scatter plot of ISI vs. Amplitudes or draw individual spikes, retrieve the relevant raw spike slices on-demand using `dm.get_cluster_spikes(cluster_id)` instead of caching the entire dataset's raw arrays in RAM indefinitely.
+3. **Cache Size Eviction / Bounds:**
+   - If needed, implement a simple LRU cache eviction policy for standard plots (e.g., keeping only the last 150 viewed/precomputed standard plots in memory, while persisting physics feature data which is much smaller).
+
+---
+
+## Block 13 — Resolution of the Physics Cache Freeze & Thread Safety
+
+### 1. Root Cause Analysis
+During parallel warm-up of the physics cache with `max_workers=2`, large datasets containing a large number of clusters (e.g., ~2000 cells in a 12GB `.sta` file) consistently froze. We identified four critical software bugs in `src/analysis/vision_integration.py` responsible for the freeze:
+
+* **Bug #1: STAReader File Handle Race (Critical):** `STAReader.get_sta_for_cell_id()` performs a `seek()` followed by `read()` on a single shared file handle (`self.sta_fp`). With concurrent worker threads, thread interleaving overwrites the seek pointer between seek and read, resulting in corrupt/truncated buffer reads. This causes downstream C-extension calls (`vcppext.unpack_rgb_sta`) to hang or silenty crash the threads.
+* **Bug #2: Cache Return Outside Lock (High):** `LazySTADict.__getitem__` released the cache lock before returning: `return self._cache[key]`. Under heavy memory eviction, another thread could evict the key in that brief window, causing a silent `KeyError` that killed the background worker.
+* **Bug #3: O(N) contains checks (Medium):** `__contains__` performed a linear search through a Python list (`key in self.keys_list`), which scaled quadratically $O(N^2)$ across 2000 cells (4,000,000 checks), causing the warm-up to appear completely hung.
+* **Bug #4: Cache Memory Pressure (Low):** Keeping 500 cells of ~960KB each in memory created unnecessary pressure.
+
+### 2. Implemented Solutions in `src/analysis/vision_integration.py`
+We implemented a highly performant and elegant architecture to address all four issues:
+
+* **Thread-Local STAReaders:**
+  To solve the file handle race condition without serializing SSD I/O under a lock, we introduced **thread-local STAReaders**:
+  ```python
+  self._local = threading.local()
+  self._creator_thread = threading.current_thread()
+  self._all_readers = [self.reader]
+  self._readers_lock = threading.Lock()
+  ```
+  When a thread calls `__getitem__`:
+  - If the thread is the main/creator thread, it directly uses `self.reader`.
+  - If it is a background worker thread, it instantiates its own dedicated `STAReader` instance (with its own isolated OS file descriptor) and stores it in thread-local storage (`self._local.reader`).
+  - Dedicated worker threads perform reads in parallel completely lock-free, getting maximum SSD throughput without any file-pointer cross-contamination.
+  - All opened worker readers are cleanly tracked in `self._all_readers` under `self._readers_lock` and closed in `__del__` to prevent descriptor leaks.
+* **Eviction-Safe Return:**
+  Changed `__getitem__` to return the thread-local `sta_data` variable directly, making it immune to cache eviction.
+* **O(1) Membership Check:**
+  Added `self._keys_set = set(self.keys_list)` during `__init__` and modified `__contains__` to query the set.
+* **Robust Mock Compatibility:**
+  Added lazy fallbacks using standard `getattr` patterns. When unit tests bypass `__init__` via `__new__` (e.g. `_make_lazy_sta_dict`), all attributes are initialized on-demand and fall back to the mocked reader safely.
+
+### 3. Verification & Test Suite Output
+All 25 tests in `tests/unit/test_physics_cache_unified.py` pass perfectly:
+- `test_lazy_sta_dict_cache_is_thread_safe` verifies that concurrent reads on `LazySTADict` do not corrupt cache lists.
+- `test_lazy_sta_dict_reads_are_concurrent` verifies that SSD reads remain concurrent (not serialized) and complete in parallel (< 0.08s).
+- All standard plots, ACG capping, and ensure-physics workers tests run successfully.
+

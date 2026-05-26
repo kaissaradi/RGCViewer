@@ -271,6 +271,7 @@ class StandardPlotsWorker(QObject):
                         f"Background precompute failed for cluster {cluster_id}: {e}")
                 finally:
                     self.finished_cluster.emit(int(cluster_id))
+                    QThread.msleep(20)
             else:
                 QThread.msleep(100)
 

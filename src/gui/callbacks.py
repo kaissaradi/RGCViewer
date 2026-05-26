@@ -263,7 +263,18 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
         main_window.status_bar.showMessage(
             "Vision loaded. Computing EI correlations in background...", 4000)
 
-    _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+    if success:
+        _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+        
+        def _warm_physics():
+            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
+            
+        main_window.cache_progress_count = 0
+        main_window.cache_progress.setValue(0)
+        main_window.cache_progress.show()
+        start_cache_progress_polling(main_window)
+        
+        threading.Thread(target=_warm_physics, daemon=True).start()
 
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
@@ -354,6 +365,16 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # never produce stale timecourse=None entries before Vision is ready.
     if success:
         _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+        
+        def _warm_physics():
+            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
+            
+        main_window.cache_progress_count = 0
+        main_window.cache_progress.setValue(0)
+        main_window.cache_progress.show()
+        start_cache_progress_polling(main_window)
+        
+        threading.Thread(target=_warm_physics, daemon=True).start()
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
@@ -570,9 +591,13 @@ def start_worker(main_window: MainWindow):
     main_window.standard_plots_worker = StandardPlotsWorker(main_window.data_manager)
     main_window.standard_plots_worker.moveToThread(main_window.standard_worker_thread)
     
-    # NEW: Connect the progress bar signal BEFORE starting or queueing
+    # Connect the progress bar signal BEFORE starting or queueing
     main_window.standard_plots_worker.finished_cluster.connect(
         lambda cid: update_cache_progress(main_window)
+    )
+    # Auto-refresh the Standard Plots panel when the viewed cluster becomes ready
+    main_window.standard_plots_worker.finished_cluster.connect(
+        main_window.on_standard_plot_ready
     )
     
     main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)

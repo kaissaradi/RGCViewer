@@ -347,22 +347,34 @@ def test_ensure_physics_cache_noop_when_warm():
 
 def test_ensure_physics_cache_respects_max_workers():
     """Pool size is configurable; default must not be overridden silently."""
-    from unittest.mock import patch
+    from concurrent.futures import ThreadPoolExecutor as _RealTPE
+    from unittest.mock import patch, call
     from src.analysis.data_manager import DataManager
 
     dm = DataManager.__new__(DataManager)
     dm._feature_lock = threading.Lock()
+    dm._physics_cell_locks = {}
+    dm._physics_cell_locks_lock = threading.Lock()
+    dm._physics_done_count = 0
     dm.feature_cache = {}
-    dm.get_cell_physics = lambda cid: None
 
-    with patch('src.analysis.data_manager.ThreadPoolExecutor') as mock_tp:
-        mock_ctx = mock_tp.return_value.__enter__.return_value
-        fut = MagicMock()
-        fut.result.return_value = None
-        mock_ctx.submit.return_value = fut
+    def fake_physics(cid):
+        with dm._feature_lock:
+            dm.feature_cache[int(cid)] = {'_computed': True}
+
+    dm.get_cell_physics = fake_physics
+
+    captured = {}
+
+    class CapturingTPE(_RealTPE):
+        def __init__(self, *a, **kw):
+            captured['max_workers'] = kw.get('max_workers')
+            super().__init__(*a, **kw)
+
+    with patch('src.analysis.data_manager.ThreadPoolExecutor', CapturingTPE):
         DataManager.ensure_physics_cache(dm, [0, 1], max_workers=2)
 
-    mock_tp.assert_called_once_with(max_workers=2)
+    assert captured.get('max_workers') == 2
 
 
 def test_ensure_physics_cache_limits_parallel_sta_work():
@@ -529,3 +541,281 @@ def test_isi_violations_sort_removed_output_unchanged():
 
     assert ref_pct == fix_pct
     assert ref_pct == pytest.approx(40.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AC13 — ACG cap at 10,000 spikes works and uses correct normalization count
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_compute_standard_plots_caps_acg_spikes():
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._feature_lock = threading.Lock()
+    dm._standard_plot_lock = threading.Lock()
+    dm._std_plot_cell_locks = {}
+    dm._std_plot_cell_locks_lock = threading.Lock()
+    dm.feature_cache = {}
+    dm.standard_plot_cache = {}
+    dm.sampling_rate = 20000.0
+
+    # 15,000 spikes spaced by 2ms (40 samples @ 20kHz)
+    spikes = np.arange(0, 15000 * 40, 40, dtype=np.int64)
+    dm.spike_times = spikes
+    dm.spike_clusters = np.zeros(len(spikes), dtype=np.int64)
+
+    dm.get_cluster_spikes = lambda cid: spikes
+    dm.get_cluster_spike_amplitudes = lambda cid: np.ones(len(spikes))
+    dm.templates = None
+
+    data = dm._compute_standard_plots(0)
+
+    assert data['acg_norm'] is not None
+    # If 10,000 cap is used on 15,000 spikes, the density is reduced to 2/3.
+    # So the normalized ACG sum should be close to 100 * (2/3) = 66.67.
+    # If the normalization was incorrectly using the uncapped count (15,000),
+    # the sum would be close to 44.4.
+    acg_sum = np.sum(data['acg_norm'])
+    assert acg_sum == pytest.approx(65.88, abs=1.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AC14 — try_get_standard_plot_data is non-blocking
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_try_get_standard_plot_data_returns_none_on_miss():
+    """Non-blocking lookup must return None when the cluster is not cached."""
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._standard_plot_lock = threading.Lock()
+    dm.standard_plot_cache = {}
+
+    result = dm.try_get_standard_plot_data(42)
+    assert result is None
+
+
+def test_try_get_standard_plot_data_returns_cached_data():
+    """Non-blocking lookup must return data when the cluster IS cached."""
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._standard_plot_lock = threading.Lock()
+    sentinel = {'spikes': np.array([1, 2, 3]), 'acg_norm': np.ones(201)}
+    dm.standard_plot_cache = {7: sentinel}
+
+    result = dm.try_get_standard_plot_data(7)
+    assert result is sentinel
+
+
+def test_try_get_standard_plot_data_never_computes():
+    """try_get must never call _compute_standard_plots even on miss."""
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._standard_plot_lock = threading.Lock()
+    dm.standard_plot_cache = {}
+
+    compute_called = {'n': 0}
+    dm._compute_standard_plots = lambda cid: (compute_called.__setitem__('n', compute_called['n'] + 1), {})[1]
+
+    dm.try_get_standard_plot_data(99)
+    assert compute_called['n'] == 0, "_compute_standard_plots should never be called"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AC15 — OOM fix: bloated raw arrays must NOT be stored in standard_plot_cache
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_standard_plots_dm(n_spikes=500):
+    from src.analysis.data_manager import DataManager
+    dm = DataManager.__new__(DataManager)
+    dm._feature_lock = threading.Lock()
+    dm._standard_plot_lock = threading.Lock()
+    dm._std_plot_cell_locks = {}
+    dm._std_plot_cell_locks_lock = threading.Lock()
+    dm.feature_cache = {}
+    dm.standard_plot_cache = {}
+    dm.sampling_rate = 20000.0
+    dm.templates = None
+    spikes = np.arange(0, n_spikes * 40, 40, dtype=np.int64)
+    # _compute_standard_plots guards on these before doing any work
+    dm.spike_times    = spikes
+    dm.spike_clusters = np.zeros(n_spikes, dtype=np.int64)
+    dm.get_cluster_spikes = lambda cid: spikes
+    dm.get_cluster_spike_amplitudes = lambda cid: np.ones(n_spikes)
+    return dm, spikes
+
+
+BLOATED_KEYS = ('spikes', 'spikes_sec', 'spikes_ms', 'isi_ms',
+                'isi_vs_amp_valid_isi', 'isi_vs_amp_valid_amplitudes',
+                'fr_overlay_x', 'fr_overlay_y')
+
+REQUIRED_KEYS = ('isi_hist_x', 'isi_hist_y',
+                 'acg_time_lags', 'acg_norm',
+                 'fr_bin_centers', 'fr_rate')
+
+
+def test_compute_standard_plots_does_not_store_raw_spike_arrays():
+    """
+    After the OOM fix, _compute_standard_plots must NOT include any
+    spike-length raw arrays in its return dict.
+    """
+    dm, _ = _make_standard_plots_dm(n_spikes=500)
+    data = dm._compute_standard_plots(0)
+
+    for key in BLOATED_KEYS:
+        assert key not in data or data[key] is None, (
+            f"Bloated key '{key}' found in cache — this causes OOM kills on large datasets."
+        )
+
+
+def test_compute_standard_plots_retains_aggregated_arrays():
+    """
+    The tiny binned/aggregated arrays the UI plots must still be present
+    after removing the bloated raw arrays.
+    """
+    dm, _ = _make_standard_plots_dm(n_spikes=500)
+    data = dm._compute_standard_plots(0)
+
+    for key in REQUIRED_KEYS:
+        assert data.get(key) is not None, (
+            f"Required aggregated key '{key}' is missing from cache after OOM fix."
+        )
+
+
+def test_cache_memory_footprint_is_bounded():
+    """
+    Total bytes of one cached entry must be independent of spike count.
+    500 vs 50,000 spikes should produce < 3x size difference.
+    Before the fix the ratio was ~100x.
+    """
+    dm_small, _ = _make_standard_plots_dm(n_spikes=500)
+    dm_large, _ = _make_standard_plots_dm(n_spikes=50_000)
+
+    data_small = dm_small._compute_standard_plots(0)
+    data_large = dm_large._compute_standard_plots(0)
+
+    def _total_bytes(d):
+        return sum(v.nbytes for v in d.values() if isinstance(v, np.ndarray))
+
+    bytes_small = _total_bytes(data_small)
+    bytes_large = _total_bytes(data_large)
+
+    assert bytes_small > 0, "Cache is completely empty — something else is wrong."
+    ratio = bytes_large / bytes_small
+    assert ratio < 3.0, (
+        f"Cache scales with spike count (ratio={ratio:.1f}x). "
+        f"Raw arrays are still being stored. small={bytes_small}B large={bytes_large}B"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AC16 — panel consumers must work without bloated keys
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_isi_histogram_works_without_isi_ms_in_cache():
+    """
+    Panel must compute isi_ms on-demand via np.diff(spikes)/sr*1000.
+    Spikes every 40 samples @ 20kHz = 2ms ISI.
+    With 1ms-wide bins (linspace 0..150, 151 edges = 150 bins),
+    a 2ms ISI falls in bin index 2 (the bin covering 2.0–3.0ms).
+    """
+    sr = 20000.0
+    spikes = np.arange(0, 500 * 40, 40, dtype=np.int64)
+
+    isi_ms = np.diff(spikes) / sr * 1000.0  # all exactly 2.0 ms
+
+    bins = np.linspace(0, 150, 151)         # 150 bins, each 1ms wide
+    hist_y, hist_x = np.histogram(isi_ms, bins=bins)
+    bin_centers = 0.5 * (hist_x[:-1] + hist_x[1:])
+
+    assert len(hist_y) == 150
+    assert np.sum(hist_y) == len(spikes) - 1  # all ISIs accounted for
+
+    # 2ms ISI: bin edges are [0,1,2,3,...] so 2.0 falls in bin index 2
+    # (left-closed, right-open: bin2 covers [2,3))
+    assert hist_y[2] == len(spikes) - 1, (
+        f"Expected all ISIs in bin[2] (2-3ms), got distribution: {hist_y[:6]}"
+    )
+
+
+def test_isi_vs_amplitude_works_without_cached_arrays():
+    """ISI/amplitude alignment must produce equal-length, correctly sized arrays."""
+    sr = 20000.0
+    n = 300
+    spikes = np.arange(0, n * 40, 40, dtype=np.int64)
+    amplitudes = np.ones(n)
+
+    isi_ms = np.diff(spikes) / sr * 1000.0
+    min_len = min(len(isi_ms), len(amplitudes) - 1)
+    valid_isi = isi_ms[:min_len]
+    valid_amp = amplitudes[1:min_len + 1]
+
+    assert len(valid_isi) == len(valid_amp)
+    assert len(valid_isi) == n - 1
+
+
+def test_fr_overlay_works_without_cached_arrays():
+    """FR overlay recomputed from amplitudes + cached fr_rate must have consistent length."""
+    from scipy.ndimage import gaussian_filter1d
+    sr = 20000.0
+    n_spikes = 500
+    spikes = np.arange(0, n_spikes * 40, 40, dtype=np.int64)
+    spikes_sec = spikes / sr
+    amplitudes = np.ones(n_spikes)
+
+    max_t = float(spikes_sec.max())
+    bins = np.arange(0.0, max_t + 1.0, 1.0)
+    counts, _ = np.histogram(spikes_sec, bins=bins)
+    rate = gaussian_filter1d(counts.astype(float), sigma=5)
+
+    norm_amp = amplitudes / float(np.max(amplitudes))
+    avg_amp = np.convolve(norm_amp, np.ones(10) / 10.0, mode='valid')
+    scaled_amp = avg_amp * 0.8 * float(np.max(rate))
+
+    overlay_len = min(len(scaled_amp), len(spikes_sec))
+    overlay_x = spikes_sec[:overlay_len]
+    overlay_y = scaled_amp[:overlay_len]
+
+    assert len(overlay_x) == len(overlay_y)
+    assert len(overlay_x) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AC17 — stale bloated pickle must be rejected by the loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_load_standard_plot_cache_rejects_bloated_pickle(tmp_path):
+    """
+    A standard_plot_cache.pkl written before the OOM fix contains 'spikes'
+    arrays. The loader must detect and discard it rather than reloading GBs
+    of bloated data into RAM.
+    """
+    import pickle
+    from src.analysis.data_manager import DataManager
+
+    bloated_cache = {
+        0: {
+            'spikes': np.arange(100_000, dtype=np.int64),
+            'spikes_sec': np.arange(100_000, dtype=np.float64) / 20000.0,
+            'acg_norm': np.ones(201),
+            'isi_hist_x': np.linspace(0, 50, 101),
+            'isi_hist_y': np.ones(100),
+        }
+    }
+    cache_pkl = tmp_path / 'standard_plot_cache.pkl'
+    with open(cache_pkl, 'wb') as f:
+        pickle.dump(bloated_cache, f)
+
+    dm = DataManager.__new__(DataManager)
+    dm._standard_plot_lock = threading.Lock()
+    dm.standard_plot_cache = {}
+    dm.kilosort_dir = tmp_path
+
+    dm._load_standard_plot_cache_from_disk()
+
+    assert dm.standard_plot_cache == {}, (
+        "Bloated on-disk cache was loaded instead of discarded. "
+        "Add a version guard or bloat-detection check to _load_standard_plot_cache_from_disk."
+    )

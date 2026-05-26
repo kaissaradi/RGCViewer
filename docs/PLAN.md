@@ -19,7 +19,7 @@ Read the "failure mechanism" column before touching anything in the "what" colum
 | `get_cell_physics()` | Vision ID offset lives here. `vision_id = cluster_id + 1` in hybrid mode. Accessing wrong key returns wrong cell's STA silently. | Run `test_get_cell_physics_vision_id_offset` — both parametrize branches — after any change. |
 | `build_cluster_dataframe()` | Runs a single `np.unique` scan that produces `_spk_unique_cls`, `_counts`. Three downstream functions consume these. A second scan breaks count assumptions and doubles load time. | Never add a second `np.unique` or `np.argsort` on the full spike arrays inside this function. |
 | `update_cluster_views()` / `_process_selection()` | The Tier 1 / Tier 2 boundary. Any heavy operation added to Tier 1 freezes the UI during keypress scrolling. | Classify every new operation as Tier 1 or Tier 2 explicitly before writing code. See AGENTS.md §1 Law 2. |
-| `LazySTADict` in `vision_integration.py` | FIFO eviction uses `list.pop(0)` — O(n). Holds an open file handle for the session lifetime. Instantiating more than one per dataset leaks the handle. | Do not refactor without profiling. Do not instantiate more than once per Vision directory. |
+| `LazySTADict` in `vision_integration.py` | Thread-local STAReader instances are spawned for background threads to ensure thread-safe, lock-free parallel reads from the SSD. Worker readers are tracked in `_all_readers` and closed in `__del__` to prevent handle leaks. | Run `test_lazy_sta_dict_reads_are_concurrent` and `test_lazy_sta_dict_cache_is_thread_safe` after any refactoring. |
 | `_save_pickle_with_fallback()` | Uses `tempfile + os.replace()` for atomicity. Replacing with a direct `pickle.dump(open(path))` would leave a corrupt truncated file if the process crashes mid-write. | Never simplify this function. The verbosity is intentional. |
 | `_compute_ei_correlations_if_needed()` | The `is_vision_only` guard prevents building a 512×512 correlation matrix that exhausts RAM on large Vision-native datasets. | The guard must never be removed or conditioned on anything else. |
 | `get_cluster_spike_indices()` | Returns pre-built index arrays from `_cluster_spike_indices` dict. Callers assume O(1). Replacing with `np.where(spike_clusters == id)` inside any loop causes O(N × n_clusters) runtime. | Never bypass this method. Never call `np.where` on the full spike arrays in a hot path. |
@@ -40,6 +40,8 @@ Read the "failure mechanism" column before touching anything in the "what" colum
 | Cell without Vision STA marked `_computed` with safe defaults | `test_cell_physics_marks_cluster_computed_without_vision_sta` | `tests/unit/test_data_manager_cache.py` |
 | Raw trace snippet skips Litke TTL row | `test_raw_trace_snippet_skips_litke_ttl_row` | `tests/unit/test_data_manager_cache.py` |
 | HDBSCAN runs as default, K-means as fallback (7 tests) | `tests/unit/test_hdbscan_clustering.py` | `tests/unit/test_hdbscan_clustering.py` |
+| LazySTADict concurrent reads do not corrupt cache | `test_lazy_sta_dict_cache_is_thread_safe` | `tests/unit/test_physics_cache_unified.py` |
+| LazySTADict SSD reads are concurrent (not serialised) | `test_lazy_sta_dict_reads_are_concurrent` | `tests/unit/test_physics_cache_unified.py` |
 
 ### Untested — add these before touching the corresponding code paths
 
@@ -50,8 +52,6 @@ Read the "failure mechanism" column before touching anything in the "what" colum
 | `on_features_ready()` discards result when cluster changed | `tests/integration/test_main_window.py` | **HIGH** | Use `qtbot` + `threading.Event` |
 | Stale `standard_plot_cache` entries pruned after cluster refinement | `tests/unit/test_data_manager_cache.py` | **HIGH** | Inject stale key, call rebuild, assert key gone |
 | Atomic pkl write: failure leaves original file intact | `tests/unit/test_data_manager_cache.py` | **HIGH** | `patch('os.replace', side_effect=OSError)` |
-| `LazySTADict` evicts oldest key after `_max_cache` exceeded | `tests/unit/test_vision_integration.py` | MEDIUM | Mock `STAReader`, fill past limit, assert oldest gone |
-| `LazySTADict` closes file handle on `__del__` | `tests/unit/test_vision_integration.py` | MEDIUM | Assert `reader.close()` called |
 | `ei_corr()` with zero-std EI returns zeros, not `NaN` | `tests/unit/test_data_manager_cache.py` | MEDIUM | `np.ones((512, 201))` input |
 | `_apply_ei_updates()` is called via signal, never directly | `tests/integration/test_data_manager_signals.py` | MEDIUM | Emit signal, assert `cluster_df` updated on main thread |
 | Population mosaic `Show IDs` toggle invalidates hot-swap cache | `tests/integration/test_population_panel.py` | LOW | |
@@ -74,6 +74,7 @@ Before modifying any file in the "changed files" column, run the corresponding t
 | Population mosaic gridlines, zoom/pan, Show IDs cache | `main_window.py`, `panels/population_panel.py` | Integration tests on real dataset | MEDIUM |
 | Light mode theme system | `src/gui/theme.py`, `main_window.py::_setup_style()` | Visual AC — toggle theme, check all panels | LOW |
 | Sidebar live search (`Ctrl+F`) | `main_window.py` | Manual | LOW |
+| Physics cache warm-up freeze on large datasets | `src/analysis/vision_integration.py` | `test_lazy_sta_dict_cache_is_thread_safe`, `test_lazy_sta_dict_reads_are_concurrent` | HIGH — any changes to LazySTADict concurrency, dict caching, or contains checking |
 
 ---
 
