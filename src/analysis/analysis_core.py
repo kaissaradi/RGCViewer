@@ -297,7 +297,11 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
             dom_trace = tc_matrix[:, 0]
         else:
             energies  = np.sum(tc_matrix ** 2, axis=0)
-            dom_idx   = int(np.argmax(energies))
+            # Intercept duplicated B/W signal across R/G/B and force Blue
+            if np.isclose(energies[0], energies[2], rtol=1e-5):
+                dom_idx = 2
+            else:
+                dom_idx   = int(np.argmax(energies))
             dom_trace = tc_matrix[:, dom_idx]
 
         channel_names = ["Red", "Green", "Blue"]
