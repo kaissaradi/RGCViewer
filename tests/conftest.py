@@ -94,14 +94,18 @@ def make_main_window(qtbot, rgc_colors):
 @pytest.fixture
 def real_data_manager():
     """
-    DataManager pointed at the real lab dataset.
-    Auto-skips if the network drive is unmounted.
+    DataManager pointed at the real lab dataset or local Desktop copy.
+    Auto-skips if neither target path exists.
     """
     from src.analysis.data_manager import DataManager
 
     target_path = Path("/mnt/lab/Array-data/sorted/20260506A/chunk10/kilosort2.5")
     if not target_path.exists():
-        pytest.skip(f"Real data path {target_path} not found.")
+        target_path = Path("/home/kais/Desktop/chunk10 (Copy)/kilosort2.5")
+        if not target_path.exists():
+            target_path = Path("/home/kais/Desktop/chunk10/kilosort2.5")
+            if not target_path.exists():
+                pytest.skip("Real data path and local Desktop fallbacks not found.")
     return DataManager(kilosort_dir=str(target_path))
 
 
@@ -115,7 +119,11 @@ def cache_cleared_data_manager(tmp_path):
 
     source_path = Path("/mnt/lab/Array-data/sorted/20260506A/chunk10/kilosort2.5")
     if not source_path.exists():
-        pytest.skip("Real data path missing.")
+        source_path = Path("/home/kais/Desktop/chunk10 (Copy)/kilosort2.5")
+        if not source_path.exists():
+            source_path = Path("/home/kais/Desktop/chunk10/kilosort2.5")
+            if not source_path.exists():
+                pytest.skip("Real data path and local Desktop fallbacks not found.")
 
     shutil.copytree(source_path, tmp_path, dirs_exist_ok=True)
     for name in ("standard_plot_cache.pkl", "feature_cache.pkl", "ei_corr_dict.pkl"):
