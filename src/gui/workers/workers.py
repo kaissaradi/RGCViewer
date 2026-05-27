@@ -258,7 +258,9 @@ class StandardPlotsWorker(QObject):
                 try:
                     self.data_manager.get_standard_plot_data(cluster_id)
                 except Exception as e:
-                    self.error.emit(f"Background precompute failed for cluster {cluster_id}: {e}")
+                    # Added missing logger call for test verification
+                    logger.error(f"Failed to compute standard plots for cluster {cluster_id}")
+                    self.error.emit(f"Background precompute failed for cluster {cluster_id}: {str(e)}")
                 finally:
                     self.finished_cluster.emit(int(cluster_id))
                     QThread.msleep(20)
@@ -267,6 +269,7 @@ class StandardPlotsWorker(QObject):
                     self.all_done.emit()          # ← NEW
                     self._all_done_emitted = True # ← NEW
                 QThread.msleep(100)
+        
 
     def add_to_queue(self, cluster_id, high_priority=False):
         """

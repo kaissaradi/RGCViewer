@@ -67,6 +67,7 @@ def _make_mock_main_window(vision_params, sta_height=100, subset_ids=None):
     mw.data_manager = MagicMock()
     mw.data_manager.vision_params = vision_params
     mw.data_manager.vision_sta_height = sta_height
+    mw.data_manager.is_vision_only = False
 
     # Default colors (dark theme)
     mw.get_current_colors.return_value = {

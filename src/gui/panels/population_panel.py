@@ -479,95 +479,56 @@ def _build_ellipse_collection(xyw_angle_list, edgecolor, alpha, lw, zorder):
     return ec
 
 
-def plot_population_rfs_background(ax, vision_params, main_window, sta_height=None, subset_cell_ids=None, colors=None):
-    if colors is None:
-        colors = DARK_COLORS
-
-    try:
-        all_cell_ids = vision_params.get_cell_ids()
-        logger.debug(f"plot_population_rfs_background: got {len(all_cell_ids) if all_cell_ids else 0} cell IDs from vision_params")
-    except Exception as e:
-        logger.error(f"Failed to get cell IDs from vision_params: {e}")
-        return
-
-    vision_subset_ids_set = set()
-    if subset_cell_ids is not None:
-        vision_subset_ids_set = {cid + 1 for cid in subset_cell_ids}
-
-    target_ids = [cid for cid in all_cell_ids if cid in vision_subset_ids_set] \
-        if vision_subset_ids_set else list(all_cell_ids)
-
-    # --- Collect geometry for background (grey) cells ---
-    bg_geom = []
-    if vision_subset_ids_set:
-        for cell_id in all_cell_ids:
-            if cell_id in vision_subset_ids_set:
-                continue
-            try:
-                stafit = vision_params.get_stafit_for_cell(cell_id)
-                adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-                bg_geom.append((stafit.center_x, adjusted_y,
-                                2 * stafit.std_x, 2 * stafit.std_y,
-                                np.rad2deg(stafit.rot)))
-            except Exception:
-                continue
-
-    # --- Collect geometry for subset (foreground) cells ---
-    fg_geom = []
-    x_coords, y_coords = [], []
-    show_ids = hasattr(main_window, 'pop_show_ids_checkbox') and main_window.pop_show_ids_checkbox.isChecked()
-
-    for cell_id in target_ids:
+def plot_population_rfs_background(ax, vision_params, main_window, sta_height, subset_cell_ids, colors):
+    from matplotlib.patches import Ellipse
+    import numpy as np
+    
+    ax.clear()
+    show_labels = main_window.pop_show_ids_checkbox.isChecked()
+    is_vision_only = getattr(main_window.data_manager, 'is_vision_only', False)
+    
+    for cell_id in vision_params.get_cell_ids():
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
-            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-            fg_geom.append((stafit.center_x, adjusted_y,
-                            2 * stafit.std_x, 2 * stafit.std_y,
-                            np.rad2deg(stafit.rot)))
-            x_coords.append(stafit.center_x)
-            y_coords.append(stafit.center_y)
-            if show_ids:
-                ax.text(stafit.center_x, adjusted_y, str(cell_id),
-                        color=colors['text_secondary'], fontsize=7,
-                        ha='center', va='center', alpha=0.8)
-        except Exception:
+        except KeyError:
             continue
+            
+        # Translate Vision ID (1-indexed) back to Kilosort ID to check subset
+        cid = cell_id if is_vision_only else cell_id - 1
+        is_target = cid in subset_cell_ids
 
-    # --- Two collection draw calls instead of N add_patch calls ---
-    if bg_geom:
-        bg_arr = np.array(bg_geom, dtype=float)
-        bg_ec = EllipseCollection(
-            widths=bg_arr[:, 2], heights=bg_arr[:, 3], angles=bg_arr[:, 4],
-            units='x', offsets=bg_arr[:, :2], offset_transform=ax.transData,
-            edgecolors=colors['text_secondary'], facecolors='none',
-            linewidths=0.75, alpha=0.15, zorder=1,
+        # Apply AC1 Spec values
+        if is_target:
+            alpha_val = 0.55
+            lw_val = 1.0
+            edge_color = colors.get("plot_highlight", "#00FFFF")
+        else:
+            alpha_val = 0.15
+            lw_val = 0.75
+            edge_color = colors.get("border_subtle", "#2E3038")
+
+        ellipse = Ellipse(
+            xy=(stafit.center_x, stafit.center_y),
+            width=stafit.std_x * 2,
+            height=stafit.std_y * 2,
+            angle=np.degrees(stafit.rot),
+            edgecolor=edge_color,
+            facecolor='none',
+            alpha=alpha_val,
+            linewidth=lw_val
         )
-        ax.add_collection(bg_ec)
+        ax.add_patch(ellipse)
 
-    if fg_geom:
-        fg_arr = np.array(fg_geom, dtype=float)
-        fg_ec = EllipseCollection(
-            widths=fg_arr[:, 2], heights=fg_arr[:, 3], angles=fg_arr[:, 4],
-            units='x', offsets=fg_arr[:, :2], offset_transform=ax.transData,
-            edgecolors=colors['text_primary'], facecolors='none',
-            linewidths=1.0, alpha=0.55, zorder=2,
-        )
-        ax.add_collection(fg_ec)
-
-    if x_coords:
-        ax.set_xlim(min(x_coords) - 20, max(x_coords) + 20)
-        ax.set_ylim(max(y_coords) + 20, min(y_coords) - 20)
-    else:
-        ax.set_xlim(0, 100)
-        ax.set_ylim(100, 0)
-
-    ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color=colors['text_primary'])
-    ax.set_facecolor(colors['bg_panel'])
-    ax.set_aspect('equal', adjustable='box')
-    ax.tick_params(colors=colors['text_secondary'])
-    for spine in ax.spines.values():
-        spine.set_edgecolor(colors['border_subtle'])
-    ax.grid(False)
+        # Apply AC3 Label wiring
+        if show_labels and is_target:
+            ax.text(
+                stafit.center_x, stafit.center_y,
+                str(cell_id),
+                color=colors.get("text_secondary", "#9B9DA6"),
+                fontsize=8,
+                ha='center',
+                va='center'
+            )
 
 
 def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):

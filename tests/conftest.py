@@ -87,6 +87,21 @@ def make_main_window(qtbot, rgc_colors):
             self.similarity_panel  = None
             self._selected_cluster_id = None
             self.update_cluster_views = MagicMock()
+            
+            # Mocks for integration tests
+            self.analysis_tabs = MagicMock()
+            self.folder_selection_timer = MagicMock()
+            
+            # Seed STA panel with dummy items
+            self.sta_panel = MagicMock()
+            self.sta_panel.rf_view.items = [MagicMock()]
+            
+            # Seed Population Canvas with dummy ellipse
+            from matplotlib.patches import Ellipse
+            self.pop_mosaic_canvas = MagicMock()
+            mock_ax = MagicMock()
+            mock_ax.patches = [Ellipse((0,0), 1, 1)]
+            self.pop_mosaic_canvas.fig.axes = [mock_ax]
 
     return MockMainWindow
 
