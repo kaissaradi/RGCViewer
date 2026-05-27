@@ -628,12 +628,6 @@ class MainWindow(QMainWindow):
                     logger.error(f"Tier 1 Pop Split update failed: {e}")
             # If can't hot-swap, defer to Tier 2 for full rebuild
 
-        # B. STA Tab (Main Center Pane) - Only update if explicitly in 'Population' mode
-        if self.analysis_tabs.currentWidget() == self.sta_panel:
-            if self.current_sta_view == 'population_rfs':
-                # Population RF in STA tab - also defer to Tier 2
-                pass  # Will be handled in _draw_plots
-
         # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
         # Standard plots are updated only in _draw_plots to prevent redundant redraws
 
@@ -828,20 +822,7 @@ class MainWindow(QMainWindow):
             self.raw_panel.load_data(cluster_id)
 
         elif current_tab == self.sta_panel:
-            # STA tab - update single-cell or population view
-            if self.current_sta_view == 'population_rfs':
-                # Population RF in STA tab - full rebuild in Tier 2
-                try:
-                    draw_population_rfs_plot(
-                        main_window=self,
-                        selected_cell_id=cluster_id,
-                        canvas=self.sta_panel.rf_canvas
-                    )
-                except Exception as e:
-                    logger.error(f"Tier 2 STA Pop RF rebuild failed: {e}")
-            else:
-                # Single-cell STA view
-                self.sta_panel.update_view(cluster_id)
+            self.sta_panel.update_view(cluster_id)
 
         self.status_bar.showMessage("Ready.", 2000)
 
@@ -1862,8 +1843,6 @@ class MainWindow(QMainWindow):
                 self.sta_panel.sta_animation_button.setText("Play Animation")
             elif view_type == "animation":
                 self.sta_panel.sta_animation_button.setText("Pause Animation")
-            elif view_type == "population_rfs":
-                self.sta_panel.sta_animation_button.setText("Play Animation")
 
         # Delegate to the STAPanel
         cluster_id = self._get_selected_cluster_id()
