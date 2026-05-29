@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import threading
 logger = logging.getLogger(__name__)
 
 # Guard import of visionloader so the app can run without it installed
@@ -11,6 +12,8 @@ except Exception:
     VISION_LOADER_AVAILABLE = False
     logger.info("'visionloader' not available; vision integration disabled")
 
+MAX_STA_CACHE_CELLS = 500
+
 
 class LazySTADict:
     """
@@ -19,16 +22,30 @@ class LazySTADict:
     Includes a lightweight FIFO cache for smooth UI scrolling.
     """
     def __init__(self, vision_dir, dataset_name):
+        self.vision_dir = vision_dir
+        self.dataset_name = dataset_name
         self.reader = vl.STAReader(str(vision_dir), dataset_name)
         self.keys_list = list(self.reader.cell_id_to_byte_offset.keys())
+        self._keys_set = set(self.keys_list)
         
         # --- NEW: LRU Cache to fix UI Scrolling lag ---
         self._cache = {}
         self._cache_keys = []
-        self._max_cache = 40  # Keep the last 40 STAs in RAM
+        self._max_cache = min(MAX_STA_CACHE_CELLS, max(200, len(self.keys_list)))
+        self._cache_lock = threading.Lock()
+        
+        # Thread-local storage for readers to avoid file handle race conditions
+        self._local = threading.local()
+        self._creator_thread = threading.current_thread()
+        self._all_readers = [self.reader]
+        self._readers_lock = threading.Lock()
         
     def __contains__(self, key):
-        return key in self.keys_list
+        keys_set = getattr(self, '_keys_set', None)
+        if keys_set is None:
+            self._keys_set = set(getattr(self, 'keys_list', []))
+            keys_set = self._keys_set
+        return key in keys_set
     
     def get(self, key, default=None):
         """Emulate dict.get() using our internal cache and SSD reader."""
@@ -37,23 +54,49 @@ class LazySTADict:
         return default
         
     def __getitem__(self, key):
-        # 1. Check RAM cache first (Instant)
-        if key in self._cache:
-            return self._cache[key]
+        # 1. Fast path: check RAM cache under lock (instant dict lookup).
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+
+        # 2. Get thread-local reader, or create one for this thread
+        local = getattr(self, '_local', None)
+        if local is None:
+            self._local = threading.local()
+            local = self._local
             
-        # 2. Read from SSD (Slow)
-        sta_data = self.reader.get_sta_for_cell_id(key)
-        
-        # 3. Store in Cache
-        self._cache[key] = sta_data
-        self._cache_keys.append(key)
-        
-        # 4. Evict oldest if we exceed limit to save RAM
-        if len(self._cache_keys) > self._max_cache:
-            oldest_key = self._cache_keys.pop(0)
-            if oldest_key in self._cache:
-                del self._cache[oldest_key]
-                
+        local_reader = getattr(local, 'reader', None)
+        if local_reader is None:
+            creator_thread = getattr(self, '_creator_thread', None)
+            if creator_thread is not None and threading.current_thread() is creator_thread:
+                local_reader = self.reader
+            else:
+                vision_dir = getattr(self, 'vision_dir', None)
+                dataset_name = getattr(self, 'dataset_name', None)
+                if vision_dir is not None and dataset_name is not None and VISION_LOADER_AVAILABLE:
+                    # Open a new reader for this worker thread to avoid file handle races
+                    local_reader = vl.STAReader(str(vision_dir), dataset_name)
+                    readers_lock = getattr(self, '_readers_lock', None)
+                    if readers_lock is not None:
+                        with readers_lock:
+                            self._all_readers.append(local_reader)
+                else:
+                    # Fallback to shared reader for tests or missing info
+                    local_reader = self.reader
+            local.reader = local_reader
+
+        # 3. Read is outside cache lock, and thread-safe because each thread has its own reader
+        sta_data = local_reader.get_sta_for_cell_id(key)
+
+        # 4. Write result under lock with double-check pattern
+        with self._cache_lock:
+            if key not in self._cache:
+                self._cache[key] = sta_data
+                self._cache_keys.append(key)
+                if len(self._cache_keys) > self._max_cache:
+                    oldest = self._cache_keys.pop(0)
+                    self._cache.pop(oldest, None)
+
         return sta_data
         
     def __iter__(self):
@@ -66,9 +109,12 @@ class LazySTADict:
         return self.keys_list
         
     def __del__(self):
-        if hasattr(self, 'reader'):
+        readers = getattr(self, '_all_readers', [])
+        if not readers and hasattr(self, 'reader'):
+            readers = [self.reader]
+        for r in readers:
             try:
-                self.reader.close()
+                r.close()
             except Exception:
                 pass
 

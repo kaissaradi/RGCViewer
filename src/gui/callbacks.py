@@ -1,8 +1,9 @@
 from __future__ import annotations
 import os
+import threading
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread, Qt, QObject
+from qtpy.QtCore import QThread, Qt, QObject, QTimer
 from qtpy.QtGui import QStandardItem, QColor
 
 from ..analysis.data_manager import DataManager
@@ -11,7 +12,11 @@ from .workers.workers import (
     KilosortLoadWorker, VisionLoadWorker
 )
 from .widgets.widgets import HighlightStatusPandasModel
-from .panels.population_panel import draw_population_timecourse_panel, draw_population_rfs_plot
+from .panels.population_panel import (
+    draw_population_timecourse_panel,
+    draw_population_rfs_plot,
+    invalidate_population_caches,
+)
 from .panels.feature_extraction import FeatureExtractionWindow
 from typing import TYPE_CHECKING
 import logging
@@ -20,6 +25,28 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
+def _ensure_cache_progress_timer(main_window):
+    """Main-thread timer: physics warm-up no longer emits finished_cluster."""
+    timer = getattr(main_window, '_cache_progress_timer', None)
+    if timer is None:
+        timer = QTimer(main_window)
+        timer.setInterval(250)
+        timer.timeout.connect(lambda: update_cache_progress(main_window))
+        main_window._cache_progress_timer = timer
+    return timer
+
+
+def start_cache_progress_polling(main_window):
+    """Poll cache counters on the UI thread while the progress bar is visible."""
+    _ensure_cache_progress_timer(main_window).start()
+
+
+def stop_cache_progress_polling(main_window):
+    timer = getattr(main_window, '_cache_progress_timer', None)
+    if timer is not None:
+        timer.stop()
+
+
 def update_cache_progress(main_window):
     """Updates the main window progress bar based on actual cache state."""
     if not main_window.data_manager or main_window.data_manager.cluster_df.empty:
@@ -27,24 +54,28 @@ def update_cache_progress(main_window):
 
     dm = main_window.data_manager
     total = len(dm.cluster_df)
+    if total <= 0:
+        return
 
-    # Count truly complete feature_cache entries (have _computed sentinel).
-    # Falls back to standard_plot_cache count if physics pass hasn't started.
     physics_done = getattr(dm, '_physics_done_count', 0)
-    std_done     = len(dm.standard_plot_cache)
+    std_done = len(dm.standard_plot_cache)
+    vision_loaded = bool(getattr(dm, 'vision_stas', None))
 
-    # Show whichever pass is currently active
-    if physics_done > 0:
-        val = int(physics_done / total * 100)
+    # StandardPlotsWorker drives finished_cluster; physics warm-up does not.
+    if vision_loaded:
         done = physics_done
+        val = int(physics_done / total * 100)
+        ready = physics_done >= total
     else:
-        val = int(std_done / total * 100)
         done = std_done
+        val = int(std_done / total * 100)
+        ready = std_done >= total
 
     main_window.cache_progress.setValue(min(val, 100))
 
-    if done >= total and not getattr(main_window, '_cache_save_triggered', False):
+    if ready and not getattr(main_window, '_cache_save_triggered', False):
         main_window._cache_save_triggered = True
+        stop_cache_progress_polling(main_window)
         main_window.cache_progress.hide()
         main_window.status_bar.showMessage(
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000)
@@ -126,6 +157,7 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.cache_progress_count = 0
     main_window.cache_progress.setValue(0)
     main_window.cache_progress.show()
+    start_cache_progress_polling(main_window)
 
     # Start the worker — handles signal wiring AND queueing all clusters internally
     start_worker(main_window)
@@ -231,37 +263,27 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
         main_window.status_bar.showMessage(
             "Vision loaded. Computing EI correlations in background...", 4000)
 
-    # --- Physics extraction pass (needs Vision STA data, so runs here not in start_worker) ---
-    all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
+    # In _on_vision_loaded, REPLACE the _warm_physics block with:
+    if success:
+        _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
 
-    main_window.cache_progress_count = 0
-    main_window.cache_progress.setValue(0)
-    main_window.cache_progress.show()
+        def _warm_physics():
+            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
 
-    def _compute_physics():
-        for cid in all_ids:
-            try:
-                main_window.data_manager.get_cell_physics(cid)
-                if getattr(main_window, 'standard_plots_worker', None):
-                    main_window.standard_plots_worker.finished_cluster.emit(int(cid))
-            except Exception:
-                logger.warning("Physics failed for cluster %s", cid, exc_info=True)
-        main_window.physics_thread.quit()
+        def _on_standard_plots_done():
+            # StandardPlotsWorker has finished — feature_cache has all ACGs.
+            # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
+            main_window.cache_progress_count = 0
+            main_window.cache_progress.setValue(0)
+            main_window.cache_progress.show()
+            start_cache_progress_polling(main_window)
+            threading.Thread(target=_warm_physics, daemon=True).start()
 
-    # Attach to main_window so GC doesn't destroy the thread while the OS
-    # thread is still running ("QThread: Destroyed while thread is still running").
-    main_window.physics_thread = QThread()
-    main_window.physics_worker = QObject()
-    main_window.physics_worker.moveToThread(main_window.physics_thread)
-    main_window.physics_thread.started.connect(_compute_physics)
-    # deleteLater connections ensure Qt cleans up both objects after the thread exits.
-    main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
-    main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
-    main_window.physics_thread.start()
-
-    main_window.status_bar.showMessage(
-        f"Vision dataset loaded. Computing physics for {len(all_ids)} cells...", 5000)
-
+        # Connect once — Qt.SingleShotConnection so it doesn't fire again if
+        # Vision reloads in the same session.
+        main_window.standard_plots_worker.all_done.connect(
+            _on_standard_plots_done, Qt.ConnectionType.SingleShotConnection
+        )
 
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
@@ -324,8 +346,10 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     main_window.central_widget.setEnabled(True)
 
     if success and not is_partial:
+        invalidate_population_caches()
         main_window.status_bar.showMessage(message, 5000)
     elif is_partial:
+        invalidate_population_caches()
         main_window.status_bar.showMessage(f"Loaded partial Vision data: {message}", 5000)
         QMessageBox.warning(main_window, "Vision Loading Warning",
                             f"Could not load all Vision data, but some files were found.\n{message}")
@@ -348,43 +372,27 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # Now that Vision STA data is loaded, compute get_cell_physics for all
     # clusters. The StandardPlotsWorker deliberately skips this so it can
     # never produce stale timecourse=None entries before Vision is ready.
+    # In _on_vision_loaded, REPLACE the _warm_physics block with:
     if success:
-        dm = main_window.data_manager
-        all_ids = dm.cluster_df['cluster_id'].astype(int).tolist()
+        _all_ids = main_window.data_manager.cluster_df['cluster_id'].astype(int).tolist()
 
-        # Reset progress bar to show the physics recompute pass
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
+        def _warm_physics():
+            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
 
-        def _compute_physics():
-            for cid in all_ids:
-                try:
-                    dm.get_cell_physics(cid)
-                    if getattr(main_window, 'standard_plots_worker', None):
-                        main_window.standard_plots_worker.finished_cluster.emit(int(cid))
-                except Exception:
-                    pass
+        def _on_standard_plots_done():
+            # Disconnect immediately so Vision reload in the same session
+            # doesn't fire a second _warm_physics thread.
+            try:
+                main_window.standard_plots_worker.all_done.disconnect(_on_standard_plots_done)
+            except RuntimeError:
+                pass  # already disconnected, fine
+            main_window.cache_progress_count = 0
+            main_window.cache_progress.setValue(0)
+            main_window.cache_progress.show()
+            start_cache_progress_polling(main_window)
+            threading.Thread(target=_warm_physics, daemon=True).start()
 
-        # Use QThread instead of threading.Thread to avoid Numba/TBB fork issues.
-        # Attach to main_window (not local variables) so Python's GC doesn't
-        # destroy the thread object while the OS thread is still running, which
-        # would cause: "QThread: Destroyed while thread is still running" + abort.
-        main_window.physics_thread = QThread()
-        main_window.physics_worker = QObject()
-        main_window.physics_worker.moveToThread(main_window.physics_thread)
-
-        def run_physics():
-            _compute_physics()
-            main_window.physics_thread.quit()
-
-        main_window.physics_thread.started.connect(run_physics)
-        main_window.physics_thread.finished.connect(main_window.physics_worker.deleteLater)
-        main_window.physics_thread.finished.connect(main_window.physics_thread.deleteLater)
-        main_window.physics_thread.start()
-
-        main_window.status_bar.showMessage(
-            f"Vision loaded. Computing physics for {len(all_ids)} cells...", 5000)
+        main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
@@ -419,7 +427,6 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
     else:
         # Group Folder selected (Tree View)
-        # Groups are not subject to rapid scrolling lag, so immediate update is fine here.
         if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
@@ -428,14 +435,9 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
                 # Check if it is a group (groups store None in UserRole)
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:
-                    group_ids = main_window._get_group_cluster_ids(item)
-
-                    if group_ids and main_window.population_view_enabled:
-                        draw_population_rfs_plot(
-                            main_window=main_window,
-                            subset_cell_ids=group_ids,
-                            canvas=main_window.pop_mosaic_canvas)
-                        redraw_population_panels(main_window)
+                    main_window._pending_folder_item = item
+                    main_window.folder_selection_timer.start()
+                    return
 
 
 def on_spatial_data_ready(
@@ -490,6 +492,7 @@ def handle_refinement_results(
         f"Refinement of C{parent_id} complete. Found {len(new_clusters)} sub-clusters.",
         5000)
     main_window.data_manager.update_after_refinement(parent_id, new_clusters)
+    invalidate_population_caches()
     # Refresh the tree view to show updated cluster information
     populate_tree_view(main_window)
     main_window.refine_button.setEnabled(True)
@@ -606,9 +609,13 @@ def start_worker(main_window: MainWindow):
     main_window.standard_plots_worker = StandardPlotsWorker(main_window.data_manager)
     main_window.standard_plots_worker.moveToThread(main_window.standard_worker_thread)
     
-    # NEW: Connect the progress bar signal BEFORE starting or queueing
+    # Connect the progress bar signal BEFORE starting or queueing
     main_window.standard_plots_worker.finished_cluster.connect(
         lambda cid: update_cache_progress(main_window)
+    )
+    # Auto-refresh the Standard Plots panel when the viewed cluster becomes ready
+    main_window.standard_plots_worker.finished_cluster.connect(
+        main_window.on_standard_plot_ready
     )
     
     main_window.standard_worker_thread.started.connect(main_window.standard_plots_worker.run)

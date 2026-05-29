@@ -6,7 +6,6 @@ import matplotlib as mpl
 from matplotlib.widgets import RectangleSelector, LassoSelector
 from matplotlib.path import Path
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from sklearn.decomposition import PCA
 from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QMenu, QLabel,
     QProgressBar, QSizePolicy, QWidget, QPushButton
@@ -158,77 +157,46 @@ class FeatureAnalysisWorker(QThread):
 
     def run(self):
         try:
-            valid_ids = []
-            final_traces = []
-            final_acg = []
-            final_rf_diam = []
-            final_time_to_peak = []
+            total = len(self.cluster_ids)
+            self.progress.emit(f"Ensuring physics cache for {total} clusters...", 0)
 
-            total_steps = len(self.cluster_ids)
+            self.data_manager.ensure_physics_cache(self.cluster_ids)
 
-            for i, cid in enumerate(self.cluster_ids):
-                if not self.is_running:
-                    return
+            self.progress.emit(f"Extracting features for {total} clusters...", 10)
 
-                if i % max(1, total_steps // 10) == 0:
-                    self.progress.emit(
-                        f"Loading features {i + 1}/{total_steps}",
-                        int(i / total_steps * 100),
-                    )
+            feature_matrix, valid_ids, metadata = self.data_manager.get_physics_feature_matrix(
+                self.cluster_ids
+            )
 
-                metrics = self.data_manager.get_cell_physics(cid)
-                trace = metrics.get('timecourse')
-                acg   = metrics.get('acg')
-                rf_area = metrics.get('rf_area', 0.0)
+            if len(valid_ids) == 0:
+                self.progress.emit("No valid features found.", 100)
+                self.finished.emit({})
+                return
 
-                if trace is None or acg is None or len(trace) == 0 or len(acg) == 0:
-                    continue
+            n = len(valid_ids)
+            n_comp = min(3, n)
 
-                valid_ids.append(cid)
-                final_traces.append(trace)
-                final_acg.append(acg)
-                final_rf_diam.append(np.sqrt(rf_area / np.pi) if rf_area > 0 else 0.0)
-                final_time_to_peak.append(metrics.get('time_to_peak', 0))
+            def _pad3(arr):
+                if arr.shape[1] < 3:
+                    return np.pad(arr, ((0, 0), (0, 3 - arr.shape[1])), mode='constant')
+                return arr
 
-            final_traces       = np.array(final_traces)
-            final_acg          = np.array(final_acg)
-            final_rf_diam      = np.array(final_rf_diam)
-            final_time_to_peak = np.array(final_time_to_peak)
-
-            if len(valid_ids) > 0:
-                n_samples = len(valid_ids)
-                n_comps   = min(3, n_samples)
-
-                if n_comps > 0 and final_traces.shape[1] >= n_comps:
-                    pca_traces = PCA(n_components=n_comps).fit_transform(final_traces)
-                    if n_comps < 3:
-                        pca_traces = np.pad(pca_traces, ((0, 0), (0, 3 - n_comps)), mode='constant')
-                else:
-                    pca_traces = np.zeros((n_samples, 3))
-
-                if n_comps > 0 and final_acg.shape[1] >= n_comps:
-                    pca_acg = PCA(n_components=n_comps).fit_transform(final_acg)
-                    if n_comps < 3:
-                        pca_acg = np.pad(pca_acg, ((0, 0), (0, 3 - n_comps)), mode='constant')
-                else:
-                    pca_acg = np.zeros((n_samples, 3))
-            else:
-                pca_traces = np.empty((0, 3))
-                pca_acg    = np.empty((0, 3))
+            tc_pca_block = feature_matrix[:, :n_comp]
+            acg_pca_block = feature_matrix[:, n_comp:2 * n_comp]
 
             results = {
                 'cluster_ids':  valid_ids,
-                'temporal_pca': pca_traces,
-                'acg_pca':      pca_acg,
-                'rf_diameter':  final_rf_diam,
-                'time_to_peak': final_time_to_peak,
+                'temporal_pca': _pad3(tc_pca_block),
+                'acg_pca':      _pad3(acg_pca_block),
+                'rf_diameter':  np.sqrt(np.array(metadata['RF Area']) / np.pi),
+                'time_to_peak': np.array(metadata['Time to Peak']),
             }
 
-            self.progress.emit("Finalizing…", 100)
+            self.progress.emit("Done.", 100)
             self.finished.emit(results)
 
         except Exception as e:
-            logger.error(f"Error in FeatureAnalysisWorker: {e}", exc_info=True)
+            logger.error("Error in FeatureAnalysisWorker: %s", e, exc_info=True)
             self.finished.emit({})
 
     def stop(self):

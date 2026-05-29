@@ -20,10 +20,6 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("hdbscan not installed; HDBSCAN clustering disabled")
 
-# --- Scientific Computing Imports ---
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import RobustScaler
-
 from ..theme import resolve_theme_colors
 
 logger = logging.getLogger(__name__)
@@ -38,93 +34,15 @@ W_GEOMETRY = 1.0
 
 def extract_features_from_datamanager(dm, cluster_ids):
     """
-    O(1) Feature Extraction.
-    Pulls pre-calculated physics directly from DataManager cache, applies 
-    RobustScaler to geometry, and PCA-compresses high-dimensional arrays.
+    Thin delegation to DataManager.get_physics_feature_matrix().
+    All logic lives in the DataManager to eliminate duplication with FeatureAnalysisWorker.
     """
-    valid_ids = []
-    tc_list = []
-    acg_list = []
-    scalars_list = []
-    
-    # We must build a metadata dictionary so the UI can color the UMAP dots
-    metadata = {
-        'Time to Peak': [],
-        'RF Area': [],
-        'Ellipticity': []
-    }
-
-    for cid in cluster_ids:
-        # 1. INSTANT O(1) CACHE LOOKUP
-        metrics = dm.get_cell_physics(cid)
-        
-        tc = metrics.get('timecourse')
-        acg = metrics.get('acg')
-        
-        if tc is not None and acg is not None:
-            valid_ids.append(cid)
-            tc_list.append(tc)
-            acg_list.append(acg)
-            
-            area = metrics.get('rf_area') or 0.0
-            ellip = metrics.get('ellipticity') or 0.0
-            t2p = metrics.get('time_to_peak') or 0
-            
-            scalars_list.append([area, ellip])
-            
-            metadata['Time to Peak'].append(t2p)
-            metadata['RF Area'].append(area)
-            metadata['Ellipticity'].append(ellip)
-
-    if not valid_ids:
-        return np.array([]), [], {}
-
-    # 2. Standardize Array Lengths
-    max_tc_len = max(len(t) for t in tc_list)
-    tc_mat = np.array([np.pad(t, (0, max_tc_len - len(t))) if len(t) < max_tc_len else t[:max_tc_len] for t in tc_list])
-
-    max_acg_len = max(len(a) for a in acg_list)
-    acg_mat = np.array([np.pad(a, (0, max_acg_len - len(a))) if len(a) < max_acg_len else a[:max_acg_len] for a in acg_list])
-
-    scalars_mat = np.array(scalars_list)
-
-    # 3a. Drop rows that contain NaN in any matrix (skip those units)
-    nan_mask = (
-        np.any(np.isnan(tc_mat), axis=1) |
-        np.any(np.isnan(acg_mat), axis=1) |
-        np.any(np.isnan(scalars_mat), axis=1)
+    return dm.get_physics_feature_matrix(
+        cluster_ids,
+        w_shape=W_SHAPE,
+        w_pattern=W_PATTERN,
+        w_geometry=W_GEOMETRY,
     )
-    if np.any(nan_mask):
-        n_dropped = int(nan_mask.sum())
-        logger.warning(f"Dropping {n_dropped} unit(s) with NaN features before UMAP")
-        keep = ~nan_mask
-        valid_ids   = [vid for vid, k in zip(valid_ids, keep) if k]
-        tc_mat      = tc_mat[keep]
-        acg_mat     = acg_mat[keep]
-        scalars_mat = scalars_mat[keep]
-        for key in metadata:
-            metadata[key] = [v for v, k in zip(metadata[key], keep) if k]
-
-    if len(valid_ids) == 0:
-        return np.array([]), [], {}
-
-    # 3b. Robust Normalization 
-    if scalars_mat.shape[0] > 0 and scalars_mat.shape[1] > 0:
-        scalars_mat = RobustScaler().fit_transform(scalars_mat)
-
-    # 4. Pre-PCA Compression 
-    n_comp = min(3, len(valid_ids))
-    tc_pca = PCA(n_components=n_comp).fit_transform(tc_mat) if n_comp > 0 else np.zeros((len(valid_ids), 0))
-    acg_pca = PCA(n_components=n_comp).fit_transform(acg_mat) if n_comp > 0 else np.zeros((len(valid_ids), 0))
-
-    # 5. Final Weighted Concatenation
-    final_features = np.hstack([
-        tc_pca * W_SHAPE,
-        acg_pca * W_PATTERN,
-        scalars_mat * W_GEOMETRY
-    ])
-
-    return final_features, valid_ids, metadata
 
 class ClusterWorker(QObject):
     """Background worker for clustering (HDBSCAN or K-Means)."""
@@ -184,14 +102,14 @@ class UMAPWorker(QObject):
                 self.error.emit("umap-learn library is not installed.")
                 return
 
-            self.progress.emit("Extracting features...")
-            
-            # --- THE FIX: Intercept 'None' and swap it for ALL cluster IDs ---
             target_ids = self.selected_cluster_ids
             if target_ids is None:
-                # If no specific cells are selected, run on the entire dataset
                 target_ids = self.dm.cluster_df['cluster_id'].values
 
+            self.progress.emit("Ensuring physics cache...")
+            self.dm.ensure_physics_cache(target_ids)
+
+            self.progress.emit("Extracting features...")
             features, cluster_ids, metadata = extract_features_from_datamanager(
                 self.dm, target_ids)
 

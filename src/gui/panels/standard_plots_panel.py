@@ -546,20 +546,39 @@ class StandardPlotsPanel(QWidget):
             logging.getLogger(__name__).warning(f"Error drawing template grid: {e}")
 
         # ------------------------------------------------------------------
-        # 2. FETCH DATA
+        # 2. FETCH DATA (non-blocking — never compute on UI thread)
         # ------------------------------------------------------------------
         try:
-            data = dm.get_standard_plot_data(cluster_id)
+            data = dm.try_get_standard_plot_data(cluster_id)
         except Exception:
             data = None
+
+        if data is None:
+            # Cache miss — queue for background computation, don't block
+            worker = getattr(self.main_window, 'standard_plots_worker', None)
+            if worker is not None:
+                worker.add_to_queue(cluster_id, high_priority=True)
+            # Clear plots so the user sees them as "pending"
+            self._acg_line.setData([], [])
+            self._ccg_bar.setVisible(False)
+            self._isi_curve.setData([], [])
+            self._isi_scatter.setVisible(False)
+            self._fr_rate_curve.setData([], [])
+            self._fr_overlay_curve.setData([], [])
+            self.acg_plot.setTitle(
+                f"<span style='color:{colors['text_tertiary']}; font-size:10px;'>AUTOCORRELATION — computing…</span>"
+            )
+            for plot in plots_to_update:
+                plot.enableAutoRange()
+            return
         
-        spikes = data.get('spikes') if data else None
-        if spikes is None:
-             self._acg_line.setData([], [])
-             self._ccg_bar.setVisible(False)
-             self._isi_curve.setData([], [])
-             self._fr_rate_curve.setData([], [])
-             return
+        # Guard: if acg_norm is absent the cluster has no usable data yet
+        if data is None or data.get('acg_norm') is None:
+            self._acg_line.setData([], [])
+            self._ccg_bar.setVisible(False)
+            self._isi_curve.setData([], [])
+            self._fr_rate_curve.setData([], [])
+            return
 
         # ------------------------------------------------------------------
         # 3. ACG / CCG
@@ -580,17 +599,16 @@ class StandardPlotsPanel(QWidget):
                 row_idx = selected_similar_rows[0].row()
                 if 0 <= row_idx < len(sim_model._dataframe):
                     similar_id = int(sim_model._dataframe.iloc[row_idx]['cluster_id'])
-                    
+
                     if similar_id != cluster_id:
                         try:
-                            spikes2 = None
-                            data2 = dm.get_standard_plot_data(similar_id)
-                            if data2: spikes2 = data2.get('spikes')
-                            if spikes2 is None: spikes2 = dm.get_cluster_spikes(similar_id)
+                            # Fetch both spike trains on-demand — memmap slices, fast
+                            spikes1 = dm.get_cluster_spikes(cluster_id)
+                            spikes2 = dm.get_cluster_spikes(similar_id)
 
-                            if spikes is not None and spikes2 is not None and len(spikes)>1 and len(spikes2)>1:
+                            if spikes1 is not None and spikes2 is not None and len(spikes1)>1 and len(spikes2)>1:
                                 sr = float(dm.sampling_rate)
-                                s1 = (np.asarray(spikes)/sr*1000).astype(int)
+                                s1 = (np.asarray(spikes1)/sr*1000).astype(int)
                                 s2 = (np.asarray(spikes2)/sr*1000).astype(int)
                                 duration = int(max(np.max(s1), np.max(s2)))
                                 
@@ -643,8 +661,14 @@ class StandardPlotsPanel(QWidget):
         # 4. ISI PLOT
         # ------------------------------------------------------------------
         isi_view = self.isi_view_combo.currentText()
-        raw_isi_ms = data.get('isi_ms') if data else None
-        if raw_isi_ms is None: raw_isi_ms = np.array([])
+
+        # Fetch spikes on-demand — memmap slice, GC'd after this block
+        _spikes_raw = dm.get_cluster_spikes(cluster_id)
+        _spikes_raw = np.asarray(_spikes_raw) if _spikes_raw is not None else np.array([])
+        if _spikes_raw.size > 1:
+            raw_isi_ms = np.diff(_spikes_raw) / float(dm.sampling_rate) * 1000.0
+        else:
+            raw_isi_ms = np.array([])
 
         if isi_view == 'ISI Histogram':
             self._isi_curve.setVisible(True)
@@ -674,8 +698,18 @@ class StandardPlotsPanel(QWidget):
             self._isi_ref_line.setVisible(False)
             self._isi_image.setVisible(False)
 
-            valid_isi = data.get('isi_vs_amp_valid_isi')
-            valid_amp = data.get('isi_vs_amp_valid_amplitudes')
+            valid_isi = None
+            valid_amp = None
+            _spikes_isi = dm.get_cluster_spikes(cluster_id)
+            _amps = dm.get_cluster_spike_amplitudes(cluster_id)
+            _spikes_isi = np.asarray(_spikes_isi) if _spikes_isi is not None else np.array([])
+            _amps = np.asarray(_amps)
+            if _spikes_isi.size > 1 and _amps.size > 1:
+                _isi = np.diff(_spikes_isi) / float(dm.sampling_rate) * 1000.0
+                _min_len = min(len(_isi), _amps.size - 1)
+                if _min_len > 0:
+                    valid_isi = _isi[:_min_len]
+                    valid_amp = _amps[1:_min_len + 1]
 
             if valid_isi is not None and len(valid_isi) > 0:
                 self._isi_scatter.setData(valid_isi, valid_amp)
@@ -692,13 +726,32 @@ class StandardPlotsPanel(QWidget):
         # ------------------------------------------------------------------
         fr_bin_centers = data.get('fr_bin_centers')
         fr_rate = data.get('fr_rate')
-        overlay_x = data.get('fr_overlay_x')
-        overlay_y = data.get('fr_overlay_y')
 
         if fr_bin_centers is not None and fr_rate is not None:
             self._fr_rate_curve.setData(fr_bin_centers, fr_rate)
         else:
             self._fr_rate_curve.setData([], [])
+
+        # FR overlay — recompute on-demand from amplitudes; spike-length arrays
+        # are never cached (OOM fix). Memory is reclaimed after this block.
+        overlay_x = None
+        overlay_y = None
+        _amps_ov = dm.get_cluster_spike_amplitudes(cluster_id)
+        _amps_ov = np.asarray(_amps_ov) if _amps_ov is not None else np.array([])
+        if (_amps_ov.size > 10 and fr_rate is not None
+                and fr_rate.size > 0 and _spikes_raw.size > 10):
+            _max_amp = float(np.max(_amps_ov))
+            if _max_amp > 0:
+                _norm_amp = _amps_ov / _max_amp
+            else:
+                _norm_amp = _amps_ov.astype(float)
+            _avg_amp = np.convolve(_norm_amp, np.ones(10) / 10.0, mode='valid')
+            _scaled = _avg_amp * 0.8 * float(np.max(fr_rate))
+            _spikes_sec_ov = _spikes_raw / float(dm.sampling_rate)
+            _ov_len = min(len(_scaled), len(_spikes_sec_ov))
+            if _ov_len > 0:
+                overlay_x = _spikes_sec_ov[:_ov_len]
+                overlay_y = _scaled[:_ov_len]
 
         if overlay_x is not None and overlay_y is not None:
             self._fr_overlay_curve.setData(overlay_x, overlay_y)

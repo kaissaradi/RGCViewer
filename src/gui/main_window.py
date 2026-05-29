@@ -104,6 +104,12 @@ class MainWindow(QMainWindow):
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
 
+        self.folder_selection_timer = QTimer(self)
+        self.folder_selection_timer.setSingleShot(True)
+        self.folder_selection_timer.setInterval(25)
+        self.folder_selection_timer.timeout.connect(self._process_folder_selection)
+        self._pending_folder_item = None
+
         # Auto-load if default paths are provided
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
             self.load_directory(default_kilosort_dir, default_dat_file)
@@ -622,12 +628,6 @@ class MainWindow(QMainWindow):
                     logger.error(f"Tier 1 Pop Split update failed: {e}")
             # If can't hot-swap, defer to Tier 2 for full rebuild
 
-        # B. STA Tab (Main Center Pane) - Only update if explicitly in 'Population' mode
-        if self.analysis_tabs.currentWidget() == self.sta_panel:
-            if self.current_sta_view == 'population_rfs':
-                # Population RF in STA tab - also defer to Tier 2
-                pass  # Will be handled in _draw_plots
-
         # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
         # Standard plots are updated only in _draw_plots to prevent redundant redraws
 
@@ -684,6 +684,30 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 "Raw data file not loaded: waveform plot disabled.", 4000)
             self._draw_plots(cluster_id, None)
+
+    def _process_folder_selection(self):
+        """Draw the selected population folder after folder navigation settles."""
+        item = self._pending_folder_item
+        if item is None or not self.population_view_enabled:
+            return
+
+        group_ids = self._get_group_cluster_ids(item)
+        if not group_ids:
+            return
+
+        # Skip if Qt fired a duplicate selectionChanged for the same folder
+        # (happens on focus changes and arrow-key repeats landing on the same item).
+        current_sig = frozenset(group_ids)
+        if getattr(self, '_last_pop_folder_sig', None) == current_sig:
+            return
+        self._last_pop_folder_sig = current_sig
+
+        draw_population_rfs_plot(
+            main_window=self,
+            subset_cell_ids=group_ids,
+            canvas=self.pop_mosaic_canvas,
+        )
+        callbacks.redraw_population_panels(self)
 
     def on_features_ready(self, cluster_id, features):
         """
@@ -798,22 +822,22 @@ class MainWindow(QMainWindow):
             self.raw_panel.load_data(cluster_id)
 
         elif current_tab == self.sta_panel:
-            # STA tab - update single-cell or population view
-            if self.current_sta_view == 'population_rfs':
-                # Population RF in STA tab - full rebuild in Tier 2
-                try:
-                    draw_population_rfs_plot(
-                        main_window=self,
-                        selected_cell_id=cluster_id,
-                        canvas=self.sta_panel.rf_canvas
-                    )
-                except Exception as e:
-                    logger.error(f"Tier 2 STA Pop RF rebuild failed: {e}")
-            else:
-                # Single-cell STA view
-                self.sta_panel.update_view(cluster_id)
+            self.sta_panel.update_view(cluster_id)
 
         self.status_bar.showMessage("Ready.", 2000)
+
+    def on_standard_plot_ready(self, cluster_id):
+        """Called when StandardPlotsWorker finishes caching a cluster.
+
+        If the user is still viewing this cluster on the Standard tab,
+        refresh the panel so the plots appear without needing another click.
+        """
+        current_id = self._get_selected_cluster_id()
+        if current_id is None or current_id != cluster_id:
+            return
+        current_tab = self.analysis_tabs.currentWidget()
+        if current_tab == self.standard_plots_panel:
+            self.standard_plots_panel.update_all(cluster_id)
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
@@ -1221,25 +1245,26 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
 
-            # If a cluster/cell is selected, draw its population mosaic
-            # immediately
-            selected = None
-            try:
-                selected = self._get_selected_cluster_id()  # adapt to your selector fun
-            except Exception:
-                selected = None
-
-            # Call plotting routine with explicit canvas
-            draw_population_rfs_plot(
-                main_window=self,
-                selected_cell_id=selected,
-                canvas=self.pop_mosaic_canvas)
-            callbacks.redraw_population_panels(self)
+            QTimer.singleShot(0, self._draw_population_panel_initial)
         else:
             # hide it
             self.pop_context_widget.hide()
             # collapse the right column completely
             self.right_splitter.setSizes([sum(self.right_splitter.sizes()), 0])
+
+    def _draw_population_panel_initial(self):
+        """Draw population context after Qt has laid out the newly shown pane."""
+        selected = None
+        try:
+            selected = self._get_selected_cluster_id()
+        except Exception:
+            selected = None
+
+        draw_population_rfs_plot(
+            main_window=self,
+            selected_cell_id=selected,
+            canvas=self.pop_mosaic_canvas)
+        callbacks.redraw_population_panels(self)
 
     def _on_pop_show_ids_toggled(self, state):
         """Force a redraw of the population mosaic when Show IDs is toggled."""
@@ -1818,8 +1843,6 @@ class MainWindow(QMainWindow):
                 self.sta_panel.sta_animation_button.setText("Play Animation")
             elif view_type == "animation":
                 self.sta_panel.sta_animation_button.setText("Pause Animation")
-            elif view_type == "population_rfs":
-                self.sta_panel.sta_animation_button.setText("Play Animation")
 
         # Delegate to the STAPanel
         cluster_id = self._get_selected_cluster_id()

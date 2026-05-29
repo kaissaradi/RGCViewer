@@ -1,6 +1,7 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -14,6 +15,8 @@ import os
 import tempfile
 import logging
 import ast
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import RobustScaler
 try:
     import bin2py
     _BIN2PY_AVAILABLE = True
@@ -488,8 +491,8 @@ class DataManager(QObject):
             # cluster_spike_indices does a single fancy-index copy of only that
             # cluster's spikes, so UI scrolling is unaffected; the OS page
             # cache keeps hot pages warm across accesses.
-            self.spike_times    = np.load(st_path,  mmap_mode="r").ravel()
-            self.spike_clusters = np.load(sc_path, mmap_mode="r").ravel()
+            self.spike_times    = np.load(st_path).ravel()
+            self.spike_clusters = np.load(sc_path).ravel()
 
             # --- channel positions / map -----------------------------------------
             chan_pos_path = ks / "channel_positions.npy"
@@ -521,7 +524,7 @@ class DataManager(QObject):
 
             # --- spike amplitudes (optional) ------------------------------------
             amplitudes_path = ks / "amplitudes.npy"
-            self.spike_amplitudes = np.load(amplitudes_path, mmap_mode="r").ravel() if amplitudes_path.exists() else None
+            self.spike_amplitudes = np.load(amplitudes_path).ravel() if amplitudes_path.exists() else None
 
             # --- cluster info / fallback ----------------------------------------
             info_path = ks / "cluster_info.tsv"
@@ -1371,6 +1374,17 @@ class DataManager(QObject):
 
         return data
 
+    def try_get_standard_plot_data(self, cluster_id):
+        """Non-blocking cache lookup — returns cached data or None.
+
+        Unlike get_standard_plot_data(), this NEVER triggers computation.
+        Safe to call from the UI/main thread without risking a freeze.
+        """
+        if not hasattr(self, 'standard_plot_cache'):
+            return None
+        with self._standard_plot_lock:
+            return self.standard_plot_cache.get(cluster_id)
+
     def save_standard_plot_cache(self):
         """Persist the full standard-plot and feature caches to disk in a background thread."""
         if not self.kilosort_dir:
@@ -1430,6 +1444,38 @@ class DataManager(QObject):
                 cache = pickle.load(f)
             if not isinstance(cache, dict):
                 raise TypeError("standard_plot_cache.pkl did not contain a dict")
+
+            # Bloat guard: pre-fix caches stored spike-length raw arrays
+            # ('spikes', 'spikes_sec', etc.) which caused OOM kills at ~68%
+            # warm-up on large datasets.  Detect by inspecting the first entry
+            # and discard the whole file if any bloated key is present.
+            _BLOATED_KEYS = ('spikes', 'spikes_sec', 'spikes_ms', 'isi_ms',
+                             'isi_vs_amp_valid_isi', 'isi_vs_amp_valid_amplitudes',
+                             'fr_overlay_x', 'fr_overlay_y')
+            first_entry = next(iter(cache.values()), {}) if cache else {}
+            if any(k in first_entry and first_entry[k] is not None
+                   for k in _BLOATED_KEYS):
+                logger.warning(
+                    "standard_plot_cache.pkl contains pre-fix bloated arrays — "
+                    "discarding to prevent OOM. It will be rebuilt automatically."
+                )
+                cache = {}
+
+            # FR downsampling guard: caches built before Fix 2 store one point
+            # per second of recording (up to 3600 elements for a 1-hour session).
+            # Detect by checking if fr_bin_centers exceeds the new cap and discard
+            # so the cache is rebuilt with the compact representation.
+            if cache:
+                first_entry = next(iter(cache.values()), {})
+                fr_centers = first_entry.get('fr_bin_centers')
+                if (fr_centers is not None and hasattr(fr_centers, '__len__')
+                        and len(fr_centers) > 300):
+                    logger.warning(
+                        "standard_plot_cache.pkl has fat FR arrays (%d bins) — "
+                        "discarding and rebuilding with compact representation.",
+                        len(fr_centers),
+                    )
+                    cache = {}
         except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
             logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
             cache = {}
@@ -1503,8 +1549,13 @@ class DataManager(QObject):
             #     also passed the fast-path miss cannot enter this block until the
             #     first thread has written to feature_cache. ---
 
-            std_data = self.get_standard_plot_data(cluster_id)
-            acg_norm = std_data.get('acg_norm') if std_data else None
+            with self._feature_lock:
+                _partial = self.feature_cache.get(cluster_id, {})
+                acg_norm = _partial.get('acg')
+
+            if acg_norm is None:
+                std_data = self.get_standard_plot_data(cluster_id)
+                acg_norm = std_data.get('acg_norm') if std_data else None
 
             timecourse = None
             rf_area = 0.0
@@ -1566,6 +1617,123 @@ class DataManager(QObject):
 
             return metrics
 
+    def get_physics_feature_matrix(self, cluster_ids, w_shape=2.0, w_pattern=1.5, w_geometry=1.0):
+        """
+        Build the weighted PCA feature matrix used by UMAPWorker and FeatureAnalysisWorker.
+
+        Reads pre-computed physics from feature_cache via get_cell_physics() — O(1)
+        cache hit if the background pass has run; triggers on-demand computation otherwise.
+        """
+        valid_ids = []
+        tc_list = []
+        acg_list = []
+        scalars_list = []
+        metadata = {'Time to Peak': [], 'RF Area': [], 'Ellipticity': []}
+
+        for cid in cluster_ids:
+            metrics = self.get_cell_physics(int(cid))
+            tc = metrics.get('timecourse')
+            acg = metrics.get('acg')
+            if tc is None or acg is None:
+                continue
+
+            valid_ids.append(cid)
+            tc_list.append(tc)
+            acg_list.append(acg)
+
+            area = metrics.get('rf_area') or 0.0
+            ellip = metrics.get('ellipticity') or 0.0
+            t2p = metrics.get('time_to_peak') or 0
+            scalars_list.append([area, ellip])
+            metadata['Time to Peak'].append(t2p)
+            metadata['RF Area'].append(area)
+            metadata['Ellipticity'].append(ellip)
+
+        if not valid_ids:
+            return np.array([]), [], {}
+
+        max_tc = max(len(t) for t in tc_list)
+        tc_mat = np.array([
+            np.pad(t, (0, max_tc - len(t))) if len(t) < max_tc else t[:max_tc]
+            for t in tc_list
+        ])
+        max_acg = max(len(a) for a in acg_list)
+        acg_mat = np.array([
+            np.pad(a, (0, max_acg - len(a))) if len(a) < max_acg else a[:max_acg]
+            for a in acg_list
+        ])
+        scalars_mat = np.array(scalars_list, dtype=np.float64)
+
+        nan_mask = (
+            np.any(np.isnan(tc_mat), axis=1) |
+            np.any(np.isnan(acg_mat), axis=1) |
+            np.any(np.isnan(scalars_mat), axis=1)
+        )
+        if np.any(nan_mask):
+            logger.warning(
+                "get_physics_feature_matrix: dropping %d unit(s) with NaN features",
+                int(nan_mask.sum()),
+            )
+            keep = ~nan_mask
+            valid_ids = [v for v, k in zip(valid_ids, keep) if k]
+            tc_mat = tc_mat[keep]
+            acg_mat = acg_mat[keep]
+            scalars_mat = scalars_mat[keep]
+            for key in metadata:
+                metadata[key] = [v for v, k in zip(metadata[key], keep) if k]
+
+        if not valid_ids:
+            return np.array([]), [], {}
+
+        if scalars_mat.shape[0] > 0:
+            scalars_mat = RobustScaler().fit_transform(scalars_mat)
+
+        n_comp_tc = min(3, len(valid_ids), tc_mat.shape[1])
+        n_comp_acg = min(3, len(valid_ids), acg_mat.shape[1])
+
+        tc_pca  = PCA(n_components=n_comp_tc).fit_transform(tc_mat) if n_comp_tc > 0 else np.zeros((len(valid_ids), 0))
+        acg_pca = PCA(n_components=n_comp_acg).fit_transform(acg_mat) if n_comp_acg > 0 else np.zeros((len(valid_ids), 0))
+
+        feature_matrix = np.hstack([
+            tc_pca * w_shape,
+            acg_pca * w_pattern,
+            scalars_mat * w_geometry,
+        ])
+
+        return feature_matrix, valid_ids, metadata
+
+    def ensure_physics_cache(self, cluster_ids, max_workers=1):
+        """
+        Guarantee that all cluster_ids have a fully-computed feature_cache entry
+        (_computed == True) before returning.
+        """
+        with self._feature_lock:
+            missing = [
+                int(cid) for cid in cluster_ids
+                if not self.feature_cache.get(int(cid), {}).get('_computed')
+            ]
+
+        if not missing:
+            return
+
+        logger.debug(
+            "ensure_physics_cache: %d cells not yet computed, filling now",
+            len(missing),
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.get_cell_physics, cid): cid for cid in missing}
+            for future in as_completed(futures):
+                cid = futures[future]
+                try:
+                    future.result()
+                except Exception:
+                    logger.warning(
+                        "ensure_physics_cache: failed for cluster %d",
+                        cid,
+                        exc_info=True,
+                    )
+
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
         data = self.get_standard_plot_data(cluster_id)
@@ -1581,10 +1749,6 @@ class DataManager(QObject):
         and packs the numeric results into a dict.
         """
         data = {
-            'spikes': None,
-            'spikes_sec': None,
-            'spikes_ms': None,
-            'isi_ms': None,
             'isi_hist_x': None,
             'isi_hist_y': None,
             'acg_time_lags': None,
@@ -1594,10 +1758,6 @@ class DataManager(QObject):
             'fr_amp_x': None,
             'fr_amp_y': None,
             'fr_amp_ymax': None,
-            'fr_overlay_x': None,
-            'fr_overlay_y': None,
-            'isi_vs_amp_valid_isi': None,
-            'isi_vs_amp_valid_amplitudes': None,
         }
 
         # Basic safety checks
@@ -1611,28 +1771,22 @@ class DataManager(QObject):
         # --- Gather spikes & amplitudes for this cluster ---
         spikes = self.get_cluster_spikes(cluster_id)
         spikes = np.asarray(spikes)
-        data['spikes'] = spikes
 
         if spikes.size == 0:
             return data
 
         sr = float(self.sampling_rate)
 
-        # Convert to seconds and milliseconds
+        # spikes_sec — full resolution, used for ISI and FR (both need the real timestamps).
         spikes_sec = spikes / sr
-        spikes_ms = (spikes_sec * 1000.0).astype(int)
-        data['spikes_sec'] = spikes_sec
-        data['spikes_ms'] = spikes_ms
+        # NOTE: spikes_ms is NOT computed here for the full array.
+        # The ACG subsamples first (Fix 3: avoid allocating a 500k-element ms array
+        # only to immediately throw 98% of it away for a 10k-spike subsample).
 
-        # ISI vector (ms) and histogram.
-        # get_cluster_spikes() returns spike_times[cluster_spike_indices[cid]].
-        # cluster_spike_indices was built from argsort(spike_clusters) which
-        # preserves the original spike_times order — and spike_times is already
-        # monotonically increasing (Kilosort writes spikes in time order).
-        # So `spikes` is already sorted; np.sort() is unnecessary.
+        # ISI vector (ms) — local only, not cached.
+        # get_cluster_spikes() returns spikes in time order (Kilosort guarantee).
         if spikes.size > 1:
             isi_ms = np.diff(spikes) / sr * 1000.0
-            data['isi_ms'] = isi_ms
 
             if isi_ms.size > 0:
                 hist_y, hist_x = np.histogram(
@@ -1644,25 +1798,26 @@ class DataManager(QObject):
         all_amplitudes = self.get_cluster_spike_amplitudes(cluster_id)
         all_amplitudes = np.asarray(all_amplitudes)
 
-        # ISI vs amplitude alignment (for scatter/density)
-        if data['isi_ms'] is not None and all_amplitudes.size > 1:
-            isi_ms = data['isi_ms']
-            min_len = min(len(isi_ms), all_amplitudes.size - 1)
-            if min_len > 0:
-                valid_isi = isi_ms[:min_len]
-                valid_amplitudes = all_amplitudes[1:min_len + 1]
-                data['isi_vs_amp_valid_isi'] = valid_isi
-                data['isi_vs_amp_valid_amplitudes'] = valid_amplitudes
-
         # --- Autocorrelation (ACG) — Direct Lag Histogram on entire recording ---
         # Instead of a memory-heavy FFT on a dense array, we use a sliding window
-        # approach with bincount. This is O(N * spikes_per_window) and uses the 
+        # approach with bincount. This is O(N * spikes_per_window) and uses the
         # FULL recording duration while remaining extremely fast for sparse spike trains.
         MIN_SPIKES = 50
-        if spikes_ms.size > MIN_SPIKES:
+        if spikes.size > MIN_SPIKES:
             MAX_LAG = 100    # ms — ±100 ms window, giving 201-sample ACG
 
-            t = np.sort(spikes_ms).astype(np.int64)
+            # Fix 3: subsample in sample-count space first, then convert to ms.
+            # Old code converted all N spikes to ms and then subsampled, allocating
+            # a full N-spike int array (up to ~4 MB for a 500k-spike cluster) that
+            # was immediately discarded. Now we subsample the raw int64 sample counts
+            # and do one small ms conversion on 10k elements instead.
+            # Seeded on cluster_id → deterministic; same ACG every run, no cache surprises.
+            t_raw = spikes  # already int64, already sorted (Kilosort guarantee)
+            if len(t_raw) > 10_000:
+                rng = np.random.default_rng(seed=int(cluster_id))
+                idx = np.sort(rng.choice(len(t_raw), size=10_000, replace=False))
+                t_raw = t_raw[idx]
+            t = (t_raw / sr * 1000.0).astype(np.int64)
             
             # Compute lags: for each spike, find neighbors within MAX_LAG.
             # We iterate k neighbors away until the distance > MAX_LAG for all spikes.
@@ -1681,11 +1836,20 @@ class DataManager(QObject):
             acg = np.concatenate([lags_sum[:0:-1], [0], lags_sum[1:]])
 
             time_lags  = np.arange(-MAX_LAG, MAX_LAG + 1, dtype=float)
-            n_spikes_f = float(spikes_ms.size)
+            n_spikes_f = float(len(t))
             acg_norm   = acg / n_spikes_f if n_spikes_f > 0 else acg
 
             data['acg_time_lags'] = time_lags
             data['acg_norm']      = acg_norm
+
+            # Write ACG into feature_cache immediately so get_cell_physics()
+            # does not need to recompute it. Partial entry — no _computed key.
+            with self._feature_lock:
+                existing = self.feature_cache.get(cluster_id)
+                if existing is None:
+                    self.feature_cache[cluster_id] = {'acg': acg_norm}
+                elif not existing.get('_computed'):
+                    existing['acg'] = acg_norm
 
         # --- Firing rate & amplitude over time ---
         if spikes_sec.size > 0:
@@ -1698,18 +1862,17 @@ class DataManager(QObject):
 
             counts, bin_edges = np.histogram(spikes_sec, bins=bins)
             bin_centers = bin_edges[:-1]
-            data['fr_bin_centers'] = bin_centers
 
             if counts.size > 0:
                 rate = gaussian_filter1d(counts.astype(float), sigma=5)
             else:
                 rate = np.zeros_like(bin_centers, dtype=float)
-            data['fr_rate'] = rate
 
             # Amplitude per bin — O(N) with bincount instead of the old
             # O(N × B) loop that did `all_amplitudes[bin_indices == b]` for
             # every bin b.  For a 1-hour recording with 3600 bins and 100k
             # spikes that loop was doing 360M element comparisons.
+            amplitude_smoothed = None
             if all_amplitudes.size > 0 and bin_centers.size > 0:
                 bin_indices = np.searchsorted(bins[1:], spikes_sec, side='left')
                 bin_indices = np.clip(bin_indices, 0, len(bin_centers) - 1)
@@ -1743,49 +1906,51 @@ class DataManager(QObject):
                         amplitude_binned = None
 
                 if amplitude_binned is not None:
-                    amplitude_smoothed = gaussian_filter1d(
-                        amplitude_binned, sigma=5)
-                    data['fr_amp_x'] = bin_centers
-                    data['fr_amp_y'] = amplitude_smoothed
+                    amplitude_smoothed = gaussian_filter1d(amplitude_binned, sigma=5)
 
-                    # Use template PTP to set a sensible right-axis scale when
-                    # available
-                    max_ptp = 1.0
-                    templates = getattr(self, 'templates', None)
-                    try:
-                        if templates is not None and cluster_id < templates.shape[0]:
-                            ptp = templates[cluster_id].max(
-                                axis=0) - templates[cluster_id].min(axis=0)
-                            if ptp.size > 0:
-                                max_ptp = float(ptp.max())
-                        # Fallback: use amplitude range
-                        if not np.isfinite(max_ptp) or max_ptp <= 0:
-                            max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
-                                amplitude_smoothed) > 0 else 1.0
-                    except Exception:
+            # Fix 2: All computation above runs at full 1-second resolution
+            # (scientifically correct — Gaussian smoothing shape is preserved).
+            # Before caching, downsample to at most FR_CACHE_MAX_BINS points.
+            # A 1-hour recording has 3600 bins; the plot canvas is ~800px wide,
+            # so storing 3600 float64 values per cluster per array wastes ~72 MB
+            # across a 500-cluster dataset for zero visual benefit.
+            # Downsampling with a uniform stride after smoothing keeps the curve
+            # shape exact and reduces per-cluster FR cache size ~12×.
+            FR_CACHE_MAX_BINS = 300
+            if len(bin_centers) > FR_CACHE_MAX_BINS:
+                step = max(1, len(bin_centers) // FR_CACHE_MAX_BINS)
+                cache_centers = bin_centers[::step]
+                cache_rate    = rate[::step]
+            else:
+                step = 1
+                cache_centers = bin_centers
+                cache_rate    = rate
+
+            data['fr_bin_centers'] = cache_centers
+            data['fr_rate']        = cache_rate
+
+            if amplitude_smoothed is not None:
+                data['fr_amp_x'] = cache_centers
+                data['fr_amp_y'] = amplitude_smoothed[::step]
+
+                # Use template PTP to set a sensible right-axis scale when available
+                max_ptp = 1.0
+                templates = getattr(self, 'templates', None)
+                try:
+                    if templates is not None and cluster_id < templates.shape[0]:
+                        ptp = templates[cluster_id].max(
+                            axis=0) - templates[cluster_id].min(axis=0)
+                        if ptp.size > 0:
+                            max_ptp = float(ptp.max())
+                    # Fallback: use amplitude range
+                    if not np.isfinite(max_ptp) or max_ptp <= 0:
                         max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
                             amplitude_smoothed) > 0 else 1.0
+                except Exception:
+                    max_ptp = float(np.nanmax(amplitude_smoothed)) if np.nanmax(
+                        amplitude_smoothed) > 0 else 1.0
 
-                    data['fr_amp_ymax'] = max_ptp * 1.1
-
-            # Overlay averaged amplitude on firing-rate trace (left axis)
-            if all_amplitudes.size > 0 and rate.size > 0 and spikes_sec.size > 10:
-                max_amp = float(np.max(all_amplitudes))
-                if max_amp > 0:
-                    normalized_amplitudes = all_amplitudes / max_amp
-                else:
-                    normalized_amplitudes = all_amplitudes.astype(float)
-
-                if normalized_amplitudes.size > 10:
-                    avg_amplitude = np.convolve(
-                        normalized_amplitudes, np.ones(10) / 10.0, mode='valid')
-                    scaled_amplitude = avg_amplitude * \
-                        0.8 * float(np.max(rate))
-
-                    overlay_len = min(len(scaled_amplitude), len(spikes_sec))
-                    if overlay_len > 0:
-                        data['fr_overlay_x'] = spikes_sec[:overlay_len]
-                        data['fr_overlay_y'] = scaled_amplitude[:overlay_len]
+                data['fr_amp_ymax'] = max_ptp * 1.1
 
         return data
 
@@ -2182,7 +2347,8 @@ class DataManager(QObject):
         if len(spike_times_cluster) < 2:
             isi_value = 0.0
         else:
-            isis = np.diff(np.sort(spike_times_cluster))
+            # spike_times_cluster comes from get_cluster_spikes() which reads the sorted Kilosort memmap.
+            isis = np.diff(spike_times_cluster)
             refractory_period_samples = (
                 refractory_period_ms / 1000.0) * self.sampling_rate
             violations = np.sum(isis < refractory_period_samples)

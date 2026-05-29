@@ -9,7 +9,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, EllipseCollection
 from PyQt5.QtGui import QColor
 
 from ..theme import DARK_COLORS
@@ -18,6 +18,156 @@ from ..theme import DARK_COLORS
 matplotlib_logger = logging.getLogger('matplotlib.font_manager')
 matplotlib_logger.setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+_group_timecourse_cache = {}
+_group_acg_cache = {}
+_rf_background_cache = {}
+_rf_background_cache_order = []
+_RF_CACHE_MAX = 10
+
+
+def invalidate_population_caches():
+    """Clear population-panel caches after source data or membership changes."""
+    _group_timecourse_cache.clear()
+    _group_acg_cache.clear()
+    _rf_background_cache.clear()
+    _rf_background_cache_order.clear()
+
+
+def _first_plot_artist(plot_result):
+    if isinstance(plot_result, (list, tuple)):
+        return plot_result[0] if plot_result else None
+    try:
+        return plot_result[0]
+    except Exception:
+        return plot_result
+
+
+def _safe_axis_limits(get_limits):
+    try:
+        limits = tuple(float(v) for v in get_limits())
+    except Exception:
+        return None
+    return limits if len(limits) == 2 else None
+
+
+def _show_population_ids(main_window):
+    return (
+        hasattr(main_window, 'pop_show_ids_checkbox') and
+        main_window.pop_show_ids_checkbox.isChecked()
+    )
+
+
+def _snapshot_rf_background(ax, colors, show_ids):
+    """
+    Store the geometry arrays from EllipseCollections on the axes, not individual
+    patch objects. Replay via _draw_cached_rf_background is then two add_collection
+    calls instead of N add_patch calls.
+    """
+    collections_data = []
+    for coll in ax.collections:
+        if not isinstance(coll, EllipseCollection):
+            continue
+        offsets = coll.get_offsets()          # (N, 2) array
+        widths  = coll._widths                # stored internally
+        heights = coll._heights
+        angles  = coll._angles
+        collections_data.append({
+            'offsets': np.array(offsets),
+            'widths':  np.array(widths),
+            'heights': np.array(heights),
+            'angles':  np.array(angles),
+            'edgecolor': coll.get_edgecolor()[0],   # RGBA tuple
+            'alpha':   coll.get_alpha(),
+            'lw':      coll.get_linewidth()[0] if hasattr(coll.get_linewidth(), '__len__') else coll.get_linewidth(),
+            'zorder':  coll.get_zorder(),
+        })
+
+    texts = []
+    for text in getattr(ax, 'texts', []):
+        texts.append({
+            'position': text.get_position(),
+            'text': text.get_text(),
+            'color': text.get_color(),
+            'fontsize': text.get_fontsize(),
+            'ha': text.get_ha(),
+            'va': text.get_va(),
+            'alpha': text.get_alpha(),
+        })
+
+    title = ax.get_title()
+    if not isinstance(title, str):
+        title = None
+
+    return {
+        'colors': dict(colors),
+        'show_ids': show_ids,
+        'collections': collections_data,
+        'texts': texts,
+        'xlim': _safe_axis_limits(ax.get_xlim),
+        'ylim': _safe_axis_limits(ax.get_ylim),
+        'title': title,
+    }
+
+
+def _apply_rf_axes_style(ax, colors, title=None):
+    if title:
+        ax.set_title(title, color=colors['text_primary'])
+    ax.set_facecolor(colors['bg_panel'])
+    ax.set_aspect('equal', adjustable='box')
+    ax.tick_params(colors=colors['text_secondary'])
+    for spine in ax.spines.values():
+        spine.set_edgecolor(colors['border_subtle'])
+    ax.grid(False)
+
+
+def _draw_cached_rf_background(ax, cache_entry, colors):
+    """Replay cached EllipseCollections — 2 add_collection calls, not N add_patch."""
+    for cd in cache_entry.get('collections', []):
+        ec = EllipseCollection(
+            widths=cd['widths'], heights=cd['heights'], angles=cd['angles'],
+            units='x', offsets=cd['offsets'], offset_transform=ax.transData,
+            edgecolors=cd['edgecolor'], facecolors='none',
+            linewidths=cd['lw'], alpha=cd['alpha'], zorder=cd['zorder'],
+        )
+        ax.add_collection(ec)
+
+    for text_data in cache_entry['texts']:
+        ax.text(
+            text_data['position'][0],
+            text_data['position'][1],
+            text_data['text'],
+            color=text_data['color'],
+            fontsize=text_data['fontsize'],
+            ha=text_data['ha'],
+            va=text_data['va'],
+            alpha=text_data['alpha'],
+        )
+
+    if cache_entry['xlim'] is not None:
+        ax.set_xlim(*cache_entry['xlim'])
+    if cache_entry['ylim'] is not None:
+        ax.set_ylim(*cache_entry['ylim'])
+    _apply_rf_axes_style(ax, colors, cache_entry.get('title'))
+
+
+def _rf_cache_entry_matches(cache_entry, colors, show_ids):
+    return (
+        isinstance(cache_entry, dict) and
+        'collections' in cache_entry and
+        cache_entry.get('colors') == colors and
+        cache_entry.get('show_ids') == show_ids
+    )
+
+
+def _store_rf_cache_entry(cache_key, cache_entry):
+    _rf_background_cache[cache_key] = cache_entry
+    if cache_key in _rf_background_cache_order:
+        _rf_background_cache_order.remove(cache_key)
+    _rf_background_cache_order.append(cache_key)
+    while len(_rf_background_cache_order) > _RF_CACHE_MAX:
+        evicted = _rf_background_cache_order.pop(0)
+        _rf_background_cache.pop(evicted, None)
 
 
 def draw_population_timecourse_panel(main_window, subset_ids=None):
@@ -47,37 +197,54 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         return
 
     # --- 1. Fast Data Extraction via Physics Cache ---
-    traces = []
-    for cid in subset_ids:
-        physics = main_window.data_manager.get_cell_physics(cid)
-        tc = physics.get('timecourse')
-        if tc is not None:
-            traces.append(tc)
+    cache_key = frozenset(subset_ids)
+    cached = _group_timecourse_cache.get(cache_key)
+    if cached is not None:
+        arr = cached['arr']
+        mean_tc = cached['mean_tc']
+        t_axis = cached['t_axis']
+        peak_idx = cached['peak_idx']
+        mean_fwhm = cached['mean_fwhm']
+    else:
+        traces = []
+        for cid in subset_ids:
+            physics = main_window.data_manager.get_cell_physics(cid)
+            tc = physics.get('timecourse')
+            if tc is not None:
+                traces.append(tc)
 
-    if not traces:
-        canvas.fig.clear()
-        canvas.fig.set_facecolor(colors['bg_panel'])
-        canvas.fig.text(0.5, 0.5, "No valid timecourses", ha='center', color=colors['text_secondary'], fontsize=10)
-        canvas.draw_idle()
-        return
+        if not traces:
+            canvas.fig.clear()
+            canvas.fig.set_facecolor(colors['bg_panel'])
+            canvas.fig.text(0.5, 0.5, "No valid timecourses", ha='center', color=colors['text_secondary'], fontsize=10)
+            canvas.draw_idle()
+            return
 
-    minlen = min(len(t) for t in traces)
-    arr = np.vstack([t[:minlen] for t in traces])
-    mean_tc = np.nanmean(arr, axis=0)
-    t_axis = np.arange(minlen)
-    
-    peak_idx = int(np.argmax(np.abs(mean_tc)))
+        minlen = min(len(t) for t in traces)
+        arr = np.vstack([t[:minlen] for t in traces])
+        mean_tc = np.nanmean(arr, axis=0)
+        t_axis = np.arange(minlen)
+        peak_idx = int(np.argmax(np.abs(mean_tc)))
+
+        mean_fwhm = float("nan")
+        try:
+            from scipy.signal import peak_widths
+            widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
+            if len(widths) > 0:
+                mean_fwhm = widths[0]
+        except Exception:
+            pass
+
+        _group_timecourse_cache[cache_key] = {
+            'arr': arr,
+            'mean_tc': mean_tc,
+            't_axis': t_axis,
+            'peak_idx': peak_idx,
+            'mean_fwhm': mean_fwhm,
+        }
+
     peak_time = t_axis[peak_idx]
     peak_val = mean_tc[peak_idx]
-    
-    mean_fwhm = float("nan")
-    try:
-        from scipy.signal import peak_widths
-        widths, *_ = peak_widths(np.abs(mean_tc), [peak_idx], rel_height=0.5)
-        if len(widths) > 0:
-            mean_fwhm = widths[0]
-    except Exception:
-        pass
 
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
@@ -136,10 +303,10 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax.add_collection(shadow_lines)
 
         # 3. Solid Mean Trace
-        mean_line, = ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4)
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4))
 
         # 4. Highlight the Peak Feature
-        peak_marker, = ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5)
+        peak_marker = _first_plot_artist(ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5))
         peak_text = ax.text(peak_time, peak_val + (np.max(mean_tc)*0.1), 
                             f" Peak\n Frame {peak_time}", color=colors['plot_peak'], 
                             fontsize=8, ha='center', va='bottom')
@@ -229,15 +396,25 @@ def draw_population_rfs_plot(
         canvas.fig.set_facecolor(colors['bg_panel'])
         ax = canvas.fig.add_subplot(111)
         ax.set_facecolor(colors['bg_panel'])
+        show_ids = _show_population_ids(main_window)
+        cache_entry = _rf_background_cache.get(current_subset_hash)
 
-        plot_population_rfs_background(
-            ax,
-            vision_params,
-            main_window=main_window,
-            sta_height=main_window.data_manager.vision_sta_height,
-            subset_cell_ids=subset_cell_ids,
-            colors=colors
-        )
+        if _rf_cache_entry_matches(cache_entry, colors, show_ids):
+            _draw_cached_rf_background(ax, cache_entry, colors)
+            _store_rf_cache_entry(current_subset_hash, cache_entry)
+        else:
+            plot_population_rfs_background(
+                ax,
+                vision_params,
+                main_window=main_window,
+                sta_height=main_window.data_manager.vision_sta_height,
+                subset_cell_ids=subset_cell_ids,
+                colors=colors
+            )
+            _store_rf_cache_entry(
+                current_subset_hash,
+                _snapshot_rf_background(ax, colors, show_ids)
+            )
 
         highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
         highlight_patch = Ellipse(
@@ -277,63 +454,81 @@ def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
         patch.set_visible(False)
 
 
-def plot_population_rfs_background(ax, vision_params, main_window, sta_height=None, subset_cell_ids=None, colors=None):
-    if colors is None:
-        colors = DARK_COLORS
+def _build_ellipse_collection(xyw_angle_list, edgecolor, alpha, lw, zorder):
+    """
+    Build a single EllipseCollection from a list of (x, y, w, h, angle_deg) tuples.
+    One draw call replaces N individual add_patch() calls.
+    EllipseCollection expects widths/heights as full diameters, angles in degrees.
+    """
+    if not xyw_angle_list:
+        return None
+    arr = np.array(xyw_angle_list, dtype=float)  # (N, 5): x y w h angle
+    ec = EllipseCollection(
+        widths=arr[:, 2],
+        heights=arr[:, 3],
+        angles=arr[:, 4],
+        units='x',
+        offsets=arr[:, :2],
+        offset_transform=None,  # set below after add_collection
+        edgecolors=edgecolor,
+        facecolors='none',
+        linewidths=lw,
+        alpha=alpha,
+        zorder=zorder,
+    )
+    return ec
 
-    try:
-        all_cell_ids = vision_params.get_cell_ids()
-        logger.debug(f"plot_population_rfs_background: got {len(all_cell_ids) if all_cell_ids else 0} cell IDs from vision_params")
-    except Exception as e:
-        logger.error(f"Failed to get cell IDs from vision_params: {e}")
-        return
+
+def plot_population_rfs_background(ax, vision_params, main_window, sta_height, subset_cell_ids, colors):
+    from matplotlib.patches import Ellipse
+    import numpy as np
     
-    vision_subset_ids = [cid + 1 for cid in subset_cell_ids] if subset_cell_ids is not None else None
-
-    x_coords, y_coords = [], []
-    target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
-
-    if vision_subset_ids is not None:
-        for cell_id in all_cell_ids:
-            if cell_id in vision_subset_ids: continue
-            try:
-                stafit = vision_params.get_stafit_for_cell(cell_id)
-                adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-                e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                            angle=np.rad2deg(stafit.rot), edgecolor=colors['text_secondary'], facecolor='none', lw=0.75, alpha=0.15)
-                ax.add_patch(e)
-            except: continue
-
-    for cell_id in target_ids:
+    ax.clear()
+    show_labels = main_window.pop_show_ids_checkbox.isChecked()
+    is_vision_only = getattr(main_window.data_manager, 'is_vision_only', False)
+    
+    for cell_id in vision_params.get_cell_ids():
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
-            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+        except KeyError:
+            continue
+            
+        # Translate Vision ID (1-indexed) back to Kilosort ID to check subset
+        cid = cell_id if is_vision_only else cell_id - 1
+        is_target = cid in subset_cell_ids
 
-            e = Ellipse(xy=(stafit.center_x, adjusted_y), width=2*stafit.std_x, height=2*stafit.std_y,
-                        angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=1.0, alpha=0.55)
-            ax.add_patch(e)
+        # Apply AC1 Spec values
+        if is_target:
+            alpha_val = 0.55
+            lw_val = 1.0
+            edge_color = colors.get("plot_highlight", "#00FFFF")
+        else:
+            alpha_val = 0.15
+            lw_val = 0.75
+            edge_color = colors.get("border_subtle", "#2E3038")
 
-            # Add ID labels if enabled via population panel checkbox (AC3)
-            if hasattr(main_window, 'pop_show_ids_checkbox') and main_window.pop_show_ids_checkbox.isChecked():
-                ax.text(stafit.center_x, adjusted_y, str(cell_id), 
-                        color=colors['text_secondary'], fontsize=7, ha='center', va='center', alpha=0.8)
+        ellipse = Ellipse(
+            xy=(stafit.center_x, stafit.center_y),
+            width=stafit.std_x * 2,
+            height=stafit.std_y * 2,
+            angle=np.degrees(stafit.rot),
+            edgecolor=edge_color,
+            facecolor='none',
+            alpha=alpha_val,
+            linewidth=lw_val
+        )
+        ax.add_patch(ellipse)
 
-            x_coords.append(stafit.center_x)
-            y_coords.append(stafit.center_y)
-        except: continue
-
-    if x_coords:
-        ax.set_xlim(min(x_coords)-20, max(x_coords)+20)
-        ax.set_ylim(max(y_coords)+20, min(y_coords)-20)
-    else:
-        ax.set_xlim(0, 100); ax.set_ylim(100, 0)
-
-    ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color=colors['text_primary'])
-    ax.set_facecolor(colors['bg_panel'])
-    ax.set_aspect('equal', adjustable='box')
-    ax.tick_params(colors=colors['text_secondary'])
-    for spine in ax.spines.values(): spine.set_edgecolor(colors['border_subtle'])
-    ax.grid(False)
+        # Apply AC3 Label wiring
+        if show_labels and is_target:
+            ax.text(
+                stafit.center_x, stafit.center_y,
+                str(cell_id),
+                color=colors.get("text_secondary", "#9B9DA6"),
+                fontsize=8,
+                ha='center',
+                va='center'
+            )
 
 
 def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):
@@ -524,26 +719,39 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
     import numpy as np
 
-    traces = []
-    t_axis = None
+    cache_key = frozenset(subset_ids)
+    cached = _group_acg_cache.get(cache_key)
+    if cached is not None:
+        arr = cached['arr']
+        mean_acg = cached['mean_acg']
+        t_axis = cached['t_axis']
+    else:
+        traces = []
+        t_axis = None
 
-    for cid in subset_ids:
-        try:
-            time_lags, acg_norm = main_window.data_manager.get_acg_data(cid)
-            if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
-                if t_axis is None: t_axis = time_lags
-                if len(acg_norm) == len(t_axis): traces.append(acg_norm)
-        except Exception: continue
+        for cid in subset_ids:
+            try:
+                time_lags, acg_norm = main_window.data_manager.get_acg_data(cid)
+                if time_lags is not None and acg_norm is not None and len(time_lags) > 1:
+                    if t_axis is None: t_axis = time_lags
+                    if len(acg_norm) == len(t_axis): traces.append(acg_norm)
+            except Exception: continue
 
-    if not traces:
-        canvas.fig.clear()
-        canvas.fig.set_facecolor(colors['bg_panel'])
-        canvas.fig.text(0.5, 0.5, "No valid ACG data", ha='center', color=colors['text_secondary'], fontsize=10)
-        canvas.draw_idle()
-        return
+        if not traces:
+            canvas.fig.clear()
+            canvas.fig.set_facecolor(colors['bg_panel'])
+            canvas.fig.text(0.5, 0.5, "No valid ACG data", ha='center', color=colors['text_secondary'], fontsize=10)
+            canvas.draw_idle()
+            return
 
-    arr = np.vstack(traces)
-    mean_acg = np.nanmean(arr, axis=0)
+        arr = np.vstack(traces)
+        mean_acg = np.nanmean(arr, axis=0)
+        _group_acg_cache[cache_key] = {
+            'arr': arr,
+            'mean_acg': mean_acg,
+            't_axis': t_axis,
+        }
+
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
     y_min, y_max = np.min(arr), np.max(arr)
@@ -582,7 +790,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         shadow_lines = LineCollection(segments, color=colors['plot_acg'], linewidth=0.8, alpha=0.18, zorder=2)
         ax.add_collection(shadow_lines)
-        mean_line, = ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4)
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4))
 
         ax.set_xlabel("Time lag (ms)", color=colors['text_secondary'], fontsize=9)
         ax.set_ylabel("Autocorrelation", color=colors['text_secondary'], fontsize=9)
