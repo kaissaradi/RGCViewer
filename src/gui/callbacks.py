@@ -399,10 +399,12 @@ def _on_vision_loaded(main_window, success, message, is_partial):
         on_cluster_selection_changed(main_window)
 
 
-def redraw_population_panels(main_window: MainWindow):
+def redraw_population_panels(main_window: MainWindow, subset=None):
     # draws the middle panel (and optionally clears bottom)
-    subset = main_window._get_pop_subset_ids()  # reuse helper in main_window
-    
+    # If an explicit subset is provided by the caller, use it; otherwise derive it.
+    if subset is None:
+        subset = main_window._get_pop_subset_ids()
+
     # Import and call both population plots
     from .panels.population_panel import draw_population_acg_panel
     draw_population_timecourse_panel(main_window, subset_ids=subset)
