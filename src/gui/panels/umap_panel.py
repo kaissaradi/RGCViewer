@@ -786,6 +786,22 @@ class UMAPPanel(QWidget):
                 alpha=0.8,
                 edgecolors='none'
             )
+            # --- 2D axis polish ---
+            self.ax.set_xlabel("UMAP Dimension 1",
+                               color=colors['text_secondary'], fontsize=9)
+            self.ax.set_ylabel("UMAP Dimension 2",
+                               color=colors['text_secondary'], fontsize=9)
+            self.ax.tick_params(colors=colors['text_secondary'], labelsize=8)
+            # Hide the harsh default box; keep only left + bottom as thin guides
+            self.ax.spines["top"].set_visible(False)
+            self.ax.spines["right"].set_visible(False)
+            self.ax.spines["left"].set_edgecolor(colors['border_subtle'])
+            self.ax.spines["left"].set_linewidth(0.8)
+            self.ax.spines["bottom"].set_edgecolor(colors['border_subtle'])
+            self.ax.spines["bottom"].set_linewidth(0.8)
+            # Soft dotted grid for spatial reference without visual noise
+            self.ax.grid(True, color=colors['border_subtle'],
+                         linestyle=':', alpha=0.5, zorder=0)
 
         if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "HDBSCAN" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)

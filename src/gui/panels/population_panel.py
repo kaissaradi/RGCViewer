@@ -125,7 +125,7 @@ def _draw_cached_rf_background(ax, cache_entry, colors):
     """Replay cached EllipseCollections — 2 add_collection calls, not N add_patch."""
     for cd in cache_entry.get('collections', []):
         ec = EllipseCollection(
-            widths=cd['widths'], heights=cd['heights'], angles=cd['angles'],
+            widths=cd['widths'] * 2, heights=cd['heights'] * 2, angles=cd['angles'] * 180 / np.pi,
             units='x', offsets=cd['offsets'], offset_transform=ax.transData,
             edgecolors=cd['edgecolor'], facecolors='none',
             linewidths=cd['lw'], alpha=cd['alpha'], zorder=cd['zorder'],
@@ -480,172 +480,75 @@ def _build_ellipse_collection(xyw_angle_list, edgecolor, alpha, lw, zorder):
 
 
 def plot_population_rfs_background(ax, vision_params, main_window, sta_height, subset_cell_ids, colors):
-    from matplotlib.patches import Ellipse
-    import numpy as np
-    
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
     is_vision_only = getattr(main_window.data_manager, 'is_vision_only', False)
-    
+
+    bg_ellipses = []     # (x, y, w, h, angle_deg) for non-subset cells
+    target_ellipses = [] # (x, y, w, h, angle_deg) for subset cells
+    x_coords = []
+    y_coords = []
+
     for cell_id in vision_params.get_cell_ids():
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
         except KeyError:
             continue
-            
-        # Translate Vision ID (1-indexed) back to Kilosort ID to check subset
+
         cid = cell_id if is_vision_only else cell_id - 1
-        is_target = cid in subset_cell_ids
+        adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
 
-        # Apply AC1 Spec values
-        if is_target:
-            alpha_val = 0.55
-            lw_val = 1.0
-            edge_color = colors.get("plot_highlight", "#00FFFF")
+        x_coords.append(stafit.center_x)
+        y_coords.append(adjusted_y)
+
+        entry = (stafit.center_x, adjusted_y,
+                 stafit.std_x * 2, stafit.std_y * 2,
+                 np.degrees(stafit.rot))
+
+        if cid in subset_cell_ids:
+            target_ellipses.append(entry)
+            if show_labels:
+                ax.text(stafit.center_x, adjusted_y, str(cell_id),
+                        color=colors.get('text_secondary', '#9B9DA6'),
+                        fontsize=8, ha='center', va='center',
+                        alpha=0.8)
         else:
-            alpha_val = 0.15
-            lw_val = 0.75
-            edge_color = colors.get("border_subtle", "#2E3038")
+            bg_ellipses.append(entry)
 
-        ellipse = Ellipse(
-            xy=(stafit.center_x, stafit.center_y),
-            width=stafit.std_x * 2,
-            height=stafit.std_y * 2,
-            angle=np.degrees(stafit.rot),
-            edgecolor=edge_color,
-            facecolor='none',
-            alpha=alpha_val,
-            linewidth=lw_val
-        )
-        ax.add_patch(ellipse)
+    # Build EllipseCollections (so _snapshot_rf_background can capture them).
+    # In light mode 'border_subtle' is very light (#DEE2E6) and alpha=0.15
+    # makes it completely invisible against the white panel background.
+    # Detect light mode by checking whether bg_panel is white/near-white and
+    # use a medium gray with higher opacity instead.
+    is_light = colors.get('bg_panel', '').upper() in ('#FFFFFF', '#FAFAFA', '#F8F9FA')
+    bg_edgecolor = colors.get('text_tertiary', '#ADB5BD') if is_light else colors.get('border_subtle', '#2E3038')
+    bg_alpha = 0.35 if is_light else 0.15
 
-        # Apply AC3 Label wiring
-        if show_labels and is_target:
-            ax.text(
-                stafit.center_x, stafit.center_y,
-                str(cell_id),
-                color=colors.get("text_secondary", "#9B9DA6"),
-                fontsize=8,
-                ha='center',
-                va='center'
-            )
+    bg_coll = _build_ellipse_collection(
+        bg_ellipses,
+        edgecolor=bg_edgecolor,
+        alpha=bg_alpha, lw=0.75, zorder=1)
+    if bg_coll is not None:
+        ax.add_collection(bg_coll)
+        bg_coll.set_offset_transform(ax.transData)
 
+    target_coll = _build_ellipse_collection(
+        target_ellipses,
+        edgecolor=colors.get('plot_highlight', '#00FFFF'),
+        alpha=0.55, lw=1.0, zorder=2)
+    if target_coll is not None:
+        ax.add_collection(target_coll)
+        target_coll.set_offset_transform(ax.transData)
 
-def plot_population_rfs(fig, vision_params, sta_height=None, selected_cell_id=None, subset_cell_ids=None, colors=None):
-    if colors is None:
-        colors = DARK_COLORS
-
-    fig.clear()
-    fig.set_facecolor(colors['bg_panel'])
-    ax = fig.add_subplot(111)
-    ax.set_facecolor(colors['bg_panel'])
-
-    try:
-        all_cell_ids = vision_params.get_cell_ids()
-        logger.debug(f"plot_population_rfs: got {len(all_cell_ids) if all_cell_ids else 0} cell IDs")
-    except Exception as e:
-        logger.error(f"Failed to get cell IDs: {e}")
-        ax.text(0.5, 0.5, f"Error: {e}", ha='center', va='center', color='red')
-        return
-
-    if not all_cell_ids:
-        ax.text(0.5, 0.5, "No RF data available", ha='center', va='center', color=colors['text_secondary'])
-        ax.set_title("Population Receptive Fields", color=colors['text_primary'])
-        return
-
-    vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
-    selected_cell_has_rf_data = False
-    if vision_cell_id_selected is not None and vision_cell_id_selected in all_cell_ids:
-        try:
-            vision_params.get_stafit_for_cell(vision_cell_id_selected)
-            selected_cell_has_rf_data = True
-        except Exception:
-            selected_cell_has_rf_data = False
-
-    vision_subset_ids = None
-    if subset_cell_ids is not None:
-        vision_subset_ids = [cid + 1 for cid in subset_cell_ids]
-
-    x_coords, y_coords = [], []
-    target_ids_for_bounds = vision_subset_ids if vision_subset_ids else all_cell_ids
-
-    for cell_id in target_ids_for_bounds:
-        if cell_id == vision_cell_id_selected and selected_cell_has_rf_data:
-            continue
-        try:
-            stafit = vision_params.get_stafit_for_cell(cell_id)
-            x_coords.append(stafit.center_x)
-            y_coords.append(stafit.center_y)
-        except Exception:
-            continue
-
-    if selected_cell_has_rf_data:
-        try:
-            stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
-            x_coords.append(stafit.center_x)
-            y_coords.append(stafit.center_y)
-        except Exception:
-            pass
-
+    # Set axis limits from collected coordinates
     if x_coords:
-        x_range = (min(x_coords) - 20, max(x_coords) + 20)
-        y_range = (min(y_coords) - 20, max(y_coords) + 20)
-    else:
-        x_range = (0, 100)
-        y_range = (0, 100)
+        margin = 20
+        ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
+        ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
 
-    if vision_subset_ids is not None:
-        for cell_id in all_cell_ids:
-            if cell_id in vision_subset_ids:
-                continue
-            try:
-                stafit = vision_params.get_stafit_for_cell(cell_id)
-                adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-                ellipse = Ellipse(xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                                  angle=np.rad2deg(stafit.rot), edgecolor=colors['text_secondary'], facecolor='none', lw=0.5, alpha=0.05)
-                ax.add_patch(ellipse)
-            except Exception:
-                continue
-
-    target_ids = vision_subset_ids if vision_subset_ids else all_cell_ids
-    valid_target_ids = []
-    for cell_id in target_ids:
-        if cell_id == vision_cell_id_selected and selected_cell_has_rf_data:
-            continue
-        try:
-            stafit = vision_params.get_stafit_for_cell(cell_id)
-            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-            ellipse = Ellipse(xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                              angle=np.rad2deg(stafit.rot), edgecolor=colors['text_primary'], facecolor='none', lw=0.5, alpha=0.3)
-            ax.add_patch(ellipse)
-            valid_target_ids.append(cell_id)
-        except Exception:
-            continue
-
-    if selected_cell_has_rf_data:
-        try:
-            stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
-            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-            highlight_rgb = QColor(colors['plot_highlight']).getRgbF()[:3]
-            highlight_ellipse = Ellipse(xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                                        angle=np.rad2deg(stafit.rot), edgecolor=colors['plot_highlight'], facecolor=(*highlight_rgb, 0.3),
-                                        lw=2.0, zorder=10)
-            ax.add_patch(highlight_ellipse)
-        except Exception as e:
-            logger.warning("Could not draw highlighted ellipse for cell %s: %s", vision_cell_id_selected, e)
-
-    target_ids = valid_target_ids
-    ax.set_xlim(x_range)
-    ax.set_ylim(y_range[1], y_range[0])
-    ax.set_title(f"Population Receptive Fields (n={len(target_ids)})", color=colors['text_primary'])
-    ax.set_xlabel("X (stixels)", color=colors['text_secondary'])
-    ax.set_ylabel("Y (stixels)", color=colors['text_secondary'])
-    ax.tick_params(colors=colors['text_secondary'])
-    for spine in ax.spines.values():
-        spine.set_edgecolor(colors['border_subtle'])
-    ax.set_aspect('equal', adjustable='box')
-
-
+    n_target = len(target_ellipses)
+    _apply_rf_axes_style(ax, colors,
+                         title=f"Population Receptive Fields (n={n_target})")
 def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _pre_samples=20, colors=None):
     """
     Plots the electrical image (EI) on the electrode array.

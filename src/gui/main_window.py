@@ -707,7 +707,7 @@ class MainWindow(QMainWindow):
             subset_cell_ids=group_ids,
             canvas=self.pop_mosaic_canvas,
         )
-        callbacks.redraw_population_panels(self)
+        callbacks.redraw_population_panels(self, subset=group_ids)
 
     def on_features_ready(self, cluster_id, features):
         """
@@ -801,6 +801,20 @@ class MainWindow(QMainWindow):
                     )
                 except Exception as e:
                     logger.error(f"Tier 2 Pop Split rebuild failed: {e}")
+
+            # Always keep the Average Timecourse & ACG panels live when a cell
+            # is selected.  These panels are normally only drawn in
+            # _process_folder_selection(), so navigating between individual
+            # cells inside a group leaves them blank.  Calling
+            # redraw_population_panels() here (with the subset derived from the
+            # selected cell's parent folder) fixes that.  The method uses the
+            # _group_timecourse_cache / _group_acg_cache, so same-group
+            # navigation is an O(1) cache hit.
+            try:
+                subset = self._get_pop_subset_ids()
+                callbacks.redraw_population_panels(self, subset=subset)
+            except Exception as e:
+                logger.error(f"Failed to update population panels on cell selection: {e}")
 
         # --- ONLY UPDATE STANDARD PLOTS WHEN THAT TAB IS VISIBLE ---
         if current_tab == self.standard_plots_panel:

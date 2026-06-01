@@ -15,7 +15,6 @@ from .feature_extraction import FeatureExtractionWindow
 from .population_panel import (
     draw_population_timecourse_panel,
     draw_population_rfs_plot,
-    plot_population_rfs,
     plot_rich_ei
 )
 
@@ -29,6 +28,5 @@ __all__ = [
     'FeatureExtractionWindow',
     'draw_population_timecourse_panel',
     'draw_population_rfs_plot',
-    'plot_population_rfs',
     'plot_rich_ei'
 ]
