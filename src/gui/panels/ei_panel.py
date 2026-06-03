@@ -6,11 +6,13 @@ from scipy.interpolate import griddata
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSplitter, QSizePolicy, QComboBox, QStackedWidget, QSlider,
+    QFrame,
 )
 from qtpy.QtCore import Qt, QTimer
 import pyqtgraph as pg
 
 from ..widgets.widgets import MplCanvas
+from .cell_tracer_dialog import CellTracerDialog
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -167,6 +169,17 @@ class EIPanel(QWidget):
         self._anim_timer.setInterval(self._ANIM_INTERVAL_MS)
         self._anim_timer.timeout.connect(self._anim_step)
 
+        # ── photo overlay state ────────────────────────────────────────────
+        self._overlay_enabled: bool = False
+        # (H, W, 4) float32 RGBA pre-loaded from the calibration image
+        self._overlay_image_rgba: np.ndarray | None = None
+        # (x_left_um, x_right_um, y_bottom_um, y_top_um)
+        self._overlay_extent_um: tuple[float, float, float, float] | None = None
+        self._overlay_alpha: float = 0.45
+
+        # cell tracer dialog reference (prevent GC)
+        self._cell_tracer_dlg: CellTracerDialog | None = None
+
         # ── build layout ───────────────────────────────────────────────────
         self._build_ui()
 
@@ -236,7 +249,49 @@ class EIPanel(QWidget):
         self.view_combo.addItems(["Heatmap", "3D"])
         self.view_combo.currentTextChanged.connect(self._on_view_changed)
         row.addWidget(self.view_combo)
+
         row.addStretch()
+
+        # ── Photo overlay toggle ───────────────────────────────────────────
+        self.photo_btn = QPushButton("Photo")
+        self.photo_btn.setCheckable(True)
+        self.photo_btn.setChecked(False)
+        self.photo_btn.setFixedHeight(24)
+        self.photo_btn.setToolTip(
+            "Overlay the calibrated microscope image behind the EI heatmap.\n"
+            "Load a transform first via Array → Map Image to Array…"
+        )
+        self.photo_btn.clicked.connect(self._on_photo_toggled)
+        row.addWidget(self.photo_btn)
+
+        # Opacity slider (range 10–95 → alpha 0.10–0.95)
+        self.overlay_alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_alpha_slider.setMinimum(10)
+        self.overlay_alpha_slider.setMaximum(95)
+        self.overlay_alpha_slider.setValue(int(self._overlay_alpha * 100))
+        self.overlay_alpha_slider.setFixedWidth(72)
+        self.overlay_alpha_slider.setToolTip("Photo overlay opacity")
+        self.overlay_alpha_slider.setEnabled(False)  # enabled only when overlay is on
+        self.overlay_alpha_slider.valueChanged.connect(self._on_overlay_alpha_changed)
+        row.addWidget(self.overlay_alpha_slider)
+
+        # ── separator ─────────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setFixedWidth(2)
+        row.addWidget(sep)
+
+        # ── Trace Cell button ──────────────────────────────────────────────
+        self.trace_btn = QPushButton("Trace Cell…")
+        self.trace_btn.setFixedHeight(24)
+        self.trace_btn.setToolTip(
+            "Open Cell Tracer: draw a freehand outline over a GFP cell\n"
+            "and rank all clusters by EI spatial correlation."
+        )
+        self.trace_btn.clicked.connect(self._open_cell_tracer)
+        row.addWidget(self.trace_btn)
+
         return row
 
     def _build_anim_controls(self) -> QHBoxLayout:
@@ -517,11 +572,29 @@ class EIPanel(QWidget):
         ax.set_facecolor(colors['bg_panel'])
         self.spatial_canvas.fig.patch.set_facecolor(colors['bg_panel'])
 
+        # ── photo underlay ─────────────────────────────────────────────────
+        if (self._overlay_enabled
+                and self._overlay_image_rgba is not None
+                and self._overlay_extent_um is not None):
+            xl, xr_img, yb, yt = self._overlay_extent_um
+            ax.imshow(
+                self._overlay_image_rgba,
+                aspect='auto',
+                origin='upper',             # pixel row-0 maps to top of extent rect
+                extent=(xl, xr_img, yb, yt),  # (left, right, bottom, top) in microns
+                alpha=self._overlay_alpha,
+                interpolation='bilinear',
+                zorder=0,
+            )
+        # ── end photo underlay ─────────────────────────────────────────────
+
         xr = (ch_pos[:, 0].min(), ch_pos[:, 0].max())
         yr = (ch_pos[:, 1].min(), ch_pos[:, 1].max())
         cmap = 'bwr' if frame >= 0 else 'hot'
         ax.imshow(img, cmap=cmap, aspect='auto', origin='lower',
-                  extent=(xr[0], xr[1], yr[0], yr[1]))
+                  extent=(xr[0], xr[1], yr[0], yr[1]),
+                  alpha=0.72 if self._overlay_enabled else 1.0,
+                  zorder=1)
         ax.axis('off')
 
         # top-channel markers
@@ -529,9 +602,10 @@ class EIPanel(QWidget):
             for j, ch in enumerate(self.current_channels):
                 x, y = ch_pos[ch]
                 ax.plot(x, y, 'o', markersize=4, markerfacecolor='none',
-                        markeredgecolor='cyan', markeredgewidth=1.5)
+                        markeredgecolor='cyan', markeredgewidth=1.5,
+                        zorder=2)
                 ax.text(x, y, str(j), color='cyan', fontsize=6,
-                        ha='center', va='center')
+                        ha='center', va='center', zorder=2)
 
         self.spatial_canvas.fig.suptitle(title, color=colors['text_primary'], fontsize=13)
         self.spatial_canvas.fig.tight_layout()
@@ -706,6 +780,139 @@ class EIPanel(QWidget):
         if self.overlay_index < self.overlay_dropdown.count() - 1:
             self.overlay_index += 1
             self.overlay_dropdown.setCurrentIndex(self.overlay_index)
+
+    # -----------------------------------------------------------------------
+    # Photo overlay — public API
+    # -----------------------------------------------------------------------
+
+    def refresh_array_image(self, transform_path: str) -> None:
+        """
+        Pre-load the calibrated microscope image and compute its micron-space
+        extent from the transform JSON.  Called by:
+          • MainWindow._on_transform_saved()  — after user saves a new transform
+          • MainWindow post-load hook          — auto-detected existing transform
+          • _try_autoload_transform()          — lazy first-click fallback
+        """
+        import json
+        from pathlib import Path
+        from PIL import Image
+
+        self._overlay_image_rgba = None
+        self._overlay_extent_um  = None
+
+        try:
+            with open(transform_path, 'r') as fh:
+                data = json.load(fh)
+
+            img_name = data.get('image_file')
+            if not img_name:
+                logger.warning("array_transform.json has no image_file field")
+                return
+
+            img_path = Path(transform_path).parent / img_name
+            if not img_path.exists():
+                logger.warning("Array image not found: %s", img_path)
+                return
+
+            # Load as RGBA float32 so matplotlib can composite cleanly
+            img = Image.open(img_path).convert('RGBA')
+            img_array = np.array(img, dtype=np.float32) / 255.0
+            img_h, img_w = img_array.shape[:2]
+
+            # Calibration: pixel = scale * micron + offset
+            # Invert:      micron = (pixel - offset) / scale
+            sx = float(data.get('scale_x', 1.0))
+            sy = float(data.get('scale_y', 1.0))
+            ox = float(data.get('offset_x', 0.0))
+            oy = float(data.get('offset_y', 0.0))
+
+            x_left_um  = (0     - ox) / sx
+            x_right_um = (img_w - ox) / sx
+            y_at_row0  = (0     - oy) / sy   # micron-Y when pixel row = 0 (top)
+            y_at_rowH  = (img_h - oy) / sy   # micron-Y when pixel row = H (bottom)
+
+            # origin='upper' → row-0 sits at the TOP of the bounding box.
+            # extent tuple = (left, right, bottom, top)
+            bottom_um = min(y_at_row0, y_at_rowH)
+            top_um    = max(y_at_row0, y_at_rowH)
+
+            self._overlay_image_rgba = img_array
+            self._overlay_extent_um  = (x_left_um, x_right_um, bottom_um, top_um)
+
+            if hasattr(self, 'photo_btn'):
+                self.photo_btn.setToolTip(
+                    f"Photo: {img_path.name}\n"
+                    f"Extent  X {x_left_um:.0f}–{x_right_um:.0f} µm  "
+                    f"Y {bottom_um:.0f}–{top_um:.0f} µm"
+                )
+
+            logger.info(
+                "EI photo overlay ready: %s  (%.0f–%.0f µm, %.0f–%.0f µm)",
+                img_path.name, x_left_um, x_right_um, bottom_um, top_um,
+            )
+
+        except Exception:
+            logger.exception("Failed to load array image for EI panel overlay")
+            self._overlay_image_rgba = None
+            self._overlay_extent_um  = None
+
+    # -----------------------------------------------------------------------
+    # Photo overlay — slot handlers
+    # -----------------------------------------------------------------------
+
+    def _on_photo_toggled(self, checked: bool) -> None:
+        if checked and self._overlay_image_rgba is None:
+            self._try_autoload_transform()
+
+        if self._overlay_image_rgba is None:
+            self.photo_btn.setChecked(False)
+            if hasattr(self.main_window, 'status_bar'):
+                self.main_window.status_bar.showMessage(
+                    "No array image loaded — use Array → Map Image to Array…", 4000)
+            return
+
+        self._overlay_enabled = checked
+        self.overlay_alpha_slider.setEnabled(checked)
+
+        if self.current_ei_data is not None:
+            self._draw_heatmap_frame(self._anim_frame)
+
+    def _on_overlay_alpha_changed(self, value: int) -> None:
+        self._overlay_alpha = value / 100.0
+        if self._overlay_enabled and self.current_ei_data is not None:
+            self._draw_heatmap_frame(self._anim_frame)
+
+    def _try_autoload_transform(self) -> None:
+        dm = self.main_window.data_manager
+        if dm is None:
+            return
+        from pathlib import Path
+        candidate = (
+            Path(dm.kilosort_dir).parent / 'transforms' / 'array_transform.json'
+        )
+        if candidate.exists():
+            self.refresh_array_image(str(candidate))
+        else:
+            logger.debug("No default transform found at %s", candidate)
+
+    # -----------------------------------------------------------------------
+    # Cell Tracer
+    # -----------------------------------------------------------------------
+
+    def _open_cell_tracer(self) -> None:
+        """Open the Cell Tracer dialog."""
+        dlg = CellTracerDialog(parent=self.main_window, ei_panel=self)
+        dlg.cluster_selected.connect(self._on_tracer_cluster_selected)
+        dlg.show()
+        self._cell_tracer_dlg = dlg   # prevent GC
+
+    def _on_tracer_cluster_selected(self, cid: int) -> None:
+        """Jump to a cluster chosen from the Cell Tracer results table."""
+        mw = self.main_window
+        if hasattr(mw, '_select_cluster_by_id'):
+            mw._select_cluster_by_id(cid)
+        elif hasattr(mw, 'select_cluster'):
+            mw.select_cluster(cid)
 
     # -----------------------------------------------------------------------
     # Helpers
