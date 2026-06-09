@@ -110,6 +110,7 @@ tests/
 ```
 
 **The layer contract:**
+
 - `vision_integration.py` produces raw data objects → consumed only by `data_manager.py`
 - `data_manager.py` is the only data source for all panels and workers
 - `workers/` reads from `DataManager`, emits Qt Signals → received by `main_window.py` slots
@@ -201,6 +202,8 @@ Things that look like implementation details but are actually load-bearing contr
 
 6. **Atomic pkl write.** `_save_pickle_with_fallback()` uses `tempfile + os.replace()`. Never replace with `pickle.dump(open(path, 'wb'))` — a crash mid-write would corrupt the cache file silently.
 
+7. **`plot_ei_waveforms` is the single EI spatial rendering primitive.** Lives in `analysis_core.py`. Both `CellTracerDialog` and the EI panel waveform mode call it. Do not copy-paste waveform rendering logic into panels — extend the function instead. It returns a list of `Line2D` artists; the caller is responsible for removing them (call `.remove()` on each, never `fig.clear()`). Box geometry is auto-derived from electrode spacing — do not hardcode `box_height` or `box_width` in callers.
+
 ---
 
 ## 7. Data Formats Reference
@@ -211,7 +214,7 @@ Things that look like implementation details but are actually load-bearing contr
 | `spike_clusters.npy` | **0-indexed** | `(N,)` int64, `np.load(mmap_mode='r')` | Parallel to `spike_times` — same index = same spike |
 | `templates.npy` | **0-indexed** | `(n_clusters, n_time, n_ch)`, memmapped | May not exist in all KS versions |
 | `.neurons` (Vision) | **1-indexed** | `dict[vid → spike_sample_nums]` via `vl.NeuronsReader` | Seed electrodes are also 1-indexed |
-| `.ei` (Vision) | **1-indexed** | `(512 electrodes, 201 time)` per cell via `vl.EIReader` | `ei_corr()` expects exactly this shape |
+| `.ei` (Vision) | **1-indexed** | `(N_electrodes, 201 time)` per cell via `vl.EIReader` — N=512 on 60 µm array, N=519 on 30 µm array (Vision keeps reference channels KS strips). Shape comes from the file; never hardcode 512. | `ei_corr()` expects the shape loaded from file; `plot_ei_waveforms` takes any (N_ch, T). |
 | `.sta` (Vision) | **1-indexed** | `LazySTADict[vid]` → obj with `.red/.green/.blue` | Shape: `(height, width, n_frames)` |
 | `.params` (Vision) | **1-indexed** | `VisionCellDataTable` via `vl.ParametersFileReader` | `get_stafit_for_cell(vid)` may return `None` |
 | `.globals` (Vision) | N/A | `(N_electrodes, 2)` xy positions | `ch = seed_electrode - 1` to convert to 0-indexed |
@@ -231,6 +234,7 @@ Things that look like implementation details but are actually load-bearing contr
 | `vision_params` | `VisionCellDataTable` | **Yes** | `if self.vision_params:` |
 | `raw_reader` | `PyBinFileReader` | **Yes** | `if self.raw_reader is not None:` |
 | `channel_positions` | `np.ndarray (N, 2)` | **Yes** | `if self.channel_positions is not None:` |
+| `vision_channel_positions` | `np.ndarray (N, 2)` | **Yes** | Never access directly in panels — use `_resolve_channel_positions()` in `ei_panel` or `_ch_pos()` in `cell_tracer_dialog`. Always `None` in vision-only mode (intentional — `.globals` positions are in `channel_positions` instead, and `_ch_pos()` falls through correctly). Shape is 519 on a 30 µm array (Vision keeps reference channels), 512 on a 60 µm array — **never hardcode either value**. |
 | `templates` | `np.ndarray` memmap | **Yes** | `if hasattr(self, 'templates') and self.templates is not None:` |
 | `is_vision_only` | `bool` | No | Defaults to `False` |
 | `sampling_rate` | `float` | No | Defaults to `30000.0` |
@@ -348,6 +352,7 @@ git commit -m "update"
 ```
 
 **PR etiquette:**
+
 - One spec per PR. No bundled unrelated changes.
 - PRs touching `data_manager.py` must be flagged — other agents may be mid-rebase.
 - Do not merge your own PR.

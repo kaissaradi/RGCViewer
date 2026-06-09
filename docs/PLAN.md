@@ -4,7 +4,7 @@
 > Read AGENTS.md before this document.
 > This is a **snapshot of the current codebase state**, not a roadmap narrative.
 > Update this file every time a spec completes or a new untested behavior is discovered.
-> Last updated: 2026-05-22 | Branch: main
+> Last updated: 2026-06-09 | Branch: main
 
 ---
 
@@ -68,6 +68,10 @@ Before modifying any file in the "changed files" column, run the corresponding t
 | ACG uses full recording (not first 2 min) | `data_manager.py::_compute_standard_plots()` | `test_acg_includes_late_spike_trains` | HIGH — any change to `_compute_standard_plots` |
 | Physics cache double-load on init | `data_manager.py::__init__`, `_load_standard_plot_cache_from_disk()` | `test_standard_plot_cache_computes_same_cluster_once` | MEDIUM |
 | Vision-only subset-of-cells UMAP bug | `data_manager.py::load_vision_native_data()` | `real_data_manager` fixture — assert all cells in `cluster_df` | HIGH — any change to vision loading |
+| `vision_channel_positions` unguarded assignment (full + partial load paths) | `data_manager.py::load_vision_data()`, `_partial_vision_reload()` | Add: assert `vision_channel_positions` is None when `electrode_map` contains NaN or values >100 000 µm | MEDIUM |
+| `vision_channel_positions` never set in vision-only path | `data_manager.py::load_vision_native_data()` | Add: assert `vision_channel_positions is not None` after a vision-only load with valid `.globals` | MEDIUM |
+| `plot_ei_waveforms` added to `analysis_core.py` | `analysis_core.py` | Smoke test: call with synthetic (519, 60) EI + positions, assert 519 artists returned | LOW |
+| Cell Tracer EI waveform overlay on single-click | `cell_tracer_dialog.py` | Manual AC: open tracer, draw lasso, single-click row → waveforms appear on canvas; alpha slider → waveforms persist; Clear lasso → waveforms removed | MEDIUM |
 | UMAP toolbar overlap on first render | `panels/umap_panel.py` | Visual AC — navigate directly to UMAP tab on cold launch | LOW |
 | UMAP lasso/rect selector conflict | `panels/umap_panel.py` | Manual — activate both selectors in sequence | LOW |
 | HDBSCAN as default clustering | `panels/umap_panel.py`, `workers/workers.py` | `tests/unit/test_hdbscan_clustering.py` (7 tests) | LOW |
@@ -95,7 +99,20 @@ Before modifying any file in the "changed files" column, run the corresponding t
 
 ---
 
-## 5. Infrastructure
+### Priority 2 — EI Panel Waveform View Mode
+- **Status:** Planned — not started
+- **What it is:** A third view option in the EI panel (`View: Heatmap | Photo | Waveform`) that replaces the heatmap `ImageItem` with a matplotlib canvas rendering `plot_ei_waveforms` co-registered to electrode positions. Triggered via the existing `View:` toggle pattern. Photo underlay optional (toggle). Scrolling to a new cluster re-renders via the existing `_update_ei` path.
+- **What remains (all of it):**
+  - Add `"Waveform"` to the `View:` button group in `ei_panel.py`
+  - Add a `FigureCanvas` widget that is shown/hidden based on mode (hides the `pyqtgraph ImageItem`, shows the mpl canvas)
+  - Wire cluster selection → `_draw_ei_waveform_mode()` which calls `plot_ei_waveforms` onto the panel's axes
+  - Implement artist cleanup between cluster changes (same `_ei_waveform_artists` list pattern as `CellTracerDialog`)
+  - Optional: expose `Photo α` slider in the panel when waveform mode is active, using `ei_panel._overlay_image_rgba` if available
+- **Key constraint:** Must not touch the existing heatmap render path — mode switch is purely additive. `_load_vision_ei()` and `_load_ks_ei()` stay unchanged.
+- **Uses:** `plot_ei_waveforms` from `analysis_core.py` and `_resolve_channel_positions()` already in `ei_panel.py`.
+- **Fragile zone overlap:** Touches `ei_panel.py` render path. Classify any new operation as Tier 1 or Tier 2 before writing (LAW 2).
+
+---
 
 ### Running tests
 
