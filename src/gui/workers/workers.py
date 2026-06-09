@@ -2,8 +2,17 @@ from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
 from ...analysis import analysis_core
 import numpy as np
+import pandas as pd
+import sklearn.cluster
 import logging
 from pathlib import Path
+
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -320,3 +329,145 @@ class StandaloneVisionWorker(QObject):
         except Exception as e:
             logger.exception("Error in StandaloneVisionWorker")
             self.finished.emit(False, str(e))
+
+
+class UMAPWorker(QObject):
+    """Background worker to compute features and run UMAP."""
+    finished = Signal(object, object, object, object, object)  # embedding, matrix, valid_ids, discarded_ids, metadata_df
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, data_manager, selected_cluster_ids=None, n_components=2, feature_config=None, filter_config=None):
+        super().__init__()
+        self.dm = data_manager
+        self.selected_cluster_ids = selected_cluster_ids
+        self.n_components = n_components
+        self.feature_config = feature_config or {}
+        self.filter_config = filter_config or {}
+
+    def run(self):
+        try:
+            try:
+                import umap
+            except ImportError:
+                self.error.emit("umap-learn library is not installed.")
+                return
+
+            target_ids = self.selected_cluster_ids
+            if target_ids is None:
+                if not self.dm.cluster_df.empty:
+                    target_ids = self.dm.cluster_df['cluster_id'].values
+                else:
+                    target_ids = []
+
+            if len(target_ids) == 0:
+                self.error.emit("No clusters to run UMAP on.")
+                return
+
+            self.progress.emit("Ensuring physics cache...")
+            self.dm.ensure_physics_cache(target_ids)
+
+            self.progress.emit("Extracting raw features...")
+            raw_blocks, valid_ids, discarded_ids = self.dm.get_raw_feature_blocks(target_ids, self.filter_config)
+
+            if len(valid_ids) == 0:
+                self.error.emit("No valid features could be extracted (all cells filtered out).")
+                return
+
+            self.progress.emit("Assembling feature matrix...")
+            matrix, col_labels = analysis_core.build_feature_matrix(raw_blocks, self.feature_config)
+
+            self.progress.emit(f"Running UMAP on {len(valid_ids)} cells...")
+            reducer = umap.UMAP(
+                n_neighbors=min(15, len(valid_ids) - 1),
+                min_dist=0.1,
+                metric='euclidean',
+                low_memory=True,
+                n_jobs=-1,
+                n_components=self.n_components,
+                verbose=False
+            )
+            embedding = reducer.fit_transform(matrix)
+
+            # Reconstruct the metadata DataFrame
+            meta_df = pd.DataFrame(index=range(len(valid_ids)))
+            meta_df['cluster_id'] = valid_ids
+
+            # Get KSLabel
+            if not self.dm.cluster_df.empty and 'KSLabel' in self.dm.cluster_df.columns:
+                label_map = dict(zip(self.dm.cluster_df['cluster_id'], self.dm.cluster_df['KSLabel']))
+                meta_df['KSLabel'] = [label_map.get(cid, 'unsorted') for cid in valid_ids]
+            else:
+                meta_df['KSLabel'] = 'unsorted'
+
+            # Get Polarity
+            polarities = []
+            for i, cid in enumerate(valid_ids):
+                tc = raw_blocks['temporal'][i]
+                if tc is not None and len(tc) > 0:
+                    peak_val = np.max(tc)
+                    trough_val = np.min(tc)
+                    is_off = abs(trough_val) > abs(peak_val)
+                    polarities.append("OFF" if is_off else "ON")
+                else:
+                    polarities.append("ON")
+            meta_df['Polarity'] = polarities
+
+            # Firing Rate
+            meta_df['Firing Rate'] = raw_blocks['scalars']['firing_rate'].values
+            # isi_violations (lowercase!)
+            meta_df['isi_violations'] = raw_blocks['scalars']['isi_violations'].values
+            # Time to Peak
+            meta_df['Time to Peak'] = raw_blocks['scalars']['time_to_peak'].values
+            # RF Area
+            meta_df['RF Area'] = raw_blocks['scalars']['rf_area'].values
+            # Ellipticity
+            meta_df['Ellipticity'] = raw_blocks['scalars']['ellipticity'].values
+            # Color Opponency
+            meta_df['Color Opponency'] = 0.0
+
+            self.progress.emit(f"UMAP complete for {len(valid_ids)} cells")
+            self.finished.emit(embedding, matrix, valid_ids, discarded_ids, meta_df)
+
+        except Exception as e:
+            logger.exception("UMAP Worker failed")
+            self.error.emit(str(e))
+
+
+class ClusterWorker(QObject):
+    """Background worker for clustering (HDBSCAN or K-Means)."""
+    finished = Signal(object, str)  # labels, method
+    error = Signal(str)
+
+    def __init__(self, feature_matrix, method, param):
+        super().__init__()
+        # Ensure contiguous array for thread safety
+        self.feature_matrix = np.array(feature_matrix, copy=True)
+        self.method = method
+        self.param = param
+
+    def run(self):
+        try:
+            if self.method == "HDBSCAN":
+                if not HDBSCAN_AVAILABLE:
+                    self.error.emit("HDBSCAN is not available (hdbscan not installed)")
+                    return
+                import hdbscan
+                clusterer = hdbscan.HDBSCAN(
+                    min_cluster_size=self.param,
+                    min_samples=None,
+                    cluster_selection_method='eom',
+                    core_dist_n_jobs=-1
+                )
+                labels = clusterer.fit_predict(self.feature_matrix)
+                self.finished.emit(labels, "HDBSCAN")
+            else:
+                # K-Means
+                kmeans = sklearn.cluster.KMeans(
+                    n_clusters=self.param, random_state=42, n_init=10)
+                labels = kmeans.fit_predict(self.feature_matrix)
+                self.finished.emit(labels, "K-Means")
+        except Exception as e:
+            logger.exception("Clustering failed")
+            self.error.emit(str(e))
+
