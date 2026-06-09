@@ -183,6 +183,14 @@ class CellTracerDialog(QDialog):
         self._worker_thread: QThread | None   = None
         self._worker: _CorrelationWorker | None = None
 
+        # EI waveform overlay state
+        # _cached_ch_pos is captured once in _initial_draw() so the lasso
+        # hit-test and waveform overlay always use the exact same positions
+        # array — immune to any mid-session reload of dm.vision_channel_positions.
+        self._cached_ch_pos: np.ndarray | None = None
+        self._ei_waveform_artists: list = []   # Line2D objects on self._ax
+        self._ei_overlay_ks_id: int | None = None  # which cluster is displayed
+
         # ── UI ───────────────────────────────────────────────────────────
         self._build_ui()
         self._connect_canvas_events()
@@ -308,6 +316,7 @@ class CellTracerDialog(QDialog):
             }
         """)
         self._table.doubleClicked.connect(self._on_table_double_click)
+        self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         right_layout.addWidget(self._table)
 
         self._result_cache: list[tuple[int, float, int]] = []
@@ -364,6 +373,11 @@ class CellTracerDialog(QDialog):
         # ── electrode positions (needed for axis limits) ─────────────────
         ch_pos = self._ch_pos()
         has_electrodes = ch_pos is not None and len(ch_pos) > 0
+
+        # Cache positions for this dialog instance.  Every downstream
+        # operation (lasso hit-test, EI overlay) uses self._cached_ch_pos
+        # so they are guaranteed to be in the same coordinate frame.
+        self._cached_ch_pos = ch_pos
 
         # Compute array bounding box in microns (used to lock axes limits)
         if has_electrodes:
@@ -426,6 +440,11 @@ class CellTracerDialog(QDialog):
         self._ax.axis('off')
         self._fig.tight_layout(pad=0.2)
         self._canvas.draw()
+
+        # fig.clear() above destroyed all previous artists.  Reset the list
+        # so _clear_ei_overlay() doesn't try to .remove() dead objects.
+        self._ei_waveform_artists = []
+        self._ei_overlay_ks_id = None
 
     # ===================================================================
     # Mouse interaction — freehand lasso
@@ -539,6 +558,7 @@ class CellTracerDialog(QDialog):
             self._sel_scatter.remove()
             self._sel_scatter = None
 
+        self._clear_ei_overlay()
         self._status_lbl.setText("No selection")
         self._table.setRowCount(0)
         self._result_cache = []
@@ -638,18 +658,117 @@ class CellTracerDialog(QDialog):
             if hasattr(mw, '_select_cluster_by_id'):
                 mw._select_cluster_by_id(cid)
 
+    def _on_table_selection_changed(self):
+        """Single-click: paint the selected cluster's EI waveforms on the canvas."""
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        cid_item = self._table.item(rows[0].row(), 0)
+        if cid_item is None:
+            return
+        try:
+            ks_id = int(cid_item.text())
+        except ValueError:
+            return
+        self._draw_ei_overlay(ks_id)
+
+    # ===================================================================
+    # EI waveform overlay
+    # ===================================================================
+
+    def _clear_ei_overlay(self):
+        """Remove all EI waveform Line2D artists from the canvas."""
+        for artist in self._ei_waveform_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._ei_waveform_artists = []
+        self._ei_overlay_ks_id = None
+
+    def _draw_ei_overlay(self, ks_id: int):
+        """
+        Fetch the EI for ks_id and paint its waveforms directly onto self._ax
+        in micron space, co-registered with the photo underlay and electrode
+        scatter.
+
+        Uses self._cached_ch_pos (captured at _initial_draw time) so the
+        positions are guaranteed to match the lasso coordinate frame.
+
+        Single-click calls this; alpha slider calls _initial_draw then this.
+        """
+        dm = self._get_dm()
+        if dm is None or dm.vision_eis is None:
+            return
+
+        ch_pos = self._cached_ch_pos
+        if ch_pos is None:
+            return
+
+        # Translate ks_id → vision_id (LAW 1)
+        is_vision_only = getattr(dm, 'is_vision_only', False)
+        vid = ks_id if is_vision_only else ks_id + 1
+
+        entry = dm.vision_eis.get(int(vid))
+        if entry is None:
+            return
+        ei_arr = getattr(entry, 'ei', None)
+        if not isinstance(ei_arr, np.ndarray) or ei_arr.ndim != 2:
+            return
+
+        # Guard: EI channel count must not exceed positions length
+        n_ch = min(ei_arr.shape[0], len(ch_pos))
+        if n_ch == 0:
+            return
+        ei_arr = ei_arr[:n_ch]
+        positions = ch_pos[:n_ch]
+
+        # Best channel from result cache for ref highlight
+        best_chan: int | None = None
+        for (cid, _score, bchan) in self._result_cache:
+            if cid == ks_id:
+                best_chan = bchan if bchan >= 0 else None
+                break
+
+        # Clear previous overlay then draw the new one
+        self._clear_ei_overlay()
+
+        from ...analysis.analysis_core import plot_ei_waveforms
+
+        artists = plot_ei_waveforms(
+            ei_arr,
+            positions,
+            ref_channel=best_chan,
+            ax=self._ax,
+            colors='#00e5ff',
+            alpha=0.75,
+            linewidth=0.6,
+            # box geometry auto-derived from array spacing in plot_ei_waveforms
+        )
+
+        self._ei_waveform_artists = artists
+        self._ei_overlay_ks_id = ks_id
+        self._canvas.draw_idle()
+
     # ===================================================================
     # Alpha slider
     # ===================================================================
 
     def _on_alpha_changed(self, value: int):
         """Redraws only the photo imshow with updated alpha."""
+        # Remember which cluster was overlaid before the full redraw wipes it.
+        prev_ks_id = self._ei_overlay_ks_id
+
         # Quick path: just re-run initial draw (fast since it's a local canvas)
         self._initial_draw()
         # Restore lasso state on top
         if self._lasso_verts:
             self._redraw_lasso_polygon()
             self._redraw_electrode_highlights()
+
+        # Restore EI overlay if one was active before the redraw.
+        if prev_ks_id is not None:
+            self._draw_ei_overlay(prev_ks_id)
 
     # ===================================================================
     # Helpers

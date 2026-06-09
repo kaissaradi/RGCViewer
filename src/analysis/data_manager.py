@@ -658,7 +658,24 @@ class DataManager(QObject):
             ei_bundle = vision_data.get('ei')
             if ei_bundle:
                 self.vision_eis = ei_bundle.get('ei_data')
-                self.vision_channel_positions = ei_bundle.get('electrode_map')
+                _raw_elec_map = ei_bundle.get('electrode_map')
+                if _raw_elec_map is not None and isinstance(_raw_elec_map, np.ndarray):
+                    if not np.all(np.isfinite(_raw_elec_map)):
+                        logger.warning(
+                            "EI electrode_map contains non-finite coordinates; "
+                            "discarding vision_channel_positions to prevent UI crash."
+                        )
+                    elif np.max(np.abs(_raw_elec_map)) > 100_000:
+                        logger.warning(
+                            "EI electrode_map coordinates unreasonably large "
+                            "(>100 000 µm); discarding vision_channel_positions."
+                        )
+                    else:
+                        self.vision_channel_positions = _raw_elec_map
+                        logger.debug(
+                            "vision_channel_positions set: shape=%s",
+                            self.vision_channel_positions.shape,
+                        )
                 if self.vision_eis:
                     logger.debug(
                         "Available Vision EI IDs (sample): %s",
@@ -767,8 +784,24 @@ class DataManager(QObject):
                 ei_bundle = vision_data.get("ei")
                 if ei_bundle:
                     self.vision_eis = ei_bundle.get("ei_data")
-                    self.vision_channel_positions = ei_bundle.get(
-                        "electrode_map")
+                    _raw_elec_map = ei_bundle.get("electrode_map")
+                    if _raw_elec_map is not None and isinstance(_raw_elec_map, np.ndarray):
+                        if not np.all(np.isfinite(_raw_elec_map)):
+                            logger.warning(
+                                "EI electrode_map (partial load) contains non-finite "
+                                "coordinates; discarding vision_channel_positions."
+                            )
+                        elif np.max(np.abs(_raw_elec_map)) > 100_000:
+                            logger.warning(
+                                "EI electrode_map (partial load) coordinates unreasonably "
+                                "large (>100 000 µm); discarding vision_channel_positions."
+                            )
+                        else:
+                            self.vision_channel_positions = _raw_elec_map
+                            logger.debug(
+                                "vision_channel_positions set (partial load): shape=%s",
+                                self.vision_channel_positions.shape,
+                            )
 
                 self.vision_stas = vision_data.get("sta")
                 self.vision_params = vision_data.get("params")
@@ -855,6 +888,13 @@ class DataManager(QObject):
                 else:
                     self.channel_positions = raw_positions
                     self.n_channels = self.channel_positions.shape[0]
+                    # Mirror into vision_channel_positions so _resolve_channel_positions()
+                    # returns consistent positions in vision-only mode.
+                    self.vision_channel_positions = self.channel_positions
+                    logger.debug(
+                        "vision_channel_positions mirrored from .globals: shape=%s",
+                        self.vision_channel_positions.shape,
+                    )
         except Exception as e:
             logging.warning(f"Could not load .globals file for array geometry: {e}")
 

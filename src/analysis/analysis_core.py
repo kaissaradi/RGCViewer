@@ -418,6 +418,157 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
 
 
 # ---------------------------------------------------------------------------
+# EI spatial waveform plot
+# ---------------------------------------------------------------------------
+
+def plot_ei_waveforms(
+    ei,
+    positions,
+    ref_channel=None,
+    scale=1.0,
+    ax=None,
+    colors='white',
+    alpha=1.0,
+    linewidth=0.5,
+    box_height=None,
+    box_width=None,
+    aspect=1.0,
+    min_global_max=None,
+):
+    """
+    Paint one or more EI waveforms onto a matplotlib Axes at their spatial
+    electrode positions.  Designed to be called on an existing Axes that
+    already shows a photo underlay and electrode scatter — waveforms are
+    drawn in data (micron) space so they register correctly.
+
+    Parameters
+    ----------
+    ei : np.ndarray or list of np.ndarray
+        Shape (n_ch, T) per array.  All arrays must share the same n_ch and T.
+    positions : np.ndarray
+        Shape (n_ch, 2), electrode xy positions in microns.  Row i must
+        correspond to ei[i, :].
+    ref_channel : int, optional
+        Channel index to highlight (thicker, fully opaque trace).
+    scale : float
+        Vertical scaling relative to box_height.  1.0 = largest waveform
+        fills the box exactly.
+    ax : matplotlib.axes.Axes, optional
+        Target axes.  Defaults to plt.gca().
+    colors : str or list of str
+        Single colour or one colour per EI array.
+    alpha : float or list of float
+        Global alpha, or one value per EI array.
+    linewidth : float or list of float
+        Line width, or one value per EI array.
+    box_height : float, optional
+        Vertical extent of each waveform box in microns.  Defaults to 80 % of
+        the median nearest-neighbour y-spacing so it is derived automatically
+        from the actual array geometry rather than hardcoded.
+    box_width : float, optional
+        Horizontal extent of the waveform time axis in microns.  Defaults to
+        the same value as box_height.
+    aspect : float
+        Axes aspect ratio passed to ax.set_aspect().
+    min_global_max : float, optional
+        Floor for the global absolute maximum used in normalisation.  Useful
+        to prevent tiny-amplitude noise channels from dominating.
+
+    Notes
+    -----
+    * Pure numpy/matplotlib — no Qt, no I/O.
+    * Does not call ax.set_xlim / ax.set_ylim so the caller's axis limits are
+      preserved.  The caller should set limits before calling this function.
+    * Returns the list of Line2D artists added so the caller can remove them
+      later (e.g. on the next selection change).
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.error("matplotlib is required for plot_ei_waveforms")
+        return []
+
+    if ax is None:
+        ax = plt.gca()
+
+    # ── derive box geometry from array spacing if not supplied ───────────────
+    if box_height is None:
+        y_vals = np.unique(positions[:, 1])
+        if len(y_vals) >= 2:
+            spacing = float(np.median(np.diff(np.sort(y_vals))))
+        else:
+            spacing = 30.0   # safe fallback
+        box_height = spacing * 0.8
+
+    if box_width is None:
+        box_width = box_height
+
+    # ── normalise inputs ─────────────────────────────────────────────────────
+    if isinstance(ei, np.ndarray):
+        eis = [ei]
+    else:
+        eis = list(ei)
+
+    if isinstance(colors, str):
+        colors = [colors] * len(eis)
+    if not isinstance(alpha, (list, np.ndarray)):
+        alpha = [alpha] * len(eis)
+    if not isinstance(linewidth, (list, np.ndarray)):
+        linewidth = [linewidth] * len(eis)
+
+    # ── global amplitude normalisation ───────────────────────────────────────
+    observed_max = max(float(np.max(np.abs(e))) for e in eis)
+    if min_global_max is not None:
+        global_max = max(observed_max, float(min_global_max))
+    else:
+        global_max = observed_max
+
+    if global_max <= 0:
+        return []
+
+    # time axis in micron units, centred on the electrode x position
+    t = np.linspace(-0.5, 0.5, eis[0].shape[1]) * box_width
+
+    added_artists = []
+
+    for ei_array, color, this_alpha, this_lw in zip(eis, colors, alpha, linewidth):
+        norm_ei = (ei_array / global_max) * scale * box_height
+
+        # per-channel peak-to-peak for dimming near-silent channels
+        p2ps = norm_ei.max(axis=1) - norm_ei.min(axis=1)
+        p2p_thresh = 0.05 * p2ps.max()
+
+        for i in range(ei_array.shape[0]):
+            if i >= len(positions):
+                break   # guard against shape mismatch
+            x_offset, y_offset = positions[i]
+
+            if p2ps[i] < p2p_thresh:
+                ch_alpha = 0.25
+                ch_lw    = 0.3
+            else:
+                ch_alpha = this_alpha
+                ch_lw    = this_lw
+
+            if ref_channel is not None and int(i) == int(ref_channel):
+                ch_alpha = 1.0
+                ch_lw    = this_lw * 3
+
+            lines = ax.plot(
+                t + x_offset,
+                norm_ei[i] + y_offset,
+                color=color,
+                alpha=ch_alpha,
+                linewidth=ch_lw,
+                zorder=7,      # above photo (0), scatter (2), lasso poly (4)
+                rasterized=True,
+            )
+            added_artists.extend(lines)
+
+    return added_artists
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -429,4 +580,5 @@ __all__ = [
     'get_sta_timecourse_data',
     'compute_sta_metrics',
     'compute_spatial_features',
+    'plot_ei_waveforms',
 ]
