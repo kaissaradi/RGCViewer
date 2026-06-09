@@ -569,6 +569,206 @@ def plot_ei_waveforms(
 
 
 # ---------------------------------------------------------------------------
+# Dynamic clustering helpers — pure numpy, no Qt, no I/O
+# ---------------------------------------------------------------------------
+
+def peak_align_timecourse(tc):
+    """
+    Shift a 1-D timecourse so its absolute peak sits at the centre index.
+
+    If the timecourse is flat (``np.std(tc) < DEFAULT_MIN_STA_STD``), a copy
+    is returned unchanged — ``np.roll`` is **not** applied because argmax on
+    a constant array is arbitrary and would introduce meaningless jitter.
+
+    Parameters
+    ----------
+    tc : np.ndarray
+        1-D array — the temporal STA trace for one cell.
+
+    Returns
+    -------
+    np.ndarray
+        Aligned *copy* of *tc*.  The original is never mutated.
+    """
+    from .constants import DEFAULT_MIN_STA_STD
+
+    tc = np.asarray(tc, dtype=np.float64).copy()
+    if tc.ndim != 1 or len(tc) == 0:
+        return tc
+
+    if np.std(tc) < DEFAULT_MIN_STA_STD:
+        return tc                       # flat — nothing to align
+
+    centre = len(tc) // 2
+    peak_idx = int(np.argmax(np.abs(tc)))
+    shift = centre - peak_idx
+    if shift != 0:
+        tc = np.roll(tc, shift)
+    return tc
+
+
+def apply_prefilter(physics_entries, filter_config):
+    """
+    Partition cluster IDs into valid and discarded based on thresholds.
+
+    A cell is discarded when **any** of the following hold:
+
+    * ``physics['timecourse']`` is ``None``
+    * ``np.std(physics['timecourse']) < filter_config['min_sta_std']``
+    * ``physics['rf_area'] > filter_config['max_rf_area']``
+
+    Parameters
+    ----------
+    physics_entries : dict
+        ``{cluster_id: physics_dict}`` where each physics_dict has at least
+        keys ``'timecourse'`` (1-D array or None) and ``'rf_area'`` (float).
+    filter_config : dict
+        ``{'min_sta_std': float, 'max_rf_area': float}``
+
+    Returns
+    -------
+    (valid_ids, discarded_ids) : (list[int], list[int])
+        Both lists are sorted for deterministic ordering.
+    """
+    min_sta_std = filter_config.get('min_sta_std', 1e-5)
+    max_rf_area = filter_config.get('max_rf_area', 300.0)
+
+    valid_ids = []
+    discarded_ids = []
+
+    for cid, phys in physics_entries.items():
+        tc = phys.get('timecourse')
+
+        # --- reject if timecourse is missing or flat ---
+        if tc is None:
+            discarded_ids.append(cid)
+            continue
+
+        tc = np.asarray(tc, dtype=np.float64)
+        if np.std(tc) < min_sta_std:
+            discarded_ids.append(cid)
+            continue
+
+        # --- reject if RF area is too large ---
+        rf_area = float(phys.get('rf_area', 0.0))
+        if rf_area > max_rf_area:
+            discarded_ids.append(cid)
+            continue
+
+        valid_ids.append(cid)
+
+    return sorted(valid_ids), sorted(discarded_ids)
+
+
+def build_feature_matrix(raw_blocks, feature_config):
+    """
+    Transform raw feature arrays into a weighted, PCA-reduced feature matrix.
+
+    Pipeline
+    --------
+    1. **Temporal STA** (if enabled): peak-align each row via
+       :func:`peak_align_timecourse`, PCA to ``TEMPORAL_PCA_COMPONENTS``
+       components, multiply by ``w_temporal``.
+    2. **ACG** (if enabled): PCA to ``ACG_PCA_COMPONENTS`` components,
+       multiply by ``w_acg``.
+    3. **Scalars** (each independently toggleable): ``RobustScaler``, multiply
+       by the per-feature weight.
+    4. ``np.hstack`` all enabled blocks.
+
+    Parameters
+    ----------
+    raw_blocks : dict
+        ``{'temporal': np.ndarray (N, T),
+          'acg':       np.ndarray (N, A),
+          'scalars':   pd.DataFrame (N rows)}``
+    feature_config : dict
+        Boolean ``use_*`` flags and float ``w_*`` weights for every feature.
+
+    Returns
+    -------
+    (matrix, column_labels) : (np.ndarray (N, D), list[str])
+
+    Raises
+    ------
+    ValueError
+        If all features are disabled (D would be 0).
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import RobustScaler
+    from .constants import TEMPORAL_PCA_COMPONENTS, ACG_PCA_COMPONENTS
+
+    N = raw_blocks['temporal'].shape[0]   # guaranteed same N across all blocks
+    blocks = []
+    labels = []
+
+    # ── Temporal STA ─────────────────────────────────────────────────────────
+    if feature_config.get('use_temporal', True):
+        w = feature_config.get('w_temporal', 3.0)
+        tc_matrix = raw_blocks['temporal'].copy()
+
+        # Peak-align each row
+        for i in range(tc_matrix.shape[0]):
+            tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
+
+        n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
+        if n_comp >= 1:
+            tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
+            blocks.append(tc_pca * w)
+            labels.extend([f'tc_pc{j}' for j in range(n_comp)])
+
+    # ── ACG ──────────────────────────────────────────────────────────────────
+    if feature_config.get('use_acg', True):
+        w = feature_config.get('w_acg', 2.0)
+        acg_matrix = raw_blocks['acg'].copy()
+
+        n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
+        if n_comp >= 1:
+            acg_pca = PCA(n_components=n_comp).fit_transform(acg_matrix)
+            blocks.append(acg_pca * w)
+            labels.extend([f'acg_pc{j}' for j in range(n_comp)])
+
+    # ── Scalar features ──────────────────────────────────────────────────────
+    scalar_features = [
+        ('firing_rate',     'use_firing_rate',     'w_firing_rate',     1.5),
+        ('isi_violations',  'use_isi_violations',  'w_isi_violations',  1.0),
+        ('time_to_peak',    'use_time_to_peak',    'w_time_to_peak',    1.0),
+        ('rf_area',         'use_rf_area',         'w_rf_area',         1.0),
+        ('ellipticity',     'use_ellipticity',     'w_ellipticity',     1.0),
+    ]
+
+    scalars_df = raw_blocks['scalars']
+    enabled_scalars = []
+    scalar_weights = []
+    scalar_labels = []
+
+    for col, use_key, w_key, default_w in scalar_features:
+        if feature_config.get(use_key, True) and col in scalars_df.columns:
+            vals = scalars_df[col].fillna(0.0).values.astype(np.float64)
+            enabled_scalars.append(vals.reshape(-1, 1))
+            scalar_weights.append(feature_config.get(w_key, default_w))
+            scalar_labels.append(col)
+
+    if enabled_scalars:
+        scalar_block = np.hstack(enabled_scalars)
+        scalar_block = RobustScaler().fit_transform(scalar_block)
+        # Apply per-column weights
+        for j, w in enumerate(scalar_weights):
+            scalar_block[:, j] *= w
+        blocks.append(scalar_block)
+        labels.extend(scalar_labels)
+
+    # ── Assembly ─────────────────────────────────────────────────────────────
+    if not blocks:
+        raise ValueError(
+            "All features are disabled — cannot build a feature matrix with "
+            "zero dimensions. Enable at least one feature."
+        )
+
+    matrix = np.hstack(blocks)
+    return matrix, labels
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -581,4 +781,7 @@ __all__ = [
     'compute_sta_metrics',
     'compute_spatial_features',
     'plot_ei_waveforms',
+    'peak_align_timecourse',
+    'apply_prefilter',
+    'build_feature_matrix',
 ]
