@@ -14,14 +14,6 @@ import logging
 import sklearn.cluster
 import matplotlib.pyplot as plt
 
-try:
-    import hdbscan
-    HDBSCAN_AVAILABLE = True
-except ImportError:
-    HDBSCAN_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("hdbscan not installed; HDBSCAN clustering disabled")
-
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
 from ...analysis.constants import (
@@ -95,7 +87,7 @@ class UMAPPanel(QWidget):
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
-            ["KSLabel", "Polarity", "HDBSCAN", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
+            ["KSLabel", "Polarity", "Ward", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
         self.color_combo.currentTextChanged.connect(
             lambda: self.update_plot())
 
@@ -121,20 +113,13 @@ class UMAPPanel(QWidget):
 
         # Clustering controls
         self.cluster_method_combo = QComboBox()
-        self.cluster_method_combo.addItems(["HDBSCAN", "K-Means"])
-        if not HDBSCAN_AVAILABLE:
-            self.cluster_method_combo.model().item(0).setEnabled(False)
-            self.cluster_method_combo.setCurrentIndex(1)
-            
+        self.cluster_method_combo.addItems(["Ward", "K-Means"])
+
         self.cluster_param_spin = QSpinBox()
-        if self.cluster_method_combo.currentText() == "HDBSCAN":
-            self.cluster_param_spin.setRange(2, 200)
-            self.cluster_param_spin.setValue(15)
-        else:
-            self.cluster_param_spin.setRange(2, 100)
-            self.cluster_param_spin.setValue(5)
-            self.cluster_param_spin.setPrefix("k=")
-            
+        self.cluster_param_spin.setRange(2, 100)
+        self.cluster_param_spin.setValue(9)
+        self.cluster_param_spin.setPrefix("# Types: ")
+
         self.cluster_method_combo.currentIndexChanged.connect(self._on_cluster_method_changed)
 
         self.cluster_btn = QPushButton("Run Clustering")
@@ -511,20 +496,12 @@ class UMAPPanel(QWidget):
         self.worker_thread.start()
 
     def _on_cluster_method_changed(self):
-        if self.cluster_method_combo.currentText() == "HDBSCAN":
-            self.cluster_param_spin.setPrefix("")
-            self.cluster_param_spin.setRange(2, 200)
-            # Default of 5 is appropriate for 2D UMAP space.
-            # (The old default of 15 was tuned for high-dimensional feature space
-            #  and produced too many noise points when run on the compact embedding.)
-            self.cluster_param_spin.setValue(5)
-        else:
-            self.cluster_param_spin.setRange(2, 100)
-            self.cluster_param_spin.setValue(5)
-            self.cluster_param_spin.setPrefix("k=")
+        # Both Ward and K-Means use the same n_clusters parameter.
+        self.cluster_param_spin.setRange(2, 100)
+        self.cluster_param_spin.setPrefix("# Types: ")
 
     def run_clustering(self):
-        if getattr(self, 'embedding', None) is None:
+        if getattr(self, 'feature_matrix', None) is None:
             QMessageBox.warning(self, "No Data", "Please run UMAP first.")
             return
 
@@ -535,12 +512,8 @@ class UMAPPanel(QWidget):
         method = self.cluster_method_combo.currentText()
         param = self.cluster_param_spin.value()
 
-        # Cluster in UMAP embedding space (2D or 3D) so that cluster boundaries
-        # align with the visible manifold topology.  Clustering the raw
-        # high-dimensional feature matrix produces boundaries that are invisible
-        # in the 2D/3D plot, making the coloring look arbitrary.
         self.cluster_worker_thread = QThread()
-        self.cluster_worker = ClusterWorker(self.embedding, method, param)
+        self.cluster_worker = ClusterWorker(self.feature_matrix, method, param)
         self.cluster_worker.moveToThread(self.cluster_worker_thread)
 
         self.cluster_worker_thread.started.connect(self.cluster_worker.run)
@@ -627,10 +600,7 @@ class UMAPPanel(QWidget):
 
         self.color_combo.setCurrentText(method_name)
         self.update_plot()
-        dims = self.embedding.shape[1] if self.embedding is not None else "?"
-        self.main_window.status_bar.showMessage(
-            f"{method_name} clustering complete ({dims}D UMAP space)."
-        )
+        self.main_window.status_bar.showMessage(f"{method_name} clustering complete.")
 
         # --- AUTO-GROUP LOGIC ---
         if self.auto_group_chk.isChecked():
@@ -650,7 +620,7 @@ class UMAPPanel(QWidget):
                     continue  # Skip noise points
                 subset_indices = np.where(labels == lbl)[0]
                 group_cluster_ids = self.cluster_ids[subset_indices]
-                group_name = f"Type_{lbl+1}" if method_name == "K-Means" else f"Cluster_{lbl}"
+                group_name = f"Type_{lbl+1}" if method_name in ("K-Means", "Ward") else f"Cluster_{lbl}"
                 
                 # Use our safe, in-place tree modifier!
                 group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
@@ -770,28 +740,11 @@ class UMAPPanel(QWidget):
                 is_discrete = True
             else:
                 c = colors['text_secondary']
-        elif mode == "HDBSCAN":
-            if 'HDBSCAN' in self.metadata_df:
-                raw_labels = self.metadata_df['HDBSCAN'].values
-                unique_non_noise = np.unique(raw_labels[raw_labels >= 0])
-                n_types = max(len(unique_non_noise), 1)
-                try:
-                    cmap_fn = plt.colormaps.get("tab20").resampled(n_types)
-                except Exception:
-                    try:
-                        cmap_fn = plt.cm.get_cmap('tab20', n_types)
-                    except Exception:
-                        cmap_fn = lambda idx: (0.5, 0.5, 0.5, 1.0)
-                color_array = []
-                for lbl in raw_labels:
-                    if lbl == -1:
-                        # Dark gray with reduced opacity
-                        color_array.append((0.4, 0.4, 0.4, 0.2))
-                    else:
-                        idx = np.searchsorted(unique_non_noise, lbl)
-                        rgba = cmap_fn(idx % n_types)
-                        color_array.append((rgba[0], rgba[1], rgba[2], 0.8))
-                c = color_array
+        elif mode == "Ward":
+            if 'Ward' in self.metadata_df:
+                # Ward produces clean integer labels 0..n_clusters-1, no noise.
+                c = self.metadata_df['Ward'].values
+                cmap = 'tab20'
                 is_discrete = True
             else:
                 c = colors['text_secondary']
@@ -842,7 +795,7 @@ class UMAPPanel(QWidget):
             self.ax.grid(True, color=colors['border_subtle'],
                          linestyle=':', alpha=0.5, zorder=0)
 
-        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "HDBSCAN" and is_discrete):
+        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "Ward" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
             # Style colorbar ticks
             if self.cbar:
@@ -868,11 +821,11 @@ class UMAPPanel(QWidget):
             return
 
         mode = self.color_combo.currentText()
-        if mode not in ["KSLabel", "K-Means", "Polarity", "HDBSCAN"]:
+        if mode not in ["KSLabel", "K-Means", "Polarity", "Ward"]:
             QMessageBox.information(
                 self,
                 "Info",
-                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, HDBSCAN).")
+                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, Ward).")
             return
 
         if mode not in self.metadata_df:

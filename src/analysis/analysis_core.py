@@ -694,7 +694,7 @@ def build_feature_matrix(raw_blocks, feature_config):
         If all features are disabled (D would be 0).
     """
     from sklearn.decomposition import PCA
-    from sklearn.preprocessing import RobustScaler
+    from sklearn.preprocessing import RobustScaler, StandardScaler
     from .constants import TEMPORAL_PCA_COMPONENTS, ACG_PCA_COMPONENTS
 
     N = raw_blocks['temporal'].shape[0]   # guaranteed same N across all blocks
@@ -713,6 +713,10 @@ def build_feature_matrix(raw_blocks, feature_config):
         n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
         if n_comp >= 1:
             tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
+            # Z-score each PC independently so weight sliders have a
+            # consistent meaning across feature groups (unit variance
+            # before the user weight is applied).
+            tc_pca = StandardScaler().fit_transform(tc_pca)
             blocks.append(tc_pca * w)
             labels.extend([f'tc_pc{j}' for j in range(n_comp)])
 
@@ -724,6 +728,9 @@ def build_feature_matrix(raw_blocks, feature_config):
         n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
         if n_comp >= 1:
             acg_pca = PCA(n_components=n_comp).fit_transform(acg_matrix)
+            # Z-score so ACG PCs are on the same scale as temporal PCs
+            # and scalar features — weight slider is then interpretable.
+            acg_pca = StandardScaler().fit_transform(acg_pca)
             blocks.append(acg_pca * w)
             labels.extend([f'acg_pc{j}' for j in range(n_comp)])
 

@@ -7,12 +7,6 @@ import sklearn.cluster
 import logging
 from pathlib import Path
 
-try:
-    import hdbscan
-    HDBSCAN_AVAILABLE = True
-except ImportError:
-    HDBSCAN_AVAILABLE = False
-
 
 logger = logging.getLogger(__name__)
 
@@ -435,55 +429,37 @@ class UMAPWorker(QObject):
 
 
 class ClusterWorker(QObject):
-    """Background worker for clustering (HDBSCAN or K-Means)."""
-    finished = Signal(object, str)  # labels, method
+    """Background worker for clustering (Ward hierarchical or K-Means).
+
+    Ward agglomerative clustering is the preferred method for RGC data.
+    It operates in the weighted feature space (temporal STA PCs, ACG PCs,
+    scalar metrics) and produces a dendrogram whose top-level splits
+    naturally recover the dominant biological axes (ON/OFF, then
+    transient/sustained, then RF size) without any user guidance.
+
+    K-Means is kept as a fast alternative when the user wants a flat
+    partition with a specific k.
+    """
+    finished = Signal(object, str)  # labels, method_name
     error = Signal(str)
 
     def __init__(self, feature_matrix, method, param):
         super().__init__()
-        # Ensure contiguous array for thread safety
         self.feature_matrix = np.array(feature_matrix, copy=True)
         self.method = method
-        self.param = param
+        self.param = param  # n_clusters for both methods
 
     def run(self):
         try:
-            if self.method == "HDBSCAN":
-                if not HDBSCAN_AVAILABLE:
-                    self.error.emit("HDBSCAN is not available (hdbscan not installed)")
-                    return
-                import hdbscan
-                clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=self.param,
-                    min_samples=None,
-                    cluster_selection_method='eom',
-                    core_dist_n_jobs=-1
+            if self.method == "Ward":
+                clusterer = sklearn.cluster.AgglomerativeClustering(
+                    n_clusters=self.param,
+                    linkage='ward',
                 )
                 labels = clusterer.fit_predict(self.feature_matrix)
-
-                # Reassign noise points (label == -1) to the nearest cluster centroid
-                # so no valid cell is silently discarded as garbage.
-                noise_mask = labels == -1
-                if noise_mask.any():
-                    unique_clusters = np.unique(labels[~noise_mask])
-                    if len(unique_clusters) > 0:
-                        centroids = np.array([
-                            self.feature_matrix[labels == c].mean(axis=0)
-                            for c in unique_clusters
-                        ])
-                        from scipy.spatial.distance import cdist
-                        dists = cdist(self.feature_matrix[noise_mask], centroids)
-                        nearest = unique_clusters[np.argmin(dists, axis=1)]
-                        labels = labels.copy()
-                        labels[noise_mask] = nearest
-                        logger.info(
-                            f"HDBSCAN: reassigned {noise_mask.sum()} noise points "
-                            f"to nearest of {len(unique_clusters)} clusters."
-                        )
-
-                self.finished.emit(labels, "HDBSCAN")
+                self.finished.emit(labels, "Ward")
             else:
-                # K-Means
+                # K-Means — kept as fast flat-partition fallback
                 kmeans = sklearn.cluster.KMeans(
                     n_clusters=self.param, random_state=42, n_init=10)
                 labels = kmeans.fit_predict(self.feature_matrix)
