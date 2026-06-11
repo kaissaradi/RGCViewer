@@ -180,6 +180,9 @@ class EIPanel(QWidget):
         # cell tracer dialog reference (prevent GC)
         self._cell_tracer_dlg: CellTracerDialog | None = None
 
+        # waveform overlay state (used when current_view == "Waveform")
+        self._waveform_artists: list = []
+
         # ── build layout ───────────────────────────────────────────────────
         self._build_ui()
 
@@ -246,7 +249,7 @@ class EIPanel(QWidget):
 
         row.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Heatmap", "3D"])
+        self.view_combo.addItems(["Heatmap", "3D", "Waveform"])
         self.view_combo.currentTextChanged.connect(self._on_view_changed)
         row.addWidget(self.view_combo)
 
@@ -484,6 +487,8 @@ class EIPanel(QWidget):
         # lazy 3-D: only render if that view is currently active
         if self.current_view == "3D":
             self.mountain_widget.plot_ei_3d(final_ei[0], ch_pos)
+        elif self.current_view == "Waveform":
+            self._draw_waveform_frame()
 
     def _load_ks_ei(self, cluster_ids: np.ndarray, is_fallback=False):
         primary_id = int(cluster_ids[0])
@@ -529,6 +534,8 @@ class EIPanel(QWidget):
 
         if self.current_view == "3D":
             self.mountain_widget.plot_ei_3d(ei_data, ch_pos)
+        elif self.current_view == "Waveform":
+            self._draw_waveform_frame()
 
     # -----------------------------------------------------------------------
     # Internal: drawing
@@ -685,7 +692,7 @@ class EIPanel(QWidget):
         self._render_anim_frame()
 
     def _render_anim_frame(self):
-        if self.current_view == "Heatmap":
+        if self.current_view in ("Heatmap", "Waveform"):
             self._draw_heatmap_frame(self._anim_frame)
             sr = self.main_window.data_manager.sampling_rate if self.main_window.data_manager else 20000
             t_ms = self._anim_frame / sr * 1000.0
@@ -742,12 +749,115 @@ class EIPanel(QWidget):
         self.current_view = text
         if text == "Heatmap":
             self.spatial_stack.setCurrentIndex(0)
-            # no re-render needed — canvas already has the right frame
+            if self.current_ei_data is not None:
+                self._draw_heatmap_frame(self._anim_frame)
         elif text == "3D":
             self.spatial_stack.setCurrentIndex(1)
             if self.current_ei_data is not None:
                 ch_pos = self._resolve_channel_positions()
                 self.mountain_widget.plot_ei_3d(self.current_ei_data[0], ch_pos)
+        elif text == "Waveform":
+            self.spatial_stack.setCurrentIndex(0)   # reuse the 2-D canvas
+            if self.current_ei_data is not None:
+                self._draw_waveform_frame()
+
+    # -----------------------------------------------------------------------
+    # Waveform view
+    # -----------------------------------------------------------------------
+
+    def _clear_waveform_artists(self):
+        for artist in self._waveform_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._waveform_artists = []
+
+    def _draw_waveform_frame(self):
+        """
+        Paint EI waveforms for the currently selected cluster(s) directly
+        onto spatial_canvas in micron space, co-registered with the photo
+        underlay.  Uses plot_ei_waveforms from analysis_core — the same
+        primitive as CellTracerDialog.
+
+        Called when:
+          • User switches to Waveform view (via _on_view_changed)
+          • A new cluster loads while Waveform is active (_load_vision_ei,
+            _load_ks_ei)
+        Animation scrubbing stays on _draw_heatmap_frame (the interpolated
+        voltage grid) — switching back to Heatmap to animate is intentional
+        since per-frame waveform re-renders of 519 traces would be too slow.
+        """
+        if not self.current_ei_data or not self.current_cluster_ids:
+            return
+
+        from ...analysis.analysis_core import plot_ei_waveforms
+
+        ch_pos = self._resolve_channel_positions()
+        if ch_pos is None or len(ch_pos) == 0:
+            return
+
+        colors_ui = self.main_window.get_current_colors()
+        cluster_colors = ['#00e5ff', '#ff9800', '#69ff47', '#ff4081']
+
+        # Full redraw of the canvas so photo underlay and axis limits are set
+        # correctly, then paint waveforms on top without clearing again.
+        self.spatial_canvas.fig.clear()
+        ax = self.spatial_canvas.fig.add_subplot(111)
+        ax.set_facecolor(colors_ui['bg_panel'])
+        self.spatial_canvas.fig.patch.set_facecolor(colors_ui['bg_panel'])
+
+        # ── photo underlay (same logic as _draw_heatmap_frame) ─────────────
+        if (self._overlay_enabled
+                and self._overlay_image_rgba is not None
+                and self._overlay_extent_um is not None):
+            xl, xr_img, yb, yt = self._overlay_extent_um
+            ax.imshow(
+                self._overlay_image_rgba,
+                aspect='auto',
+                origin='upper',
+                extent=(xl, xr_img, yb, yt),
+                alpha=self._overlay_alpha,
+                interpolation='bilinear',
+                zorder=0,
+            )
+
+        # ── set axis limits from electrode positions ────────────────────────
+        pad = 50.0
+        ax.set_xlim(ch_pos[:, 0].min() - pad, ch_pos[:, 0].max() + pad)
+        ax.set_ylim(ch_pos[:, 1].min() - pad, ch_pos[:, 1].max() + pad)
+        ax.axis('off')
+
+        # ── electrode scatter (dim, for spatial reference) ──────────────────
+        ax.scatter(ch_pos[:, 0], ch_pos[:, 1],
+                   s=2, c='#444444', zorder=2, rasterized=True)
+
+        # ── waveforms for each loaded cluster ───────────────────────────────
+        self._waveform_artists = []
+        for i, (ei_arr, cid) in enumerate(
+                zip(self.current_ei_data, self.current_cluster_ids)):
+            color = cluster_colors[i % len(cluster_colors)]
+            n_ch = min(ei_arr.shape[0], len(ch_pos))
+            artists = plot_ei_waveforms(
+                ei_arr[:n_ch],
+                ch_pos[:n_ch],
+                ref_channel=int(self.current_channels[0])
+                            if self.current_channels is not None else None,
+                ax=ax,
+                colors=color,
+                alpha=0.80,
+                linewidth=0.6,
+            )
+            self._waveform_artists.extend(artists)
+
+        cluster_str = ", ".join(str(c) for c in self.current_cluster_ids)
+        self.spatial_canvas.fig.suptitle(
+            f"EI waveforms — cluster{'s' if len(self.current_cluster_ids) > 1 else ''} "
+            f"{cluster_str}",
+            color=colors_ui['text_primary'], fontsize=13,
+        )
+        self.spatial_canvas.fig.tight_layout()
+        self.spatial_canvas.draw()
 
     # -----------------------------------------------------------------------
     # Overlay nav (multiple clusters)

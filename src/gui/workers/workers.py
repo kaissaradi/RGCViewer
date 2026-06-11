@@ -460,6 +460,27 @@ class ClusterWorker(QObject):
                     core_dist_n_jobs=-1
                 )
                 labels = clusterer.fit_predict(self.feature_matrix)
+
+                # Reassign noise points (label == -1) to the nearest cluster centroid
+                # so no valid cell is silently discarded as garbage.
+                noise_mask = labels == -1
+                if noise_mask.any():
+                    unique_clusters = np.unique(labels[~noise_mask])
+                    if len(unique_clusters) > 0:
+                        centroids = np.array([
+                            self.feature_matrix[labels == c].mean(axis=0)
+                            for c in unique_clusters
+                        ])
+                        from scipy.spatial.distance import cdist
+                        dists = cdist(self.feature_matrix[noise_mask], centroids)
+                        nearest = unique_clusters[np.argmin(dists, axis=1)]
+                        labels = labels.copy()
+                        labels[noise_mask] = nearest
+                        logger.info(
+                            f"HDBSCAN: reassigned {noise_mask.sum()} noise points "
+                            f"to nearest of {len(unique_clusters)} clusters."
+                        )
+
                 self.finished.emit(labels, "HDBSCAN")
             else:
                 # K-Means
@@ -470,4 +491,3 @@ class ClusterWorker(QObject):
         except Exception as e:
             logger.exception("Clustering failed")
             self.error.emit(str(e))
-
