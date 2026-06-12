@@ -12,7 +12,7 @@ A high-performance GUI for refining and analyzing neural spike sorting clusters 
 
 2.  **Set up a virtual environment (recommended):**
     ```bash
-    conda create --name rgcviewer python=3.9
+    conda create --name rgcviewer python=3.10
     conda activate rgcviewer
     ```
 

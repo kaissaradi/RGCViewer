@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                             QComboBox, QLabel, QProgressBar, QMessageBox,
-                            QSpinBox, QDialog, QTextEdit, QCheckBox, QSizePolicy)
+                            QSpinBox, QDialog, QTextEdit, QCheckBox, QSizePolicy,
+                            QGroupBox, QDoubleSpinBox, QGridLayout)
 from qtpy.QtCore import QThread, Signal, QObject, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -13,135 +14,22 @@ import logging
 import sklearn.cluster
 import matplotlib.pyplot as plt
 
-try:
-    HDBSCAN_AVAILABLE = True
-except ImportError:
-    HDBSCAN_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("hdbscan not installed; HDBSCAN clustering disabled")
-
 from ..theme import resolve_theme_colors
+from ..workers.workers import UMAPWorker, ClusterWorker
+from ...analysis.constants import (
+    DEFAULT_MIN_STA_STD,
+    DEFAULT_MAX_RF_AREA,
+    DEFAULT_WEIGHT_TEMPORAL,
+    DEFAULT_WEIGHT_ACG,
+    DEFAULT_WEIGHT_FIRING_RATE,
+    DEFAULT_WEIGHT_ISI_VIOLATIONS,
+    DEFAULT_WEIGHT_TIME_TO_PEAK,
+    DEFAULT_WEIGHT_RF_AREA,
+    DEFAULT_WEIGHT_ELLIPTICITY,
+)
 
 logger = logging.getLogger(__name__)
 
-# --- WEIGHTING CONSTANTS ---
-# Tuned for RGC Classification: 
-# Shape (Polarity/Kinetics) > Pattern (Burstiness) > Geometry (Area)
-W_SHAPE = 2.0       
-W_PATTERN = 1.5     
-W_GEOMETRY = 1.0
-
-
-def extract_features_from_datamanager(dm, cluster_ids):
-    """
-    Thin delegation to DataManager.get_physics_feature_matrix().
-    All logic lives in the DataManager to eliminate duplication with FeatureAnalysisWorker.
-    """
-    return dm.get_physics_feature_matrix(
-        cluster_ids,
-        w_shape=W_SHAPE,
-        w_pattern=W_PATTERN,
-        w_geometry=W_GEOMETRY,
-    )
-
-class ClusterWorker(QObject):
-    """Background worker for clustering (HDBSCAN or K-Means)."""
-    finished = Signal(object, str)  # labels, method
-    error = Signal(str)
-
-    def __init__(self, embedding, method, param):
-        super().__init__()
-        # Ensure contiguous array for thread safety
-        self.embedding = np.array(embedding, copy=True)
-        self.method = method
-        self.param = param
-
-    def run(self):
-        try:
-            if self.method == "HDBSCAN":
-                if not HDBSCAN_AVAILABLE:
-                    self.error.emit("HDBSCAN is not available (hdbscan not installed)")
-                    return
-                import hdbscan
-                clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=self.param,
-                    min_samples=None,
-                    cluster_selection_method='eom',
-                    core_dist_n_jobs=-1
-                )
-                labels = clusterer.fit_predict(self.embedding)
-                self.finished.emit(labels, "HDBSCAN")
-            else:
-                # K-Means
-                kmeans = sklearn.cluster.KMeans(
-                    n_clusters=self.param, random_state=42, n_init=10)
-                labels = kmeans.fit_predict(self.embedding)
-                self.finished.emit(labels, "K-Means")
-        except Exception as e:
-            logger.exception("Clustering failed")
-            self.error.emit(str(e))
-
-
-class UMAPWorker(QObject):
-    """Background worker to compute features and run UMAP."""
-    finished = Signal(object, object, object)  # embedding, cluster_ids, metadata_df
-    error = Signal(str)
-    progress = Signal(str)
-
-    def __init__(self, data_manager, selected_cluster_ids=None, n_components=2):
-        super().__init__()
-        self.dm = data_manager
-        self.selected_cluster_ids = selected_cluster_ids
-        self.n_components = n_components
-
-    def run(self):
-        try:
-            try:
-                import umap
-            except ImportError:
-                self.error.emit("umap-learn library is not installed.")
-                return
-
-            target_ids = self.selected_cluster_ids
-            if target_ids is None:
-                target_ids = self.dm.cluster_df['cluster_id'].values
-
-            self.progress.emit("Ensuring physics cache...")
-            self.dm.ensure_physics_cache(target_ids)
-
-            self.progress.emit("Extracting features...")
-            features, cluster_ids, metadata = extract_features_from_datamanager(
-                self.dm, target_ids)
-
-            if len(features) == 0:
-                self.error.emit("No valid features could be extracted for the selected cells.")
-                return
-
-            self.progress.emit(f"Running UMAP on {len(features)} cells...")
-
-            reducer = umap.UMAP(
-                n_neighbors=min(15, len(features) - 1),
-                min_dist=0.1,
-                metric='euclidean',
-                low_memory=True,
-                n_jobs=-1,
-                n_components=self.n_components,
-                verbose=False
-            )
-
-            embedding = reducer.fit_transform(features)
-
-            # Reconstruct the metadata DataFrame
-            meta_df = pd.DataFrame(metadata)
-            meta_df['cluster_id'] = cluster_ids
-            
-            self.progress.emit(f"UMAP complete for {len(cluster_ids)} cells")
-            self.finished.emit(embedding, cluster_ids, meta_df)
-
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).exception("UMAP Worker failed")
-            self.error.emit(str(e))
 
 
 class UMAPPanel(QWidget):
@@ -164,6 +52,27 @@ class UMAPPanel(QWidget):
             "bg_panel": colors['bg_panel'],
         }
 
+        self._build_control_panel(colors)
+
+        # Plot Initialization
+        self.fig = Figure(facecolor=self._umap_colors['bg_panel'])
+        self.canvas = FigureCanvas(self.fig)
+        self.layout.addWidget(self.canvas)
+
+        # Initialize default 2D axes
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor(self._umap_colors['bg_panel'])
+
+        # NEW: Initialize empty selector state
+        self.current_selector = None
+
+        # Worker refs
+        self.worker_thread = None
+        self.worker = None
+        self.cluster_worker_thread = None
+        self.cluster_worker = None
+
+    def _build_control_panel(self, colors):
         # --- Controls Row 1 ---
         ctrl_layout = QHBoxLayout()
         self.run_btn = QPushButton("Run UMAP (2D)")
@@ -178,7 +87,7 @@ class UMAPPanel(QWidget):
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
-            ["KSLabel", "Polarity", "HDBSCAN", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
+            ["KSLabel", "Polarity", "Ward", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
         self.color_combo.currentTextChanged.connect(
             lambda: self.update_plot())
 
@@ -204,20 +113,13 @@ class UMAPPanel(QWidget):
 
         # Clustering controls
         self.cluster_method_combo = QComboBox()
-        self.cluster_method_combo.addItems(["HDBSCAN", "K-Means"])
-        if not HDBSCAN_AVAILABLE:
-            self.cluster_method_combo.model().item(0).setEnabled(False)
-            self.cluster_method_combo.setCurrentIndex(1)
-            
+        self.cluster_method_combo.addItems(["Ward", "K-Means"])
+
         self.cluster_param_spin = QSpinBox()
-        if self.cluster_method_combo.currentText() == "HDBSCAN":
-            self.cluster_param_spin.setRange(2, 200)
-            self.cluster_param_spin.setValue(15)
-        else:
-            self.cluster_param_spin.setRange(2, 100)
-            self.cluster_param_spin.setValue(5)
-            self.cluster_param_spin.setPrefix("k=")
-            
+        self.cluster_param_spin.setRange(2, 100)
+        self.cluster_param_spin.setValue(9)
+        self.cluster_param_spin.setPrefix("# Types: ")
+
         self.cluster_method_combo.currentIndexChanged.connect(self._on_cluster_method_changed)
 
         self.cluster_btn = QPushButton("Run Clustering")
@@ -248,35 +150,100 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
 
-        # Wrap both toolbar rows in a fixed-height container so QTabWidget
-        # first-show layout cannot collapse row 2 onto row 1.
+        # --- Controls Row 3 (Feature Selection & Weights Grid) ---
+        weights_group = QGroupBox("Feature Selection & Weights")
+        weights_grid = QGridLayout(weights_group)
+        weights_grid.setContentsMargins(6, 6, 6, 6)
+        weights_grid.setSpacing(6)
+
+        # Config map for features
+        self.feature_widgets = {}
+        features_info = [
+            ("Temporal STA", "use_temporal", "w_temporal", DEFAULT_WEIGHT_TEMPORAL),
+            ("ACG (Autocorrelogram)", "use_acg", "w_acg", DEFAULT_WEIGHT_ACG),
+            ("Firing Rate", "use_firing_rate", "w_firing_rate", DEFAULT_WEIGHT_FIRING_RATE),
+            ("ISI Violations", "use_isi_violations", "w_isi_violations", DEFAULT_WEIGHT_ISI_VIOLATIONS),
+            ("Time to Peak", "use_time_to_peak", "w_time_to_peak", DEFAULT_WEIGHT_TIME_TO_PEAK),
+            ("RF Area", "use_rf_area", "w_rf_area", DEFAULT_WEIGHT_RF_AREA),
+            ("Ellipticity", "use_ellipticity", "w_ellipticity", DEFAULT_WEIGHT_ELLIPTICITY),
+        ]
+
+        for idx, (label, use_key, w_key, default_w) in enumerate(features_info):
+            chk = QCheckBox(label)
+            chk.setChecked(True)
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 10.0)
+            spin.setSingleStep(0.1)
+            spin.setValue(default_w)
+            spin.setDecimals(1)
+            spin.setFixedWidth(60)
+            
+            # Connect checkbox to enable/disable spinbox
+            chk.toggled.connect(spin.setEnabled)
+
+            # Store widget references
+            self.feature_widgets[use_key] = (chk, spin, w_key)
+
+            # Add to grid layout (2 rows)
+            row = idx // 4
+            col = (idx % 4) * 2
+            weights_grid.addWidget(chk, row, col)
+            weights_grid.addWidget(spin, row, col + 1)
+
+        # --- Controls Row 4 (Pre-Filter Thresholds) ---
+        filter_group = QGroupBox("Quality Pre-Filtering")
+        filter_layout = QHBoxLayout(filter_group)
+        filter_layout.setContentsMargins(6, 6, 6, 6)
+        filter_layout.setSpacing(10)
+
+        # Min STA Std
+        filter_layout.addWidget(QLabel("Min STA Std:"))
+        self.min_sta_std_spin = QDoubleSpinBox()
+        self.min_sta_std_spin.setRange(0.0, 1.0)
+        self.min_sta_std_spin.setSingleStep(0.00001)
+        self.min_sta_std_spin.setValue(DEFAULT_MIN_STA_STD)
+        self.min_sta_std_spin.setDecimals(6)
+        self.min_sta_std_spin.setFixedWidth(90)
+        filter_layout.addWidget(self.min_sta_std_spin)
+
+        # Max RF Area
+        filter_layout.addWidget(QLabel("Max RF Area:"))
+        self.max_rf_area_spin = QDoubleSpinBox()
+        self.max_rf_area_spin.setRange(0.0, 9999.0)
+        self.max_rf_area_spin.setSingleStep(10.0)
+        self.max_rf_area_spin.setValue(DEFAULT_MAX_RF_AREA)
+        self.max_rf_area_spin.setDecimals(1)
+        self.max_rf_area_spin.setFixedWidth(80)
+        filter_layout.addWidget(self.max_rf_area_spin)
+        filter_layout.addStretch()
+
+        # Build final controls layout
         self.controls_widget = QWidget(self)
         controls_layout = QVBoxLayout(self.controls_widget)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
         controls_layout.addLayout(ctrl_layout)
         controls_layout.addLayout(cluster_layout)
+        controls_layout.addWidget(weights_group)
+        controls_layout.addWidget(filter_group)
+        
         self.controls_widget.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.layout.addWidget(self.controls_widget)
 
-        # Plot Initialization
-        self.fig = Figure(facecolor=self._umap_colors['bg_panel'])
-        self.canvas = FigureCanvas(self.fig)
-        self.layout.addWidget(self.canvas)
+    def get_feature_config(self):
+        config = {}
+        for use_key, (chk, spin, w_key) in self.feature_widgets.items():
+            config[use_key] = chk.isChecked()
+            config[w_key] = float(spin.value())
+        return config
 
-        # Initialize default 2D axes
-        self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor(self._umap_colors['bg_panel'])
+    def get_filter_config(self):
+        return {
+            'min_sta_std': float(self.min_sta_std_spin.value()),
+            'max_rf_area': float(self.max_rf_area_spin.value()),
+        }
 
-        # NEW: Initialize empty selector state
-        self.current_selector = None
-
-        # Worker refs
-        self.worker_thread = None
-        self.worker = None
-        self.cluster_worker_thread = None
-        self.cluster_worker = None
 
     def showEvent(self, event):
         """
@@ -430,6 +397,13 @@ class UMAPPanel(QWidget):
                                 f"Check the progress bar in the bottom right.")
             return
         self._reset_workers()
+        
+        # Verify at least one feature is enabled
+        feature_config = self.get_feature_config()
+        if not any(feature_config.get(k, False) for k in self.feature_widgets.keys()):
+            QMessageBox.warning(self, "No Features Selected", "Please select at least one feature to run UMAP.")
+            return
+
         self.run_btn.setEnabled(False)
         self.run_3d_btn.setEnabled(False)
         self.progress.show()
@@ -437,19 +411,26 @@ class UMAPPanel(QWidget):
 
         # Get selected cluster IDs
         selected_cluster_ids = self.get_selected_cluster_ids()
-        
-        if selected_cluster_ids is not None and len(selected_cluster_ids) < 5:
+        target_ids = selected_cluster_ids
+        if target_ids is None:
+            target_ids = list(dm.cluster_df['cluster_id'].values)
+            
+        if len(target_ids) < 5:
             self.run_btn.setEnabled(True)
             self.run_3d_btn.setEnabled(True)
             self.progress.hide()
             QMessageBox.warning(self, "Insufficient Selection", 
-                              f"Need at least 5 selected cells for UMAP. Only {len(selected_cluster_ids)} selected.")
+                              f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.")
             return
 
         self.worker_thread = QThread()
-        self.worker = UMAPWorker(self.main_window.data_manager, 
-                                selected_cluster_ids=selected_cluster_ids,
-                                n_components=2)
+        self.worker = UMAPWorker(
+            self.main_window.data_manager, 
+            selected_cluster_ids=selected_cluster_ids,
+            n_components=2,
+            feature_config=feature_config,
+            filter_config=self.get_filter_config()
+        )
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
@@ -471,6 +452,13 @@ class UMAPPanel(QWidget):
                                 f"Check the progress bar in the bottom right.")
             return
         self._reset_workers()
+        
+        # Verify at least one feature is enabled
+        feature_config = self.get_feature_config()
+        if not any(feature_config.get(k, False) for k in self.feature_widgets.keys()):
+            QMessageBox.warning(self, "No Features Selected", "Please select at least one feature to run UMAP.")
+            return
+
         self.run_btn.setEnabled(False)
         self.run_3d_btn.setEnabled(False)
         self.progress.show()
@@ -478,19 +466,26 @@ class UMAPPanel(QWidget):
 
         # Get selected cluster IDs
         selected_cluster_ids = self.get_selected_cluster_ids()
-        
-        if selected_cluster_ids is not None and len(selected_cluster_ids) < 5:
+        target_ids = selected_cluster_ids
+        if target_ids is None:
+            target_ids = list(dm.cluster_df['cluster_id'].values)
+            
+        if len(target_ids) < 5:
             self.run_btn.setEnabled(True)
             self.run_3d_btn.setEnabled(True)
             self.progress.hide()
             QMessageBox.warning(self, "Insufficient Selection", 
-                              f"Need at least 5 selected cells for UMAP. Only {len(selected_cluster_ids)} selected.")
+                              f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.")
             return
 
         self.worker_thread = QThread()
-        self.worker = UMAPWorker(self.main_window.data_manager, 
-                                selected_cluster_ids=selected_cluster_ids,
-                                n_components=3)
+        self.worker = UMAPWorker(
+            self.main_window.data_manager, 
+            selected_cluster_ids=selected_cluster_ids,
+            n_components=3,
+            feature_config=feature_config,
+            filter_config=self.get_filter_config()
+        )
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
@@ -501,17 +496,12 @@ class UMAPPanel(QWidget):
         self.worker_thread.start()
 
     def _on_cluster_method_changed(self):
-        if self.cluster_method_combo.currentText() == "HDBSCAN":
-            self.cluster_param_spin.setPrefix("")
-            self.cluster_param_spin.setRange(2, 200)
-            self.cluster_param_spin.setValue(15)
-        else:
-            self.cluster_param_spin.setRange(2, 100)
-            self.cluster_param_spin.setValue(5)
-            self.cluster_param_spin.setPrefix("k=")
+        # Both Ward and K-Means use the same n_clusters parameter.
+        self.cluster_param_spin.setRange(2, 100)
+        self.cluster_param_spin.setPrefix("# Types: ")
 
     def run_clustering(self):
-        if self.embedding is None:
+        if getattr(self, 'feature_matrix', None) is None:
             QMessageBox.warning(self, "No Data", "Please run UMAP first.")
             return
 
@@ -523,7 +513,7 @@ class UMAPPanel(QWidget):
         param = self.cluster_param_spin.value()
 
         self.cluster_worker_thread = QThread()
-        self.cluster_worker = ClusterWorker(self.embedding, method, param)
+        self.cluster_worker = ClusterWorker(self.feature_matrix, method, param)
         self.cluster_worker.moveToThread(self.cluster_worker_thread)
 
         self.cluster_worker_thread.started.connect(self.cluster_worker.run)
@@ -558,10 +548,12 @@ class UMAPPanel(QWidget):
             self.cluster_worker_thread = None
         self.cluster_worker = None
 
-    def on_processing_finished(self, embedding, ids, metadata):
+    def on_processing_finished(self, embedding, matrix, valid_ids, discarded_ids, metadata):
         self.embedding = np.asarray(embedding)
-        self.cluster_ids = np.array(ids)
+        self.feature_matrix = np.asarray(matrix)
+        self.cluster_ids = np.array(valid_ids)
         self.metadata_df = metadata
+        self.discarded_ids = np.array(discarded_ids)
 
         # Determine if result is 3D
         self.is_3d = (self.embedding.shape[1] == 3)
@@ -573,7 +565,7 @@ class UMAPPanel(QWidget):
         self.show_ids_btn.setEnabled(True)
         self.cluster_btn.setEnabled(True)
 
-        # Clean up worker thread gracefully (don't reset here, just clean up the thread ref)
+        # Clean up worker thread gracefully
         if self.worker_thread:
             self.worker_thread.quit()
             self.worker_thread.wait(500)
@@ -584,8 +576,17 @@ class UMAPPanel(QWidget):
         
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
         selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
+        
+        # Display weights used in status bar
+        weight_strs = []
+        for use_key, (chk, spin, w_key) in self.feature_widgets.items():
+            if chk.isChecked():
+                name_short = use_key.replace("use_", "")
+                weight_strs.append(f"{name_short}={spin.value():.1f}")
+        weights_summary = ", ".join(weight_strs)
+
         self.main_window.status_bar.showMessage(
-            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells. (Shape={W_SHAPE}, Pattern={W_PATTERN}, Geo={W_GEOMETRY})")
+            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells (discarded {len(self.discarded_ids)}). Features: {weights_summary}")
 
     def on_cluster_finished(self, labels, method_name):
         self.metadata_df[method_name] = labels
@@ -619,7 +620,7 @@ class UMAPPanel(QWidget):
                     continue  # Skip noise points
                 subset_indices = np.where(labels == lbl)[0]
                 group_cluster_ids = self.cluster_ids[subset_indices]
-                group_name = f"Type_{lbl+1}" if method_name == "K-Means" else f"Cluster_{lbl}"
+                group_name = f"Type_{lbl+1}" if method_name in ("K-Means", "Ward") else f"Cluster_{lbl}"
                 
                 # Use our safe, in-place tree modifier!
                 group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
@@ -739,20 +740,11 @@ class UMAPPanel(QWidget):
                 is_discrete = True
             else:
                 c = colors['text_secondary']
-        elif mode == "HDBSCAN":
-            if 'HDBSCAN' in self.metadata_df:
-                raw_labels = self.metadata_df['HDBSCAN'].values
-                unique_non_noise = np.unique(raw_labels[raw_labels >= 0])
-                n_types = max(len(unique_non_noise), 1)
-                cmap_fn = plt.cm.get_cmap('tab20', n_types)
-                color_array = []
-                for lbl in raw_labels:
-                    if lbl == -1:
-                        color_array.append('#888888')
-                    else:
-                        idx = np.searchsorted(unique_non_noise, lbl)
-                        color_array.append(cmap_fn(idx % n_types))
-                c = color_array
+        elif mode == "Ward":
+            if 'Ward' in self.metadata_df:
+                # Ward produces clean integer labels 0..n_clusters-1, no noise.
+                c = self.metadata_df['Ward'].values
+                cmap = 'tab20'
                 is_discrete = True
             else:
                 c = colors['text_secondary']
@@ -803,7 +795,7 @@ class UMAPPanel(QWidget):
             self.ax.grid(True, color=colors['border_subtle'],
                          linestyle=':', alpha=0.5, zorder=0)
 
-        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "HDBSCAN" and is_discrete):
+        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "Ward" and is_discrete):
             self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
             # Style colorbar ticks
             if self.cbar:
@@ -829,11 +821,11 @@ class UMAPPanel(QWidget):
             return
 
         mode = self.color_combo.currentText()
-        if mode not in ["KSLabel", "K-Means", "Polarity", "HDBSCAN"]:
+        if mode not in ["KSLabel", "K-Means", "Polarity", "Ward"]:
             QMessageBox.information(
                 self,
                 "Info",
-                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, HDBSCAN).")
+                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, Ward).")
             return
 
         if mode not in self.metadata_df:

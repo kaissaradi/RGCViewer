@@ -1242,6 +1242,11 @@ class MainWindow(QMainWindow):
             cid = self._get_selected_cluster_id()
             if cid is not None:
                 self.standard_plots_panel.update_all(cid)
+
+        # Also push to the EI panel so Photo overlay is immediately available
+        if hasattr(self, 'ei_panel'):
+            self.ei_panel.refresh_array_image(transform_path)
+
         self.status_bar.showMessage(f"Array transform saved: {transform_path}", 4000)
 
     def toggle_population_split_view(self, checked: bool):

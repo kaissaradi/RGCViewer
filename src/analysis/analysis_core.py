@@ -418,6 +418,364 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
 
 
 # ---------------------------------------------------------------------------
+# EI spatial waveform plot
+# ---------------------------------------------------------------------------
+
+def plot_ei_waveforms(
+    ei,
+    positions,
+    ref_channel=None,
+    scale=1.0,
+    ax=None,
+    colors='white',
+    alpha=1.0,
+    linewidth=0.5,
+    box_height=None,
+    box_width=None,
+    aspect=1.0,
+    min_global_max=None,
+):
+    """
+    Paint one or more EI waveforms onto a matplotlib Axes at their spatial
+    electrode positions.  Designed to be called on an existing Axes that
+    already shows a photo underlay and electrode scatter — waveforms are
+    drawn in data (micron) space so they register correctly.
+
+    Parameters
+    ----------
+    ei : np.ndarray or list of np.ndarray
+        Shape (n_ch, T) per array.  All arrays must share the same n_ch and T.
+    positions : np.ndarray
+        Shape (n_ch, 2), electrode xy positions in microns.  Row i must
+        correspond to ei[i, :].
+    ref_channel : int, optional
+        Channel index to highlight (thicker, fully opaque trace).
+    scale : float
+        Vertical scaling relative to box_height.  1.0 = largest waveform
+        fills the box exactly.
+    ax : matplotlib.axes.Axes, optional
+        Target axes.  Defaults to plt.gca().
+    colors : str or list of str
+        Single colour or one colour per EI array.
+    alpha : float or list of float
+        Global alpha, or one value per EI array.
+    linewidth : float or list of float
+        Line width, or one value per EI array.
+    box_height : float, optional
+        Vertical extent of each waveform box in microns.  Defaults to 80 % of
+        the median nearest-neighbour y-spacing so it is derived automatically
+        from the actual array geometry rather than hardcoded.
+    box_width : float, optional
+        Horizontal extent of the waveform time axis in microns.  Defaults to
+        the same value as box_height.
+    aspect : float
+        Axes aspect ratio passed to ax.set_aspect().
+    min_global_max : float, optional
+        Floor for the global absolute maximum used in normalisation.  Useful
+        to prevent tiny-amplitude noise channels from dominating.
+
+    Notes
+    -----
+    * Pure numpy/matplotlib — no Qt, no I/O.
+    * Does not call ax.set_xlim / ax.set_ylim so the caller's axis limits are
+      preserved.  The caller should set limits before calling this function.
+    * Returns the list of Line2D artists added so the caller can remove them
+      later (e.g. on the next selection change).
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.error("matplotlib is required for plot_ei_waveforms")
+        return []
+
+    if ax is None:
+        ax = plt.gca()
+
+    # ── derive box geometry from array spacing if not supplied ───────────────
+    if box_height is None:
+        y_vals = np.unique(positions[:, 1])
+        if len(y_vals) >= 2:
+            spacing = float(np.median(np.diff(np.sort(y_vals))))
+        else:
+            spacing = 30.0   # safe fallback
+        box_height = spacing * 0.8
+
+    if box_width is None:
+        box_width = box_height
+
+    # ── normalise inputs ─────────────────────────────────────────────────────
+    if isinstance(ei, np.ndarray):
+        eis = [ei]
+    else:
+        eis = list(ei)
+
+    if isinstance(colors, str):
+        colors = [colors] * len(eis)
+    if not isinstance(alpha, (list, np.ndarray)):
+        alpha = [alpha] * len(eis)
+    if not isinstance(linewidth, (list, np.ndarray)):
+        linewidth = [linewidth] * len(eis)
+
+    # ── global amplitude normalisation ───────────────────────────────────────
+    observed_max = max(float(np.max(np.abs(e))) for e in eis)
+    if min_global_max is not None:
+        global_max = max(observed_max, float(min_global_max))
+    else:
+        global_max = observed_max
+
+    if global_max <= 0:
+        return []
+
+    # time axis in micron units, centred on the electrode x position
+    t = np.linspace(-0.5, 0.5, eis[0].shape[1]) * box_width
+
+    added_artists = []
+
+    for ei_array, color, this_alpha, this_lw in zip(eis, colors, alpha, linewidth):
+        norm_ei = (ei_array / global_max) * scale * box_height
+
+        # per-channel peak-to-peak for dimming near-silent channels
+        p2ps = norm_ei.max(axis=1) - norm_ei.min(axis=1)
+        p2p_thresh = 0.05 * p2ps.max()
+
+        for i in range(ei_array.shape[0]):
+            if i >= len(positions):
+                break   # guard against shape mismatch
+            x_offset, y_offset = positions[i]
+
+            if p2ps[i] < p2p_thresh:
+                ch_alpha = 0.25
+                ch_lw    = 0.3
+            else:
+                ch_alpha = this_alpha
+                ch_lw    = this_lw
+
+            if ref_channel is not None and int(i) == int(ref_channel):
+                ch_alpha = 1.0
+                ch_lw    = this_lw * 3
+
+            lines = ax.plot(
+                t + x_offset,
+                norm_ei[i] + y_offset,
+                color=color,
+                alpha=ch_alpha,
+                linewidth=ch_lw,
+                zorder=7,      # above photo (0), scatter (2), lasso poly (4)
+                rasterized=True,
+            )
+            added_artists.extend(lines)
+
+    return added_artists
+
+
+# ---------------------------------------------------------------------------
+# Dynamic clustering helpers — pure numpy, no Qt, no I/O
+# ---------------------------------------------------------------------------
+
+def peak_align_timecourse(tc):
+    """
+    Shift a 1-D timecourse so its absolute peak sits at the centre index.
+
+    If the timecourse is flat (``np.std(tc) < DEFAULT_MIN_STA_STD``), a copy
+    is returned unchanged — ``np.roll`` is **not** applied because argmax on
+    a constant array is arbitrary and would introduce meaningless jitter.
+
+    Parameters
+    ----------
+    tc : np.ndarray
+        1-D array — the temporal STA trace for one cell.
+
+    Returns
+    -------
+    np.ndarray
+        Aligned *copy* of *tc*.  The original is never mutated.
+    """
+    from .constants import DEFAULT_MIN_STA_STD
+
+    tc = np.asarray(tc, dtype=np.float64).copy()
+    if tc.ndim != 1 or len(tc) == 0:
+        return tc
+
+    if np.std(tc) < DEFAULT_MIN_STA_STD:
+        return tc                       # flat — nothing to align
+
+    centre = len(tc) // 2
+    peak_idx = int(np.argmax(np.abs(tc)))
+    shift = centre - peak_idx
+    if shift != 0:
+        tc = np.roll(tc, shift)
+    return tc
+
+
+def apply_prefilter(physics_entries, filter_config):
+    """
+    Partition cluster IDs into valid and discarded based on thresholds.
+
+    A cell is discarded when **any** of the following hold:
+
+    * ``physics['timecourse']`` is ``None``
+    * ``np.std(physics['timecourse']) < filter_config['min_sta_std']``
+    * ``physics['rf_area'] > filter_config['max_rf_area']``
+
+    Parameters
+    ----------
+    physics_entries : dict
+        ``{cluster_id: physics_dict}`` where each physics_dict has at least
+        keys ``'timecourse'`` (1-D array or None) and ``'rf_area'`` (float).
+    filter_config : dict
+        ``{'min_sta_std': float, 'max_rf_area': float}``
+
+    Returns
+    -------
+    (valid_ids, discarded_ids) : (list[int], list[int])
+        Both lists are sorted for deterministic ordering.
+    """
+    min_sta_std = filter_config.get('min_sta_std', 1e-5)
+    max_rf_area = filter_config.get('max_rf_area', 300.0)
+
+    valid_ids = []
+    discarded_ids = []
+
+    for cid, phys in physics_entries.items():
+        tc = phys.get('timecourse')
+
+        # --- reject if timecourse is missing or flat ---
+        if tc is None:
+            discarded_ids.append(cid)
+            continue
+
+        tc = np.asarray(tc, dtype=np.float64)
+        if np.std(tc) < min_sta_std:
+            discarded_ids.append(cid)
+            continue
+
+        # --- reject if RF area is too large ---
+        rf_area = float(phys.get('rf_area', 0.0))
+        if rf_area > max_rf_area:
+            discarded_ids.append(cid)
+            continue
+
+        valid_ids.append(cid)
+
+    return sorted(valid_ids), sorted(discarded_ids)
+
+
+def build_feature_matrix(raw_blocks, feature_config):
+    """
+    Transform raw feature arrays into a weighted, PCA-reduced feature matrix.
+
+    Pipeline
+    --------
+    1. **Temporal STA** (if enabled): peak-align each row via
+       :func:`peak_align_timecourse`, PCA to ``TEMPORAL_PCA_COMPONENTS``
+       components, multiply by ``w_temporal``.
+    2. **ACG** (if enabled): PCA to ``ACG_PCA_COMPONENTS`` components,
+       multiply by ``w_acg``.
+    3. **Scalars** (each independently toggleable): ``RobustScaler``, multiply
+       by the per-feature weight.
+    4. ``np.hstack`` all enabled blocks.
+
+    Parameters
+    ----------
+    raw_blocks : dict
+        ``{'temporal': np.ndarray (N, T),
+          'acg':       np.ndarray (N, A),
+          'scalars':   pd.DataFrame (N rows)}``
+    feature_config : dict
+        Boolean ``use_*`` flags and float ``w_*`` weights for every feature.
+
+    Returns
+    -------
+    (matrix, column_labels) : (np.ndarray (N, D), list[str])
+
+    Raises
+    ------
+    ValueError
+        If all features are disabled (D would be 0).
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import RobustScaler, StandardScaler
+    from .constants import TEMPORAL_PCA_COMPONENTS, ACG_PCA_COMPONENTS
+
+    N = raw_blocks['temporal'].shape[0]   # guaranteed same N across all blocks
+    blocks = []
+    labels = []
+
+    # ── Temporal STA ─────────────────────────────────────────────────────────
+    if feature_config.get('use_temporal', True):
+        w = feature_config.get('w_temporal', 3.0)
+        tc_matrix = raw_blocks['temporal'].copy()
+
+        # Peak-align each row
+        for i in range(tc_matrix.shape[0]):
+            tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
+
+        n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
+        if n_comp >= 1:
+            tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
+            # Z-score each PC independently so weight sliders have a
+            # consistent meaning across feature groups (unit variance
+            # before the user weight is applied).
+            tc_pca = StandardScaler().fit_transform(tc_pca)
+            blocks.append(tc_pca * w)
+            labels.extend([f'tc_pc{j}' for j in range(n_comp)])
+
+    # ── ACG ──────────────────────────────────────────────────────────────────
+    if feature_config.get('use_acg', True):
+        w = feature_config.get('w_acg', 2.0)
+        acg_matrix = raw_blocks['acg'].copy()
+
+        n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
+        if n_comp >= 1:
+            acg_pca = PCA(n_components=n_comp).fit_transform(acg_matrix)
+            # Z-score so ACG PCs are on the same scale as temporal PCs
+            # and scalar features — weight slider is then interpretable.
+            acg_pca = StandardScaler().fit_transform(acg_pca)
+            blocks.append(acg_pca * w)
+            labels.extend([f'acg_pc{j}' for j in range(n_comp)])
+
+    # ── Scalar features ──────────────────────────────────────────────────────
+    scalar_features = [
+        ('firing_rate',     'use_firing_rate',     'w_firing_rate',     1.5),
+        ('isi_violations',  'use_isi_violations',  'w_isi_violations',  1.0),
+        ('time_to_peak',    'use_time_to_peak',    'w_time_to_peak',    1.0),
+        ('rf_area',         'use_rf_area',         'w_rf_area',         1.0),
+        ('ellipticity',     'use_ellipticity',     'w_ellipticity',     1.0),
+    ]
+
+    scalars_df = raw_blocks['scalars']
+    enabled_scalars = []
+    scalar_weights = []
+    scalar_labels = []
+
+    for col, use_key, w_key, default_w in scalar_features:
+        if feature_config.get(use_key, True) and col in scalars_df.columns:
+            vals = scalars_df[col].fillna(0.0).values.astype(np.float64)
+            enabled_scalars.append(vals.reshape(-1, 1))
+            scalar_weights.append(feature_config.get(w_key, default_w))
+            scalar_labels.append(col)
+
+    if enabled_scalars:
+        scalar_block = np.hstack(enabled_scalars)
+        scalar_block = RobustScaler().fit_transform(scalar_block)
+        # Apply per-column weights
+        for j, w in enumerate(scalar_weights):
+            scalar_block[:, j] *= w
+        blocks.append(scalar_block)
+        labels.extend(scalar_labels)
+
+    # ── Assembly ─────────────────────────────────────────────────────────────
+    if not blocks:
+        raise ValueError(
+            "All features are disabled — cannot build a feature matrix with "
+            "zero dimensions. Enable at least one feature."
+        )
+
+    matrix = np.hstack(blocks)
+    return matrix, labels
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -429,4 +787,8 @@ __all__ = [
     'get_sta_timecourse_data',
     'compute_sta_metrics',
     'compute_spatial_features',
+    'plot_ei_waveforms',
+    'peak_align_timecourse',
+    'apply_prefilter',
+    'build_feature_matrix',
 ]

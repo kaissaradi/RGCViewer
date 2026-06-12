@@ -658,7 +658,24 @@ class DataManager(QObject):
             ei_bundle = vision_data.get('ei')
             if ei_bundle:
                 self.vision_eis = ei_bundle.get('ei_data')
-                self.vision_channel_positions = ei_bundle.get('electrode_map')
+                _raw_elec_map = ei_bundle.get('electrode_map')
+                if _raw_elec_map is not None and isinstance(_raw_elec_map, np.ndarray):
+                    if not np.all(np.isfinite(_raw_elec_map)):
+                        logger.warning(
+                            "EI electrode_map contains non-finite coordinates; "
+                            "discarding vision_channel_positions to prevent UI crash."
+                        )
+                    elif np.max(np.abs(_raw_elec_map)) > 100_000:
+                        logger.warning(
+                            "EI electrode_map coordinates unreasonably large "
+                            "(>100 000 µm); discarding vision_channel_positions."
+                        )
+                    else:
+                        self.vision_channel_positions = _raw_elec_map
+                        logger.debug(
+                            "vision_channel_positions set: shape=%s",
+                            self.vision_channel_positions.shape,
+                        )
                 if self.vision_eis:
                     logger.debug(
                         "Available Vision EI IDs (sample): %s",
@@ -767,8 +784,24 @@ class DataManager(QObject):
                 ei_bundle = vision_data.get("ei")
                 if ei_bundle:
                     self.vision_eis = ei_bundle.get("ei_data")
-                    self.vision_channel_positions = ei_bundle.get(
-                        "electrode_map")
+                    _raw_elec_map = ei_bundle.get("electrode_map")
+                    if _raw_elec_map is not None and isinstance(_raw_elec_map, np.ndarray):
+                        if not np.all(np.isfinite(_raw_elec_map)):
+                            logger.warning(
+                                "EI electrode_map (partial load) contains non-finite "
+                                "coordinates; discarding vision_channel_positions."
+                            )
+                        elif np.max(np.abs(_raw_elec_map)) > 100_000:
+                            logger.warning(
+                                "EI electrode_map (partial load) coordinates unreasonably "
+                                "large (>100 000 µm); discarding vision_channel_positions."
+                            )
+                        else:
+                            self.vision_channel_positions = _raw_elec_map
+                            logger.debug(
+                                "vision_channel_positions set (partial load): shape=%s",
+                                self.vision_channel_positions.shape,
+                            )
 
                 self.vision_stas = vision_data.get("sta")
                 self.vision_params = vision_data.get("params")
@@ -855,6 +888,13 @@ class DataManager(QObject):
                 else:
                     self.channel_positions = raw_positions
                     self.n_channels = self.channel_positions.shape[0]
+                    # Mirror into vision_channel_positions so _resolve_channel_positions()
+                    # returns consistent positions in vision-only mode.
+                    self.vision_channel_positions = self.channel_positions
+                    logger.debug(
+                        "vision_channel_positions mirrored from .globals: shape=%s",
+                        self.vision_channel_positions.shape,
+                    )
         except Exception as e:
             logging.warning(f"Could not load .globals file for array geometry: {e}")
 
@@ -1733,6 +1773,136 @@ class DataManager(QObject):
                         cid,
                         exc_info=True,
                     )
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+
+        if not valid_ids:
+            empty_blocks = {
+                'temporal': np.empty((0, 0)),
+                'acg':      np.empty((0, 0)),
+                'scalars':  pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        scalar_rows = []
+
+        # Compute mean firing rate from spike counts and recording duration.
+        # spike_times is monotonically sorted (Architecture Invariant 1), so
+        # duration = (last - first) / sampling_rate.
+        recording_duration_sec = 0.0
+        if (hasattr(self, 'spike_times') and self.spike_times is not None
+                and len(self.spike_times) > 1):
+            sr = float(getattr(self, 'sampling_rate', 30000.0))
+            recording_duration_sec = float(
+                self.spike_times[-1] - self.spike_times[0]
+            ) / sr
+
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+
+            # Timecourse — must copy to prevent np.roll from mutating cache
+            tc = np.array(phys['timecourse'], dtype=np.float64).copy()
+            tc_list.append(tc)
+
+            # ACG — copy for safety
+            acg = phys.get('acg')
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+
+            # Scalar features
+            rf_area = float(phys.get('rf_area', 0.0))
+            ellipticity = float(phys.get('ellipticity', 0.0))
+            time_to_peak = float(phys.get('time_to_peak', 0))
+
+            # Firing rate: n_spikes / recording duration
+            firing_rate = 0.0
+            if recording_duration_sec > 0:
+                n_spikes = len(self.get_cluster_spike_indices(cid))
+                firing_rate = n_spikes / recording_duration_sec
+
+            # ISI violations: read from cluster_df
+            isi_violations = 0.0
+            if not self.cluster_df.empty and 'isi_violations_pct' in self.cluster_df.columns:
+                row = self.cluster_df.loc[
+                    self.cluster_df['cluster_id'] == cid, 'isi_violations_pct'
+                ]
+                if not row.empty:
+                    isi_violations = float(row.iloc[0])
+
+            scalar_rows.append({
+                'firing_rate': firing_rate,
+                'isi_violations': isi_violations,
+                'time_to_peak': time_to_peak,
+                'rf_area': rf_area,
+                'ellipticity': ellipticity,
+            })
+
+        # 4. Pad/truncate to uniform length
+        max_tc = max(len(t) for t in tc_list)
+        tc_mat = np.array([
+            np.pad(t, (0, max_tc - len(t))) if len(t) < max_tc else t[:max_tc]
+            for t in tc_list
+        ])
+
+        max_acg = max(len(a) for a in acg_list)
+        acg_mat = np.array([
+            np.pad(a, (0, max_acg - len(a))) if len(a) < max_acg else a[:max_acg]
+            for a in acg_list
+        ])
+
+        scalars_df = pd.DataFrame(scalar_rows, index=range(len(valid_ids)))
+
+        raw_blocks = {
+            'temporal': tc_mat,
+            'acg': acg_mat,
+            'scalars': scalars_df,
+        }
+        return raw_blocks, valid_ids, discarded_ids
 
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
