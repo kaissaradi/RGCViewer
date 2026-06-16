@@ -1183,7 +1183,7 @@ class MainWindow(QMainWindow):
         self.load_vision_action.setEnabled(True)
         
         self.load_classification_action = file_menu.addAction("&Load Classification File...")
-        self.load_classification_action.setEnabled(False)
+        self.load_classification_action.setEnabled(True)
         
         self.save_classification_action = file_menu.addAction("Save Classification Text File...")
         self.save_classification_action.setEnabled(False)
