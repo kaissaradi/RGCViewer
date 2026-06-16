@@ -613,9 +613,15 @@ def apply_prefilter(physics_entries, filter_config):
 
     A cell is discarded when **any** of the following hold:
 
-    * ``physics['timecourse']`` is ``None``
-    * ``np.std(physics['timecourse']) < filter_config['min_sta_std']``
-    * ``physics['rf_area'] > filter_config['max_rf_area']``
+    * ``physics['timecourse']`` is not None AND
+      ``np.std(physics['timecourse']) < filter_config['min_sta_std']``
+      (STA exists but is flat/uninformative — likely a noise unit)
+    * ``physics['rf_area'] > 0`` AND
+      ``physics['rf_area'] > filter_config['max_rf_area']``
+
+    Note: ``timecourse is None`` is **not** a rejection criterion.
+    Cells without STA data (Vision .sta file absent, or cell not fitted)
+    are included and embedded using ACG + scalar features only.
 
     Parameters
     ----------
@@ -639,19 +645,20 @@ def apply_prefilter(physics_entries, filter_config):
     for cid, phys in physics_entries.items():
         tc = phys.get('timecourse')
 
-        # --- reject if timecourse is missing or flat ---
-        if tc is None:
-            discarded_ids.append(cid)
-            continue
+        # --- reject only if STA exists but is flat/uninformative ---
+        # timecourse=None means no STA data, which is fine — cell still
+        # contributes ACG + scalar features to the embedding.
+        if tc is not None:
+            tc = np.asarray(tc, dtype=np.float64)
+            if np.std(tc) < min_sta_std:
+                discarded_ids.append(cid)
+                continue
 
-        tc = np.asarray(tc, dtype=np.float64)
-        if np.std(tc) < min_sta_std:
-            discarded_ids.append(cid)
-            continue
-
-        # --- reject if RF area is too large ---
+        # --- reject if RF area is explicitly fitted and too large ---
+        # rf_area=0.0 is the default when no fit exists, not a real measurement,
+        # so skip the area gate entirely when area is zero.
         rf_area = float(phys.get('rf_area', 0.0))
-        if rf_area > max_rf_area:
+        if rf_area > 0.0 and rf_area > max_rf_area:
             discarded_ids.append(cid)
             continue
 
@@ -706,19 +713,31 @@ def build_feature_matrix(raw_blocks, feature_config):
         w = feature_config.get('w_temporal', 3.0)
         tc_matrix = raw_blocks['temporal'].copy()
 
-        # Peak-align each row
-        for i in range(tc_matrix.shape[0]):
-            tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
+        # Guard: skip the entire temporal block when no STA data is available.
+        # get_raw_feature_blocks fills timecourse=None cells with a zero-length
+        # sentinel row; after padding they become all-zero rows of width 1.
+        # np.std==0 on such a matrix means PCA and StandardScaler would either
+        # produce NaNs (zero-variance columns) or meaningless components.
+        sta_available = tc_matrix.shape[1] > 1 and np.std(tc_matrix) > 0
+        if sta_available:
+            # Peak-align each row
+            for i in range(tc_matrix.shape[0]):
+                tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
 
-        n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
-        if n_comp >= 1:
-            tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
-            # Z-score each PC independently so weight sliders have a
-            # consistent meaning across feature groups (unit variance
-            # before the user weight is applied).
-            tc_pca = StandardScaler().fit_transform(tc_pca)
-            blocks.append(tc_pca * w)
-            labels.extend([f'tc_pc{j}' for j in range(n_comp)])
+            n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
+            if n_comp >= 1:
+                tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
+                # Z-score each PC independently so weight sliders have a
+                # consistent meaning across feature groups (unit variance
+                # before the user weight is applied).
+                tc_pca = StandardScaler().fit_transform(tc_pca)
+                blocks.append(tc_pca * w)
+                labels.extend([f'tc_pc{j}' for j in range(n_comp)])
+        else:
+            logger.debug(
+                "build_feature_matrix: skipping temporal STA block — "
+                "no STA data available (all timecourses are None)."
+            )
 
     # ── ACG ──────────────────────────────────────────────────────────────────
     if feature_config.get('use_acg', True):
