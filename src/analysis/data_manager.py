@@ -1842,8 +1842,16 @@ class DataManager(QObject):
         for cid in valid_ids:
             phys = physics_entries[cid]
 
-            # Timecourse — must copy to prevent np.roll from mutating cache
-            tc = np.array(phys['timecourse'], dtype=np.float64).copy()
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get('timecourse')
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
             tc_list.append(tc)
 
             # ACG — copy for safety
@@ -1883,11 +1891,17 @@ class DataManager(QObject):
             })
 
         # 4. Pad/truncate to uniform length
-        max_tc = max(len(t) for t in tc_list)
-        tc_mat = np.array([
-            np.pad(t, (0, max_tc - len(t))) if len(t) < max_tc else t[:max_tc]
-            for t in tc_list
-        ])
+        max_tc = max((len(t) for t in tc_list), default=0)
+        if max_tc == 0:
+            # All cells have timecourse=None (no STA data at all).
+            # Fill with a single zero column so tc_mat has a consistent shape;
+            # build_feature_matrix will detect np.std==0 and skip temporal PCA.
+            tc_mat = np.zeros((len(valid_ids), 1), dtype=np.float64)
+        else:
+            tc_mat = np.array([
+                np.pad(t, (0, max_tc - len(t))) if len(t) < max_tc else t[:max_tc]
+                for t in tc_list
+            ])
 
         max_acg = max(len(a) for a in acg_list)
         acg_mat = np.array([
