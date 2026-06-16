@@ -6,7 +6,7 @@ scikit-learn
 scipy
 
 # GUI & Visualization
-PyQt5
+PyQt6
 pyqtgraph
 QtPy
 
