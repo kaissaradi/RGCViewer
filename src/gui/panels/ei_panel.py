@@ -378,6 +378,8 @@ class EIPanel(QWidget):
         vision_ids = cluster_ids + 1
 
         self._stop_animation()
+        dm = self.main_window.data_manager
+        vision_ids = np.array([dm.get_vision_id_for_cluster(c) for c in cluster_ids])
 
         try:
             has_vision = (
@@ -434,6 +436,8 @@ class EIPanel(QWidget):
     # -----------------------------------------------------------------------
 
     def _load_vision_ei(self, cluster_ids: np.ndarray):
+        dm = self.main_window.data_manager
+        vision_ids = np.array([dm.get_vision_id_for_cluster(c) for c in cluster_ids])
         vision_ids = cluster_ids + 1
         valid_ei, valid_orig = [], []
 

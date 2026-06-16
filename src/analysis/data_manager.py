@@ -2916,3 +2916,9 @@ class DataManager(QObject):
 
         self.vision_sim_cache[cache_key] = result_df
         return result_df.copy()
+    
+    def get_vision_id_for_cluster(self, cluster_id: int) -> int:
+        """Translate UI cluster_id → Vision file key, respecting is_vision_only."""
+        if getattr(self, 'is_vision_only', False):
+            return int(cluster_id)
+        return int(cluster_id) + 1

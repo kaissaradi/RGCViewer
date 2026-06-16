@@ -271,6 +271,12 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
             main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
 
         def _on_standard_plots_done():
+            # Disconnect immediately so it only fires once
+            try:
+                main_window.standard_plots_worker.all_done.disconnect(_on_standard_plots_done)
+            except RuntimeError:
+                pass
+                
             # StandardPlotsWorker has finished — feature_cache has all ACGs.
             # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
             main_window.cache_progress_count = 0
@@ -279,11 +285,7 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
             start_cache_progress_polling(main_window)
             threading.Thread(target=_warm_physics, daemon=True).start()
 
-        # Connect once — Qt.SingleShotConnection so it doesn't fire again if
-        # Vision reloads in the same session.
-        main_window.standard_plots_worker.all_done.connect(
-            _on_standard_plots_done, Qt.ConnectionType.SingleShotConnection
-        )
+        main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
 
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""

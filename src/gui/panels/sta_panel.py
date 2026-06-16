@@ -374,7 +374,7 @@ class STAPanel(QWidget):
             self._clear_all()
             return
 
-        vision_id = cluster_id + 1
+        vision_id = dm.get_vision_id_for_cluster(cluster_id)
         if vision_id not in dm.vision_stas:
             self._clear_all()
             return
@@ -420,7 +420,7 @@ class STAPanel(QWidget):
         n_frames = sta_data.red.shape[2]
         self.current_sta_data       = sta_data
         self.current_stafit         = stafit
-        self.current_sta_cluster_id = vision_id
+        self.current_sta_cluster_id = cluster_id
         self.total_sta_frames       = n_frames
         self._current_metrics       = metrics
 
