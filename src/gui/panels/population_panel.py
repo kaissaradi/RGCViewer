@@ -479,33 +479,61 @@ def _build_ellipse_collection(xyw_angle_list, edgecolor, alpha, lw, zorder):
     return ec
 
 
+def _tight_limits(ellipses, frac_margin=0.05):
+    """
+    Return (xmin, xmax, ymin, ymax) that tightly encloses a list of
+    (cx, cy, w, h, angle_deg) ellipse tuples, using the semi-axes as radii.
+    A fractional margin (fraction of the span) is added on each side so that
+    the outermost ellipses are not clipped.  Returns None when the list is empty.
+    """
+    if not ellipses:
+        return None
+    arr = np.array(ellipses)          # (N, 5): cx cy w h angle
+    cx, cy = arr[:, 0], arr[:, 1]
+    rx, ry = arr[:, 2] / 2.0, arr[:, 3] / 2.0   # semi-axes (w/h are full diameters)
+    x_lo, x_hi = np.min(cx - rx), np.max(cx + rx)
+    y_lo, y_hi = np.min(cy - ry), np.max(cy + ry)
+    mx = max((x_hi - x_lo) * frac_margin, 5.0)   # never less than 5 µm
+    my = max((y_hi - y_lo) * frac_margin, 5.0)
+    return x_lo - mx, x_hi + mx, y_lo - my, y_hi + my
+
+
 def plot_population_rfs_background(ax, vision_params, main_window, sta_height, subset_cell_ids, colors):
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
     is_vision_only = getattr(main_window.data_manager, 'is_vision_only', False)
 
-    bg_ellipses = []     # (x, y, w, h, angle_deg) for non-subset cells
-    target_ellipses = [] # (x, y, w, h, angle_deg) for subset cells
-    x_coords = []
-    y_coords = []
+    all_cell_ids = set(vision_params.get_cell_ids())
 
-    for cell_id in vision_params.get_cell_ids():
+    # Determine whether a meaningful subset is active.
+    # subset_cell_ids uses Kilosort (0-based) IDs; translate to Vision IDs for comparison.
+    if subset_cell_ids is not None and len(subset_cell_ids) > 0:
+        # Convert subset to Vision IDs for comparison against vision_params IDs
+        if is_vision_only:
+            subset_vision_ids = set(subset_cell_ids)
+        else:
+            subset_vision_ids = {cid + 1 for cid in subset_cell_ids}
+        has_subset = len(subset_vision_ids) < len(all_cell_ids)
+    else:
+        subset_vision_ids = all_cell_ids
+        has_subset = False
+
+    bg_ellipses = []     # (cx, cy, w, h, angle_deg) for non-subset cells
+    target_ellipses = [] # (cx, cy, w, h, angle_deg) for subset cells
+
+    for cell_id in all_cell_ids:
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
         except KeyError:
             continue
 
-        cid = cell_id if is_vision_only else cell_id - 1
         adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-
-        x_coords.append(stafit.center_x)
-        y_coords.append(adjusted_y)
 
         entry = (stafit.center_x, adjusted_y,
                  stafit.std_x * 2, stafit.std_y * 2,
                  np.degrees(stafit.rot))
 
-        if cid in subset_cell_ids:
+        if cell_id in subset_vision_ids:
             target_ellipses.append(entry)
             if show_labels:
                 ax.text(stafit.center_x, adjusted_y, str(cell_id),
@@ -540,11 +568,16 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height, s
         ax.add_collection(target_coll)
         target_coll.set_offset_transform(ax.transData)
 
-    # Set axis limits from collected coordinates
-    if x_coords:
-        margin = 20
-        ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
-        ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+    # --- Tight axis limits ---
+    # When a non-trivial subset is active, zoom to the subset ellipses only.
+    # When showing all cells (or subset == all), zoom to all ellipses.
+    # In both cases use ellipse extent (center ± semi-axis) rather than just
+    # the center coordinates so that outermost ellipses are never clipped.
+    zoom_ellipses = target_ellipses if (has_subset and target_ellipses) else (target_ellipses + bg_ellipses)
+    limits = _tight_limits(zoom_ellipses, frac_margin=0.05)
+    if limits is not None:
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
 
     n_target = len(target_ellipses)
     _apply_rf_axes_style(ax, colors,
