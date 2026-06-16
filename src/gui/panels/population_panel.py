@@ -389,7 +389,10 @@ def draw_population_rfs_plot(
     if can_hot_swap:
         ax = canvas._pop_plot_state['ax']
         highlight_patch = canvas._pop_plot_state['highlight_artist']
-        _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
+        
+        # --- FIXED CALL 1 (3 arguments) ---
+        _update_highlight_patch(highlight_patch, main_window.data_manager, selected_cell_id)
+        
         canvas.draw_idle()
     else:
         canvas.fig.clear()
@@ -423,7 +426,9 @@ def draw_population_rfs_plot(
             lw=1.75, zorder=10, visible=False
         )
         ax.add_patch(highlight_patch)
-        _update_highlight_patch(highlight_patch, vision_params, selected_cell_id, main_window.data_manager.vision_sta_height)
+        
+        # --- FIXED CALL 2 (3 arguments) ---
+        _update_highlight_patch(highlight_patch, main_window.data_manager, selected_cell_id)
 
         canvas._pop_plot_state = {
             'subset_hash': current_subset_hash,
@@ -434,12 +439,16 @@ def draw_population_rfs_plot(
         canvas.draw_idle()
 
 
-def _update_highlight_patch(patch, vision_params, cell_id, sta_height):
+def _update_highlight_patch(patch, data_manager, cell_id):
     if cell_id is None:
         patch.set_visible(False)
         return
 
-    vision_id = cell_id + 1
+    # Now data_manager is defined because we passed it in!
+    vision_id = data_manager.get_vision_id_for_cluster(cell_id)
+    vision_params = data_manager.vision_params
+    sta_height = data_manager.vision_sta_height
+
     try:
         stafit = vision_params.get_stafit_for_cell(vision_id)
         adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
@@ -507,12 +516,10 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height, s
 
     # Determine whether a meaningful subset is active.
     # subset_cell_ids uses Kilosort (0-based) IDs; translate to Vision IDs for comparison.
+    # Determine whether a meaningful subset is active.
     if subset_cell_ids is not None and len(subset_cell_ids) > 0:
-        # Convert subset to Vision IDs for comparison against vision_params IDs
-        if is_vision_only:
-            subset_vision_ids = set(subset_cell_ids)
-        else:
-            subset_vision_ids = {cid + 1 for cid in subset_cell_ids}
+        # Convert subset to Vision IDs safely
+        subset_vision_ids = {main_window.data_manager.get_vision_id_for_cluster(cid) for cid in subset_cell_ids}
         has_subset = len(subset_vision_ids) < len(all_cell_ids)
     else:
         subset_vision_ids = all_cell_ids
@@ -536,7 +543,9 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height, s
         if cell_id in subset_vision_ids:
             target_ellipses.append(entry)
             if show_labels:
-                ax.text(stafit.center_x, adjusted_y, str(cell_id),
+                # Map internal Vision ID back to UI ID for the label
+                display_id = cell_id if getattr(main_window.data_manager, 'is_vision_only', False) else cell_id - 1
+                ax.text(stafit.center_x, adjusted_y, str(display_id),
                         color=colors.get('text_secondary', '#9B9DA6'),
                         fontsize=8, ha='center', va='center',
                         alpha=0.8)
