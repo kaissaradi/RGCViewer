@@ -23,6 +23,7 @@ from .panels.population_panel import (
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
+from .panels.chirp_panel import ChirpPanel
 from .panels.ei_panel import EIPanel
 from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
@@ -458,6 +459,7 @@ class MainWindow(QMainWindow):
         # 3. Notify all panels to restyle their internal plots
         panels = [
             self.standard_plots_panel,
+            self.chirp_panel,
             self.ei_panel,
             self.waveforms_panel,
             self.raw_panel,
@@ -769,6 +771,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Tab change EI update failed: {e}")
 
+        elif current_panel == self.chirp_panel:
+            self.chirp_panel.update_all(cluster_id)
+
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
 
@@ -828,6 +833,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Draw plots EI update failed: {e}")
             self.similarity_panel.update_main_cluster_id(cluster_id)
+
+        elif current_tab == self.chirp_panel:
+            self.chirp_panel.update_all(cluster_id)
 
         elif current_tab == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
@@ -1133,6 +1141,7 @@ class MainWindow(QMainWindow):
 
         # --- Panels ---
         self.standard_plots_panel = StandardPlotsPanel(self)
+        self.chirp_panel = ChirpPanel(self)
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
@@ -1141,6 +1150,7 @@ class MainWindow(QMainWindow):
 
         # --- Tab Order (Short Labels) ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
+        self.analysis_tabs.addTab(self.chirp_panel, "Chirp")
         self.analysis_tabs.addTab(self.ei_panel, "EI")
         self.analysis_tabs.addTab(self.sta_panel, "STA")
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")

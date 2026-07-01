@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _group_timecourse_cache = {}
 _group_acg_cache = {}
+_group_fr_cache = {}
 _rf_background_cache = {}
 _rf_background_cache_order = []
 _RF_CACHE_MAX = 10
@@ -30,6 +31,7 @@ def invalidate_population_caches():
     """Clear population-panel caches after source data or membership changes."""
     _group_timecourse_cache.clear()
     _group_acg_cache.clear()
+    _group_fr_cache.clear()
     _rf_background_cache.clear()
     _rf_background_cache_order.clear()
 
@@ -248,13 +250,22 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
-    y_min, y_max = np.min(arr), np.max(arr)
-    y_range = y_max - y_min
+    # Robust scaling: a single wild-outlier trace would otherwise stretch the
+    # y-axis and flatten the rest of the population into an unreadable band.
+    # Use the 1st/99th percentile across all traces as the "typical" envelope —
+    # a trace that exceeds it just runs off the top/bottom edge, which is
+    # itself a visible signal that it's an outlier.
+    finite_vals = arr[np.isfinite(arr)]
+    if finite_vals.size == 0:
+        y_lo, y_hi = -1.0, 1.0
+    else:
+        y_lo, y_hi = np.nanpercentile(finite_vals, [1, 99])
+    y_range = y_hi - y_lo
     if y_range == 0:
         y_range = 1.0
-    
-    y_bottom = y_min - (0.1 * y_range)
-    y_top = y_max + (0.25 * y_range)
+
+    y_bottom = y_lo - (0.1 * y_range)
+    y_top = y_hi + (0.3 * y_range)  # extra headroom for the "Peak" label
 
     # --- 2. Hot-Swap Rendering ---
     if hasattr(canvas, '_timecourse_state') and canvas._timecourse_state['ax'] in canvas.fig.axes:
@@ -298,12 +309,14 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         # 1. Zero Line
         ax.axhline(0, color=colors['text_primary'], linestyle='--', linewidth=1.0, alpha=0.2, zorder=1)
 
-        # 2. Shadow Traces
-        shadow_lines = LineCollection(segments, color=colors['accent'], linewidth=0.8, alpha=0.15, zorder=2)
+        # 2. Shadow Traces — bolder/more opaque so individual outliers are
+        # actually visible, not nearly-invisible at alpha=0.15.
+        shadow_lines = LineCollection(segments, color=colors['accent'], linewidth=1.0, alpha=0.35, zorder=2)
         ax.add_collection(shadow_lines)
 
-        # 3. Solid Mean Trace
-        mean_line = _first_plot_artist(ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=2.5, zorder=4))
+        # 3. Mean Trace — thinned so it reads as a reference line rather than
+        # a solid band that paints over the traces underneath it.
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_tc, color=colors['plot_mean'], linewidth=1.6, alpha=0.95, zorder=4))
 
         # 4. Highlight the Peak Feature
         peak_marker = _first_plot_artist(ax.plot([peak_time], [peak_val], 'o', color=colors['plot_peak'], markersize=6, zorder=5))
@@ -498,6 +511,14 @@ def _tight_limits(ellipses, frac_margin=0.05):
     if not ellipses:
         return None
     arr = np.array(ellipses)          # (N, 5): cx cy w h angle
+    # Defense-in-depth: even though callers should pre-filter degenerate fits,
+    # never let a NaN/Inf row reach matplotlib's set_xlim/set_ylim (it raises
+    # ValueError and kills the whole panel redraw). Drop bad rows here too.
+    finite_mask = np.all(np.isfinite(arr), axis=1)
+    if not np.all(finite_mask):
+        arr = arr[finite_mask]
+    if arr.shape[0] == 0:
+        return None
     cx, cy = arr[:, 0], arr[:, 1]
     rx, ry = arr[:, 2] / 2.0, arr[:, 3] / 2.0   # semi-axes (w/h are full diameters)
     x_lo, x_hi = np.min(cx - rx), np.max(cx + rx)
@@ -532,6 +553,18 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height, s
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
         except KeyError:
+            continue
+
+        # Vision returns a stafit object (not a KeyError) for cells where the
+        # Gaussian RF fit failed or degenerated — center/std/rot can be NaN,
+        # or std can be 0/negative. These cells have no usable RF geometry;
+        # including them here propagates NaN all the way into
+        # ax.set_xlim()/set_ylim() via _tight_limits() and crashes the panel.
+        # Skip them here, at the source, instead of trying to sanitize later.
+        fit_vals = (stafit.center_x, stafit.center_y, stafit.std_x, stafit.std_y, stafit.rot)
+        if not all(np.isfinite(v) for v in fit_vals):
+            continue
+        if stafit.std_x <= 0 or stafit.std_y <= 0:
             continue
 
         adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
@@ -697,13 +730,34 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             't_axis': t_axis,
         }
 
+    t_axis = np.asarray(t_axis)
+    arr = np.asarray(arr)
+
+    # Causal lags only — matches the single-cell ACG view in
+    # standard_plots_panel.py (mask = time_lags >= 0). The ACG is symmetric,
+    # so the negative half adds no information here; dropping it doubles the
+    # effective resolution on the refractory/decay structure that matters.
+    causal_mask = (t_axis >= 0) & (t_axis <= 50)
+    t_axis = t_axis[causal_mask]
+    arr = arr[:, causal_mask]
+    mean_acg = np.nanmean(arr, axis=0)
+
     segments = [np.column_stack([t_axis, row]) for row in arr]
 
-    y_min, y_max = np.min(arr), np.max(arr)
-    y_range = y_max - y_min
-    if y_range == 0: y_range = 1.0
-    y_bottom = y_min - (0.05 * y_range)
-    y_top = y_max + (0.05 * y_range)
+    # Scaling, take 3: a 95th-percentile ceiling still let the top 5% of cells
+    # run off the visible axis — not acceptable here, every trace needs to
+    # stay fully on-screen. Use the true max of per-cell peaks instead. This
+    # keeps the take-2 fix (deriving the ceiling from each cell's own peak,
+    # not bins pooled across the long flat tail) but drops the percentile
+    # cutoff so nothing gets clipped.
+    per_cell_peak = np.nanmax(arr, axis=1) if arr.size else np.array([])
+    finite_peaks = per_cell_peak[np.isfinite(per_cell_peak)]
+    y_hi = float(np.nanmax(finite_peaks)) if finite_peaks.size else 1.0
+    if y_hi <= 0:
+        y_hi = 1.0
+    y_range = y_hi
+    y_bottom = -0.02 * y_range
+    y_top = y_hi + 0.08 * y_range
 
     if hasattr(canvas, '_acg_state') and canvas._acg_state['ax'] in canvas.fig.axes:
         state = canvas._acg_state
@@ -733,9 +787,9 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.axhline(0, color=colors['text_primary'], linestyle='--', linewidth=1.0, alpha=0.2, zorder=1)
         ax.axvline(0, color=colors['text_primary'], linestyle='--', linewidth=1.0, alpha=0.3, zorder=1)
 
-        shadow_lines = LineCollection(segments, color=colors['plot_acg'], linewidth=0.8, alpha=0.18, zorder=2)
+        shadow_lines = LineCollection(segments, color=colors['plot_acg'], linewidth=1.0, alpha=0.35, zorder=2)
         ax.add_collection(shadow_lines)
-        mean_line = _first_plot_artist(ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=2.5, zorder=4))
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_acg, color=colors['plot_compare'], linewidth=1.6, alpha=0.95, zorder=4))
 
         ax.set_xlabel("Time lag (ms)", color=colors['text_secondary'], fontsize=9)
         ax.set_ylabel("Autocorrelation", color=colors['text_secondary'], fontsize=9)
@@ -743,8 +797,140 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
         ax.tick_params(colors=colors['text_secondary'], labelsize=8)
         for spine in ax.spines.values(): spine.set_edgecolor(colors['border_subtle'])
-            
+
         canvas._acg_state = {'ax': ax, 'mean_line': mean_line, 'shadow_lines': shadow_lines}
 
     canvas.draw_idle()
     main_window.pop_acg_summary.setText(f"n={arr.shape[0]}")
+
+
+def draw_population_fr_panel(main_window, subset_ids=None):
+    """
+    Population firing rate over the course of the recording for every cell in
+    the subset, overlaid. Reads the per-cluster 'fr_bin_centers'/'fr_rate'
+    series already computed by DataManager._compute_standard_plots() — no new
+    computation, just reusing the standard_plot_cache.
+
+    Primarily a stability/QC view: a cell whose rate trace drifts, drops out,
+    or spikes relative to the rest of the subset is a candidate for re-review
+    (electrode drift, lost unit, recording artifact), and it's visible here in
+    a way that a single static firing-rate number isn't.
+    """
+    if subset_ids is None:
+        try:
+            subset_ids = main_window._get_pop_subset_ids()
+        except Exception:
+            subset_ids = []
+
+    canvas = getattr(main_window, 'pop_fr_canvas', None)
+    if canvas is None:
+        return
+
+    colors = main_window.get_current_colors()
+
+    if not subset_ids:
+        canvas.fig.clear()
+        canvas.fig.set_facecolor(colors['bg_panel'])
+        canvas.fig.text(0.5, 0.5, "No cells selected", ha='center', color=colors['text_secondary'], fontsize=10)
+        canvas.draw_idle()
+        if hasattr(main_window, 'pop_fr_summary'):
+            main_window.pop_fr_summary.setText("n=0")
+        if hasattr(canvas, '_fr_state'):
+            del canvas._fr_state
+        return
+
+    cache_key = frozenset(subset_ids)
+    cached = _group_fr_cache.get(cache_key)
+    if cached is not None:
+        arr = cached['arr']
+        mean_fr = cached['mean_fr']
+        t_axis = cached['t_axis']
+    else:
+        traces = []
+        t_axis = None
+
+        for cid in subset_ids:
+            try:
+                std_data = main_window.data_manager.get_standard_plot_data(cid)
+                bin_centers = std_data.get('fr_bin_centers') if std_data else None
+                rate = std_data.get('fr_rate') if std_data else None
+                if bin_centers is not None and rate is not None and len(bin_centers) > 1:
+                    if t_axis is None:
+                        t_axis = np.asarray(bin_centers)
+                    if len(rate) == len(t_axis):
+                        traces.append(np.asarray(rate))
+            except Exception:
+                continue
+
+        if not traces:
+            canvas.fig.clear()
+            canvas.fig.set_facecolor(colors['bg_panel'])
+            canvas.fig.text(0.5, 0.5, "No valid firing-rate data", ha='center', color=colors['text_secondary'], fontsize=10)
+            canvas.draw_idle()
+            return
+
+        arr = np.vstack(traces)
+        mean_fr = np.nanmean(arr, axis=0)
+        _group_fr_cache[cache_key] = {
+            'arr': arr,
+            'mean_fr': mean_fr,
+            't_axis': t_axis,
+        }
+
+    segments = [np.column_stack([t_axis, row]) for row in arr]
+
+    # No-clipping scaling — see draw_population_acg_panel for the full
+    # rationale. Ceiling is the true max of per-cell peaks (not a percentile),
+    # so no trace ever runs off the visible axis. Floor anchored near zero
+    # since firing rate can't go negative.
+    per_cell_peak = np.nanmax(arr, axis=1) if arr.size else np.array([])
+    finite_peaks = per_cell_peak[np.isfinite(per_cell_peak)]
+    y_hi = float(np.nanmax(finite_peaks)) if finite_peaks.size else 1.0
+    if y_hi <= 0:
+        y_hi = 1.0
+    y_range = y_hi
+    y_bottom = -0.02 * y_range
+    y_top = y_hi + 0.08 * y_range
+
+    if hasattr(canvas, '_fr_state') and canvas._fr_state['ax'] in canvas.fig.axes:
+        state = canvas._fr_state
+        ax = state['ax']
+
+        current_facecolor = QColor(colors['bg_panel']).name().lower()
+        facecolor_tuple = ax.get_facecolor()
+        stored_facecolor = QColor.fromRgbF(
+            facecolor_tuple[0], facecolor_tuple[1], facecolor_tuple[2], facecolor_tuple[3]
+        ).name().lower()
+        if current_facecolor != stored_facecolor:
+            if hasattr(canvas, '_fr_state'):
+                del canvas._fr_state
+            draw_population_fr_panel(main_window, subset_ids)
+            return
+
+        state['mean_line'].set_data(t_axis, mean_fr)
+        state['shadow_lines'].set_segments(segments)
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+    else:
+        canvas.fig.clear()
+        canvas.fig.set_facecolor(colors['bg_panel'])
+        ax = canvas.fig.add_subplot(111)
+        ax.set_facecolor(colors['bg_panel'])
+
+        shadow_lines = LineCollection(segments, color=colors['plot_fr'], linewidth=1.0, alpha=0.35, zorder=2)
+        ax.add_collection(shadow_lines)
+        mean_line = _first_plot_artist(ax.plot(t_axis, mean_fr, color=colors['plot_compare'], linewidth=1.6, alpha=0.95, zorder=4))
+
+        ax.set_xlabel("Time (s)", color=colors['text_secondary'], fontsize=9)
+        ax.set_ylabel("Firing Rate (Hz)", color=colors['text_secondary'], fontsize=9)
+        ax.set_xlim(t_axis[0], t_axis[-1])
+        ax.set_ylim(y_bottom, y_top)
+        ax.tick_params(colors=colors['text_secondary'], labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(colors['border_subtle'])
+
+        canvas._fr_state = {'ax': ax, 'mean_line': mean_line, 'shadow_lines': shadow_lines}
+
+    canvas.draw_idle()
+    if hasattr(main_window, 'pop_fr_summary'):
+        main_window.pop_fr_summary.setText(f"n={arr.shape[0]}")

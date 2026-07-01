@@ -370,17 +370,52 @@ class STAPanel(QWidget):
         dispatches to the three draw methods.
         """
         dm = getattr(self.main_window, 'data_manager', None)
+        print(f"[VISION-DEBUG][sta_panel] update_view(cluster_id={cluster_id}) called. "
+              f"dm is None: {dm is None}", flush=True)
+
         if dm is None or not dm.vision_stas:
+            print(f"[VISION-DEBUG][sta_panel] GUARD A hit -> clearing. "
+                  f"dm.vision_stas = {dm.vision_stas if dm is not None else 'N/A (dm is None)'} "
+                  f"(type={type(dm.vision_stas).__name__ if dm is not None and dm.vision_stas is not None else 'NoneType'})",
+                  flush=True)
             self._clear_all()
             return
+
+        print(f"[VISION-DEBUG][sta_panel] dm.vision_stas OK: "
+              f"type={type(dm.vision_stas).__name__}, len={len(dm.vision_stas)}", flush=True)
 
         vision_id = dm.get_vision_id_for_cluster(cluster_id)
+        print(f"[VISION-DEBUG][sta_panel] get_vision_id_for_cluster({cluster_id}) -> {vision_id} "
+              f"(is_vision_only={getattr(dm, 'is_vision_only', 'N/A')})", flush=True)
+
+        # NOTE: There is intentionally no "unshifted ID" fallback here.
+        # If the correctly-offset vision_id (per Law 1 / get_vision_id_for_cluster)
+        # isn't in dm.vision_stas, it means Vision genuinely has no STA for this
+        # cell (e.g. it was excluded as MUA/noise during sorting). Falling back to
+        # the raw cluster_id would silently key into a DIFFERENT cell's STA data
+        # whenever that raw integer happens to coincide with another cell's vision_id.
+        # See AGENTS.md Law 1. Treat "missing" as missing — clear the panel below.
         if vision_id not in dm.vision_stas:
+            print(f"[VISION-DEBUG][sta_panel] GUARD B hit -> clearing. "
+                  f"vision_id={vision_id} not in dm.vision_stas (len={len(dm.vision_stas)}). "
+                  f"Sample of available keys: {list(dm.vision_stas.keys())[:10]}", flush=True)
             self._clear_all()
             return
 
+        print(f"[VISION-DEBUG][sta_panel] Both guards passed for vision_id={vision_id}. "
+              f"Calling _load_sta_data...", flush=True)
+
         # Load & cache
-        self._load_sta_data(cluster_id, vision_id, dm)
+        if not self._load_sta_data(cluster_id, vision_id, dm):
+            # vision_stas[vision_id] returned None (corrupt byte offset, or
+            # the per-cell read timed out — see LazySTADict.__getitem__).
+            # That's an expected, documented possibility, not a crash.
+            print(f"[VISION-DEBUG][sta_panel] _load_sta_data returned False for vision_id={vision_id} "
+                  f"— the actual disk read failed/timed out.", flush=True)
+            self._clear_all(reason="STA unavailable for this cell\n(corrupt data or read timeout)")
+            return
+
+        print(f"[VISION-DEBUG][sta_panel] _load_sta_data SUCCEEDED for vision_id={vision_id}. Drawing...", flush=True)
 
         # Draw
         self._draw_rf_frame()
@@ -395,12 +430,27 @@ class STAPanel(QWidget):
     # Data loading  (single call per cell selection)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _load_sta_data(self, cluster_id: int, vision_id: int, dm):
+    def _load_sta_data(self, cluster_id: int, vision_id: int, dm) -> bool:
         """
         Fetch sta_data, stafit, and the full metrics dict.  Results cached on
         self so every draw method reads the same objects without re-fetching.
+
+        Returns False (and leaves self.current_sta_data alone) if the STA
+        read failed — LazySTADict.__getitem__ deliberately returns None for
+        cells with corrupt byte offsets or reads that timed out, per its
+        documented contract ("Returning None is safe — all callers check
+        hasattr(sta_data, 'red')."). Every other caller in data_manager.py
+        already checks this; this one didn't, which is why a single bad
+        cell could silently kill the rest of the panel update.
         """
         sta_data = dm.vision_stas[vision_id]
+
+        if not hasattr(sta_data, 'red') or sta_data.red is None:
+            logger.warning(
+                "STA read returned no data for vision_id=%d (cluster_id=%d); "
+                "leaving panel cleared.", vision_id, cluster_id,
+            )
+            return False
 
         try:
             stafit = dm.vision_params.get_stafit_for_cell(vision_id)
@@ -437,6 +487,8 @@ class STAPanel(QWidget):
         self.sta_frame_slider.blockSignals(False)
         self.sta_frame_slider.setEnabled(True)
         self.sta_frame_label.setText(f"Frame {peak_frame + 1}/{n_frames}")
+
+        return True
 
     # ──────────────────────────────────────────────────────────────────────────
     # Draw: RF image + ellipse
@@ -631,13 +683,14 @@ class STAPanel(QWidget):
         fig.tight_layout(pad=0.6)
         self.temporal_filter_canvas.draw()
 
-    def _draw_temporal_placeholder(self, colors):
-        """Blank placeholder shown before any cell is selected."""
+    def _draw_temporal_placeholder(self, colors, message="Select a cell"):
+        """Blank placeholder shown before any cell is selected, or to
+        surface a reason why the panel is empty (e.g. a failed STA read)."""
         fig = self.temporal_filter_canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
         self._style_ax(ax, colors)
-        ax.text(0.5, 0.5, "Select a cell",
+        ax.text(0.5, 0.5, message,
                 transform=ax.transAxes,
                 ha='center', va='center',
                 color=colors.get('text_secondary', '#888'), fontsize=11)
@@ -666,7 +719,7 @@ class STAPanel(QWidget):
     # Clear state
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _clear_all(self):
+    def _clear_all(self, reason: str = "Select a cell"):
         """Reset everything to the no-data state."""
         self._pg_image_item.clear()
         self.rf_ellipse_item.setData([], [])
@@ -677,7 +730,7 @@ class STAPanel(QWidget):
         self.metrics_bar.update_metrics(None)
 
         colors = self.main_window.get_current_colors()
-        self._draw_temporal_placeholder(colors)
+        self._draw_temporal_placeholder(colors, message=reason)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Animation

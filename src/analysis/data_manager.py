@@ -1,7 +1,7 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -277,6 +277,14 @@ class DataManager(QObject):
 
         # Initialize refractory period (default from constants)
         self.refractory_period_ms = ISI_REFRACTORY_PERIOD_MS
+
+        # --- Chirp Data ---
+        # Precomputed offline by chirp_analysis.py and saved as a .npy in
+        # kilosort_dir. cluster_id inside the file is Kilosort space (same
+        # space as cluster_df['cluster_id']) — no ID translation needed.
+        self.chirp_data = None          # raw loaded dict (mdic) or None
+        self.chirp_id_to_row = None     # dict[int cluster_id -> int row index]
+        self.chirp_available = False
 
     def set_refractory_period(self, new_period_ms):
         """
@@ -643,6 +651,8 @@ class DataManager(QObject):
         call returns much faster.
         """
         logger.debug("Starting vision data load from %s", vision_dir)
+        print(f"[VISION-DEBUG][data_manager] load_vision_data() called with "
+              f"vision_dir={vision_dir!r} dataset_name={dataset_name!r}", flush=True)
         vision_path = Path(vision_dir)
 
         # Use the high-level helper in vision_integration
@@ -650,6 +660,11 @@ class DataManager(QObject):
         vision_data = vision_integration.load_vision_data(
             vision_path, dataset_name)
         logger.debug("Completed vision_integration.load_vision_data call")
+        print(f"[VISION-DEBUG][data_manager] vision_integration.load_vision_data returned: "
+              f"keys present -> ei={vision_data.get('ei') is not None}, "
+              f"sta={vision_data.get('sta') is not None}, "
+              f"params={vision_data.get('params') is not None}, "
+              f"neurons={vision_data.get('neurons') is not None}", flush=True)
 
         success = False
 
@@ -823,6 +838,13 @@ class DataManager(QObject):
             self.vision_eis is not None or self.vision_stas is not None
         )
 
+        print(f"[VISION-DEBUG][data_manager] load_vision_data() DONE — "
+              f"success={success} vision_available={self.vision_available} "
+              f"vision_stas={'None' if self.vision_stas is None else f'{len(self.vision_stas)} cells'} "
+              f"vision_params={'None' if self.vision_params is None else 'present'} "
+              f"vision_eis={'None' if self.vision_eis is None else f'{len(self.vision_eis)} cells'}",
+              flush=True)
+
         return success, f"{'Successfully' if success else 'Failed to'} load Vision data for {dataset_name}."
     
     def load_vision_native_data(self, vision_dir, dataset_name):
@@ -937,7 +959,12 @@ class DataManager(QObject):
         self.vision_eis = ei_bundle.get('ei_data') if ei_bundle else None
         self.vision_stas = vision_data.get('sta')
         self.vision_params = vision_data.get('params')
-        self.vision_available = True
+        # vision_available mirrors the hybrid-path contract: True only when we have
+        # at least EI or STA data.  vision_eis may legitimately be None (no .ei file
+        # present) — that must not block loading; it just disables duplicate detection.
+        self.vision_available = (
+            self.vision_eis is not None or self.vision_stas is not None
+        )
         
         self.templates = None
         self.templates_ind = None
@@ -1761,12 +1788,39 @@ class DataManager(QObject):
             len(missing),
         )
 
+        # Per-cell timeout: the STA read inside get_cell_physics can hang on a
+        # corrupt byte offset in the .sta file. LazySTADict.__getitem__ already has
+        # an 8-second inner timeout; we add a 15-second outer ceiling here so even
+        # if multiple slow paths compound (ACG compute + STA seek), one bad cell
+        # never stalls the entire 1600-cell warm-up queue indefinitely.
+        _CELL_TIMEOUT_S = 15
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self.get_cell_physics, cid): cid for cid in missing}
             for future in as_completed(futures):
                 cid = futures[future]
                 try:
-                    future.result()
+                    future.result(timeout=_CELL_TIMEOUT_S)
+                except TimeoutError:
+                    future.cancel()
+                    logger.warning(
+                        "ensure_physics_cache: timed out after %ds for cluster %d; "
+                        "writing empty entry so UMAP gate can pass.",
+                        _CELL_TIMEOUT_S, cid,
+                    )
+                    # Write a minimal _computed entry so valid_cached count advances
+                    # and the UMAP "Please wait" gate doesn't block forever.
+                    with self._feature_lock:
+                        if not self.feature_cache.get(cid, {}).get('_computed'):
+                            self.feature_cache[cid] = {
+                                '_computed': True,
+                                'acg': None,
+                                'timecourse': None,
+                                'rf_area': 0.0,
+                                'ellipticity': 0.0,
+                                'time_to_peak': 0,
+                            }
+                            self._physics_done_count = getattr(self, '_physics_done_count', 0) + 1
                 except Exception:
                     logger.warning(
                         "ensure_physics_cache: failed for cluster %d",
@@ -2917,6 +2971,101 @@ class DataManager(QObject):
         self.vision_sim_cache[cache_key] = result_df
         return result_df.copy()
     
+    def load_chirp_data(self, chirp_path=None):
+        """
+        Load a chirp_analysis.py output .npy from kilosort_dir.
+
+        chirp_analysis.py writes its output into the exact same directory
+        DataManager treats as kilosort_dir (SORT_PATH/exp/chunk/algorithm),
+        so no separate path needs to be configured — we just glob for it.
+
+        cluster_id inside the file is Kilosort space (same as
+        cluster_df['cluster_id']); no Vision ID translation is applied.
+
+        Returns (success: bool, message: str). Never raises — on any failure
+        chirp_available is set False and chirp_data/chirp_id_to_row are None,
+        so callers can proceed without chirp data.
+        """
+        try:
+            if chirp_path is None:
+                candidates = sorted(self.kilosort_dir.glob('*Chirp*.npy'))
+                if not candidates:
+                    self.chirp_available = False
+                    self.chirp_data = None
+                    self.chirp_id_to_row = None
+                    logger.info("No chirp analysis file found in %s", self.kilosort_dir)
+                    return False, "No chirp analysis file found."
+                chirp_path = candidates[0]
+
+            mdic = np.load(chirp_path, allow_pickle=True).item()
+
+            required_keys = ('psth_mean', 'cluster_id', 'quality_index', 'bin_size_ms')
+            missing = [k for k in required_keys if k not in mdic]
+            if missing:
+                self.chirp_available = False
+                self.chirp_data = None
+                self.chirp_id_to_row = None
+                logger.warning(
+                    "Chirp file %s missing required keys: %s", chirp_path.name, missing)
+                return False, f"Chirp file missing required keys: {missing}"
+
+            self.chirp_data = mdic
+            self.chirp_id_to_row = {
+                int(cid): i for i, cid in enumerate(mdic['cluster_id'])
+            }
+            self.chirp_available = True
+            n_cells = len(self.chirp_id_to_row)
+            logger.debug("Loaded chirp data from %s (%d cells)", chirp_path.name, n_cells)
+            return True, f"Loaded chirp data from {chirp_path.name} ({n_cells} cells)"
+
+        except Exception as e:
+            logger.warning("Could not load chirp data: %s", e, exc_info=True)
+            self.chirp_available = False
+            self.chirp_data = None
+            self.chirp_id_to_row = None
+            return False, str(e)
+
+    def get_chirp_data_for_cluster(self, cluster_id):
+        """
+        Return chirp PSTH data for a single cluster, or None if unavailable.
+
+        Read-only dict/row lookup — no lock, no disk I/O. Safe to call from
+        the main thread, but per AGENTS.md Law 2 this still must be invoked
+        from Tier 2 (panel.update_all()), never Tier 1, since it backs a
+        panel rebuild.
+
+        Returns a dict with:
+            psth_mean        : (n_bins,) ndarray, Hz
+            quality_index    : float (NaN if silent)
+            bin_size_ms      : float
+            phase_step_on    : (start, end) bin indices
+            phase_step_off   : (start, end) bin indices
+            phase_freq_sweep : (start, end) bin indices
+            phase_contrast   : (start, end) bin indices
+            freq_min_hz      : float
+            freq_max_hz      : float
+        or None if chirp data isn't loaded or this cluster isn't in it.
+        """
+        if not self.chirp_available or self.chirp_data is None or self.chirp_id_to_row is None:
+            return None
+
+        row = self.chirp_id_to_row.get(int(cluster_id))
+        if row is None:
+            return None
+
+        d = self.chirp_data
+        return {
+            'psth_mean': d['psth_mean'][row],
+            'quality_index': float(d['quality_index'][row]),
+            'bin_size_ms': float(d['bin_size_ms']),
+            'phase_step_on': tuple(d['phase_step_on']),
+            'phase_step_off': tuple(d['phase_step_off']),
+            'phase_freq_sweep': tuple(d['phase_freq_sweep']),
+            'phase_contrast': tuple(d['phase_contrast']),
+            'freq_min_hz': float(d['freq_min_hz']),
+            'freq_max_hz': float(d['freq_max_hz']),
+        }
+
     def get_vision_id_for_cluster(self, cluster_id: int) -> int:
         """Translate UI cluster_id → Vision file key, respecting is_vision_only."""
         if getattr(self, 'is_vision_only', False):

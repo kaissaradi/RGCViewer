@@ -375,7 +375,6 @@ class EIPanel(QWidget):
 
         cluster_ids = np.atleast_1d(np.array(cluster_ids, dtype=int))
         primary_id = int(cluster_ids[0])
-        vision_ids = cluster_ids + 1
 
         self._stop_animation()
         dm = self.main_window.data_manager
@@ -438,7 +437,6 @@ class EIPanel(QWidget):
     def _load_vision_ei(self, cluster_ids: np.ndarray):
         dm = self.main_window.data_manager
         vision_ids = np.array([dm.get_vision_id_for_cluster(c) for c in cluster_ids])
-        vision_ids = cluster_ids + 1
         valid_ei, valid_orig = [], []
 
         for i, vid in enumerate(vision_ids):

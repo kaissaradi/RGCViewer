@@ -407,10 +407,11 @@ def redraw_population_panels(main_window: MainWindow, subset=None):
     if subset is None:
         subset = main_window._get_pop_subset_ids()
 
-    # Import and call both population plots
-    from .panels.population_panel import draw_population_acg_panel
+    # Import and call all three population plots
+    from .panels.population_panel import draw_population_acg_panel, draw_population_fr_panel
     draw_population_timecourse_panel(main_window, subset_ids=subset)
     draw_population_acg_panel(main_window, subset_ids=subset)
+    draw_population_fr_panel(main_window, subset_ids=subset)
 
 
 def on_cluster_selection_changed(main_window: MainWindow):
@@ -558,8 +559,8 @@ def save_results(main_window, output_path):
                 child = item.child(i)
                 cluster_id = child.data(Qt.ItemDataRole.UserRole)
                 if cluster_id is not None:
-                    # Format: "VisionID Path/" (Note: VisionID is cluster_id + 1)
-                    lines_to_write.append(f"{cluster_id + 1} {current_path}")
+                    vision_id = main_window.data_manager.get_vision_id_for_cluster(cluster_id)
+                    lines_to_write.append(f"{vision_id} {current_path}")
                 else:
                     if child.text() != "Unclassified":
                         recurse_extract(child, f"{current_path}{child.text()}/")
@@ -1015,7 +1016,7 @@ def load_classification_file(main_window: MainWindow):
                     classification_path = ""
 
                 # Convert vision_id (1-indexed) to cluster_id (0-indexed)
-                cluster_id = vision_id - 1
+                cluster_id = vision_id if getattr(main_window.data_manager, 'is_vision_only', False) else vision_id - 1
                 classifications[cluster_id] = classification_path
 
         # Update the tree view based on classifications

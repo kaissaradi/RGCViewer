@@ -10,6 +10,30 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+# Vision files for a single dataset all share one stem, e.g.:
+#   data000.ei, data000.sta, data000.params, data000.neurons
+# Every worker below needs to recover that stem from a directory listing.
+# Preference order matters only when a directory somehow contains stems from
+# more than one dataset; .ei is checked first purely to preserve prior
+# behavior, but a dataset missing .ei (a perfectly normal, supported case —
+# see vision_integration.load_ei_data's FileNotFoundError handling) must
+# still resolve via .sta/.params/.neurons instead of silently giving up.
+_DATASET_NAME_GLOB_PRIORITY = ('*.ei', '*.sta', '*.params', '*.neurons')
+
+
+def _resolve_vision_dataset_name(vision_dir: Path):
+    """
+    Finds the Vision dataset name (file stem shared by .ei/.sta/.params/
+    .neurons) in `vision_dir`. Returns None if no Vision files are found at
+    all. Does NOT require an .ei file — that was the bug.
+    """
+    for pattern in _DATASET_NAME_GLOB_PRIORITY:
+        for f in vision_dir.glob(pattern):
+            return f.stem
+    return None
+
+
 class KilosortLoadWorker(QObject):
     """Background worker to handle Kilosort and Vision I/O synchronously."""
     finished = Signal(bool, str)
@@ -37,21 +61,33 @@ class KilosortLoadWorker(QObject):
 
             # --- SYNCHRONOUS VISION LOADING ---
             vision_dir = Path(self.ks_dir_name)
-            dataset_name = None
-            for ei_file in vision_dir.glob('*.ei'):
-                dataset_name = ei_file.stem
-                break
+            dataset_name = _resolve_vision_dataset_name(vision_dir)
+            print(f"[VISION-DEBUG][workers] KilosortLoadWorker resolved dataset_name="
+                  f"{dataset_name!r} in {vision_dir}", flush=True)
 
             if dataset_name:
                 self.progress.emit("Found Vision data. Queueing background load...")
                 # Tell the DataManager where the data is so callbacks.py can spawn the VisionLoadWorker
                 self.dm._auto_vision_dir = str(vision_dir)
                 self.dm._auto_vision_dataset = dataset_name
+            else:
+                print(f"[VISION-DEBUG][workers] No .ei/.sta/.params/.neurons files found in "
+                      f"{vision_dir} — Vision auto-load will NOT trigger.", flush=True)
 
             # Load cell type file
             ls_txt = list(vision_dir.glob('*.txt'))
             txt_file = ls_txt[0] if ls_txt else None
             self.dm.load_cell_type_file(txt_file)
+
+            # --- CHIRP DATA (optional) ---
+            # chirp_analysis.py writes directly into this same directory, so
+            # no path configuration is needed. Missing file is not an error —
+            # load_chirp_data() handles that internally and just leaves
+            # chirp_available False.
+            self.progress.emit("Checking for chirp analysis data...")
+            chirp_success, chirp_msg = self.dm.load_chirp_data()
+            if chirp_success:
+                logger.debug(chirp_msg)
 
             self.finished.emit(True, "Kilosort and Vision data loaded successfully.")
         except Exception as e:
@@ -75,11 +111,15 @@ class VisionLoadWorker(QObject):
             self.progress.emit(f"Loading Vision files from {vision_dir.name}...")
             
             # Find dataset name dynamically
-            dataset_name = None
-            for ei_file in vision_dir.glob('*.ei'):
-                dataset_name = ei_file.stem
-                break
-                
+            dataset_name = _resolve_vision_dataset_name(vision_dir)
+            if dataset_name is None:
+                self.finished.emit(
+                    False,
+                    f"No Vision files (.ei/.sta/.params/.neurons) found in {vision_dir}.",
+                    False,
+                )
+                return
+
             # load_vision_data handles partial loading internally — one call is enough.
             # The old code called it a second time on failure which was pure wasted work.
             success, message = self.dm.load_vision_data(vision_dir, dataset_name)
@@ -304,13 +344,13 @@ class StandaloneVisionWorker(QObject):
             self.progress.emit(f"Loading Vision-native dataset from {vision_dir.name}...")
             
             # Find dataset name dynamically
-            dataset_name = None
-            for ei_file in vision_dir.glob('*.ei'):
-                dataset_name = ei_file.stem
-                break
-                
+            dataset_name = _resolve_vision_dataset_name(vision_dir)
+
             if not dataset_name:
-                self.finished.emit(False, "Could not find a valid .ei file to determine dataset name.")
+                self.finished.emit(
+                    False,
+                    f"No Vision files (.ei/.sta/.params/.neurons) found in {vision_dir}.",
+                )
                 return
 
             # Execute our new native loader
