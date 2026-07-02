@@ -89,6 +89,15 @@ class KilosortLoadWorker(QObject):
             if chirp_success:
                 logger.debug(chirp_msg)
 
+            # --- GRATING DATA (optional) ---
+            # Same colocated-with-kilosort_dir convention as chirp. Unlike
+            # chirp, this may only find a RAW file — DSI/OSI then get
+            # computed later, on demand, per cluster (see GratingComputeWorker).
+            self.progress.emit("Checking for grating analysis data...")
+            grating_success, grating_msg = self.dm.load_grating_data()
+            if grating_success:
+                logger.debug(grating_msg)
+
             self.finished.emit(True, "Kilosort and Vision data loaded successfully.")
         except Exception as e:
             logger.exception("Error in KilosortLoadWorker")
@@ -327,6 +336,40 @@ class StandardPlotsWorker(QObject):
 
     def stop(self):
         self.is_running = False
+
+
+class GratingComputeWorker(QObject):
+    """
+    One-shot DSI/OSI compute for a single cluster, from raw grating data.
+
+    Deliberately NOT a persistent queue-worker like StandardPlotsWorker.
+    Grating DSI/OSI (FFT + 1000-shuffle permutation test per condition) is
+    only ever needed for clusters the user actually views — batch
+    precomputing all ~900 clusters at dataset-load time would be wasted
+    work for the vast majority never opened in a session. Spawned on demand
+    by GratingPanel with its own throwaway QThread; caches into
+    DataManager.grating_computed_cache so repeat views of the same cluster
+    don't recompute.
+    """
+    finished = Signal(int, bool, str)   # cluster_id, success, message
+
+    def __init__(self, data_manager, cluster_id):
+        super().__init__()
+        self.dm = data_manager
+        self.cluster_id = int(cluster_id)
+
+    def run(self):
+        try:
+            result = self.dm.compute_grating_data_for_cluster(self.cluster_id)
+            if result is None:
+                self.finished.emit(self.cluster_id, False,
+                                    f"No grating trials for cluster {self.cluster_id}")
+            else:
+                self.finished.emit(self.cluster_id, True, "")
+        except Exception as e:
+            logger.exception("GratingComputeWorker failed for cluster %s", self.cluster_id)
+            self.finished.emit(self.cluster_id, False, str(e))
+
 
 class StandaloneVisionWorker(QObject):
     """Background worker to handle loading pure Vision datasets."""

@@ -24,6 +24,7 @@ from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
 from .panels.chirp_panel import ChirpPanel
+from .panels.grating_panel import GratingPanel
 from .panels.ei_panel import EIPanel
 from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
@@ -460,6 +461,7 @@ class MainWindow(QMainWindow):
         panels = [
             self.standard_plots_panel,
             self.chirp_panel,
+            self.grating_panel,
             self.ei_panel,
             self.waveforms_panel,
             self.raw_panel,
@@ -478,10 +480,12 @@ class MainWindow(QMainWindow):
         self.pop_mosaic_canvas.restyle(colors)
         self.pop_timecourse_canvas.restyle(colors)
         self.pop_acg_canvas.restyle(colors)
+        self.pop_dsos_canvas.restyle(colors)
 
         # Update population header styles
         self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        self.pop_dsos_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         
         if hasattr(self, 'sidebar_toggle_btn'):
             self._style_sidebar_toggle_btn(colors)
@@ -536,6 +540,8 @@ class MainWindow(QMainWindow):
             self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
         if hasattr(self, "pop_acg_label"):
             self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        if hasattr(self, "pop_dsos_label"):
+            self.pop_dsos_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
 
         if hasattr(self, "tree_model"):
             self._apply_tree_item_theme(colors)
@@ -774,6 +780,9 @@ class MainWindow(QMainWindow):
         elif current_panel == self.chirp_panel:
             self.chirp_panel.update_all(cluster_id)
 
+        elif current_panel == self.grating_panel:
+            self.grating_panel.update_all(cluster_id)
+
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
 
@@ -836,6 +845,9 @@ class MainWindow(QMainWindow):
 
         elif current_tab == self.chirp_panel:
             self.chirp_panel.update_all(cluster_id)
+
+        elif current_tab == self.grating_panel:
+            self.grating_panel.update_all(cluster_id)
 
         elif current_tab == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
@@ -1123,9 +1135,25 @@ class MainWindow(QMainWindow):
         acg_layout.addWidget(self.pop_acg_canvas)
         self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
+        # 4. DS/OS Probe Map Panel
+        self.pop_dsos_widget = QWidget()
+        dsos_layout = QVBoxLayout(self.pop_dsos_widget)
+        dsos_layout.setContentsMargins(0, 0, 0, 0)
+        dsos_hdr = QHBoxLayout()
+        self.pop_dsos_label = QLabel("DS/OS Probe Map")
+        self.pop_dsos_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        self.pop_dsos_summary = QLabel("n=0")
+        dsos_hdr.addWidget(self.pop_dsos_label)
+        dsos_hdr.addStretch()
+        dsos_hdr.addWidget(self.pop_dsos_summary)
+        dsos_layout.addLayout(dsos_hdr)
+        self.pop_dsos_canvas = MplCanvas(width=6, height=2, dpi=100)
+        dsos_layout.addWidget(self.pop_dsos_canvas)
+        self.pop_master_splitter.addWidget(self.pop_dsos_widget)
+
         # Add master splitter to layout
         pop_layout.addWidget(self.pop_master_splitter, stretch=1)
-        self.pop_master_splitter.setSizes([400, 200, 200])
+        self.pop_master_splitter.setSizes([400, 200, 200, 200])
 
         # --- NEW: right-side splitter containing tabs and pop widget ---
         self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1142,6 +1170,7 @@ class MainWindow(QMainWindow):
         # --- Panels ---
         self.standard_plots_panel = StandardPlotsPanel(self)
         self.chirp_panel = ChirpPanel(self)
+        self.grating_panel = GratingPanel(self)
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
@@ -1151,6 +1180,7 @@ class MainWindow(QMainWindow):
         # --- Tab Order (Short Labels) ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
         self.analysis_tabs.addTab(self.chirp_panel, "Chirp")
+        self.analysis_tabs.addTab(self.grating_panel, "Grating")
         self.analysis_tabs.addTab(self.ei_panel, "EI")
         self.analysis_tabs.addTab(self.sta_panel, "STA")
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")

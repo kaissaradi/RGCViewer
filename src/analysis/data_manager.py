@@ -286,6 +286,20 @@ class DataManager(QObject):
         self.chirp_id_to_row = None     # dict[int cluster_id -> int row index]
         self.chirp_available = False
 
+        # --- Grating (DSOS / SF) Data ---
+        # Unlike chirp, this is NOT always precomputed offline. A raw file
+        # (spike_times_by_trial + trial_parameters) is guaranteed; an
+        # analyzed file (DSI/OSI already computed) is not. Whichever is
+        # found determines grating_status; DSI/OSI get computed on demand
+        # per cluster via GratingComputeWorker when only raw data exists.
+        self.grating_data = None            # pre-analyzed dict[cluster_id -> ...] or None
+        self.grating_raw_data = None        # {'spike_times_by_trial':..., 'trial_parameters':...} or None
+        self.grating_available = False
+        self.grating_status = 'missing'     # 'ok' | 'raw_only' | 'missing'
+        self.grating_conditions = None      # sorted list[(barWidth, temporalFrequency)]
+        self.grating_computed_cache = {}    # dict[cluster_id -> per-condition dict], on-demand results
+        self._grating_cache_lock = threading.Lock()
+
     def set_refractory_period(self, new_period_ms):
         """
         Set the refractory period for ISI analysis.
@@ -3065,6 +3079,168 @@ class DataManager(QObject):
             'freq_min_hz': float(d['freq_min_hz']),
             'freq_max_hz': float(d['freq_max_hz']),
         }
+
+    def _classify_grating_npy(self, mdic):
+        """Returns 'analyzed', 'raw', or 'unknown'. Schema-based, since
+        filenames don't reliably distinguish raw vs analyzed grating files."""
+        if self._grating_looks_analyzed(mdic):
+            return 'analyzed'
+        if 'trial_parameters' in mdic and 'spike_times_by_trial' in mdic:
+            return 'raw'
+        return 'unknown'
+
+    @staticmethod
+    def _grating_looks_analyzed(mdic):
+        sample_vals = [v for k, v in mdic.items() if isinstance(k, (int, np.integer))]
+        if not sample_vals:
+            return False
+        first = sample_vals[0]
+        if not isinstance(first, dict):
+            return False
+        return any(
+            isinstance(k, tuple) and isinstance(v, dict) and 'condition_type' in v
+            for k, v in first.items()
+        )
+
+    def load_grating_data(self, grating_path=None):
+        """
+        Load grating (DSOS/SF) data from kilosort_dir.
+
+        Handles both cases: a precomputed analyzed file (DSI/OSI already
+        run, e.g. combined_grating_analysis.py output), or only a raw file
+        (spike_times_by_trial + trial_parameters) — DSI/OSI then get
+        computed on demand per cluster via GratingComputeWorker.
+
+        Never raises. Always leaves grating_available/grating_status in a
+        well-defined state.
+        """
+        try:
+            candidates = grating_path
+            if candidates is None:
+                candidates = sorted(self.kilosort_dir.glob('*Grating*.npy')) + \
+                             sorted(self.kilosort_dir.glob('*DSOS*.npy'))
+                candidates = sorted(set(candidates))
+                if not candidates:
+                    self.grating_available = False
+                    self.grating_status = 'missing'
+                    logger.info("No grating analysis file found in %s", self.kilosort_dir)
+                    return False, "No grating file found."
+            else:
+                candidates = [candidates]
+
+            analyzed_path = None
+            raw_path = None
+            for p in candidates:
+                try:
+                    mdic = np.load(p, allow_pickle=True).item()
+                except Exception:
+                    continue
+                kind = self._classify_grating_npy(mdic)
+                if kind == 'analyzed':
+                    if analyzed_path is None or '_combined' in p.name:
+                        analyzed_path = p
+                elif kind == 'raw' and raw_path is None:
+                    raw_path = p
+
+            if analyzed_path is not None:
+                mdic = np.load(analyzed_path, allow_pickle=True).item()
+                self.grating_data = {
+                    int(k): v for k, v in mdic.items() if isinstance(k, (int, np.integer))
+                }
+                self.grating_raw_data = None
+                self.grating_available = True
+                self.grating_status = 'ok'
+                self.grating_conditions = self._collect_grating_conditions(self.grating_data)
+                logger.debug("Loaded analyzed grating data from %s (%d cells)",
+                             analyzed_path.name, len(self.grating_data))
+                return True, f"Loaded analyzed grating data from {analyzed_path.name}"
+
+            if raw_path is not None:
+                mdic = np.load(raw_path, allow_pickle=True).item()
+                self.grating_raw_data = {
+                    'spike_times_by_trial': mdic['spike_times_by_trial'],
+                    'trial_parameters': mdic['trial_parameters'],
+                }
+                self.grating_data = None
+                self.grating_available = True
+                self.grating_status = 'raw_only'
+                self.grating_computed_cache = {}
+                self.grating_conditions = sorted(set(
+                    (t['barWidth'], t['temporalFrequency'])
+                    for t in mdic['trial_parameters']
+                ))
+                logger.debug("Loaded raw grating data from %s (will compute DSI/OSI on demand)",
+                             raw_path.name)
+                return True, f"Loaded raw grating data from {raw_path.name} (unanalyzed)"
+
+            self.grating_available = False
+            self.grating_status = 'missing'
+            logger.info("Grating file(s) found in %s but none matched a known schema", self.kilosort_dir)
+            return False, "Grating file(s) found but schema not recognized."
+
+        except Exception as e:
+            logger.warning("Could not load grating data: %s", e, exc_info=True)
+            self.grating_available = False
+            self.grating_status = 'missing'
+            self.grating_data = None
+            self.grating_raw_data = None
+            return False, str(e)
+
+    @staticmethod
+    def _collect_grating_conditions(grating_data):
+        conditions = set()
+        for cid, per_cond in grating_data.items():
+            for k in per_cond:
+                if isinstance(k, tuple):
+                    conditions.add(k)
+        return sorted(conditions)
+
+    def get_grating_data_for_cluster(self, cluster_id):
+        """
+        Tier 1-safe dict lookup ONLY — never computes. Checks the
+        pre-analyzed file first, then the on-demand compute cache.
+
+        Returns None if unavailable in either. If grating_status ==
+        'raw_only' and this returns None, the caller (GratingPanel) is
+        responsible for spawning a GratingComputeWorker — this method does
+        not do that itself, to keep it non-blocking and side-effect-free.
+        """
+        cluster_id = int(cluster_id)
+
+        if self.grating_status == 'ok' and self.grating_data is not None:
+            return self.grating_data.get(cluster_id)
+
+        if self.grating_status == 'raw_only':
+            with self._grating_cache_lock:
+                return self.grating_computed_cache.get(cluster_id)
+
+        return None
+
+    # Alias matching try_get_standard_plot_data's non-blocking-read naming.
+    try_get_grating_data_for_cluster = get_grating_data_for_cluster
+
+    def compute_grating_data_for_cluster(self, cluster_id):
+        """
+        Runs grating_calc.compute_grating_response() for one cluster and
+        caches the result. Expensive (FFT + 1000-shuffle permutation test
+        per DSOS condition) — must only be called from a background thread
+        (GratingComputeWorker.run()), never from the main/GUI thread.
+        """
+        cluster_id = int(cluster_id)
+        if self.grating_raw_data is None:
+            return None
+
+        from . import grating_calc
+        result = grating_calc.compute_grating_response(
+            cluster_id,
+            self.grating_raw_data['spike_times_by_trial'],
+            self.grating_raw_data['trial_parameters'],
+        )
+
+        with self._grating_cache_lock:
+            self.grating_computed_cache[cluster_id] = result
+
+        return result
 
     def get_vision_id_for_cluster(self, cluster_id: int) -> int:
         """Translate UI cluster_id → Vision file key, respecting is_vision_only."""
