@@ -10,3 +10,4 @@ htmlcov/
 # Editor & Tooling
 .vscode/
 .codex_artifacts
+.claude
