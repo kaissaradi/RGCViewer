@@ -20,9 +20,15 @@
   `constants.py`; added the chirp PCA block to `analysis_core.build_feature_matrix`
   (after grating, before scalars). Tests: `TestBuildFeatureMatrixChirp` (5 tests)
   in `tests/unit/test_dynamic_clustering.py` — **passing**.
-- [ ] **Stage 2 — `DataManager.get_raw_feature_blocks`.** Emit the `'chirp'`
-  block (L2-normalized PSTH, QI gate, zero sentinel, `'chirp'` key in both
-  return dicts). Tests in `tests/unit/test_raw_feature_blocks.py`.
+- [x] **Stage 2 — `DataManager.get_raw_feature_blocks`.** Emits the `'chirp'`
+  block: L2-normalized PSTH shape, QI gate (`CHIRP_MIN_QI`), zero sentinel for
+  missing/low-QI cells, `'chirp'` key in both the normal and empty-blocks return
+  dicts. **Deviation from spec Block 5.2:** accesses `chirp_id_to_row` +
+  `chirp_data['psth_mean' / 'quality_index']` directly rather than
+  `get_chirp_data_for_cluster()` — equally Law-1-safe (the row map has the offset
+  baked in at load) and avoids depending on the full phase-region schema for a
+  path that only needs two arrays. Tests: `TestGetRawFeatureBlocksChirp` (5) in
+  `tests/unit/test_raw_feature_blocks.py` — **passing**.
 - [ ] **Stage 3 — `UMAPPanel` UI.** `features_info` entry + disable-when-no-chirp
   gate in `umap_panel.py`. Run full suite.
 - [ ] **Stage 4 — docs.** Delete `rgcviewer_stabilization_plan.md`, update
