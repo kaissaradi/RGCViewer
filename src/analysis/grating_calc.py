@@ -22,6 +22,19 @@ N_SHUFFLES = 1000
 RNG_SEED = 0
 MIN_DIRECTIONS_FOR_DSOS = 8
 
+# --- "Best condition" / DS-OS classification -------------------------------
+# Selection previously used max(|DSI|) alone, which is amplitude-blind and
+# significance-blind: a condition with a handful of spikes that happened to
+# land in one direction by chance can produce a higher |DSI| than a
+# condition with a large, clearly time-locked, less-perfectly-concentrated
+# response. Gate on both a minimum response amplitude AND a significance
+# test before ranking by |DSI|/|OSI|, so "best" means "reliable," not just
+# "numerically largest."
+MIN_RESPONSE_HZ = 2.0      # peak-condition response floor (Hz-equivalent for f1/delta metrics)
+ALPHA = 0.05                # shuffle-test significance threshold
+DSI_THRESHOLD = 0.3         # DS classification cutoff, applied AFTER gating
+OSI_THRESHOLD = 0.3         # OS classification cutoff, applied AFTER gating
+
 
 def f1_amplitude(spike_times_ms, window, tf_hz, bin_ms=PSTH_BIN_MS):
     t0, t1 = window
@@ -237,9 +250,26 @@ def compute_grating_response(cluster_id, spike_times_by_trial, trial_parameters,
                                     n_shuffles=n_shuffles, rng=rng)
             osi_p = shuffle_pvalue(local_dirs, trial_resp_by_dir, harmonic=2,
                                     n_shuffles=n_shuffles, rng=rng)
+
+            # peak_rate_hz: real evoked firing rate (Hz), independent of
+            # response_metric ('f1' amplitude / 'delta' aren't in Hz units
+            # and aren't comparable across conditions run with different
+            # tf). This is the amplitude-floor gate for best-condition
+            # selection — see select_best_dsos_condition — so a condition
+            # with a handful of noisy spikes can't out-rank a condition
+            # with a real, strong response just because its DSI happens
+            # to be numerically higher.
+            peak_rate_hz = np.nanmax([
+                firing_rate_in_window(trials[i], stim_window)
+                for i in range(len(trials))
+                if trial_parameters[i]['barWidth'] == bw
+                and trial_parameters[i]['temporalFrequency'] == tf
+            ]) if local_dirs else np.nan
+
             entry.update({
                 'DSI': dsi, 'preferred_direction_deg': pref_dir, 'DSI_pvalue': dsi_p,
                 'OSI': osi, 'preferred_orientation_deg': pref_ori, 'OSI_pvalue': osi_p,
+                'peak_rate_hz': float(peak_rate_hz) if np.isfinite(peak_rate_hz) else np.nan,
             })
         else:
             entry.update({
@@ -264,3 +294,114 @@ def compute_grating_response(cluster_id, spike_times_by_trial, trial_parameters,
         result['sf_tuning_curve'] = curve
 
     return result
+
+
+def select_best_dsos_condition(data, min_response_hz=MIN_RESPONSE_HZ, alpha=ALPHA,
+                                dsi_threshold=DSI_THRESHOLD, osi_threshold=OSI_THRESHOLD):
+    """
+    Picks the single 'best' (barWidth, temporalFrequency) condition and a
+    DS/OS classification for one cluster, replacing the old max(|DSI|)
+    selection used independently (and inconsistently) in GratingPanel and
+    the population DS/OS probe map.
+
+    `data` is the per-cluster dict returned by compute_grating_response
+    (or the equivalent pre-analyzed-file entry) — i.e. data[cluster_id].
+
+    Selection logic, in order:
+      1. GATE: a condition is only eligible if peak_rate_hz > min_response_hz
+         AND its relevant p-value < alpha. This is the actual bug fix — the
+         old code ranked by raw |DSI| with no amplitude or significance
+         floor, so a near-silent condition with a few spikes that landed in
+         one direction by chance could out-rank a condition with a real,
+         strong, time-locked response.
+      2. CLASSIFY: DS takes priority over OS, matching the reference
+         notebook's convention (DSI > threshold => DS, regardless of OSI;
+         only cells that clear the OSI bar *without* clearing the DSI bar
+         are called OS). A single-lobed tuning curve mathematically pushes
+         up both DSI and OSI together, so DSI-first is the standard/non-
+         arbitrary way to split them, rather than comparing DSI vs OSI
+         head-to-head (they're different harmonics and not on a shared
+         scale — see harmonic=1 vs harmonic=2 in vector_sum_index).
+      3. RANK: among gated conditions of the winning class (DS or OS),
+         pick the highest |DSI| (or |OSI| for OS) — same idea as before,
+         just restricted to conditions that already passed the gate.
+
+    Returns a dict:
+        {
+            'condition': (bw, tf) or None,
+            'classification': 'DS' | 'OS' | 'none',
+            'DSI', 'OSI', 'preferred_direction_deg', 'preferred_orientation_deg',
+            'DSI_pvalue', 'OSI_pvalue', 'peak_rate_hz',
+        }
+    or None if the cluster has no 'dsos' conditions at all (as opposed to
+    having conditions that just didn't pass the gate — that case returns
+    classification='none' with condition=None, which callers should render
+    as an explicit "not significantly tuned" state, not silently omit).
+    """
+    dsos_conditions = [
+        c for c in data
+        if isinstance(c, tuple) and data[c].get('condition_type') == 'dsos'
+    ]
+    if not dsos_conditions:
+        return None
+
+    def _passes_gate(entry, pvalue_key):
+        # NOTE: pre-analyzed files loaded from disk (combined_grating_
+        # analysis.py output, predating this gate) won't have
+        # 'peak_rate_hz' in their per-condition dict. That's a schema gap,
+        # not a "this condition is weak" signal — but np.isfinite(nan) is
+        # False either way, so it fails the gate and this cluster reports
+        # classification='none' until re-run through compute_grating_
+        # response. This is intentionally conservative (silently passing
+        # ungated legacy data through would reintroduce the exact bug this
+        # function exists to fix) but it does mean old analyzed files go
+        # dark on first load — flag this to the user rather than treating
+        # it as a quiet edge case.
+        peak_hz = entry.get('peak_rate_hz', np.nan)
+        pval = entry.get(pvalue_key, np.nan)
+        if not np.isfinite(peak_hz) or peak_hz <= min_response_hz:
+            return False
+        if not np.isfinite(pval) or pval >= alpha:
+            return False
+        return True
+
+    ds_candidates = [c for c in dsos_conditions if _passes_gate(data[c], 'DSI_pvalue')]
+    os_candidates = [c for c in dsos_conditions if _passes_gate(data[c], 'OSI_pvalue')]
+
+    def _abs_or_neg1(val):
+        return abs(val) if np.isfinite(val) else -1.0
+
+    best_ds = max(ds_candidates, key=lambda c: _abs_or_neg1(data[c].get('DSI', np.nan))) \
+        if ds_candidates else None
+    if best_ds is not None and abs(data[best_ds].get('DSI', 0.0)) > dsi_threshold:
+        entry = data[best_ds]
+        return {
+            'condition': best_ds,
+            'classification': 'DS',
+            'DSI': entry.get('DSI', np.nan), 'OSI': entry.get('OSI', np.nan),
+            'preferred_direction_deg': entry.get('preferred_direction_deg', np.nan),
+            'preferred_orientation_deg': entry.get('preferred_orientation_deg', np.nan),
+            'DSI_pvalue': entry.get('DSI_pvalue', np.nan), 'OSI_pvalue': entry.get('OSI_pvalue', np.nan),
+            'peak_rate_hz': entry.get('peak_rate_hz', np.nan),
+        }
+
+    best_os = max(os_candidates, key=lambda c: _abs_or_neg1(data[c].get('OSI', np.nan))) \
+        if os_candidates else None
+    if best_os is not None and abs(data[best_os].get('OSI', 0.0)) > osi_threshold:
+        entry = data[best_os]
+        return {
+            'condition': best_os,
+            'classification': 'OS',
+            'DSI': entry.get('DSI', np.nan), 'OSI': entry.get('OSI', np.nan),
+            'preferred_direction_deg': entry.get('preferred_direction_deg', np.nan),
+            'preferred_orientation_deg': entry.get('preferred_orientation_deg', np.nan),
+            'DSI_pvalue': entry.get('DSI_pvalue', np.nan), 'OSI_pvalue': entry.get('OSI_pvalue', np.nan),
+            'peak_rate_hz': entry.get('peak_rate_hz', np.nan),
+        }
+
+    return {
+        'condition': None, 'classification': 'none',
+        'DSI': np.nan, 'OSI': np.nan,
+        'preferred_direction_deg': np.nan, 'preferred_orientation_deg': np.nan,
+        'DSI_pvalue': np.nan, 'OSI_pvalue': np.nan, 'peak_rate_hz': np.nan,
+    }

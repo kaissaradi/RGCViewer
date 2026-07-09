@@ -98,14 +98,14 @@ class TestApplyPrefilter:
         assert valid == [0]
         assert discarded == []
 
-    def test_rejects_none_timecourse(self, filter_config):
-        """Cell with timecourse=None is discarded."""
+    def test_passes_none_timecourse(self, filter_config):
+        """Cell with timecourse=None is accepted (KS-only support)."""
         physics = {
             0: {'timecourse': None, 'rf_area': 50.0},
         }
         valid, discarded = apply_prefilter(physics, filter_config)
-        assert valid == []
-        assert discarded == [0]
+        assert valid == [0]
+        assert discarded == []
 
     def test_rejects_flat_sta(self, filter_config):
         """Cell with flat STA (std < threshold) is discarded."""
@@ -126,26 +126,27 @@ class TestApplyPrefilter:
         assert discarded == [0]
 
     def test_mixed_cells(self, filter_config):
-        """Correctly partitions a mix of good, flat, and oversized cells."""
+        """Correctly partitions a mix of good, flat, oversized, and None-tc cells."""
         physics = {
             1: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 50.0},   # good
             2: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 500.0},   # big RF
             3: {'timecourse': np.full(20, 0.0), 'rf_area': 50.0},                     # flat
-            4: {'timecourse': None, 'rf_area': 50.0},                                  # missing
+            4: {'timecourse': None, 'rf_area': 50.0},                                  # None tc → accepted (KS-only)
             5: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 100.0},   # good
         }
         valid, discarded = apply_prefilter(physics, filter_config)
-        assert valid == [1, 5]
-        assert sorted(discarded) == [2, 3, 4]
+        assert valid == [1, 4, 5]
+        assert sorted(discarded) == [2, 3]
 
     def test_sorted_output(self, filter_config):
         """Output lists are sorted regardless of input dict order."""
         physics = {
             9: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 50.0},
             3: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 50.0},
-            7: {'timecourse': None, 'rf_area': 50.0},
+            7: {'timecourse': None, 'rf_area': 50.0},  # None tc → accepted
         }
         valid, discarded = apply_prefilter(physics, filter_config)
+        assert valid == [3, 7, 9]  # all pass, sorted
         assert valid == sorted(valid)
         assert discarded == sorted(discarded)
 
@@ -275,12 +276,23 @@ class TestBuildFeatureMatrix:
         assert not np.any(np.isnan(matrix))
 
     def test_scalars_only(self):
-        """Works with only scalar features enabled (no PCA blocks)."""
+        """Works with only scalar features enabled (no PCA blocks).
+
+        build_feature_matrix's scalar_features table was consolidated to
+        rf_long_diameter / rf_short_diameter only (see analysis_core.py
+        and constants.py DEFAULT_WEIGHT_* comments).  Old scalars like
+        firing_rate, isi_violations, etc. are still present in
+        raw_blocks['scalars'] for metadata/hover but are NOT used as
+        embedding features.
+        """
         rng = np.random.RandomState(42)
         raw_blocks = {
             'temporal': rng.randn(5, 20),
             'acg': rng.randn(5, 50),
+            'grating': np.zeros((5, 12)),  # zero sentinel → skipped
             'scalars': pd.DataFrame({
+                'rf_long_diameter': rng.rand(5) * 50,
+                'rf_short_diameter': rng.rand(5) * 30,
                 'firing_rate': rng.rand(5) * 20,
                 'isi_violations': rng.rand(5) * 0.1,
                 'time_to_peak': rng.randint(0, 20, size=5).astype(float),
@@ -290,12 +302,97 @@ class TestBuildFeatureMatrix:
         }
         config = {
             'use_temporal': False, 'use_acg': False,
-            'use_firing_rate': True, 'w_firing_rate': 1.0,
-            'use_isi_violations': True, 'w_isi_violations': 1.0,
-            'use_time_to_peak': True, 'w_time_to_peak': 1.0,
-            'use_rf_area': True, 'w_rf_area': 1.0,
-            'use_ellipticity': True, 'w_ellipticity': 1.0,
+            'use_grating_dsos': False,
+            'use_rf_diameter': True, 'w_rf_diameter': 6.0,
         }
         matrix, labels = build_feature_matrix(raw_blocks, config)
-        assert matrix.shape == (5, 5)
-        assert labels == ['firing_rate', 'isi_violations', 'time_to_peak', 'rf_area', 'ellipticity']
+        assert matrix.shape == (5, 2)
+        assert labels == ['rf_long_diameter', 'rf_short_diameter']
+
+
+# ---------------------------------------------------------------------------
+# build_feature_matrix — chirp PSTH shape block
+# (see docs/specs/chirp_umap_feature_spec.md)
+# ---------------------------------------------------------------------------
+
+class TestBuildFeatureMatrixChirp:
+    """Chirp PSTH-shape PCA block behaves like the grating block:
+    PCA'd when present, skipped (no NaN) when all-zero/absent/disabled."""
+
+    @pytest.fixture
+    def raw_blocks_chirp(self):
+        """10 cells; chirp = 40-bin PSTH shape rows with real variance."""
+        rng = np.random.RandomState(7)
+        return {
+            'temporal': rng.randn(10, 20),
+            'acg': rng.randn(10, 50),
+            'grating': np.zeros((10, 12)),  # zero sentinel → skipped
+            'chirp': rng.randn(10, 40),
+            'scalars': pd.DataFrame({
+                'rf_long_diameter': rng.rand(10) * 50,
+                'rf_short_diameter': rng.rand(10) * 30,
+            }),
+        }
+
+    @pytest.fixture
+    def chirp_only_config(self):
+        # Only the chirp block active, so width == chirp PC count exactly.
+        return {
+            'use_temporal': False, 'use_acg': False,
+            'use_grating_dsos': False, 'use_rf_diameter': False,
+            'use_chirp': True, 'w_chirp': 3.0,
+        }
+
+    def test_chirp_block_present_adds_pcs(self, raw_blocks_chirp, chirp_only_config):
+        from src.analysis.constants import CHIRP_PCA_COMPONENTS
+        matrix, labels = build_feature_matrix(raw_blocks_chirp, chirp_only_config)
+        n_comp = min(CHIRP_PCA_COMPONENTS, 10 - 1, 40)
+        chirp_cols = [l for l in labels if l.startswith('chirp_pc')]
+        assert len(chirp_cols) == n_comp
+        assert matrix.shape == (10, n_comp)
+        assert not np.any(np.isnan(matrix))
+
+    def test_chirp_disabled_omits_block(self, raw_blocks_chirp, chirp_only_config):
+        full, _ = build_feature_matrix(
+            raw_blocks_chirp, {**chirp_only_config, 'use_rf_diameter': True,
+                               'w_rf_diameter': 6.0})
+        no_chirp, labels = build_feature_matrix(
+            raw_blocks_chirp, {**chirp_only_config, 'use_chirp': False,
+                               'use_rf_diameter': True, 'w_rf_diameter': 6.0})
+        from src.analysis.constants import CHIRP_PCA_COMPONENTS
+        diff = min(CHIRP_PCA_COMPONENTS, 10 - 1, 40)
+        assert full.shape[1] - no_chirp.shape[1] == diff
+        assert not any(l.startswith('chirp_pc') for l in labels)
+
+    def test_chirp_all_zero_skipped(self, raw_blocks_chirp, chirp_only_config):
+        """All-zero chirp matrix (every cell sentinel) is skipped, no NaN."""
+        raw_blocks_chirp['chirp'] = np.zeros((10, 40))
+        # Need at least one other enabled block so the matrix isn't empty.
+        cfg = {**chirp_only_config, 'use_rf_diameter': True, 'w_rf_diameter': 6.0}
+        matrix, labels = build_feature_matrix(raw_blocks_chirp, cfg)
+        assert not any(l.startswith('chirp_pc') for l in labels)
+        assert not np.any(np.isnan(matrix))
+
+    def test_chirp_absent_key_no_error(self, raw_blocks_chirp, chirp_only_config):
+        """A raw_blocks dict with no 'chirp' key (older caller) is tolerated."""
+        del raw_blocks_chirp['chirp']
+        cfg = {**chirp_only_config, 'use_rf_diameter': True, 'w_rf_diameter': 6.0}
+        matrix, labels = build_feature_matrix(raw_blocks_chirp, cfg)
+        assert not any(l.startswith('chirp_pc') for l in labels)
+        assert matrix.shape[0] == 10
+
+    def test_chirp_pca_clamps_components(self, chirp_only_config):
+        """With only 3 cells, chirp PCA clamps to N-1."""
+        rng = np.random.RandomState(1)
+        raw_blocks = {
+            'temporal': rng.randn(3, 20),
+            'acg': rng.randn(3, 50),
+            'chirp': rng.randn(3, 40),
+            'scalars': pd.DataFrame({
+                'rf_long_diameter': [10.0, 20.0, 30.0],
+                'rf_short_diameter': [5.0, 10.0, 15.0],
+            }),
+        }
+        matrix, labels = build_feature_matrix(raw_blocks, chirp_only_config)
+        chirp_cols = [l for l in labels if l.startswith('chirp_pc')]
+        assert len(chirp_cols) == 2  # min(4, 3-1, 40)

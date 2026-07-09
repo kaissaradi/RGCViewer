@@ -13,6 +13,7 @@ from matplotlib.collections import LineCollection, EllipseCollection
 from PyQt5.QtGui import QColor
 
 from ..theme import DARK_COLORS
+from ...analysis import grating_calc
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
 matplotlib_logger = logging.getLogger('matplotlib.font_manager')
@@ -624,6 +625,7 @@ def plot_population_rfs_background(ax, vision_params, main_window, sta_height, s
     n_target = len(target_ellipses)
     _apply_rf_axes_style(ax, colors,
                          title=f"Population Receptive Fields (n={n_target})")
+
 def plot_rich_ei(fig, median_ei, channel_positions, features, _sampling_rate, _pre_samples=20, colors=None):
     """
     Plots the electrical image (EI) on the electrode array.
@@ -934,3 +936,172 @@ def draw_population_fr_panel(main_window, subset_ids=None):
     canvas.draw_idle()
     if hasattr(main_window, 'pop_fr_summary'):
         main_window.pop_fr_summary.setText(f"n={arr.shape[0]}")
+
+# ---------------------------------------------------------------------------
+# DS/OS Probe Map
+# ---------------------------------------------------------------------------
+# Cell classified DS if |DSI| exceeds this at its best (barWidth, TF)
+# condition; else OS if |OSI| exceeds this. These now alias grating_calc's
+# constants rather than duplicating the numbers — two independently
+# maintained copies of the same threshold is exactly the kind of drift
+# that let this module's classification silently disagree with
+# GratingPanel's before this fix. Retune in grating_calc.py, not here.
+DSOS_DSI_THRESHOLD = grating_calc.DSI_THRESHOLD
+DSOS_OSI_THRESHOLD = grating_calc.OSI_THRESHOLD
+
+DSOS_ARROW_BASE = 60.0     # µm per unit DSI, before clamping
+DSOS_ARROW_MAX = 150.0     # µm, clamp so a few outlier DSI~1 cells don't blow out the plot
+
+
+def _best_dsos_condition(grating_entry):
+    """
+    Delegates to grating_calc.select_best_dsos_condition — the single
+    shared, gated selector used by both this probe map and GratingPanel.
+
+    Previously this function independently re-derived "best" as
+    max(|DSI|) with no amplitude or significance gate, duplicating (and
+    able to silently diverge from) the same buggy logic in
+    grating_panel.py. That meant a cell could get a DS arrow here purely
+    because a low-spike-count condition happened to clear the DSI
+    threshold by chance, with no cross-check against the single-cluster
+    panel's own "best" pick — they were computed independently and could
+    disagree. Now both call the same function, so they can't.
+
+    Returns (dsi, osi, pref_dir_deg, pref_ori_deg, classification) where
+    classification is 'DS' | 'OS' | 'none', or None if this cluster has no
+    dsos conditions at all. Callers should use `classification` directly
+    rather than re-deriving DS/OS from the returned DSI/OSI values against
+    local thresholds — that re-derivation is exactly the kind of
+    independent, divergence-prone logic this fix removes.
+    """
+    selection = grating_calc.select_best_dsos_condition(grating_entry)
+    if selection is None:
+        return None
+    return (
+        selection['DSI'], selection['OSI'],
+        selection['preferred_direction_deg'], selection['preferred_orientation_deg'],
+        selection['classification'],
+    )
+
+
+def draw_population_dsos_plot(main_window, subset_ids=None):
+    """
+    Probe-map view of direction/orientation selectivity across the
+    population: each DS cell gets a red arrow (length ~ DSI) at its
+    electrode position pointing toward its preferred direction; each OS
+    cell gets a blue double-headed line (length ~ OSI) along its preferred
+    orientation axis. Cells below both thresholds are plotted as small gray
+    dots for spatial context, same as the rest of the array being drawn
+    faint gray in the reference notebook.
+
+    Positions come from DataManager.cluster_df['x_um'/'y_um'] — already
+    built at dataset-load time from Vision seed electrodes, so unlike the
+    reference notebook this needs no templates.npy/spike_clusters.npy
+    dominant-channel computation.
+    """
+    if subset_ids is None:
+        try:
+            subset_ids = main_window._get_pop_subset_ids()
+        except Exception:
+            subset_ids = []
+
+    canvas = getattr(main_window, 'pop_dsos_canvas', None)
+    if canvas is None:
+        return
+
+    colors = main_window.get_current_colors()
+    dm = main_window.data_manager
+
+    canvas.fig.clear()
+    canvas.fig.set_facecolor(colors['bg_panel'])
+
+    if not subset_ids or dm is None or not getattr(dm, 'grating_available', False):
+        canvas.fig.text(0.5, 0.5,
+                         "No cells selected" if subset_ids else "No grating data",
+                         ha='center', va='center', color=colors['text_secondary'], fontsize=10)
+        canvas.draw_idle()
+        if hasattr(main_window, 'pop_dsos_summary'):
+            main_window.pop_dsos_summary.setText("n=0")
+        return
+
+    ax = canvas.fig.add_subplot(111)
+    ax.set_facecolor(colors['bg_panel'])
+
+    cluster_df = dm.cluster_df
+    has_positions = cluster_df is not None and 'x_um' in cluster_df.columns
+
+    bg_x, bg_y = [], []
+    n_ds, n_os = 0, 0
+
+    for cid in subset_ids:
+        if not has_positions:
+            break
+        row = cluster_df.loc[cluster_df['cluster_id'] == cid]
+        if row.empty:
+            continue
+        x, y = row.iloc[0]['x_um'], row.iloc[0]['y_um']
+        if np.isnan(x) or np.isnan(y):
+            continue
+
+        entry = dm.get_grating_data_for_cluster(cid)
+        stats = _best_dsos_condition(entry) if entry else None
+
+        if stats is None:
+            bg_x.append(x)
+            bg_y.append(y)
+            continue
+
+        dsi, osi, pref_dir, pref_ori, classification = stats
+
+        # Trust the shared selector's own classification rather than
+        # re-applying DSOS_DSI_THRESHOLD/DSOS_OSI_THRESHOLD here — that
+        # re-derivation is exactly the duplicated, divergence-prone logic
+        # this fix removes. 'none' covers both "had dsos conditions but
+        # none passed the amplitude/significance gate" and falls through
+        # to the same gray background-dot treatment as "no dsos data at
+        # all", which is the correct probe-map behavior either way: no
+        # reliable tuning, no arrow.
+        if classification == 'DS' and not np.isnan(pref_dir):
+            n_ds += 1
+            theta = np.deg2rad(pref_dir)
+            length = min(DSOS_ARROW_BASE * abs(dsi), DSOS_ARROW_MAX)
+            dx, dy = np.cos(theta) * length, np.sin(theta) * length
+            ax.scatter([x], [y], s=35, c=colors.get('plot_compare', '#E03131'),
+                       edgecolor=colors['bg_panel'], linewidth=0.5, zorder=3)
+            ax.annotate('', xy=(x + dx, y + dy), xytext=(x, y),
+                        arrowprops=dict(facecolor=colors.get('plot_compare', '#E03131'),
+                                         edgecolor=colors.get('plot_compare', '#E03131'),
+                                         width=1.5, headwidth=6, headlength=6, alpha=0.9),
+                        zorder=4)
+        elif classification == 'OS' and not np.isnan(pref_ori):
+            n_os += 1
+            theta = np.deg2rad(pref_ori)
+            length = min(DSOS_ARROW_BASE * abs(osi), DSOS_ARROW_MAX) / 2.0
+            dx, dy = np.cos(theta) * length, np.sin(theta) * length
+            ax.scatter([x], [y], s=35, c=colors.get('plot_overlay', '#1971C2'),
+                       edgecolor=colors['bg_panel'], linewidth=0.5, zorder=3)
+            ax.plot([x - dx, x + dx], [y - dy, y + dy],
+                    color=colors.get('plot_overlay', '#1971C2'), linewidth=2.0, alpha=0.9, zorder=4)
+        else:
+            bg_x.append(x)
+            bg_y.append(y)
+
+    if bg_x:
+        ax.scatter(bg_x, bg_y, s=18, c=colors['border_subtle'], alpha=0.5, zorder=1)
+
+    ax.scatter([], [], c=colors.get('plot_compare', '#E03131'), s=35, label=f'DS (n={n_ds})')
+    ax.scatter([], [], c=colors.get('plot_overlay', '#1971C2'), s=35, label=f'OS (n={n_os})')
+    ax.legend(loc='upper right', fontsize=8, facecolor=colors['bg_panel'], labelcolor=colors['text_primary'])
+
+    ax.set_xlabel("X (µm)", color=colors['text_secondary'], fontsize=9)
+    ax.set_ylabel("Y (µm)", color=colors['text_secondary'], fontsize=9)
+    ax.tick_params(colors=colors['text_secondary'], labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(colors['border_subtle'])
+    _apply_rf_axes_style(ax, colors, title=f"DS/OS Probe Map (n={n_ds + n_os}/{len(subset_ids)})")
+
+    canvas.fig.tight_layout()
+    canvas.draw_idle()
+
+    if hasattr(main_window, 'pop_dsos_summary'):
+        main_window.pop_dsos_summary.setText(f"n={n_ds + n_os}  DS={n_ds}  OS={n_os}")

@@ -1861,7 +1861,7 @@ class DataManager(QObject):
         -------
         raw_blocks : dict
             ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
-              'scalars': pd.DataFrame (N rows)}``
+              'chirp': np.ndarray (N, 15), 'scalars': pd.DataFrame (N rows)}``
         valid_ids : list[int]
             Cluster IDs that passed pre-filtering.
         discarded_ids : list[int]
@@ -1887,6 +1887,7 @@ class DataManager(QObject):
             empty_blocks = {
                 'temporal': np.empty((0, 0)),
                 'acg':      np.empty((0, 0)),
+                'chirp':    np.empty((0, 0)),
                 'scalars':  pd.DataFrame(),
             }
             return empty_blocks, valid_ids, discarded_ids
@@ -1894,6 +1895,7 @@ class DataManager(QObject):
         # 3. Collect raw arrays for valid cells (always copy — Law 3)
         tc_list = []
         acg_list = []
+        chirp_list = []
         scalar_rows = []
 
         # Compute mean firing rate from spike counts and recording duration.
@@ -1929,6 +1931,19 @@ class DataManager(QObject):
             else:
                 acg = np.zeros(1, dtype=np.float64)
             acg_list.append(acg)
+
+            # Chirp — 15-dim ON/OFF/freq/contrast feature vector, computed
+            # from DataManager.get_chirp_data_for_cluster() (already handles
+            # the Vision-ID translation and missing-cell/missing-file cases).
+            # Zero-vector sentinel for cells with no chirp data, same
+            # missing-data convention as timecourse=None above; caught by
+            # build_feature_matrix's np.std==0 guard if EVERY cell in this
+            # selection lacks chirp data.
+            chirp_entry = self.get_chirp_data_for_cluster(cid)
+            chirp_vec = analysis_core.compute_chirp_feature_vector(chirp_entry)
+            if chirp_vec is None:
+                chirp_vec = np.zeros(len(analysis_core.CHIRP_FEATURE_NAMES), dtype=np.float64)
+            chirp_list.append(chirp_vec)
 
             # Scalar features
             rf_area = float(phys.get('rf_area', 0.0))
@@ -1977,11 +1992,16 @@ class DataManager(QObject):
             for a in acg_list
         ])
 
+        # Chirp vectors are always a fixed length (CHIRP_FEATURE_NAMES),
+        # no padding needed unlike temporal/ACG which vary in length.
+        chirp_mat = np.array(chirp_list)
+
         scalars_df = pd.DataFrame(scalar_rows, index=range(len(valid_ids)))
 
         raw_blocks = {
             'temporal': tc_mat,
             'acg': acg_mat,
+            'chirp': chirp_mat,
             'scalars': scalars_df,
         }
         return raw_blocks, valid_ids, discarded_ids
@@ -3048,6 +3068,18 @@ class DataManager(QObject):
         from Tier 2 (panel.update_all()), never Tier 1, since it backs a
         panel rebuild.
 
+        ID SPACE: chirp_analysis.py sources its cluster_id array from
+        symphony_data.py's get_spike_times_dict(), which builds cell_ids
+        from self.vcd.get_cell_ids() — Vision's cell table, NOT
+        spike_clusters.npy. So chirp_id_to_row is keyed by Vision cell ID,
+        while `cluster_id` here (from the UI / cluster_df) is Kilosort
+        space. Confirmed empirically (a 1-spike cell showed a full chirp
+        response under the old untranslated lookup) after this was
+        originally flagged and incorrectly overridden as "already Kilosort
+        space" earlier in this project — do not remove this translation
+        without re-confirming against cluster_df, this bug has already
+        shipped once.
+
         Returns a dict with:
             psth_mean        : (n_bins,) ndarray, Hz
             quality_index    : float (NaN if silent)
@@ -3063,7 +3095,8 @@ class DataManager(QObject):
         if not self.chirp_available or self.chirp_data is None or self.chirp_id_to_row is None:
             return None
 
-        row = self.chirp_id_to_row.get(int(cluster_id))
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
+        row = self.chirp_id_to_row.get(vid)
         if row is None:
             return None
 
@@ -3200,19 +3233,27 @@ class DataManager(QObject):
         Tier 1-safe dict lookup ONLY — never computes. Checks the
         pre-analyzed file first, then the on-demand compute cache.
 
+        ID SPACE: both grating_data (pre-analyzed) and
+        grating_computed_cache are keyed by Vision cell ID, same reasoning
+        as chirp — combined_grating_analysis.py's per-cluster results dict
+        is built directly from the raw file's cluster_id array, which comes
+        from symphony_data.py's Vision-sourced cell_ids, not
+        spike_clusters.npy. Translate the incoming UI/Kilosort cluster_id
+        before every lookup.
+
         Returns None if unavailable in either. If grating_status ==
         'raw_only' and this returns None, the caller (GratingPanel) is
         responsible for spawning a GratingComputeWorker — this method does
         not do that itself, to keep it non-blocking and side-effect-free.
         """
-        cluster_id = int(cluster_id)
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
 
         if self.grating_status == 'ok' and self.grating_data is not None:
-            return self.grating_data.get(cluster_id)
+            return self.grating_data.get(vid)
 
         if self.grating_status == 'raw_only':
             with self._grating_cache_lock:
-                return self.grating_computed_cache.get(cluster_id)
+                return self.grating_computed_cache.get(vid)
 
         return None
 
@@ -3225,20 +3266,25 @@ class DataManager(QObject):
         caches the result. Expensive (FFT + 1000-shuffle permutation test
         per DSOS condition) — must only be called from a background thread
         (GratingComputeWorker.run()), never from the main/GUI thread.
+
+        cluster_id in (UI/Kilosort space) is translated to Vision space
+        before indexing spike_times_by_trial, which is keyed by Vision cell
+        ID (see get_grating_data_for_cluster docstring). The cache is also
+        keyed by Vision ID for consistency with grating_data.
         """
-        cluster_id = int(cluster_id)
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
         if self.grating_raw_data is None:
             return None
 
         from . import grating_calc
         result = grating_calc.compute_grating_response(
-            cluster_id,
+            vid,
             self.grating_raw_data['spike_times_by_trial'],
             self.grating_raw_data['trial_parameters'],
         )
 
         with self._grating_cache_lock:
-            self.grating_computed_cache[cluster_id] = result
+            self.grating_computed_cache[vid] = result
 
         return result
 
