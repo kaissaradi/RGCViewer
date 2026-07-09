@@ -4,7 +4,7 @@
 > Read AGENTS.md before this document.
 > This is a **snapshot of the current codebase state**, not a roadmap narrative.
 > Update this file every time a spec completes or a new untested behavior is discovered.
-> Last updated: 2026-06-09 | Branch: main
+> Last updated: 2026-07-08 | Branch: tsting
 
 ---
 
@@ -79,6 +79,7 @@ Before modifying any file in the "changed files" column, run the corresponding t
 | Light mode theme system | `src/gui/theme.py`, `main_window.py::_setup_style()` | Visual AC — toggle theme, check all panels | LOW |
 | Sidebar live search (`Ctrl+F`) | `main_window.py` | Manual | LOW |
 | Physics cache warm-up freeze on large datasets | `src/analysis/vision_integration.py` | `test_lazy_sta_dict_cache_is_thread_safe`, `test_lazy_sta_dict_reads_are_concurrent` | HIGH — any changes to LazySTADict concurrency, dict caching, or contains checking |
+| Chirp PSTH PCA added as a UMAP feature block | `constants.py`, `analysis_core.py::build_feature_matrix`, `data_manager.py::get_raw_feature_blocks`, `panels/umap_panel.py` | `TestBuildFeatureMatrixChirp` (5, `test_dynamic_clustering.py`), `TestGetRawFeatureBlocksChirp` (5, `test_raw_feature_blocks.py`) | MEDIUM — spec `docs/specs/chirp_umap_feature_spec.md`. Block is additive/self-guarding (width-0 → skipped when no chirp file). |
 
 ---
 
@@ -111,6 +112,16 @@ Before modifying any file in the "changed files" column, run the corresponding t
 - **Key constraint:** Must not touch the existing heatmap render path — mode switch is purely additive. `_load_vision_ei()` and `_load_ks_ei()` stay unchanged.
 - **Uses:** `plot_ei_waveforms` from `analysis_core.py` and `_resolve_channel_positions()` already in `ei_panel.py`.
 - **Fragile zone overlap:** Touches `ei_panel.py` render path. Classify any new operation as Tier 1 or Tier 2 before writing (LAW 2).
+
+---
+
+### Priority 3 — Known issues found 2026-07-08, not yet fixed
+
+- **Stale `feature_cache.pkl` is permanently sticky.** `get_cell_physics()` returns any cached entry flagged `_computed: True` without recomputation. If the cache was written while the Vision STA load was incomplete, entries land with `timecourse=None` and `rf_area=0` and are never repaired — the Population Dynamics panel then reports "No valid timecourses" for most cells. Observed on `20260623A-1`: 593 of 894 entries were poisoned this way. Workaround today is deleting the pickle. Fix would be to refuse to mark an entry `_computed` when the Vision block was skipped, or to version the cache.
+- **DS/OS threshold slider does not affect the grating panel.** The slider writes `main_window.dsos_threshold`, which is only read by `population_panel.py:910` for the population RF markers. `grating_panel.py:367` calls `select_best_dsos_condition(data)` with no threshold argument, so that panel's `[not significant]` label always uses the hardcoded `DSI_THRESHOLD = 0.3`. Additionally the `pvalue < ALPHA (0.05)` gate runs before any DSI comparison, so lowering the slider could not rescue a borderline cell even if it were wired through. Either thread the threshold into `select_best_dsos_condition` or relabel the slider "Population DS/OS threshold".
+- **`get_cell_physics()` reads the full STA cube it does not need.** It indexes `self.vision_stas[vid]`, forcing a full-movie disk read behind the 8 s `LazySTADict` timeout, even though the timecourse it ultimately uses comes from `vision_params['RedTimeCourse']`. Reading the cube should be a fallback, not the default path. This is the dominant cost when scrolling cells with a cold physics cache.
+- **`_draw_plots()` redraws the population panels on every selection.** `main_window.py:886` calls `callbacks.redraw_population_panels(...)` whenever `population_view_enabled`, regardless of which tab is visible, invoking `get_cell_physics()` for every cell in the group. Combined with the cube read above, this makes chirp-view scrolling slow until the cache warms.
+- **~19 pre-existing test failures on `tsting`, unrelated to any current feature work.** They fall into: a stale `HDBSCAN_AVAILABLE` import, calls to a `get_physics_feature_matrix` method that no longer exists, a precondition fixture yielding 0 valid cells, an `N=1` PCA edge case, and RF-mosaic/layout/debounce GUI tests whose functionality may no longer be wanted. These need triage into "update" vs "delete" before the suite can be trusted as a gate. Per AGENTS.md Rule 5 they have not been silenced.
 
 ---
 

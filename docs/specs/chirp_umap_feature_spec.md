@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | **Date created** | 2026-07-08 |
-| **Branch** | `feat/chirp-umap-feature` |
+| **Branch** | `tsting` |
 | **Author** | Kais |
-| **Spec status** | In progress |
+| **Spec status** | Complete (all 4 stages landed) |
 
 ---
 
@@ -35,8 +35,14 @@
   disabled with a "No chirp data loaded" tooltip. Compiles; no Qt unit test added
   (the panel has no isolated widget-config test harness — verified by import +
   the existing integration tests still passing).
-- [ ] **Stage 4 — docs.** Delete `rgcviewer_stabilization_plan.md`, update
-  `docs/PLAN.md`.
+- [x] **Stage 4 — docs.** Deleted `rgcviewer_stabilization_plan.md` (its live
+  items are folded into `docs/PLAN.md`; the rest were already fixed). Recorded
+  this feature in the `docs/PLAN.md` §3 Completed Fix Registry and added a
+  Priority 3 "Known issues" subsection to §4 for the four bugs found while
+  debugging this session (sticky poisoned `feature_cache.pkl`, the DS/OS slider
+  that never reaches the grating panel, the needless full-STA-cube read in
+  `get_cell_physics`, and the unconditional population-panel redraw in
+  `_draw_plots`) plus the stale-test triage backlog.
 
 **Pre-existing unrelated failures** (not caused by this work, do not fix here):
 `tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_all_filtered_returns_empty`
