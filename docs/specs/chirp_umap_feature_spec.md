@@ -29,8 +29,12 @@
   baked in at load) and avoids depending on the full phase-region schema for a
   path that only needs two arrays. Tests: `TestGetRawFeatureBlocksChirp` (5) in
   `tests/unit/test_raw_feature_blocks.py` — **passing**.
-- [ ] **Stage 3 — `UMAPPanel` UI.** `features_info` entry + disable-when-no-chirp
-  gate in `umap_panel.py`. Run full suite.
+- [x] **Stage 3 — `UMAPPanel` UI.** Added the "Chirp PSTH (response shape)"
+  entry to `features_info` and imported `DEFAULT_WEIGHT_CHIRP`. Availability
+  gate: when `data_manager.chirp_available` is False, the checkbox is unchecked +
+  disabled with a "No chirp data loaded" tooltip. Compiles; no Qt unit test added
+  (the panel has no isolated widget-config test harness — verified by import +
+  the existing integration tests still passing).
 - [ ] **Stage 4 — docs.** Delete `rgcviewer_stabilization_plan.md`, update
   `docs/PLAN.md`.
 

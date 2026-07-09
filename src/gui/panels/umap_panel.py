@@ -1,18 +1,30 @@
 import numpy as np
-import pandas as pd
-from qtpy.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                            QComboBox, QLabel, QProgressBar, QMessageBox,
-                            QSpinBox, QDialog, QTextEdit, QCheckBox, QSizePolicy,
-                            QGroupBox, QDoubleSpinBox, QGridLayout)
-from qtpy.QtCore import QThread, Signal, QObject, QTimer
+from qtpy.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QComboBox,
+    QLabel,
+    QProgressBar,
+    QMessageBox,
+    QSpinBox,
+    QDialog,
+    QTextEdit,
+    QCheckBox,
+    QSizePolicy,
+    QGroupBox,
+    QDoubleSpinBox,
+    QGridLayout,
+    QSlider,
+)
+from qtpy.QtCore import QThread, QTimer, Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.widgets import LassoSelector, RectangleSelector
 from matplotlib.path import Path as MplPath
 from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
-import sklearn.cluster
-import matplotlib.pyplot as plt
 
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
@@ -21,15 +33,12 @@ from ...analysis.constants import (
     DEFAULT_MAX_RF_AREA,
     DEFAULT_WEIGHT_TEMPORAL,
     DEFAULT_WEIGHT_ACG,
-    DEFAULT_WEIGHT_FIRING_RATE,
-    DEFAULT_WEIGHT_ISI_VIOLATIONS,
-    DEFAULT_WEIGHT_TIME_TO_PEAK,
-    DEFAULT_WEIGHT_RF_AREA,
-    DEFAULT_WEIGHT_ELLIPTICITY,
+    DEFAULT_WEIGHT_RF_DIAMETER,
+    DEFAULT_WEIGHT_GRATING_DSOS,
+    DEFAULT_WEIGHT_CHIRP,
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 class UMAPPanel(QWidget):
@@ -47,21 +56,21 @@ class UMAPPanel(QWidget):
 
         colors = resolve_theme_colors(self.main_window.get_current_colors())
         self._umap_colors = {
-            "accent": colors['accent'],
-            "accent_positive": colors['accent_positive'],
-            "bg_panel": colors['bg_panel'],
+            "accent": colors["accent"],
+            "accent_positive": colors["accent_positive"],
+            "bg_panel": colors["bg_panel"],
         }
 
         self._build_control_panel(colors)
 
         # Plot Initialization
-        self.fig = Figure(facecolor=self._umap_colors['bg_panel'])
+        self.fig = Figure(facecolor=self._umap_colors["bg_panel"])
         self.canvas = FigureCanvas(self.fig)
         self.layout.addWidget(self.canvas)
 
         # Initialize default 2D axes
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor(self._umap_colors['bg_panel'])
+        self.ax.set_facecolor(self._umap_colors["bg_panel"])
 
         # NEW: Initialize empty selector state
         self.current_selector = None
@@ -78,18 +87,30 @@ class UMAPPanel(QWidget):
         self.run_btn = QPushButton("Run UMAP (2D)")
         self.run_btn.clicked.connect(self.run_umap)
         self.run_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent']}; font-weight: bold;")
+            f"background-color: {self._umap_colors['accent']}; font-weight: bold;"
+        )
 
         self.run_3d_btn = QPushButton("Run UMAP (3D)")
         self.run_3d_btn.clicked.connect(self.run_umap_3d)
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent_positive']}; font-weight: bold;")
+            f"background-color: {self._umap_colors['accent_positive']}; font-weight: bold;"
+        )
 
         self.color_combo = QComboBox()
         self.color_combo.addItems(
-            ["KSLabel", "Polarity", "Ward", "K-Means", "Firing Rate", "ISI Violations", "Time to Peak", "RF Area", "Color Opponency"])
-        self.color_combo.currentTextChanged.connect(
-            lambda: self.update_plot())
+            [
+                "KSLabel",
+                "Polarity",
+                "Ward",
+                "K-Means",
+                "Firing Rate",
+                "ISI Violations",
+                "Time to Peak",
+                "RF Area",
+                "Color Opponency",
+            ]
+        )
+        self.color_combo.currentTextChanged.connect(lambda: self.update_plot())
 
         # NEW: Selection Tool Toggle
         self.selector_combo = QComboBox()
@@ -120,7 +141,9 @@ class UMAPPanel(QWidget):
         self.cluster_param_spin.setValue(9)
         self.cluster_param_spin.setPrefix("# Types: ")
 
-        self.cluster_method_combo.currentIndexChanged.connect(self._on_cluster_method_changed)
+        self.cluster_method_combo.currentIndexChanged.connect(
+            self._on_cluster_method_changed
+        )
 
         self.cluster_btn = QPushButton("Run Clustering")
         self.cluster_btn.clicked.connect(self.run_clustering)
@@ -138,7 +161,9 @@ class UMAPPanel(QWidget):
         self.show_ids_btn.setEnabled(False)
 
         self.project_3d_chk = QCheckBox("Lasso 3D Proj")
-        self.project_3d_chk.setToolTip("Allows Lasso selection in 3D mode via screen projection.")
+        self.project_3d_chk.setToolTip(
+            "Allows Lasso selection in 3D mode via screen projection."
+        )
         self.project_3d_chk.setChecked(True)
 
         cluster_layout.addWidget(QLabel("Clustering:"))
@@ -156,39 +181,102 @@ class UMAPPanel(QWidget):
         weights_grid.setContentsMargins(6, 6, 6, 6)
         weights_grid.setSpacing(6)
 
-        # Config map for features
         self.feature_widgets = {}
+        # Config map for features. Must stay in sync with analysis_core.py's
+        # scalar_features table (temporal/acg/grating are handled as PCA
+        # blocks, not scalar columns, but share the same use/weight-key
+        # convention). "RF Diameter" covers rf_long_diameter +
+        # rf_short_diameter as two scalar columns under one checkbox+slider.
+        # "Grating DS/OS" drives PCA on the pooled direction-tuning curve
+        # SHAPE (grating_calc.pooled_direction_tuning_curve), not a raw
+        # DSI/OSI scalar summary — see build_feature_matrix's grating block
+        # for why (DSI/OSI can't distinguish differently-shaped curves that
+        # share a value). DSI/OSI/peak_rate/angle still exist as metadata-
+        # only columns (UMAP scatter coloring/hover), just not read by the
+        # embedding anymore.
         features_info = [
             ("Temporal STA", "use_temporal", "w_temporal", DEFAULT_WEIGHT_TEMPORAL),
             ("ACG (Autocorrelogram)", "use_acg", "w_acg", DEFAULT_WEIGHT_ACG),
-            ("Firing Rate", "use_firing_rate", "w_firing_rate", DEFAULT_WEIGHT_FIRING_RATE),
-            ("ISI Violations", "use_isi_violations", "w_isi_violations", DEFAULT_WEIGHT_ISI_VIOLATIONS),
-            ("Time to Peak", "use_time_to_peak", "w_time_to_peak", DEFAULT_WEIGHT_TIME_TO_PEAK),
-            ("RF Area", "use_rf_area", "w_rf_area", DEFAULT_WEIGHT_RF_AREA),
-            ("Ellipticity", "use_ellipticity", "w_ellipticity", DEFAULT_WEIGHT_ELLIPTICITY),
+            (
+                "RF Diameter (long + short)",
+                "use_rf_diameter",
+                "w_rf_diameter",
+                DEFAULT_WEIGHT_RF_DIAMETER,
+            ),
+            (
+                "Grating DS/OS (tuning shape)",
+                "use_grating_dsos",
+                "w_grating_dsos",
+                DEFAULT_WEIGHT_GRATING_DSOS,
+            ),
+            (
+                "Chirp PSTH (response shape)",
+                "use_chirp",
+                "w_chirp",
+                DEFAULT_WEIGHT_CHIRP,
+            ),
         ]
 
         for idx, (label, use_key, w_key, default_w) in enumerate(features_info):
             chk = QCheckBox(label)
             chk.setChecked(True)
-            spin = QDoubleSpinBox()
-            spin.setRange(0.0, 10.0)
-            spin.setSingleStep(0.1)
-            spin.setValue(default_w)
-            spin.setDecimals(1)
-            spin.setFixedWidth(60)
-            
-            # Connect checkbox to enable/disable spinbox
-            chk.toggled.connect(spin.setEnabled)
 
-            # Store widget references
-            self.feature_widgets[use_key] = (chk, spin, w_key)
+            # Slider (0-100 internal range) + read-only numeric readout,
+            # replacing the old bare QDoubleSpinBox. Qt's QSlider is
+            # integer-only, so the slider's internal range is 10x the
+            # actual weight range (0-10.0); divide by 10 wherever the real
+            # float value is read (see get_feature_config, the status-bar
+            # summary below, and _on_slider_changed here). The readout
+            # label makes the exact value always visible (needed for
+            # reproducibility — knowing a UMAP run used weight 3.0 vs 3.2
+            # later matters), which a bare slider alone would lose.
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(0, 100)
+            slider.setValue(int(round(default_w * 10)))
+            slider.setFixedWidth(110)
+            slider.setToolTip(f"{label} weight (0-10)")
 
-            # Add to grid layout (2 rows)
-            row = idx // 4
-            col = (idx % 4) * 2
+            value_label = QLabel(f"{default_w:.1f} / 10")
+            value_label.setFixedWidth(48)
+
+            def _make_slider_handler(lbl):
+                def _on_slider_changed(v):
+                    lbl.setText(f"{v / 10.0:.1f} / 10")
+
+                return _on_slider_changed
+
+            slider.valueChanged.connect(_make_slider_handler(value_label))
+
+            # Connect checkbox to enable/disable the slider + readout
+            chk.toggled.connect(slider.setEnabled)
+            chk.toggled.connect(value_label.setEnabled)
+
+            # Availability gate: chirp has no in-GUI fallback (it's precomputed
+            # offline, unlike grating). If no chirp file is loaded, disable and
+            # uncheck the row so the user can't enable a dead feature. The
+            # embedding would skip it anyway (get_raw_feature_blocks emits a
+            # width-0 chirp block → build_feature_matrix's size==0 guard), but
+            # graying it out makes the "no data" state visible rather than
+            # silently no-op.
+            if use_key == "use_chirp":
+                dm = getattr(self.main_window, "data_manager", None)
+                if not getattr(dm, "chirp_available", False):
+                    chk.setChecked(False)
+                    chk.setEnabled(False)
+                    slider.setEnabled(False)
+                    value_label.setEnabled(False)
+                    chk.setToolTip("No chirp data loaded for this dataset")
+
+            # Store widget references — get_feature_config() reads
+            # slider.value()/10.0 rather than spin.value() directly now.
+            self.feature_widgets[use_key] = (chk, slider, w_key)
+
+            # Add to grid layout: checkbox, slider, readout per feature
+            row = idx // 3
+            col = (idx % 3) * 3
             weights_grid.addWidget(chk, row, col)
-            weights_grid.addWidget(spin, row, col + 1)
+            weights_grid.addWidget(slider, row, col + 1)
+            weights_grid.addWidget(value_label, row, col + 2)
 
         # --- Controls Row 4 (Pre-Filter Thresholds) ---
         filter_group = QGroupBox("Quality Pre-Filtering")
@@ -226,24 +314,26 @@ class UMAPPanel(QWidget):
         controls_layout.addLayout(cluster_layout)
         controls_layout.addWidget(weights_group)
         controls_layout.addWidget(filter_group)
-        
+
         self.controls_widget.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self.layout.addWidget(self.controls_widget)
 
     def get_feature_config(self):
         config = {}
-        for use_key, (chk, spin, w_key) in self.feature_widgets.items():
+        for use_key, (chk, slider, w_key) in self.feature_widgets.items():
             config[use_key] = chk.isChecked()
-            config[w_key] = float(spin.value())
+            # slider is an integer QSlider on a 0-100 range representing a
+            # 0.0-10.0 float weight — see the slider construction above.
+            config[w_key] = slider.value() / 10.0
         return config
 
     def get_filter_config(self):
         return {
-            'min_sta_std': float(self.min_sta_std_spin.value()),
-            'max_rf_area': float(self.max_rf_area_spin.value()),
+            "min_sta_std": float(self.min_sta_std_spin.value()),
+            "max_rf_area": float(self.max_rf_area_spin.value()),
         }
-
 
     def showEvent(self, event):
         """
@@ -279,16 +369,18 @@ class UMAPPanel(QWidget):
                 # Already disconnected or never connected
                 pass
             self.worker = None
-        
+
         if self.worker_thread:
             self.worker_thread.quit()
             # Use timeout to prevent indefinite hangs (positional argument, not keyword)
             if not self.worker_thread.wait(1000):  # 1 second timeout in ms
-                logger.warning("UMAP worker thread did not stop gracefully, forcing termination")
+                logger.warning(
+                    "UMAP worker thread did not stop gracefully, forcing termination"
+                )
                 self.worker_thread.terminate()
                 self.worker_thread.wait(500)
             self.worker_thread = None
-        
+
         # --- Cluster Worker Cleanup ---
         if self.cluster_worker:
             # Disconnect all signals first
@@ -298,12 +390,14 @@ class UMAPPanel(QWidget):
             except (TypeError, RuntimeError):
                 pass
             self.cluster_worker = None
-        
+
         if self.cluster_worker_thread:
             self.cluster_worker_thread.quit()
             # Use timeout to prevent indefinite hangs (positional argument, not keyword)
             if not self.cluster_worker_thread.wait(1000):  # 1 second timeout in ms
-                logger.warning("Cluster worker thread did not stop gracefully, forcing termination")
+                logger.warning(
+                    "Cluster worker thread did not stop gracefully, forcing termination"
+                )
                 self.cluster_worker_thread.terminate()
                 self.cluster_worker_thread.wait(500)
             self.cluster_worker_thread = None
@@ -311,27 +405,27 @@ class UMAPPanel(QWidget):
     def cleanup(self):
         """Explicitly cleanup resources to prevent memory leaks."""
         self._reset_workers()
-        
+
         # Explicitly clear and delete selector
-        if hasattr(self, 'current_selector') and self.current_selector:
+        if hasattr(self, "current_selector") and self.current_selector:
             self.current_selector.set_active(False)
             self.current_selector.disconnect_events()
             self.current_selector = None
 
-        if hasattr(self, 'selector') and self.selector:
+        if hasattr(self, "selector") and self.selector:
             self.selector.set_active(False)
             self.selector.disconnect_events()
             self.selector = None
 
         # Explicitly clear the Matplotlib figure
-        if hasattr(self, 'fig'):
+        if hasattr(self, "fig"):
             self.fig.clf()
-            
+
         # Delete the canvas
-        if hasattr(self, 'canvas'):
+        if hasattr(self, "canvas"):
             self.canvas.setParent(None)
             self.canvas.deleteLater()
-            # self.canvas = None # Do not set to None here if we need to check it later, 
+            # self.canvas = None # Do not set to None here if we need to check it later,
             # but usually it's better to let GC handle it after deleteLater
 
     def closeEvent(self, event):
@@ -362,7 +456,7 @@ class UMAPPanel(QWidget):
                 cid = item.data(Qt.UserRole)
                 if cid is not None:
                     selected_ids.add(cid)
-                
+
                 # Dig into children/sub-folders
                 for i in range(item.rowCount()):
                     child = item.child(i)
@@ -375,7 +469,9 @@ class UMAPPanel(QWidget):
                     extract_cids_recursively(item)
 
             if not selected_ids:
-                logger.info("No valid cluster IDs found in selection, using all clusters")
+                logger.info(
+                    "No valid cluster IDs found in selection, using all clusters"
+                )
                 return None
 
             result_list = list(selected_ids)
@@ -385,23 +481,31 @@ class UMAPPanel(QWidget):
         except Exception as e:
             logger.error(f"Error getting selected cluster IDs: {e}")
             return None
+
     def run_umap(self):
         dm = self.main_window.data_manager
         total_clusters = len(dm.cluster_df)
-        feature_cache  = getattr(dm, 'feature_cache', {})
-        valid_cached = sum(1 for v in feature_cache.values() if v.get('_computed'))
+        feature_cache = getattr(dm, "feature_cache", {})
+        valid_cached = sum(1 for v in feature_cache.values() if v.get("_computed"))
         if valid_cached < total_clusters:
-            QMessageBox.warning(self, "Cache Warming Up",
-                                f"Please wait for background caching to finish.\n\n"
-                                f"Ready: {valid_cached} / {total_clusters} cells.\n"
-                                f"Check the progress bar in the bottom right.")
+            QMessageBox.warning(
+                self,
+                "Cache Warming Up",
+                f"Please wait for background caching to finish.\n\n"
+                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                f"Check the progress bar in the bottom right.",
+            )
             return
         self._reset_workers()
-        
+
         # Verify at least one feature is enabled
         feature_config = self.get_feature_config()
         if not any(feature_config.get(k, False) for k in self.feature_widgets.keys()):
-            QMessageBox.warning(self, "No Features Selected", "Please select at least one feature to run UMAP.")
+            QMessageBox.warning(
+                self,
+                "No Features Selected",
+                "Please select at least one feature to run UMAP.",
+            )
             return
 
         self.run_btn.setEnabled(False)
@@ -413,23 +517,26 @@ class UMAPPanel(QWidget):
         selected_cluster_ids = self.get_selected_cluster_ids()
         target_ids = selected_cluster_ids
         if target_ids is None:
-            target_ids = list(dm.cluster_df['cluster_id'].values)
-            
+            target_ids = list(dm.cluster_df["cluster_id"].values)
+
         if len(target_ids) < 5:
             self.run_btn.setEnabled(True)
             self.run_3d_btn.setEnabled(True)
             self.progress.hide()
-            QMessageBox.warning(self, "Insufficient Selection", 
-                              f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.")
+            QMessageBox.warning(
+                self,
+                "Insufficient Selection",
+                f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.",
+            )
             return
 
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
-            self.main_window.data_manager, 
+            self.main_window.data_manager,
             selected_cluster_ids=selected_cluster_ids,
             n_components=2,
             feature_config=feature_config,
-            filter_config=self.get_filter_config()
+            filter_config=self.get_filter_config(),
         )
         self.worker.moveToThread(self.worker_thread)
 
@@ -443,20 +550,27 @@ class UMAPPanel(QWidget):
     def run_umap_3d(self):
         dm = self.main_window.data_manager
         total_clusters = len(dm.cluster_df)
-        feature_cache  = getattr(dm, 'feature_cache', {})
-        valid_cached = sum(1 for v in feature_cache.values() if v.get('_computed'))
+        feature_cache = getattr(dm, "feature_cache", {})
+        valid_cached = sum(1 for v in feature_cache.values() if v.get("_computed"))
         if valid_cached < total_clusters:
-            QMessageBox.warning(self, "Cache Warming Up",
-                                f"Please wait for background caching to finish.\n\n"
-                                f"Ready: {valid_cached} / {total_clusters} cells.\n"
-                                f"Check the progress bar in the bottom right.")
+            QMessageBox.warning(
+                self,
+                "Cache Warming Up",
+                f"Please wait for background caching to finish.\n\n"
+                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                f"Check the progress bar in the bottom right.",
+            )
             return
         self._reset_workers()
-        
+
         # Verify at least one feature is enabled
         feature_config = self.get_feature_config()
         if not any(feature_config.get(k, False) for k in self.feature_widgets.keys()):
-            QMessageBox.warning(self, "No Features Selected", "Please select at least one feature to run UMAP.")
+            QMessageBox.warning(
+                self,
+                "No Features Selected",
+                "Please select at least one feature to run UMAP.",
+            )
             return
 
         self.run_btn.setEnabled(False)
@@ -468,23 +582,26 @@ class UMAPPanel(QWidget):
         selected_cluster_ids = self.get_selected_cluster_ids()
         target_ids = selected_cluster_ids
         if target_ids is None:
-            target_ids = list(dm.cluster_df['cluster_id'].values)
-            
+            target_ids = list(dm.cluster_df["cluster_id"].values)
+
         if len(target_ids) < 5:
             self.run_btn.setEnabled(True)
             self.run_3d_btn.setEnabled(True)
             self.progress.hide()
-            QMessageBox.warning(self, "Insufficient Selection", 
-                              f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.")
+            QMessageBox.warning(
+                self,
+                "Insufficient Selection",
+                f"Need at least 5 cells for UMAP. Only {len(target_ids)} available.",
+            )
             return
 
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
-            self.main_window.data_manager, 
+            self.main_window.data_manager,
             selected_cluster_ids=selected_cluster_ids,
             n_components=3,
             feature_config=feature_config,
-            filter_config=self.get_filter_config()
+            filter_config=self.get_filter_config(),
         )
         self.worker.moveToThread(self.worker_thread)
 
@@ -501,7 +618,7 @@ class UMAPPanel(QWidget):
         self.cluster_param_spin.setPrefix("# Types: ")
 
     def run_clustering(self):
-        if getattr(self, 'feature_matrix', None) is None:
+        if getattr(self, "embedding", None) is None:
             QMessageBox.warning(self, "No Data", "Please run UMAP first.")
             return
 
@@ -513,7 +630,19 @@ class UMAPPanel(QWidget):
         param = self.cluster_param_spin.value()
 
         self.cluster_worker_thread = QThread()
-        self.cluster_worker = ClusterWorker(self.feature_matrix, method, param)
+        # Cluster on self.embedding (the 2D/3D UMAP projection actually
+        # rendered on screen), NOT self.feature_matrix (the pre-UMAP
+        # high-dimensional weighted feature space). Clustering in the
+        # high-dim space and only painting the resulting labels onto the
+        # embedding for display is exactly what produced the "scattered
+        # clusters" symptom: UMAP's projection can fold/curve the original
+        # space in ways that don't preserve "close in full feature space"
+        # as "close on screen," so a pair of points adjacent in the plotted
+        # embedding could get different labels from a boundary that only
+        # made sense in the original >10-dimensional space. Clustering
+        # directly on the embedding guarantees the boundaries the user sees
+        # are the boundaries that were actually computed.
+        self.cluster_worker = ClusterWorker(self.embedding, method, param)
         self.cluster_worker.moveToThread(self.cluster_worker_thread)
 
         self.cluster_worker_thread.started.connect(self.cluster_worker.run)
@@ -544,11 +673,13 @@ class UMAPPanel(QWidget):
         QMessageBox.critical(self, "Clustering Error", msg)
         if self.cluster_worker_thread:
             self.cluster_worker_thread.quit()
-            self.cluster_worker_thread.wait()
+            self.cluster_worker_thread.wait(2000)
             self.cluster_worker_thread = None
         self.cluster_worker = None
 
-    def on_processing_finished(self, embedding, matrix, valid_ids, discarded_ids, metadata):
+    def on_processing_finished(
+        self, embedding, matrix, valid_ids, discarded_ids, metadata
+    ):
         self.embedding = np.asarray(embedding)
         self.feature_matrix = np.asarray(matrix)
         self.cluster_ids = np.array(valid_ids)
@@ -556,7 +687,7 @@ class UMAPPanel(QWidget):
         self.discarded_ids = np.array(discarded_ids)
 
         # Determine if result is 3D
-        self.is_3d = (self.embedding.shape[1] == 3)
+        self.is_3d = self.embedding.shape[1] == 3
         self.project_3d_chk.setVisible(self.is_3d)
 
         self.run_btn.setEnabled(True)
@@ -573,20 +704,23 @@ class UMAPPanel(QWidget):
         self.worker = None
 
         self.update_plot()
-        
+
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
-        selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
-        
+        selection_info = (
+            "selected" if self.get_selected_cluster_ids() is not None else "all"
+        )
+
         # Display weights used in status bar
         weight_strs = []
-        for use_key, (chk, spin, w_key) in self.feature_widgets.items():
+        for use_key, (chk, slider, w_key) in self.feature_widgets.items():
             if chk.isChecked():
                 name_short = use_key.replace("use_", "")
-                weight_strs.append(f"{name_short}={spin.value():.1f}")
+                weight_strs.append(f"{name_short}={slider.value() / 10.0:.1f}")
         weights_summary = ", ".join(weight_strs)
 
         self.main_window.status_bar.showMessage(
-            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells (discarded {len(self.discarded_ids)}). Features: {weights_summary}")
+            f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells (discarded {len(self.discarded_ids)}). Features: {weights_summary}"
+        )
 
     def on_cluster_finished(self, labels, method_name):
         self.metadata_df[method_name] = labels
@@ -594,7 +728,7 @@ class UMAPPanel(QWidget):
         self.progress.hide()
         if self.cluster_worker_thread:
             self.cluster_worker_thread.quit()
-            self.cluster_worker_thread.wait()
+            self.cluster_worker_thread.wait(2000)
             self.cluster_worker_thread = None
         self.cluster_worker = None
 
@@ -612,59 +746,68 @@ class UMAPPanel(QWidget):
     def apply_grouping(self, labels, method_name):
         try:
             from ..callbacks import group_clusters_in_tree
+
             unique_labels = np.unique(labels)
             count = 0
-            
+
             for lbl in unique_labels:
                 if lbl == -1:
                     continue  # Skip noise points
                 subset_indices = np.where(labels == lbl)[0]
                 group_cluster_ids = self.cluster_ids[subset_indices]
-                group_name = f"Type_{lbl+1}" if method_name in ("K-Means", "Ward") else f"Cluster_{lbl}"
-                
+                group_name = (
+                    f"Type_{lbl+1}"
+                    if method_name in ("K-Means", "Ward")
+                    else f"Cluster_{lbl}"
+                )
+
                 # Use our safe, in-place tree modifier!
                 group_clusters_in_tree(self.main_window, group_cluster_ids, group_name)
                 count += 1
-            
+
             self.main_window.status_bar.showMessage(
                 f"Auto-Group: created {count} groups."
             )
-            
+
             # Force the main tree view to collapse all groups after auto-grouping
-            if hasattr(self.main_window, 'tree_view'):
+            if hasattr(self.main_window, "tree_view"):
                 self.main_window.tree_view.collapseAll()
-            
+
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to auto-group: {e}")
             from qtpy.QtWidgets import QMessageBox
+
             QMessageBox.warning(self, "Auto-Group Error", str(e))
 
     def restyle_plots(self, colors):
         """Updates plot styling based on the provided color scheme."""
-        self.fig.patch.set_facecolor(colors['bg_panel'])
-        self.ax.set_facecolor(colors['bg_panel'])
-        
+        self.fig.patch.set_facecolor(colors["bg_panel"])
+        self.ax.set_facecolor(colors["bg_panel"])
+
         # Update button colors
         self.run_btn.setStyleSheet(
-            f"background-color: {colors['accent']}; font-weight: bold;")
+            f"background-color: {colors['accent']}; font-weight: bold;"
+        )
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {colors['accent_positive']}; font-weight: bold;")
-        
+            f"background-color: {colors['accent_positive']}; font-weight: bold;"
+        )
+
         # Update stored colors
         self._umap_colors = {
-            "accent": colors['accent'],
-            "accent_positive": colors['accent_positive'],
-            "bg_panel": colors['bg_panel'],
+            "accent": colors["accent"],
+            "accent_positive": colors["accent_positive"],
+            "bg_panel": colors["bg_panel"],
         }
-        
+
         self.update_plot()
 
     def update_plot(self, _color_mode=None):
         if self.embedding is None:
             return
-            
+
         colors = resolve_theme_colors(self.main_window.get_current_colors())
 
         # Clean up old plot
@@ -676,78 +819,78 @@ class UMAPPanel(QWidget):
             self.cbar = None
 
         # Re-create axes if dimension changed (2D vs 3D)
-        current_is_3d = hasattr(self.ax, 'zaxis')
-        
+        current_is_3d = hasattr(self.ax, "zaxis")
+
         if self.is_3d != current_is_3d:
             self.fig.clear()
             if self.is_3d:
-                self.ax = self.fig.add_subplot(111, projection='3d')
+                self.ax = self.fig.add_subplot(111, projection="3d")
             else:
                 self.ax = self.fig.add_subplot(111)
-            self.ax.set_facecolor(colors['bg_panel'])
-            self.fig.patch.set_facecolor(colors['bg_panel'])
+            self.ax.set_facecolor(colors["bg_panel"])
+            self.fig.patch.set_facecolor(colors["bg_panel"])
         else:
             self.ax.clear()
-            self.ax.set_facecolor(colors['bg_panel'])
+            self.ax.set_facecolor(colors["bg_panel"])
 
         # ... (rest of update_plot, updating hardcoded colors) ...
         # Determine Colors
         mode = self.color_combo.currentText()
-        c = colors['plot_highlight']
+        c = colors["plot_highlight"]
         cmap = None
         is_discrete = False
 
         if mode == "KSLabel":
-            if 'KSLabel' in self.metadata_df:
-                labels = self.metadata_df['KSLabel'].values
+            if "KSLabel" in self.metadata_df:
+                labels = self.metadata_df["KSLabel"].values
                 unique_labels = np.unique(labels)
                 label_map = {l: i for i, l in enumerate(unique_labels)}
                 c = [label_map.get(l, 0) for l in labels]
-                cmap = 'tab10'
+                cmap = "tab10"
                 is_discrete = True
         elif mode == "Polarity":
-            if 'Polarity' in self.metadata_df:
-                labels = self.metadata_df['Polarity'].values
+            if "Polarity" in self.metadata_df:
+                labels = self.metadata_df["Polarity"].values
                 unique_labels = np.unique(labels)
                 label_map = {l: i for i, l in enumerate(unique_labels)}
                 c = [label_map.get(l, 0) for l in labels]
-                cmap = 'coolwarm' 
+                cmap = "coolwarm"
                 is_discrete = True
         elif mode == "Firing Rate":
-            if 'Firing Rate' in self.metadata_df:
-                c = self.metadata_df['Firing Rate'].values
-                cmap = 'plasma'
+            if "Firing Rate" in self.metadata_df:
+                c = self.metadata_df["Firing Rate"].values
+                cmap = "plasma"
         elif mode == "ISI Violations":
-            if 'isi_violations' in self.metadata_df:
-                c = self.metadata_df['isi_violations'].values
-                cmap = 'magma_r'
+            if "isi_violations" in self.metadata_df:
+                c = self.metadata_df["isi_violations"].values
+                cmap = "magma_r"
         elif mode == "Time to Peak":
-            if 'Time to Peak' in self.metadata_df:
-                c = self.metadata_df['Time to Peak'].values
-                cmap = 'viridis'
+            if "Time to Peak" in self.metadata_df:
+                c = self.metadata_df["Time to Peak"].values
+                cmap = "viridis"
         elif mode == "RF Area":
-            if 'RF Area' in self.metadata_df:
-                c = self.metadata_df['RF Area'].values
-                cmap = 'viridis'
+            if "RF Area" in self.metadata_df:
+                c = self.metadata_df["RF Area"].values
+                cmap = "viridis"
         elif mode == "Color Opponency":
-            if 'Color Opponency' in self.metadata_df:
-                c = self.metadata_df['Color Opponency'].values
-                cmap = 'cool'
+            if "Color Opponency" in self.metadata_df:
+                c = self.metadata_df["Color Opponency"].values
+                cmap = "cool"
         elif mode == "K-Means":
-            if 'K-Means' in self.metadata_df:
-                c = self.metadata_df['K-Means'].values
-                cmap = 'tab20'
+            if "K-Means" in self.metadata_df:
+                c = self.metadata_df["K-Means"].values
+                cmap = "tab20"
                 is_discrete = True
             else:
-                c = colors['text_secondary']
+                c = colors["text_secondary"]
         elif mode == "Ward":
-            if 'Ward' in self.metadata_df:
+            if "Ward" in self.metadata_df:
                 # Ward produces clean integer labels 0..n_clusters-1, no noise.
-                c = self.metadata_df['Ward'].values
-                cmap = 'tab20'
+                c = self.metadata_df["Ward"].values
+                cmap = "tab20"
                 is_discrete = True
             else:
-                c = colors['text_secondary']
+                c = colors["text_secondary"]
 
         # Draw Scatter
         if self.is_3d:
@@ -759,11 +902,11 @@ class UMAPPanel(QWidget):
                 cmap=cmap,
                 s=20,
                 alpha=0.8,
-                edgecolors='none'
+                edgecolors="none",
             )
-            self.ax.set_xlabel('Dim 1', color=colors['text_secondary'])
-            self.ax.set_ylabel('Dim 2', color=colors['text_secondary'])
-            self.ax.set_zlabel('Dim 3', color=colors['text_secondary'])
+            self.ax.set_xlabel("Dim 1", color=colors["text_secondary"])
+            self.ax.set_ylabel("Dim 2", color=colors["text_secondary"])
+            self.ax.set_zlabel("Dim 3", color=colors["text_secondary"])
             self.ax.xaxis.pane.fill = False
             self.ax.yaxis.pane.fill = False
             self.ax.zaxis.pane.fill = False
@@ -776,40 +919,53 @@ class UMAPPanel(QWidget):
                 cmap=cmap,
                 s=15,
                 alpha=0.8,
-                edgecolors='none'
+                edgecolors="none",
             )
             # --- 2D axis polish ---
-            self.ax.set_xlabel("UMAP Dimension 1",
-                               color=colors['text_secondary'], fontsize=9)
-            self.ax.set_ylabel("UMAP Dimension 2",
-                               color=colors['text_secondary'], fontsize=9)
-            self.ax.tick_params(colors=colors['text_secondary'], labelsize=8)
+            self.ax.set_xlabel(
+                "UMAP Dimension 1", color=colors["text_secondary"], fontsize=9
+            )
+            self.ax.set_ylabel(
+                "UMAP Dimension 2", color=colors["text_secondary"], fontsize=9
+            )
+            self.ax.tick_params(colors=colors["text_secondary"], labelsize=8)
             # Hide the harsh default box; keep only left + bottom as thin guides
             self.ax.spines["top"].set_visible(False)
             self.ax.spines["right"].set_visible(False)
-            self.ax.spines["left"].set_edgecolor(colors['border_subtle'])
+            self.ax.spines["left"].set_edgecolor(colors["border_subtle"])
             self.ax.spines["left"].set_linewidth(0.8)
-            self.ax.spines["bottom"].set_edgecolor(colors['border_subtle'])
+            self.ax.spines["bottom"].set_edgecolor(colors["border_subtle"])
             self.ax.spines["bottom"].set_linewidth(0.8)
             # Soft dotted grid for spatial reference without visual noise
-            self.ax.grid(True, color=colors['border_subtle'],
-                         linestyle=':', alpha=0.5, zorder=0)
+            self.ax.grid(
+                True, color=colors["border_subtle"], linestyle=":", alpha=0.5, zorder=0
+            )
 
-        if mode != "KSLabel" and not (mode == "K-Means" and is_discrete) and not (mode == "Polarity" and is_discrete) and not (mode == "Ward" and is_discrete):
-            self.cbar = self.fig.colorbar(scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05)
+        if (
+            mode != "KSLabel"
+            and not (mode == "K-Means" and is_discrete)
+            and not (mode == "Polarity" and is_discrete)
+            and not (mode == "Ward" and is_discrete)
+        ):
+            self.cbar = self.fig.colorbar(
+                scatter, ax=self.ax, pad=0.1 if self.is_3d else 0.05
+            )
             # Style colorbar ticks
             if self.cbar:
-                self.cbar.ax.yaxis.set_tick_params(color=colors['text_secondary'])
+                self.cbar.ax.yaxis.set_tick_params(color=colors["text_secondary"])
                 for label in self.cbar.ax.get_yticklabels():
-                    label.set_color(colors['text_secondary'])
-        
+                    label.set_color(colors["text_secondary"])
+
         # Add selection info to title
-        selection_info = "selected" if self.get_selected_cluster_ids() is not None else "all"
+        selection_info = (
+            "selected" if self.get_selected_cluster_ids() is not None else "all"
+        )
         title_prefix = "UMAP (3D)" if self.is_3d else "UMAP (2D)"
         self.ax.set_title(
             f"{title_prefix} - {len(self.cluster_ids)} {selection_info} cells - Color: {mode}",
-            color=colors['text_primary'])
-        self.ax.tick_params(colors=colors['text_secondary'])
+            color=colors["text_primary"],
+        )
+        self.ax.tick_params(colors=colors["text_secondary"])
 
         # NEW: Re-attach the active selection tool to the fresh plot
         self.update_selector()
@@ -825,19 +981,21 @@ class UMAPPanel(QWidget):
             QMessageBox.information(
                 self,
                 "Info",
-                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, Ward).")
+                "Group IDs only available for discrete categories (KSLabel, K-Means, Polarity, Ward).",
+            )
             return
 
         if mode not in self.metadata_df:
             return
 
-        groups = self.metadata_df.groupby(mode)['cluster_id'].apply(list)
+        groups = self.metadata_df.groupby(mode)["cluster_id"].apply(list)
         text_output = ""
         for group_name, ids in groups.items():
             text_output += f"=== Group {group_name} ({len(ids)} cells) ===\n"
             id_strs = [str(x) for x in sorted(ids)]
-            chunked = [", ".join(id_strs[i:i + 10])
-                       for i in range(0, len(id_strs), 10)]
+            chunked = [
+                ", ".join(id_strs[i : i + 10]) for i in range(0, len(id_strs), 10)
+            ]
             text_output += "\n".join(chunked)
             text_output += "\n\n"
 
@@ -865,7 +1023,11 @@ class UMAPPanel(QWidget):
             if self.project_3d_chk.isChecked():
                 try:
                     proj = self.ax.get_proj()
-                    xs, ys, zs = self.embedding[:, 0], self.embedding[:, 1], self.embedding[:, 2]
+                    xs, ys, zs = (
+                        self.embedding[:, 0],
+                        self.embedding[:, 1],
+                        self.embedding[:, 2],
+                    )
                     x2, y2, _ = proj3d.proj_transform(xs, ys, zs, proj)
                     points_2d = np.column_stack((x2, y2))
                     mask = path.contains_points(points_2d)
@@ -884,58 +1046,69 @@ class UMAPPanel(QWidget):
                 self,
                 "Selection",
                 f"Selected {len(selected_ids)} clusters.\nCreate a new Group?",
-                QMessageBox.Yes | QMessageBox.No)
+                QMessageBox.Yes | QMessageBox.No,
+            )
 
             if reply == QMessageBox.Yes:
                 self.create_group(selected_ids)
 
     def create_group(self, ids):
         from qtpy.QtWidgets import QInputDialog
+
         name, ok = QInputDialog.getText(
-            self, "Group Name", "Enter name for this cluster group:")
+            self, "Group Name", "Enter name for this cluster group:"
+        )
         if ok and name:
             from ..callbacks import group_clusters_in_tree
+
             group_clusters_in_tree(self.main_window, ids, name)
 
     def update_selector(self):
         """Hot-swaps between Lasso and Rectangle selection tools."""
-        if not hasattr(self, 'ax'): 
+        if not hasattr(self, "ax"):
             return
-            
+
         # Clear existing selector safely
-        if hasattr(self, 'current_selector') and self.current_selector is not None:
+        if hasattr(self, "current_selector") and self.current_selector is not None:
             self.current_selector.set_active(False)
             self.current_selector.disconnect_events()
             self.current_selector = None
 
         # Clean up legacy selector if it exists
-        if hasattr(self, 'selector') and self.selector is not None:
+        if hasattr(self, "selector") and self.selector is not None:
             self.selector.set_active(False)
             self.selector.disconnect_events()
             self.selector = None
-            
+
         if self.selector_combo.currentText() == "Lasso Tool":
             self.current_selector = LassoSelector(self.ax, onselect=self.on_select)
         else:
             self.current_selector = RectangleSelector(
-                self.ax, onselect=self.on_select_rect,
-                useblit=True, button=[1], minspanx=5, minspany=5,
-                spancoords='pixels', interactive=True
+                self.ax,
+                onselect=self.on_select_rect,
+                useblit=True,
+                button=[1],
+                minspanx=5,
+                minspany=5,
+                spancoords="pixels",
+                interactive=True,
             )
 
     def on_select_rect(self, eclick, erelease):
         """Bridges RectangleSelector output into existing Lasso selection pipeline."""
         if (
-            eclick.xdata is None or eclick.ydata is None or
-            erelease.xdata is None or erelease.ydata is None
+            eclick.xdata is None
+            or eclick.ydata is None
+            or erelease.xdata is None
+            or erelease.ydata is None
         ):
             return
 
         x1, y1 = eclick.xdata, eclick.ydata
         x2, y2 = erelease.xdata, erelease.ydata
-        
+
         # Convert bounding box coordinates to a vertex path
         verts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
-        
+
         # Pass directly into your existing lasso logic
         self.on_select(verts)
