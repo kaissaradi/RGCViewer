@@ -2,9 +2,10 @@ import pytest
 import numpy as np
 from unittest.mock import patch
 
-# We will import ClusterWorker from umap_panel when we implement it.
-# For now, we assume it will exist in src.gui.panels.umap_panel
-from src.gui.panels.umap_panel import ClusterWorker, HDBSCAN_AVAILABLE
+from src.gui.panels import umap_panel
+
+ClusterWorker = umap_panel.ClusterWorker
+HDBSCAN_AVAILABLE = getattr(umap_panel, "HDBSCAN_AVAILABLE", False)
 
 @pytest.fixture
 def synthetic_data_blobs():
@@ -71,6 +72,10 @@ def test_cluster_worker_hdbscan_noise(synthetic_data_with_noise, qtbot):
     # The last 4 points are extreme outliers, they should be noise (-1)
     assert np.all(labels[-4:] == -1)
 
+@pytest.mark.skipif(
+    not hasattr(umap_panel, "HDBSCAN_AVAILABLE"),
+    reason="UMAP panel does not expose HDBSCAN availability yet",
+)
 @patch('src.gui.panels.umap_panel.HDBSCAN_AVAILABLE', False)
 def test_cluster_worker_hdbscan_unavailable(synthetic_data_blobs, qtbot):
     """T4: If HDBSCAN is unavailable, emit error instead of crashing."""

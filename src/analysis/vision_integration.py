@@ -177,14 +177,13 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
     """
     Loads all relevant data from Vision files (.ei, .sta, .params, .neurons).
     """
-    print(f"[VISION-DEBUG] load_vision_data START vision_dir={vision_dir} dataset_name={dataset_name!r}", flush=True)
     logger.debug(f"Loading Vision files from: {vision_dir}")
 
     if not VISION_LOADER_AVAILABLE:
-        print("[VISION-DEBUG] VISION_LOADER_AVAILABLE is False — visionloader failed to import. "
-              "Everything below this is a no-op.", flush=True)
         logger.warning(
-            f"visionloader is not available; skipping vision load for {vision_dir}")
+            "visionloader is not available; skipping vision load for %s",
+            vision_dir,
+        )
         return {'ei': None, 'sta': None, 'params': None, 'neurons': None}
 
     ei_data = None
@@ -194,23 +193,17 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
 
     try:
         ei_data = load_ei_data(vision_dir, dataset_name)
-        print(f"[VISION-DEBUG] load_ei_data -> {'None' if ei_data is None else 'OK, ' + str(len(ei_data.get('ei_data') or {})) + ' cells'}", flush=True)
     except Exception as e:
-        print(f"[VISION-DEBUG] load_ei_data RAISED: {e!r}", flush=True)
         logger.warning(f"Could not load EI data: {e}")
 
     try:
         sta_data = load_sta_data(vision_dir, dataset_name)
-        print(f"[VISION-DEBUG] load_sta_data -> {'None' if sta_data is None else 'OK, ' + str(len(sta_data)) + ' cells'}", flush=True)
     except Exception as e:
-        print(f"[VISION-DEBUG] load_sta_data RAISED: {e!r}", flush=True)
         logger.warning(f"Could not load STA data: {e}")
 
     try:
         neurons_data = load_neurons_data(vision_dir, dataset_name)
-        print(f"[VISION-DEBUG] load_neurons_data -> {'None' if neurons_data is None else 'OK'}", flush=True)
     except Exception as e:
-        print(f"[VISION-DEBUG] load_neurons_data RAISED: {e!r}", flush=True)
         logger.warning(f"Could not load Neurons data: {e}")
 
     # NOTE: params is loaded LAST and under a hard timeout. Unlike the other
@@ -223,12 +216,13 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
     # prevent EI/STA/neurons data (which are already loaded above) from
     # being returned to the caller.
     params_data = _load_params_with_timeout(vision_dir, dataset_name)
-    print(f"[VISION-DEBUG] load_params_data -> {'None' if params_data is None else 'OK'}", flush=True)
 
-    print(f"[VISION-DEBUG] load_vision_data END — returning dict with "
-          f"sta={'present' if sta_data is not None else 'None'}, "
-          f"params={'present' if params_data is not None else 'None'}, "
-          f"ei={'present' if ei_data is not None else 'None'}", flush=True)
+    logger.info(
+        "load_vision_data complete: sta=%s, params=%s, ei=%s",
+        "present" if sta_data is not None else "None",
+        "present" if params_data is not None else "None",
+        "present" if ei_data is not None else "None",
+    )
 
     return {
         'ei': ei_data,

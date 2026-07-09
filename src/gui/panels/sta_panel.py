@@ -18,13 +18,12 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QSizePolicy, QSlider, QSplitter,
-    QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QSlider, QSplitter, QVBoxLayout,
+    QWidget,
 )
 
 from ...analysis import analysis_core
-from ..theme import DARK_COLORS
 from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
@@ -370,23 +369,18 @@ class STAPanel(QWidget):
         dispatches to the three draw methods.
         """
         dm = getattr(self.main_window, 'data_manager', None)
-        print(f"[VISION-DEBUG][sta_panel] update_view(cluster_id={cluster_id}) called. "
-              f"dm is None: {dm is None}", flush=True)
+        logger.debug(
+            "update_view(cluster_id=%d): dm=%s",
+            cluster_id,
+            "None" if dm is None else "ok",
+        )
 
         if dm is None or not dm.vision_stas:
-            print(f"[VISION-DEBUG][sta_panel] GUARD A hit -> clearing. "
-                  f"dm.vision_stas = {dm.vision_stas if dm is not None else 'N/A (dm is None)'} "
-                  f"(type={type(dm.vision_stas).__name__ if dm is not None and dm.vision_stas is not None else 'NoneType'})",
-                  flush=True)
             self._clear_all()
             return
 
-        print(f"[VISION-DEBUG][sta_panel] dm.vision_stas OK: "
-              f"type={type(dm.vision_stas).__name__}, len={len(dm.vision_stas)}", flush=True)
-
         vision_id = dm.get_vision_id_for_cluster(cluster_id)
-        print(f"[VISION-DEBUG][sta_panel] get_vision_id_for_cluster({cluster_id}) -> {vision_id} "
-              f"(is_vision_only={getattr(dm, 'is_vision_only', 'N/A')})", flush=True)
+        logger.debug("get_vision_id_for_cluster(%d) -> %s", cluster_id, vision_id)
 
         # NOTE: There is intentionally no "unshifted ID" fallback here.
         # If the correctly-offset vision_id (per Law 1 / get_vision_id_for_cluster)
@@ -396,26 +390,17 @@ class STAPanel(QWidget):
         # whenever that raw integer happens to coincide with another cell's vision_id.
         # See AGENTS.md Law 1. Treat "missing" as missing — clear the panel below.
         if vision_id not in dm.vision_stas:
-            print(f"[VISION-DEBUG][sta_panel] GUARD B hit -> clearing. "
-                  f"vision_id={vision_id} not in dm.vision_stas (len={len(dm.vision_stas)}). "
-                  f"Sample of available keys: {list(dm.vision_stas.keys())[:10]}", flush=True)
             self._clear_all()
             return
-
-        print(f"[VISION-DEBUG][sta_panel] Both guards passed for vision_id={vision_id}. "
-              f"Calling _load_sta_data...", flush=True)
 
         # Load & cache
         if not self._load_sta_data(cluster_id, vision_id, dm):
             # vision_stas[vision_id] returned None (corrupt byte offset, or
             # the per-cell read timed out — see LazySTADict.__getitem__).
             # That's an expected, documented possibility, not a crash.
-            print(f"[VISION-DEBUG][sta_panel] _load_sta_data returned False for vision_id={vision_id} "
-                  f"— the actual disk read failed/timed out.", flush=True)
+            logger.debug("_load_sta_data returned False for vision_id=%s", vision_id)
             self._clear_all(reason="STA unavailable for this cell\n(corrupt data or read timeout)")
             return
-
-        print(f"[VISION-DEBUG][sta_panel] _load_sta_data SUCCEEDED for vision_id={vision_id}. Drawing...", flush=True)
 
         # Draw
         self._draw_rf_frame()

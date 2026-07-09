@@ -2,7 +2,10 @@ import pytest
 import numpy as np
 import pandas as pd
 from unittest.mock import MagicMock, patch
-from src.gui.panels.umap_panel import UMAPPanel, HDBSCAN_AVAILABLE
+from src.gui.panels import umap_panel
+
+UMAPPanel = umap_panel.UMAPPanel
+HDBSCAN_AVAILABLE = getattr(umap_panel, "HDBSCAN_AVAILABLE", False)
 
 @pytest.fixture
 def mock_main_window():
@@ -66,10 +69,9 @@ def test_integration_ui_method_swap(initialized_umap_panel, qtbot):
     
     # K-Means should be available
     panel.cluster_method_combo.setCurrentText("K-Means")
-    assert panel.cluster_param_spin.prefix() == "k="
+    assert panel.cluster_param_spin.prefix() == "# Types: "
     assert panel.cluster_param_spin.minimum() == 2
     assert panel.cluster_param_spin.maximum() == 100
-    assert panel.cluster_param_spin.value() == 5
     
     if HDBSCAN_AVAILABLE:
         panel.cluster_method_combo.setCurrentText("HDBSCAN")

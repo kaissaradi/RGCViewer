@@ -9,7 +9,12 @@ from unittest.mock import MagicMock
 from src.gui.panels.umap_panel import UMAPPanel
 from src.gui.panels.standard_plots_panel import StandardPlotsPanel
 
-umap = pytest.importorskip("umap")
+try:
+    import umap
+except ImportError:
+    pytest.skip("umap is not installed", allow_module_level=True)
+except RuntimeError as exc:
+    pytest.skip(f"umap could not be imported in this environment: {exc}", allow_module_level=True)
 
 pytestmark = [pytest.mark.performance, pytest.mark.stress]
 
@@ -140,21 +145,25 @@ def test_frantic_user_stress(qtbot, mocker):
     # Mock umap.UMAP.fit_transform to avoid heavy computation in stress test
     mocker.patch("umap.UMAP.fit_transform", return_value=np.random.rand(100, 2))
     
-    # Mock feature extraction to return valid test data
-    def mock_extract_features(dm, cluster_ids):
-        # Return valid 2D feature matrix for testing
+    # Mock the data manager methods that UMAPWorker.run() calls
+    def mock_get_raw_feature_blocks(cluster_ids, filter_config):
         n_samples = min(len(cluster_ids), 100) if cluster_ids is not None else 100
-        features = np.random.rand(n_samples, 10)
-        ids = list(range(n_samples))
-        metadata = pd.DataFrame({
-            'Time to Peak': np.random.rand(n_samples),
-            'RF Area': np.random.rand(n_samples),
-            'Ellipticity': np.random.rand(n_samples)
-        })
-        return features, ids, metadata
-    
-    mocker.patch("src.gui.panels.umap_panel.extract_features_from_datamanager", 
-                 side_effect=mock_extract_features)
+        raw_blocks = {
+            'temporal': np.random.rand(n_samples, 20),
+            'acg': np.random.rand(n_samples, 50),
+            'grating': np.zeros((n_samples, 12)),
+            'scalars': pd.DataFrame({
+                'rf_long_diameter': np.random.rand(n_samples) * 50,
+                'rf_short_diameter': np.random.rand(n_samples) * 30,
+                'firing_rate': np.random.rand(n_samples) * 20,
+                'isi_violations': np.random.rand(n_samples) * 0.1,
+                'time_to_peak': np.random.randint(0, 20, size=n_samples).astype(float),
+                'rf_area': np.random.rand(n_samples) * 100,
+                'ellipticity': np.random.rand(n_samples) * 2,
+            }),
+        }
+        valid_ids = list(range(n_samples))
+        return raw_blocks, valid_ids, []
     
     # Mock any message boxes that might block the test
     mocker.patch("qtpy.QtWidgets.QMessageBox.warning")

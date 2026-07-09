@@ -1,0 +1,2257 @@
+(rgcviewer) [~/Documents/RGCViewer]$ python -m pytest
+================================================================================================================ test session starts =================================================================================================================
+platform linux -- Python 3.10.20, pytest-9.1.1, pluggy-1.6.0
+Matplotlib: 3.10.9
+Freetype: 2.6.1
+PyQt5 5.15.11 -- Qt runtime 5.15.19 -- Qt compiled 5.15.14
+benchmark: 5.2.3 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/fieldlab/Documents/RGCViewer
+configfile: pytest.ini
+testpaths: tests
+plugins: mpl-0.19.0, cov-7.1.0, qt-4.5.0, benchmark-5.2.3, mock-3.15.1
+collected 195 items / 1 skipped                                                                                                                                                                                                                      
+
+tests/integration/test_cell_id_toggle.py ..                                                                                                                                                                                                    [  1%]
+tests/integration/test_gui_sanity.py .                                                                                                                                                                                                         [  1%]
+tests/integration/test_population_and_sta_regression.py ..                                                                                                                                                                                     [  2%]
+tests/integration/test_raw_panel_synthetic.py .                                                                                                                                                                                                [  3%]
+tests/integration/test_real_data_loading.py sss                                                                                                                                                                                                [  4%]
+tests/integration/test_tree_operations.py ..                                                                                                                                                                                                   [  5%]
+tests/integration/test_ui_ux_polish.py .....                                                                                                                                                                                                   [  8%]
+tests/integration/test_umap_panel_clustering.py sF.                                                                                                                                                                                            [  9%]
+tests/integration/test_umap_selection.py FF....                                                                                                                                                                                                [ 12%]
+tests/integration/test_visual_regression.py .                                                                                                                                                                                                  [ 13%]
+tests/performance/test_concurrency_fix.py .                                                                                                                                                                                                    [ 13%]
+tests/performance/test_first_click.py .                                                                                                                                                                                                        [ 14%]
+tests/performance/test_lock_contention.py s                                                                                                                                                                                                    [ 14%]
+tests/performance/test_physics_perf.py .                                                                                                                                                                                                       [ 15%]
+tests/performance/test_profiling.py sss                                                                                                                                                                                                        [ 16%]
+tests/performance/test_ram_usage.py s                                                                                                                                                                                                          [ 17%]
+tests/performance/test_stress.py ..F                                                                                                                                                                                                           [ 18%]
+tests/performance/test_tree_view_perf.py ..                                                                                                                                                                                                    [ 20%]
+tests/unit/test_autocorrelation.py ...                                                                                                                                                                                                         [ 21%]
+tests/unit/test_critical_production_bugs.py ........                                                                                                                                                                                           [ 25%]
+tests/unit/test_data_manager_cache.py .....                                                                                                                                                                                                    [ 28%]
+tests/unit/test_data_manager_spatial_pca.py .F....FF.F.FF....                                                                                                                                                                                  [ 36%]
+tests/unit/test_dynamic_clustering.py ........F..F.........F                                                                                                                                                                                   [ 48%]
+tests/unit/test_folder_debounce.py .......F                                                                                                                                                                                                    [ 52%]
+tests/unit/test_gui_polish.py FFs..s..                                                                                                                                                                                                         [ 56%]
+tests/unit/test_hdbscan_clustering.py s.ss                                                                                                                                                                                                     [ 58%]
+tests/unit/test_lazy_sta_cache_size.py ..                                                                                                                                                                                                      [ 59%]
+tests/unit/test_physics_cache_unified.py .........................                                                                                                                                                                             [ 72%]
+tests/unit/test_population_panel_cache.py .............                                                                                                                                                                                        [ 78%]
+tests/unit/test_population_panel_cache_invalidation.py ...                                                                                                                                                                                     [ 80%]
+tests/unit/test_population_panel_revisit_cache.py ...                                                                                                                                                                                          [ 82%]
+tests/unit/test_population_rf_background_fix.py ..F..FF..                                                                                                                                                                                      [ 86%]
+tests/unit/test_population_rf_mosaic.py FF...F.                                                                                                                                                                                                [ 90%]
+tests/unit/test_raw_feature_blocks.py FFFFFFFFFF                                                                                                                                                                                               [ 95%]
+tests/unit/test_sanity.py ..                                                                                                                                                                                                                   [ 96%]
+tests/unit/test_standard_plots_worker.py .                                                                                                                                                                                                     [ 96%]
+tests/unit/test_theme.py ..                                                                                                                                                                                                                    [ 97%]
+tests/unit/test_umap_worker.py ..FF                                                                                                                                                                                                            [100%]
+
+====================================================================================================================== FAILURES ======================================================================================================================
+__________________________________________________________________________________________________________ test_integration_ui_method_swap ___________________________________________________________________________________________________________
+
+initialized_umap_panel = <src.gui.panels.umap_panel.UMAPPanel object at 0x7272917b3640>, qtbot = <pytestqt.qtbot.QtBot object at 0x7272946b32b0>
+
+    def test_integration_ui_method_swap(initialized_umap_panel, qtbot):
+        """T6: Swap method combo and verify spinbox update."""
+        panel = initialized_umap_panel
+    
+        # K-Means should be available
+        panel.cluster_method_combo.setCurrentText("K-Means")
+>       assert panel.cluster_param_spin.prefix() == "k="
+E       AssertionError: assert '# Types: ' == 'k='
+E         
+E         - k=
+E         + # Types: 
+
+tests/integration/test_umap_panel_clustering.py:72: AssertionError
+________________________________________________________________________________________________________ test_umap_selection_tool_persistence ________________________________________________________________________________________________________
+
+umap_panel = <src.gui.panels.umap_panel.UMAPPanel object at 0x727291758f70>
+
+    def test_umap_selection_tool_persistence(umap_panel):
+        """Verify that only ONE selection tool is active at a time."""
+        embedding = np.column_stack((np.linspace(0, 1, 10), np.linspace(1, 0, 10)))
+        ids = np.arange(10)
+        metadata = _metadata(ids)
+    
+>       umap_panel.on_processing_finished(embedding, ids, metadata)
+E       TypeError: UMAPPanel.on_processing_finished() missing 2 required positional arguments: 'discarded_ids' and 'metadata'
+
+tests/integration/test_umap_selection.py:46: TypeError
+__________________________________________________________________________________________________________ test_rectangle_selection_switch ___________________________________________________________________________________________________________
+
+umap_panel = <src.gui.panels.umap_panel.UMAPPanel object at 0x7272df9389d0>
+
+    def test_rectangle_selection_switch(umap_panel):
+        """Verify that switching to Rectangle Tool works and disables Lasso."""
+        embedding = np.column_stack((np.linspace(0, 1, 10), np.linspace(1, 0, 10)))
+        ids = np.arange(10)
+        metadata = _metadata(ids)
+>       umap_panel.on_processing_finished(embedding, ids, metadata)
+E       TypeError: UMAPPanel.on_processing_finished() missing 2 required positional arguments: 'discarded_ids' and 'metadata'
+
+tests/integration/test_umap_selection.py:60: TypeError
+______________________________________________________________________________________________________________ test_frantic_user_stress ______________________________________________________________________________________________________________
+
+qtbot = <pytestqt.qtbot.QtBot object at 0x7272948a2bc0>, mocker = <pytest_mock.plugin.MockerFixture object at 0x7272948a1810>
+
+    def test_frantic_user_stress(qtbot, mocker):
+        """
+        STRESS TEST: Rapidly trigger UMAP runs to ensure workers are handled correctly.
+        Tests that rapid successive calls don't cause hangs or race conditions.
+        """
+        # Mock umap.UMAP.fit_transform to avoid heavy computation in stress test
+        mocker.patch("umap.UMAP.fit_transform", return_value=np.random.rand(100, 2))
+    
+        # Mock feature extraction to return valid test data
+        def mock_extract_features(dm, cluster_ids):
+            # Return valid 2D feature matrix for testing
+            n_samples = min(len(cluster_ids), 100) if cluster_ids is not None else 100
+            features = np.random.rand(n_samples, 10)
+            ids = list(range(n_samples))
+            metadata = pd.DataFrame({
+                'Time to Peak': np.random.rand(n_samples),
+                'RF Area': np.random.rand(n_samples),
+                'Ellipticity': np.random.rand(n_samples)
+            })
+            return features, ids, metadata
+    
+>       mocker.patch("src.gui.panels.umap_panel.extract_features_from_datamanager",
+                     side_effect=mock_extract_features)
+
+tests/performance/test_stress.py:161: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../miniconda3/envs/rgcviewer/lib/python3.10/site-packages/pytest_mock/plugin.py:448: in __call__
+    return self._start_patch(
+../../miniconda3/envs/rgcviewer/lib/python3.10/site-packages/pytest_mock/plugin.py:266: in _start_patch
+    mocked: MockType = p.start()
+../../miniconda3/envs/rgcviewer/lib/python3.10/unittest/mock.py:1595: in start
+    result = self.__enter__()
+../../miniconda3/envs/rgcviewer/lib/python3.10/unittest/mock.py:1447: in __enter__
+    original, local = self.get_original()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x7272948a0af0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'src.gui.panels.umap_panel' from '/home/fieldlab/Documents/RGCViewer/src/gui/panels/umap_panel.py'> does not have the attribute 'extract_features_from_datamanager'
+
+../../miniconda3/envs/rgcviewer/lib/python3.10/unittest/mock.py:1420: AttributeError
+_________________________________________________________________________________ TestFeatureMatrixWithSpatialPCA.test_matrix_has_9_columns_when_all_blocks_present __________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestFeatureMatrixWithSpatialPCA object at 0x727293e664d0>, mock_dm_vision = (<src.analysis.data_manager.DataManager object at 0x7272944abd90>, [0, 1, 2, 3, 4, 5, ...])
+
+    def test_matrix_has_9_columns_when_all_blocks_present(self, mock_dm_vision):
+        dm, cids = mock_dm_vision
+        matrix, valid_ids, metadata = dm.get_physics_feature_matrix(cids)
+>       assert matrix.shape[1] == 11, (
+            f"Expected 11 columns (3 TC + 3 ACG + 3 spatial + 2 KS scalars), got {matrix.shape[1]}"
+        )
+E       AssertionError: Expected 11 columns (3 TC + 3 ACG + 3 spatial + 2 KS scalars), got 8
+E       assert 8 == 11
+
+tests/unit/test_data_manager_spatial_pca.py:178: AssertionError
+_____________________________________________________________________________________ TestFeatureMatrixKilosortOnly.test_returns_nonempty_matrix_without_vision ______________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestFeatureMatrixKilosortOnly object at 0x727293e89210>, mock_dm_ks_only = (<src.analysis.data_manager.DataManager object at 0x7272944ab010>, [0, 1, 2, 3, 4, 5, ...])
+
+    def test_returns_nonempty_matrix_without_vision(self, mock_dm_ks_only):
+        dm, cids = mock_dm_ks_only
+        matrix, valid_ids, metadata = dm.get_physics_feature_matrix(cids)
+>       assert len(valid_ids) > 0, (
+            "Expected valid cells in Kilosort-only mode, got empty valid_ids. "
+            "The tc/acg gate must be relaxed to allow ACG-only rows."
+        )
+E       AssertionError: Expected valid cells in Kilosort-only mode, got empty valid_ids. The tc/acg gate must be relaxed to allow ACG-only rows.
+E       assert 0 > 0
+E        +  where 0 = len([])
+
+tests/unit/test_data_manager_spatial_pca.py:224: AssertionError
+______________________________________________________________________________________ TestFeatureMatrixKilosortOnly.test_matrix_has_5_columns_in_ks_only_mode _______________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestFeatureMatrixKilosortOnly object at 0x727293e89570>, mock_dm_ks_only = (<src.analysis.data_manager.DataManager object at 0x7272944a89d0>, [0, 1, 2, 3, 4, 5, ...])
+
+    def test_matrix_has_5_columns_in_ks_only_mode(self, mock_dm_ks_only):
+        dm, cids = mock_dm_ks_only
+        matrix, valid_ids, _ = dm.get_physics_feature_matrix(cids)
+>       assert len(valid_ids) > 0, "Precondition: must have valid cells"
+E       AssertionError: Precondition: must have valid cells
+E       assert 0 > 0
+E        +  where 0 = len([])
+
+tests/unit/test_data_manager_spatial_pca.py:233: AssertionError
+_______________________________________________________________________________________ TestFeatureMatrixKilosortOnly.test_all_cells_included_in_ks_only_mode ________________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestFeatureMatrixKilosortOnly object at 0x727293e89c30>, mock_dm_ks_only = (<src.analysis.data_manager.DataManager object at 0x7272944ab490>, [0, 1, 2, 3, 4, 5, ...])
+
+    def test_all_cells_included_in_ks_only_mode(self, mock_dm_ks_only):
+        """
+        Every cell has an ACG — none should be dropped when tc is None.
+        """
+        dm, cids = mock_dm_ks_only
+        _, valid_ids, _ = dm.get_physics_feature_matrix(cids)
+>       assert set(valid_ids) == set(cids), (
+            f"Expected all {len(cids)} cells; got {len(valid_ids)}. "
+            f"Missing: {set(cids) - set(valid_ids)}"
+        )
+E       AssertionError: Expected all 8 cells; got 0. Missing: {0, 1, 2, 3, 4, 5, 6, 7}
+E       assert set() == {0, 1, 2, 3, 4, 5, ...}
+E         
+E         Extra items in the right set:
+E         0
+E         1
+E         2
+E         3
+E         4...
+E         
+E         ...Full output truncated (4 lines hidden), use '-vv' to show
+
+tests/unit/test_data_manager_spatial_pca.py:251: AssertionError
+___________________________________________________________________________________________ TestCacheMigrationPrunesLegacy.test_legacy_cache_is_discarded ____________________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestCacheMigrationPrunesLegacy object at 0x727293e8a320>, tmp_path = PosixPath('/tmp/pytest-of-fieldlab/pytest-1/test_legacy_cache_is_discarded0')
+mock_dm = <src.analysis.data_manager.DataManager object at 0x727292371990>
+
+    def test_legacy_cache_is_discarded(self, tmp_path, mock_dm):
+        """A pre-footprint pkl must be discarded; feature_cache ends up empty."""
+        self._write_legacy_cache(tmp_path)
+        mock_dm.kilosort_dir = tmp_path
+    
+        mock_dm.load_persisted_caches()
+    
+>       assert len(mock_dm.feature_cache) == 0, (
+            f"Expected empty feature_cache after legacy migration, "
+            f"got {len(mock_dm.feature_cache)} entries"
+        )
+E       AssertionError: Expected empty feature_cache after legacy migration, got 2 entries
+E       assert 2 == 0
+E        +  where 2 = len({0: {'_computed': True, 'acg': array([0.6387439 , 0.27054155, 0.04108816, 0.01657388, 0.8155457 ,\n       0.91530937, 0... ,\n        0.45953488,  0.03048144, -0.2244217 , -0.6000108 , -0.19736087],\n      dtype=float32), 'rf_area': 8.0, ...}})
+E        +    where {0: {'_computed': True, 'acg': array([0.6387439 , 0.27054155, 0.04108816, 0.01657388, 0.8155457 ,\n       0.91530937, 0... ,\n        0.45953488,  0.03048144, -0.2244217 , -0.6000108 , -0.19736087],\n      dtype=float32), 'rf_area': 8.0, ...}} = <src.analysis.data_manager.DataManager object at 0x727292371990>.feature_cache
+
+tests/unit/test_data_manager_spatial_pca.py:318: AssertionError
+_____________________________________________________________________________________ TestCacheMigrationPrunesLegacy.test_legacy_cache_resets_physics_done_count _____________________________________________________________________________________
+
+self = <test_data_manager_spatial_pca.TestCacheMigrationPrunesLegacy object at 0x727293e64070>, tmp_path = PosixPath('/tmp/pytest-of-fieldlab/pytest-1/test_legacy_cache_resets_physi0')
+mock_dm = <src.analysis.data_manager.DataManager object at 0x7272923712d0>
+
+    def test_legacy_cache_resets_physics_done_count(self, tmp_path, mock_dm):
+        self._write_legacy_cache(tmp_path)
+        mock_dm.kilosort_dir = tmp_path
+    
+        mock_dm.load_persisted_caches()
+    
+>       assert mock_dm._physics_done_count == 0, (
+            f"Expected _physics_done_count=0 after legacy migration, "
+            f"got {mock_dm._physics_done_count}"
+        )
+E       AssertionError: Expected _physics_done_count=0 after legacy migration, got 2
+E       assert 2 == 0
+E        +  where 2 = <src.analysis.data_manager.DataManager object at 0x7272923712d0>._physics_done_count
+
+tests/unit/test_data_manager_spatial_pca.py:329: AssertionError
+__________________________________________________________________________________________________ TestApplyPrefilter.test_rejects_none_timecourse ___________________________________________________________________________________________________
+
+self = <test_dynamic_clustering.TestApplyPrefilter object at 0x727293e8bd30>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_rejects_none_timecourse(self, filter_config):
+        """Cell with timecourse=None is discarded."""
+        physics = {
+            0: {'timecourse': None, 'rf_area': 50.0},
+        }
+        valid, discarded = apply_prefilter(physics, filter_config)
+>       assert valid == []
+E       assert [0] == []
+E         
+E         Left contains one more item: 0
+E         Use -v to get more diff
+
+tests/unit/test_dynamic_clustering.py:107: AssertionError
+________________________________________________________________________________________________________ TestApplyPrefilter.test_mixed_cells _________________________________________________________________________________________________________
+
+self = <test_dynamic_clustering.TestApplyPrefilter object at 0x727293e8aec0>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_mixed_cells(self, filter_config):
+        """Correctly partitions a mix of good, flat, and oversized cells."""
+        physics = {
+            1: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 50.0},   # good
+            2: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 500.0},   # big RF
+            3: {'timecourse': np.full(20, 0.0), 'rf_area': 50.0},                     # flat
+            4: {'timecourse': None, 'rf_area': 50.0},                                  # missing
+            5: {'timecourse': np.sin(np.linspace(0, np.pi, 20)), 'rf_area': 100.0},   # good
+        }
+        valid, discarded = apply_prefilter(physics, filter_config)
+>       assert valid == [1, 5]
+E       assert [1, 4, 5] == [1, 5]
+E         
+E         At index 1 diff: 4 != 5
+E         Left contains one more item: 5
+E         Use -v to get more diff
+
+tests/unit/test_dynamic_clustering.py:138: AssertionError
+______________________________________________________________________________________________________ TestBuildFeatureMatrix.test_scalars_only ______________________________________________________________________________________________________
+
+self = <test_dynamic_clustering.TestBuildFeatureMatrix object at 0x727293ea5390>
+
+    def test_scalars_only(self):
+        """Works with only scalar features enabled (no PCA blocks)."""
+        rng = np.random.RandomState(42)
+        raw_blocks = {
+            'temporal': rng.randn(5, 20),
+            'acg': rng.randn(5, 50),
+            'scalars': pd.DataFrame({
+                'firing_rate': rng.rand(5) * 20,
+                'isi_violations': rng.rand(5) * 0.1,
+                'time_to_peak': rng.randint(0, 20, size=5).astype(float),
+                'rf_area': rng.rand(5) * 100,
+                'ellipticity': rng.rand(5) * 2,
+            }),
+        }
+        config = {
+            'use_temporal': False, 'use_acg': False,
+            'use_firing_rate': True, 'w_firing_rate': 1.0,
+            'use_isi_violations': True, 'w_isi_violations': 1.0,
+            'use_time_to_peak': True, 'w_time_to_peak': 1.0,
+            'use_rf_area': True, 'w_rf_area': 1.0,
+            'use_ellipticity': True, 'w_ellipticity': 1.0,
+        }
+>       matrix, labels = build_feature_matrix(raw_blocks, config)
+
+tests/unit/test_dynamic_clustering.py:299: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+raw_blocks = {'temporal': array([[ 0.49671415, -0.1382643 ,  0.64768854,  1.52302986, -0.23415337,
+        -0.23413696,  1.57921282...   0.005630           2.0   8.289132     1.112010
+4     2.223950        0.011882          12.0  52.837012     0.645373}
+feature_config = {'use_temporal': False, 'use_acg': False, 'use_firing_rate': True, 'w_firing_rate': 1.0, ...}
+
+    def build_feature_matrix(raw_blocks, feature_config):
+        """
+        Transform raw feature arrays into a weighted, PCA-reduced feature matrix.
+    
+        Pipeline
+        --------
+        1. **Temporal STA** (if enabled): peak-align each row via
+           :func:`peak_align_timecourse`, PCA to ``TEMPORAL_PCA_COMPONENTS``
+           components, multiply by ``w_temporal``.
+        2. **ACG** (if enabled): PCA to ``ACG_PCA_COMPONENTS`` components,
+           multiply by ``w_acg``.
+        3. **Scalars** (each independently toggleable): ``RobustScaler``, multiply
+           by the per-feature weight.
+        4. ``np.hstack`` all enabled blocks.
+    
+        Parameters
+        ----------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T),
+              'acg':       np.ndarray (N, A),
+              'scalars':   pd.DataFrame (N rows)}``
+        feature_config : dict
+            Boolean ``use_*`` flags and float ``w_*`` weights for every feature.
+    
+        Returns
+        -------
+        (matrix, column_labels) : (np.ndarray (N, D), list[str])
+    
+        Raises
+        ------
+        ValueError
+            If all features are disabled (D would be 0).
+        """
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import RobustScaler, StandardScaler
+        from .constants import (
+            TEMPORAL_PCA_COMPONENTS,
+            ACG_PCA_COMPONENTS,
+            GRATING_PCA_COMPONENTS,
+        )
+    
+        N = raw_blocks["temporal"].shape[0]  # guaranteed same N across all blocks
+        blocks = []
+        labels = []
+    
+        # ── Temporal STA ─────────────────────────────────────────────────────────
+        if feature_config.get("use_temporal", True):
+            w = feature_config.get("w_temporal", 3.0)
+            tc_matrix = raw_blocks["temporal"].copy()
+    
+            # Guard: skip the entire temporal block when no STA data is available.
+            # get_raw_feature_blocks fills timecourse=None cells with a zero-length
+            # sentinel row; after padding they become all-zero rows of width 1.
+            # np.std==0 on such a matrix means PCA and StandardScaler would either
+            # produce NaNs (zero-variance columns) or meaningless components.
+            sta_available = tc_matrix.shape[1] > 1 and np.std(tc_matrix) > 0
+            if sta_available:
+                # Peak-align each row
+                for i in range(tc_matrix.shape[0]):
+                    tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
+    
+                n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
+                if n_comp >= 1:
+                    tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
+                    # Z-score each PC independently so weight sliders have a
+                    # consistent meaning across feature groups (unit variance
+                    # before the user weight is applied).
+                    tc_pca = StandardScaler().fit_transform(tc_pca)
+                    blocks.append(tc_pca * w)
+                    labels.extend([f"tc_pc{j}" for j in range(n_comp)])
+            else:
+                logger.debug(
+                    "build_feature_matrix: skipping temporal STA block — "
+                    "no STA data available (all timecourses are None)."
+                )
+    
+        # ── ACG ──────────────────────────────────────────────────────────────────
+        if feature_config.get("use_acg", True):
+            w = feature_config.get("w_acg", 2.0)
+            acg_matrix = raw_blocks["acg"].copy()
+    
+            n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
+            if n_comp >= 1:
+                acg_pca = PCA(n_components=n_comp).fit_transform(acg_matrix)
+                # Z-score so ACG PCs are on the same scale as temporal PCs
+                # and scalar features — weight slider is then interpretable.
+                acg_pca = StandardScaler().fit_transform(acg_pca)
+                blocks.append(acg_pca * w)
+                labels.extend([f"acg_pc{j}" for j in range(n_comp)])
+    
+        # ── Grating direction-tuning-curve shape ────────────────────────────────
+        # PCA on grating_calc.pooled_direction_tuning_curve — a peak-weighted,
+        # shape-normalized tuning curve pooled across every dsos condition per
+        # cell (see that function's docstring for the pooling method) — rather
+        # than the DSI/OSI scalar summary. DSI/OSI collapse an entire tuning
+        # curve to "how concentrated around one harmonic," which can't
+        # distinguish a narrow single-peaked curve from a broad lopsided one if
+        # they happen to share a DSI value; PCA on the curve shape itself
+        # preserves that distinction the same way temporal/ACG PCA preserve STA/
+        # autocorrelogram shape rather than collapsing them to summary scalars.
+        # Cells with no dsos conditions (or none with usable peak response) get
+        # an all-zero sentinel row from get_raw_feature_blocks — same "guard
+        # against zero-variance / all-zero matrix" pattern as the temporal
+        # block above, not a per-cell special case here.
+        if feature_config.get("use_grating_dsos", True):
+            w = feature_config.get("w_grating_dsos", 3.0)
+            grating_matrix = raw_blocks.get("grating")
+            # Defensive: 'grating' is always present from the current
+            # get_raw_feature_blocks, but this is a public API (__all__) so
+            # guard rather than KeyError if a caller passes an older/partial
+            # raw_blocks dict.
+            if grating_matrix is None or grating_matrix.size == 0:
+                grating_available = False
+            else:
+                grating_matrix = grating_matrix.copy()
+                # Unlike temporal (which collapses to width-1 when no STA),
+                # grating is always POOLED_CURVE_N_BINS wide — so the real
+                # "no usable data" signal is an all-zero matrix (every cell got
+                # the zero sentinel), i.e. np.std == 0. A width check would be
+                # meaningless here.
+                grating_available = np.std(grating_matrix) > 0
+    
+            if grating_available:
+                n_comp = min(GRATING_PCA_COMPONENTS, N - 1, grating_matrix.shape[1])
+                if n_comp >= 1:
+                    grating_pca = PCA(n_components=n_comp).fit_transform(grating_matrix)
+                    grating_pca = StandardScaler().fit_transform(grating_pca)
+                    blocks.append(grating_pca * w)
+                    labels.extend([f"grating_pc{j}" for j in range(n_comp)])
+            else:
+                logger.debug(
+                    "build_feature_matrix: skipping grating block — no cells "
+                    "with usable direction-tuning curves (all-zero matrix)."
+                )
+    
+        # ── Scalar features ──────────────────────────────────────────────────────
+        # Consolidated set: firing_rate, isi_violations, time_to_peak, and
+        # ellipticity removed (see constants.py DEFAULT_WEIGHT_* comments).
+        # RF area replaced by long/short axis diameters — two independent
+        # scalars rather than one derived area+ratio pair, so PCA/UMAP can find
+        # whatever size/shape relationship actually matters rather than the
+        # relationship being pre-baked into a single ellipticity ratio.
+        #
+        # NOTE on weight semantics: w_rf_diameter is applied independently to
+        # both rf_long_diameter/rf_short_diameter (one checkbox/slider controls
+        # both columns at once). Since scaled Euclidean distance sums
+        # weight**2 per column, a block's total contribution to distance scales
+        # with (n_columns * weight**2), not weight alone.
+        scalar_features = [
+            ("rf_long_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
+            ("rf_short_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
+        ]
+    
+        scalars_df = raw_blocks["scalars"]
+        enabled_scalars = []
+        scalar_weights = []
+        scalar_labels = []
+    
+        for col, use_key, w_key, default_w in scalar_features:
+            if feature_config.get(use_key, True) and col in scalars_df.columns:
+                vals = scalars_df[col].fillna(0.0).values.astype(np.float64)
+                enabled_scalars.append(vals.reshape(-1, 1))
+                scalar_weights.append(feature_config.get(w_key, default_w))
+                scalar_labels.append(col)
+    
+        if enabled_scalars:
+            scalar_block = np.hstack(enabled_scalars)
+            scalar_block = RobustScaler().fit_transform(scalar_block)
+            # Apply per-column weights
+            for j, w in enumerate(scalar_weights):
+                scalar_block[:, j] *= w
+            blocks.append(scalar_block)
+            labels.extend(scalar_labels)
+    
+        # ── Assembly ─────────────────────────────────────────────────────────────
+        if not blocks:
+>           raise ValueError(
+                "All features are disabled — cannot build a feature matrix with "
+                "zero dimensions. Enable at least one feature."
+            )
+E           ValueError: All features are disabled — cannot build a feature matrix with zero dimensions. Enable at least one feature.
+
+src/analysis/analysis_core.py:862: ValueError
+_______________________________________________________________________________________ TestCallbacksFolderBranch.test_direct_draw_not_called_on_folder_click ________________________________________________________________________________________
+
+self = <test_folder_debounce.TestCallbacksFolderBranch object at 0x727293ea6260>, qtbot = <pytestqt.qtbot.QtBot object at 0x727294b9ba60>
+
+    def test_direct_draw_not_called_on_folder_click(self, qtbot):
+        """
+        on_cluster_selection_changed must NOT call draw_population_rfs_plot
+        directly when a folder is clicked (the debounce timer handles it).
+        """
+        from src.gui import callbacks
+    
+        win = MagicMock()
+        win.population_view_enabled = True
+        win.view_stack.currentIndex.return_value = 0
+        win._get_selected_cluster_id.return_value = None
+    
+        mock_item = MagicMock()
+        mock_item.data.return_value = None
+        win.tree_view.selectionModel.return_value.selectedIndexes.return_value = [MagicMock()]
+        win.tree_model.itemFromIndex.return_value = mock_item
+        win._get_group_cluster_ids.return_value = [0, 1, 2]
+        win.folder_selection_timer = MagicMock()
+    
+>       with patch('src.gui.callbacks.draw_population_rfs_plot') as mock_draw_rfs, \
+             patch('src.gui.callbacks.redraw_population_panels') as mock_redraw:
+
+tests/unit/test_folder_debounce.py:290: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../miniconda3/envs/rgcviewer/lib/python3.10/unittest/mock.py:1447: in __enter__
+    original, local = self.get_original()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x72729412c6d0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'src.gui.callbacks' from '/home/fieldlab/Documents/RGCViewer/src/gui/callbacks.py'> does not have the attribute 'draw_population_rfs_plot'
+
+../../miniconda3/envs/rgcviewer/lib/python3.10/unittest/mock.py:1420: AttributeError
+_________________________________________________________________________________________________ TestUmapLayoutFix.test_umap_layout_on_first_visit __________________________________________________________________________________________________
+
+self = <test_gui_polish.TestUmapLayoutFix object at 0x727293ea7fa0>, qtbot = <pytestqt.qtbot.QtBot object at 0x727294bec700>, main_window_fixture = <src.gui.main_window.MainWindow object at 0x727291714e50>
+
+    def test_umap_layout_on_first_visit(self, qtbot, main_window_fixture):
+        """First UMAP visit must not overlap toolbar rows."""
+        win = main_window_fixture
+        win.analysis_tabs.setCurrentIndex(3)          # UMAP tab
+>       qtbot.waitUntil(lambda: win.umap_panel.run_btn.isVisible(), timeout=2000)
+E       pytestqt.exceptions.TimeoutError: waitUntil timed out in 2000 milliseconds
+
+tests/unit/test_gui_polish.py:28: TimeoutError
+---------------------------------------------------------------------------------------------------------------- Captured Qt messages ----------------------------------------------------------------------------------------------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+___________________________________________________________________________________________ TestUmapLayoutFix.test_umap_layout_identical_after_tab_switch ____________________________________________________________________________________________
+
+self = <test_gui_polish.TestUmapLayoutFix object at 0x727293ec43a0>, qtbot = <pytestqt.qtbot.QtBot object at 0x727294431180>, main_window_fixture = <src.gui.main_window.MainWindow object at 0x727291704160>
+
+    def test_umap_layout_identical_after_tab_switch(self, qtbot, main_window_fixture):
+        """
+        Geometry must remain stable after switching tabs.
+        Small y‑offset differences (≤1 pixel) are tolerated due to offscreen rendering.
+        """
+        win = main_window_fixture
+        win.analysis_tabs.setCurrentIndex(3)
+>       qtbot.waitUntil(lambda: win.umap_panel.run_btn.isVisible(), timeout=2000)
+E       pytestqt.exceptions.TimeoutError: waitUntil timed out in 2000 milliseconds
+
+tests/unit/test_gui_polish.py:48: TimeoutError
+---------------------------------------------------------------------------------------------------------------- Captured Qt messages ----------------------------------------------------------------------------------------------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+____________________________________________________________________________________________________ test_y_flip_matches_highlight_and_background ____________________________________________________________________________________________________
+
+    def test_y_flip_matches_highlight_and_background():
+        """AC3: Background and highlight patches share same center coords (both y-flipped)."""
+        invalidate_population_caches()
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp)
+        colors = mw.get_current_colors()
+    
+        selected_cell_id = 0
+        vision_id = selected_cell_id + 1
+        stafit = vp.get_stafit_for_cell(vision_id)
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=[selected_cell_id], colors=colors,
+        )
+    
+        target_coll = None
+        for coll in ax.collections:
+            if isinstance(coll, EllipseCollection) and coll.get_zorder() == 2:
+                target_coll = coll
+                break
+    
+>       assert target_coll is not None, "Target collection not found"
+E       AssertionError: Target collection not found
+E       assert None is not None
+
+tests/unit/test_population_rf_background_fix.py:177: AssertionError
+______________________________________________________________________________________________________ test_axes_style_applied_title_and_aspect ______________________________________________________________________________________________________
+
+    def test_axes_style_applied_title_and_aspect():
+        """AC6: _apply_rf_axes_style is called (title, aspect equal)."""
+        invalidate_population_caches()
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp)
+        colors = mw.get_current_colors()
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=[0, 1, 2], colors=colors,
+        )
+    
+>       assert ax.get_title() == "Population Receptive Fields (n=3)"
+E       AssertionError: assert 'Population R... Fields (n=0)' == 'Population R... Fields (n=3)'
+E         
+E         - Population Receptive Fields (n=3)
+E         ?                                ^
+E         + Population Receptive Fields (n=0)
+E         ?                                ^
+
+tests/unit/test_population_rf_background_fix.py:273: AssertionError
+_______________________________________________________________________________________________________ test_ellipse_alpha_lw_ranges_preserved _______________________________________________________________________________________________________
+
+    def test_ellipse_alpha_lw_ranges_preserved():
+        """AC7: Spec compliance for alpha and lw on background and target collection."""
+        invalidate_population_caches()
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp)
+        colors = mw.get_current_colors()
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=[0, 1, 2], colors=colors,
+        )
+    
+        bg_coll = None
+        target_coll = None
+        for coll in ax.collections:
+            if not isinstance(coll, EllipseCollection):
+                continue
+            if coll.get_zorder() == 1:
+                bg_coll = coll
+            elif coll.get_zorder() == 2:
+                target_coll = coll
+    
+        assert bg_coll is not None, "Background collection not found"
+>       assert target_coll is not None, "Target collection not found"
+E       AssertionError: Target collection not found
+E       assert None is not None
+
+tests/unit/test_population_rf_background_fix.py:303: AssertionError
+_____________________________________________________________________________________________ TestEllipseVisibility.test_background_ellipse_alpha_and_lw _____________________________________________________________________________________________
+
+self = <test_population_rf_mosaic.TestEllipseVisibility object at 0x727293cd65c0>
+
+    def test_background_ellipse_alpha_and_lw(self):
+        """Background (non-target) ellipses: alpha 0.12–0.18, lw 0.6–0.9."""
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp)
+        colors = mw.get_current_colors()
+    
+        # subset = first 3 cells (kilosort IDs 0..2 → vision IDs 1..3)
+        subset_cell_ids = [0, 1, 2]
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        from src.gui.panels.population_panel import plot_population_rfs_background
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=subset_cell_ids, colors=colors,
+        )
+    
+        # Background ellipses are those NOT in the subset (vision IDs 4, 5, 6)
+        bg_patches = [
+            p for p in ax.patches
+            if isinstance(p, Ellipse) and p.get_alpha() is not None and p.get_alpha() < 0.20
+        ]
+>       assert len(bg_patches) > 0, "Expected background ellipses"
+E       AssertionError: Expected background ellipses
+E       assert 0 > 0
+E        +  where 0 = len([])
+
+tests/unit/test_population_rf_mosaic.py:127: AssertionError
+_______________________________________________________________________________________________ TestEllipseVisibility.test_target_ellipse_alpha_and_lw _______________________________________________________________________________________________
+
+self = <test_population_rf_mosaic.TestEllipseVisibility object at 0x727293cd7a60>
+
+    def test_target_ellipse_alpha_and_lw(self):
+        """Target (in-subset) ellipses: alpha 0.45–0.65, lw 0.9–1.2."""
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp)
+        colors = mw.get_current_colors()
+    
+        subset_cell_ids = [0, 1, 2]
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        from src.gui.panels.population_panel import plot_population_rfs_background
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=subset_cell_ids, colors=colors,
+        )
+    
+        # Target ellipses are those IN the subset (higher alpha)
+        target_patches = [
+            p for p in ax.patches
+            if isinstance(p, Ellipse) and p.get_alpha() is not None and p.get_alpha() >= 0.20
+        ]
+>       assert len(target_patches) > 0, "Expected target ellipses"
+E       AssertionError: Expected target ellipses
+E       assert 0 > 0
+E        +  where 0 = len([])
+
+tests/unit/test_population_rf_mosaic.py:159: AssertionError
+_____________________________________________________________________________________________ TestShowIdsLabelsOnMosaic.test_labels_appear_when_checked ______________________________________________________________________________________________
+
+self = <test_population_rf_mosaic.TestShowIdsLabelsOnMosaic object at 0x727293cf84c0>
+
+    def test_labels_appear_when_checked(self):
+        """When checked, text artists == number of target cells, font ≤ 8."""
+        cells, vp = _make_vision_params(6)
+        mw = _make_mock_main_window(vp, subset_ids=[0, 1, 2])
+        mw.pop_show_ids_checkbox.isChecked.return_value = True
+        colors = mw.get_current_colors()
+    
+        fig = Figure()
+        ax = fig.add_subplot(111)
+    
+        from src.gui.panels.population_panel import plot_population_rfs_background
+        plot_population_rfs_background(
+            ax, vp, main_window=mw, sta_height=100,
+            subset_cell_ids=[0, 1, 2], colors=colors,
+        )
+    
+        texts = [t for t in ax.texts]
+        # 3 target cells → 3 labels
+>       assert len(texts) == 3, f"Expected 3 text labels, got {len(texts)}"
+E       AssertionError: Expected 3 text labels, got 0
+E       assert 0 == 3
+E        +  where 0 = len([])
+
+tests/unit/test_population_rf_mosaic.py:277: AssertionError
+_________________________________________________________________________________________________ TestGetRawFeatureBlocks.test_valid_cells_returned __________________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfa0b0>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_valid_cells_returned(self, filter_config):
+        """Good cells pass the filter and appear in raw_blocks."""
+        physics = {
+            0: _make_physics(rf_area=50.0),
+            1: _make_physics(rf_area=100.0),
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:126: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x7272901c5990>, cluster_ids = [0, 1], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+___________________________________________________________________________________________________ TestGetRawFeatureBlocks.test_discards_flat_sta ___________________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfa3e0>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_discards_flat_sta(self, filter_config):
+        """Cell with flat timecourse is discarded."""
+        physics = {
+            0: _make_physics(),                                        # good
+            1: _make_physics(tc_value=np.full(20, 0.5)),              # flat
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:141: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x7272901c0d90>, cluster_ids = [0, 1], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+___________________________________________________________________________________________________ TestGetRawFeatureBlocks.test_discards_large_rf ___________________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfa710>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_discards_large_rf(self, filter_config):
+        """Cell with oversized RF is discarded."""
+        physics = {
+            0: _make_physics(rf_area=50.0),    # good
+            1: _make_physics(rf_area=500.0),   # too large
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:154: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x727290104850>, cluster_ids = [0, 1], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+______________________________________________________________________________________________ TestGetRawFeatureBlocks.test_all_filtered_returns_empty _______________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfaa40>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_all_filtered_returns_empty(self, filter_config):
+        """All cells filtered → empty blocks, no crash."""
+        physics = {
+            0: _make_physics(tc_value=None),
+            1: _make_physics(rf_area=999.0),
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:166: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x727290178a30>, cluster_ids = [0, 1], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+_____________________________________________________________________________________________ TestGetRawFeatureBlocks.test_copies_arrays_not_cache_refs ______________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfad70>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_copies_arrays_not_cache_refs(self, filter_config):
+        """Returned arrays must be copies, not references to cached originals."""
+        tc_original = np.sin(np.linspace(0, np.pi, 20))
+        physics = {0: _make_physics(tc_value=tc_original.copy())}
+        dm = _MockDataManager(physics)
+>       raw_blocks, _, _ = dm.get_raw_feature_blocks([0], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:177: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x7272948f58a0>, cluster_ids = [0], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+____________________________________________________________________________________________________ TestGetRawFeatureBlocks.test_uniform_padding ____________________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cd7760>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_uniform_padding(self, filter_config):
+        """All TC rows and ACG rows have the same length after padding."""
+        physics = {
+            0: _make_physics(tc_len=15, acg_len=40),
+            1: _make_physics(tc_len=20, acg_len=50),
+            2: _make_physics(tc_len=18, acg_len=45),
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, _ = dm.get_raw_feature_blocks([0, 1, 2], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x727290f93fa0>, cluster_ids = [0, 1, 2], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+______________________________________________________________________________________________ TestGetRawFeatureBlocks.test_scalars_include_firing_rate ______________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cd4730>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_scalars_include_firing_rate(self, filter_config):
+        """Scalars DataFrame includes firing_rate column."""
+        physics = {0: _make_physics()}
+        spike_times = np.array([0, 30000, 60000, 90000])  # 4 spikes over 3 seconds
+        spike_indices = {0: np.array([0, 1, 2, 3])}
+        dm = _MockDataManager(
+            physics,
+            spike_times=spike_times,
+            spike_indices=spike_indices,
+        )
+>       raw_blocks, _, _ = dm.get_raw_feature_blocks([0], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:213: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x7272943771f0>, cluster_ids = [0], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+____________________________________________________________________________________________ TestGetRawFeatureBlocks.test_scalars_include_isi_violations _____________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfad40>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_scalars_include_isi_violations(self, filter_config):
+        """Scalars DataFrame includes isi_violations from cluster_df."""
+        physics = {0: _make_physics()}
+        cluster_df = pd.DataFrame({
+            'cluster_id': [0],
+            'isi_violations_pct': [2.5],
+        })
+        dm = _MockDataManager(physics, cluster_df=cluster_df)
+>       raw_blocks, _, _ = dm.get_raw_feature_blocks([0], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:228: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x727290187520>, cluster_ids = [0], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+______________________________________________________________________________________________ TestGetRawFeatureBlocks.test_scalars_all_columns_present ______________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cfa410>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_scalars_all_columns_present(self, filter_config):
+        """Scalars DataFrame has all 5 expected columns."""
+        physics = {0: _make_physics()}
+        dm = _MockDataManager(physics)
+>       raw_blocks, _, _ = dm.get_raw_feature_blocks([0], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:238: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x7272944436a0>, cluster_ids = [0], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+______________________________________________________________________________________________ TestGetRawFeatureBlocks.test_row_count_matches_valid_ids ______________________________________________________________________________________________
+
+self = <test_raw_feature_blocks.TestGetRawFeatureBlocks object at 0x727293cf9f90>, filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def test_row_count_matches_valid_ids(self, filter_config):
+        """All blocks have exactly len(valid_ids) rows."""
+        physics = {
+            0: _make_physics(),
+            1: _make_physics(tc_value=None),   # filtered out
+            2: _make_physics(),
+        }
+        dm = _MockDataManager(physics)
+>       raw_blocks, valid_ids, _ = dm.get_raw_feature_blocks([0, 1, 2], filter_config)
+
+tests/unit/test_raw_feature_blocks.py:252: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_raw_feature_blocks._MockDataManager object at 0x727290f8fb50>, cluster_ids = [0, 1, 2], filter_config = {'min_sta_std': 1e-05, 'max_rf_area': 300.0}
+
+    def get_raw_feature_blocks(self, cluster_ids, filter_config):
+        """
+        Extract raw feature arrays for the dynamic clustering pipeline.
+    
+        This is the data-access counterpart to analysis_core.build_feature_matrix().
+        It calls get_cell_physics() per cluster (Law 1 handled internally), applies
+        the pre-filter, and returns raw arrays as *copies* — never cache references.
+    
+        Parameters
+        ----------
+        cluster_ids : list[int]
+            Cluster IDs to process.
+        filter_config : dict
+            ``{'min_sta_std': float, 'max_rf_area': float}``
+    
+        Returns
+        -------
+        raw_blocks : dict
+            ``{'temporal': np.ndarray (N, T), 'acg': np.ndarray (N, A),
+              'grating': np.ndarray (N, grating_calc.POOLED_CURVE_N_BINS),
+              'scalars': pd.DataFrame (N rows)}``
+        valid_ids : list[int]
+            Cluster IDs that passed pre-filtering.
+        discarded_ids : list[int]
+            Cluster IDs rejected by pre-filter.
+    
+        Thread safety
+        -------------
+        Acquires _feature_lock for cache reads via get_cell_physics().
+        Safe to call from worker threads.
+        """
+        # 1. Collect physics for every cluster (triggers on-demand computation)
+        physics_entries = {}
+        for cid in cluster_ids:
+            cid = int(cid)
+            physics_entries[cid] = self.get_cell_physics(cid)
+    
+        # 2. Pre-filter via pure function in analysis_core
+        valid_ids, discarded_ids = analysis_core.apply_prefilter(
+            physics_entries, filter_config
+        )
+    
+        if not valid_ids:
+            empty_blocks = {
+                "temporal": np.empty((0, 0)),
+                "acg": np.empty((0, 0)),
+                "grating": np.empty((0, 0)),
+                "scalars": pd.DataFrame(),
+            }
+            return empty_blocks, valid_ids, discarded_ids
+    
+        # 3. Collect raw arrays for valid cells (always copy — Law 3)
+        tc_list = []
+        acg_list = []
+        grating_list = []  # pooled direction-tuning curve shapes, for PCA
+        scalar_rows = []
+    
+        # Recording duration, needed for the firing_rate metadata column
+        # below. firing_rate/isi_violations are NOT embedding features
+        # (removed from the weighted feature space — see constants.py
+        # DEFAULT_WEIGHT_* comments), but UMAPWorker still surfaces them as
+        # display/hover metadata on the scatter plot, so they need to keep
+        # existing in raw_blocks['scalars'] even though build_feature_
+        # matrix's scalar_features table no longer reads them for
+        # clustering distance.
+        recording_duration_sec = 0.0
+        if (
+            hasattr(self, "spike_times")
+            and self.spike_times is not None
+            and len(self.spike_times) > 1
+        ):
+            sr = float(getattr(self, "sampling_rate", 30000.0))
+            recording_duration_sec = (
+                float(self.spike_times[-1] - self.spike_times[0]) / sr
+            )
+    
+        from . import grating_calc
+    
+        for cid in valid_ids:
+            phys = physics_entries[cid]
+    
+            # Timecourse — must copy to prevent np.roll from mutating cache.
+            # timecourse=None means no STA was available for this cell; use a
+            # zero-length sentinel so the cell still contributes ACG + scalars.
+            # build_feature_matrix detects all-zero tc_mat and skips the
+            # temporal PCA block rather than producing NaN components.
+            tc = phys.get("timecourse")
+            if tc is not None:
+                tc = np.array(tc, dtype=np.float64).copy()
+            else:
+                tc = np.zeros(0, dtype=np.float64)
+            tc_list.append(tc)
+    
+            # ACG — copy for safety
+            acg = phys.get("acg")
+            if acg is not None:
+                acg = np.array(acg, dtype=np.float64).copy()
+            else:
+                acg = np.zeros(1, dtype=np.float64)
+            acg_list.append(acg)
+    
+            # Grating direction-tuning curve shape — for the EMBEDDING (PCA
+            # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
+            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
+            # number can't distinguish differently-shaped tuning curves
+            # that happen to share a value, so we PCA the curve shape
+            # itself instead — see grating_calc.pooled_direction_tuning_
+            # curve's docstring for the peak-weighted pooling method across
+            # a cell's conditions. None (no dsos data, or no condition with
+            # usable peak response) becomes an all-zero sentinel row, same
+            # "guard in build_feature_matrix, not a per-cell special case
+            # here" pattern as the timecourse=None handling above.
+>           grating_entry = self.grating_computed_cache.get(cid)
+E           AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+
+src/analysis/data_manager.py:2155: AttributeError
+___________________________________________________________________________________________________________ test_worker_single_cell_passes ___________________________________________________________________________________________________________
+
+    def test_worker_single_cell_passes():
+        """Only 1 cell passes filter -> UMAP fails (requires neighbors >= 2), gracefully handled."""
+        cluster_df = pd.DataFrame({'cluster_id': [0], 'KSLabel': ['good']})
+    
+        raw_blocks = {
+            'temporal': np.random.randn(1, 20),
+            'acg': np.random.randn(1, 50),
+            'scalars': pd.DataFrame({
+                'firing_rate': [5.0],
+                'isi_violations': [0.1],
+                'time_to_peak': [12.0],
+                'rf_area': [45.0],
+                'ellipticity': [0.9],
+            })
+        }
+    
+        dm = MockDataManager(cluster_df, raw_blocks, valid_ids=[0], discarded_ids=[])
+    
+        worker = UMAPWorker(dm, selected_cluster_ids=[0], n_components=2)
+    
+        finished_args = []
+        errors = []
+    
+        worker.finished.connect(lambda *args: finished_args.append(args))
+        worker.error.connect(errors.append)
+    
+        worker.run()
+    
+        assert not finished_args
+        assert len(errors) == 1
+>       assert any(term in errors[0] for term in ("n_neighbors", "ValueError", "neighborhood"))
+E       assert False
+E        +  where False = any(<generator object test_worker_single_cell_passes.<locals>.<genexpr> at 0x727290bedfc0>)
+
+tests/unit/test_umap_worker.py:144: AssertionError
+----------------------------------------------------------------------------------------------------------------- Captured log call ------------------------------------------------------------------------------------------------------------------
+ERROR    src.gui.workers.workers:workers.py:628 UMAP Worker failed
+Traceback (most recent call last):
+  File "/home/fieldlab/Documents/RGCViewer/src/gui/workers/workers.py", line 556, in run
+    matrix, col_labels = analysis_core.build_feature_matrix(
+  File "/home/fieldlab/Documents/RGCViewer/src/analysis/analysis_core.py", line 862, in build_feature_matrix
+    raise ValueError(
+ValueError: All features are disabled — cannot build a feature matrix with zero dimensions. Enable at least one feature.
+_______________________________________________________________________________________________________ test_cluster_worker_uses_highd_matrix ________________________________________________________________________________________________________
+
+    def test_cluster_worker_uses_highd_matrix():
+        """ClusterWorker receives high-D matrix, not 2D embedding, and clusters correctly."""
+        matrix = np.random.randn(10, 8)
+    
+>       from src.gui.workers.workers import HDBSCAN_AVAILABLE
+E       ImportError: cannot import name 'HDBSCAN_AVAILABLE' from 'src.gui.workers.workers' (/home/fieldlab/Documents/RGCViewer/src/gui/workers/workers.py)
+
+tests/unit/test_umap_worker.py:151: ImportError
+
+------------------------------------------------------------------------------------------------------------------------- benchmark: 4 tests -------------------------------------------------------------------------------------------------------------------------
+Name (time in ns)                                           Min                         Max                       Mean                     StdDev                     Median                     IQR            Outliers             OPS            Rounds  Iterations
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+test_first_click_latency_under_load                    518.9795 (1.0)           10,250.0198 (1.0)             583.0493 (1.0)             369.2278 (1.0)             546.5117 (1.0)           67.8701 (1.0)           3;4  1,715,120.7292 (1.0)         956           1
+test_physics_loading_benchmark_sequential           20,159.9905 (38.85)         52,973.0460 (5.17)         21,636.7921 (37.11)         2,169.6157 (5.88)         21,310.9888 (38.99)        140.9790 (2.08)     183;1652     46,217.5722 (0.03)       5014           1
+test_tree_view_population_performance            6,017,813.9247 (>1000.0)    7,108,644.9316 (693.52)    6,176,052.1219 (>1000.0)     110,181.7813 (298.41)    6,166,937.4700 (>1000.0)   62,379.4622 (919.10)      19;12        161.9157 (0.00)        144           1
+test_tree_view_population_performance_large     24,479,916.0864 (>1000.0)  152,999,043.9303 (>1000.0)  27,981,927.8152 (>1000.0)  19,764,734.5658 (>1000.0)  24,849,846.9591 (>1000.0)  336,028.0534 (>1000.0)       1;2         35.7374 (0.00)         42           1
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Legend:
+  Outliers: 1 Standard Deviation from Mean; 1.5 IQR (InterQuartile Range) from 1st Quartile and 3rd Quartile.
+  OPS: Operations Per Second, computed as 1 / Mean
+============================================================================================================== short test summary info ===============================================================================================================
+FAILED tests/integration/test_umap_panel_clustering.py::test_integration_ui_method_swap - AssertionError: assert '# Types: ' == 'k='
+FAILED tests/integration/test_umap_selection.py::test_umap_selection_tool_persistence - TypeError: UMAPPanel.on_processing_finished() missing 2 required positional arguments: 'discarded_ids' and 'metadata'
+FAILED tests/integration/test_umap_selection.py::test_rectangle_selection_switch - TypeError: UMAPPanel.on_processing_finished() missing 2 required positional arguments: 'discarded_ids' and 'metadata'
+FAILED tests/performance/test_stress.py::test_frantic_user_stress - AttributeError: <module 'src.gui.panels.umap_panel' from '/home/fieldlab/Documents/RGCViewer/src/gui/panels/umap_panel.py'> does not have the attribute 'extract_features_from_datamanager'
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestFeatureMatrixWithSpatialPCA::test_matrix_has_9_columns_when_all_blocks_present - AssertionError: Expected 11 columns (3 TC + 3 ACG + 3 spatial + 2 KS scalars), got 8
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestFeatureMatrixKilosortOnly::test_returns_nonempty_matrix_without_vision - AssertionError: Expected valid cells in Kilosort-only mode, got empty valid_ids. The tc/acg gate must be relaxed to allow ACG-only rows.
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestFeatureMatrixKilosortOnly::test_matrix_has_5_columns_in_ks_only_mode - AssertionError: Precondition: must have valid cells
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestFeatureMatrixKilosortOnly::test_all_cells_included_in_ks_only_mode - AssertionError: Expected all 8 cells; got 0. Missing: {0, 1, 2, 3, 4, 5, 6, 7}
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestCacheMigrationPrunesLegacy::test_legacy_cache_is_discarded - AssertionError: Expected empty feature_cache after legacy migration, got 2 entries
+FAILED tests/unit/test_data_manager_spatial_pca.py::TestCacheMigrationPrunesLegacy::test_legacy_cache_resets_physics_done_count - AssertionError: Expected _physics_done_count=0 after legacy migration, got 2
+FAILED tests/unit/test_dynamic_clustering.py::TestApplyPrefilter::test_rejects_none_timecourse - assert [0] == []
+FAILED tests/unit/test_dynamic_clustering.py::TestApplyPrefilter::test_mixed_cells - assert [1, 4, 5] == [1, 5]
+FAILED tests/unit/test_dynamic_clustering.py::TestBuildFeatureMatrix::test_scalars_only - ValueError: All features are disabled — cannot build a feature matrix with zero dimensions. Enable at least one feature.
+FAILED tests/unit/test_folder_debounce.py::TestCallbacksFolderBranch::test_direct_draw_not_called_on_folder_click - AttributeError: <module 'src.gui.callbacks' from '/home/fieldlab/Documents/RGCViewer/src/gui/callbacks.py'> does not have the attribute 'draw_population_rfs_plot'
+FAILED tests/unit/test_gui_polish.py::TestUmapLayoutFix::test_umap_layout_on_first_visit - pytestqt.exceptions.TimeoutError: waitUntil timed out in 2000 milliseconds
+FAILED tests/unit/test_gui_polish.py::TestUmapLayoutFix::test_umap_layout_identical_after_tab_switch - pytestqt.exceptions.TimeoutError: waitUntil timed out in 2000 milliseconds
+FAILED tests/unit/test_population_rf_background_fix.py::test_y_flip_matches_highlight_and_background - AssertionError: Target collection not found
+FAILED tests/unit/test_population_rf_background_fix.py::test_axes_style_applied_title_and_aspect - AssertionError: assert 'Population R... Fields (n=0)' == 'Population R... Fields (n=3)'
+FAILED tests/unit/test_population_rf_background_fix.py::test_ellipse_alpha_lw_ranges_preserved - AssertionError: Target collection not found
+FAILED tests/unit/test_population_rf_mosaic.py::TestEllipseVisibility::test_background_ellipse_alpha_and_lw - AssertionError: Expected background ellipses
+FAILED tests/unit/test_population_rf_mosaic.py::TestEllipseVisibility::test_target_ellipse_alpha_and_lw - AssertionError: Expected target ellipses
+FAILED tests/unit/test_population_rf_mosaic.py::TestShowIdsLabelsOnMosaic::test_labels_appear_when_checked - AssertionError: Expected 3 text labels, got 0
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_valid_cells_returned - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_discards_flat_sta - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_discards_large_rf - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_all_filtered_returns_empty - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_copies_arrays_not_cache_refs - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_uniform_padding - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_scalars_include_firing_rate - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_scalars_include_isi_violations - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_scalars_all_columns_present - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_raw_feature_blocks.py::TestGetRawFeatureBlocks::test_row_count_matches_valid_ids - AttributeError: '_MockDataManager' object has no attribute 'grating_computed_cache'
+FAILED tests/unit/test_umap_worker.py::test_worker_single_cell_passes - assert False
+FAILED tests/unit/test_umap_worker.py::test_cluster_worker_uses_highd_matrix - ImportError: cannot import name 'HDBSCAN_AVAILABLE' from 'src.gui.workers.workers' (/home/fieldlab/Documents/RGCViewer/src/gui/workers/workers.py)
+==================================================================================================== 34 failed, 147 passed, 15 skipped in 36.83s =====================================================================================================
+(rgcviewer) [~/Documents/RGCViewer]$ 
+

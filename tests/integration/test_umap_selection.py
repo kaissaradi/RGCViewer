@@ -43,7 +43,7 @@ def test_umap_selection_tool_persistence(umap_panel):
     ids = np.arange(10)
     metadata = _metadata(ids)
     
-    umap_panel.on_processing_finished(embedding, ids, metadata)
+    umap_panel.on_processing_finished(embedding, embedding, ids, np.array([]), metadata)
     
     assert umap_panel.selector_combo.currentText() == "Lasso Tool"
     
@@ -57,7 +57,7 @@ def test_rectangle_selection_switch(umap_panel):
     embedding = np.column_stack((np.linspace(0, 1, 10), np.linspace(1, 0, 10)))
     ids = np.arange(10)
     metadata = _metadata(ids)
-    umap_panel.on_processing_finished(embedding, ids, metadata)
+    umap_panel.on_processing_finished(embedding, embedding, ids, np.array([]), metadata)
     
     umap_panel.selector_combo.setCurrentText("Rectangle Tool")
     

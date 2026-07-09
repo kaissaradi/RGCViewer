@@ -2,7 +2,6 @@
 
 import pyqtgraph as pg
 
-
 DARK_COLORS = {
     "bg_base": "#111214",
     "bg_panel": "#18191C",
