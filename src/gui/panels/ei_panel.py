@@ -2,6 +2,20 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.interpolate import griddata
+from scipy.spatial import cKDTree
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize, to_rgba
+import matplotlib.cm as mpl_cm
+
+try:
+    # matplotlib >= 3.7: mpl_cm.get_cmap is deprecated
+    from matplotlib import colormaps as _mpl_colormaps
+
+    def _get_cmap(name):
+        return _mpl_colormaps[name]
+except Exception:  # older matplotlib
+    def _get_cmap(name):
+        return mpl_cm.get_cmap(name)
 
 from qtpy.QtWidgets import (
     QWidget,
@@ -177,11 +191,14 @@ class EIPanel(QWidget):
         # ── state ──────────────────────────────────────────────────────────
         self.current_view: str = "Heatmap"
         self.current_ei_data: list[np.ndarray] | None = None
+        self.current_ei_error: list | None = None
         self.current_ei_map_list: list[np.ndarray] | None = None
         self.current_cluster_ids: list[int] | None = None
         self.current_channels: np.ndarray | None = None
         self.overlay_index: int = 0
         self.n_frames: int = 0
+        # sample index of the soma spike (Vision nl_points, or global trough)
+        self._soma_frame: int = 0
 
         # per-cluster ei_map cache: {cluster_id: ei_map_ndarray}
         self._ei_map_cache: dict[int, np.ndarray] = {}
@@ -404,6 +421,11 @@ class EIPanel(QWidget):
         cluster_ids = np.atleast_1d(np.array(cluster_ids, dtype=int))
         primary_id = int(cluster_ids[0])
 
+        # array geometry can change between datasets; recompute pitch lazily
+        self._electrode_pitch = None
+        # amplitude scale is per-selection; recompute on next draw
+        self._global_ei_scale = None
+
         self._stop_animation()
         dm = self.main_window.data_manager
         vision_ids = np.array([dm.get_vision_id_for_cluster(c) for c in cluster_ids])
@@ -468,7 +490,8 @@ class EIPanel(QWidget):
     def _load_vision_ei(self, cluster_ids: np.ndarray):
         dm = self.main_window.data_manager
         vision_ids = np.array([dm.get_vision_id_for_cluster(c) for c in cluster_ids])
-        valid_ei, valid_orig = [], []
+        valid_ei, valid_orig, valid_err = [], [], []
+        soma_frame = None
 
         for i, vid in enumerate(vision_ids):
             if not (isinstance(vid, (int, np.integer)) and 0 < vid < 100_000):
@@ -482,15 +505,30 @@ class EIPanel(QWidget):
             ):
                 valid_ei.append(entry.ei)
                 valid_orig.append(int(cluster_ids[i]))
+                # Vision computes a per-sample EI error (SD across spikes);
+                # capture it so the footprint view can gate real-signal
+                # channels against Vision's own error rather than a guessed
+                # noise floor. May be absent on some containers.
+                err = getattr(entry, "ei_error", None)
+                valid_err.append(err if (err is not None and getattr(err, "ndim", 0) == 2) else None)
+                # Vision aligns the spike at sample index nl_points (nl left
+                # points, then the trough, then nr right points). Use the
+                # primary cluster's alignment as the soma frame for both the
+                # default heatmap frame and the animation window.
+                if soma_frame is None and hasattr(entry, "nl_points"):
+                    try:
+                        soma_frame = int(entry.nl_points)
+                    except Exception:
+                        soma_frame = None
 
         if not valid_ei:
             self.clear()
             return
 
         ch_pos = self._resolve_channel_positions()
-        ei_maps, final_ids, final_ei = [], [], []
+        ei_maps, final_ids, final_ei, final_err = [], [], [], []
 
-        for ei_data, orig_id in zip(valid_ei, valid_orig):
+        for ei_data, orig_id, err_data in zip(valid_ei, valid_orig, valid_err):
             # use cached ei_map when available
             cached = self._ei_map_cache.get(orig_id)
             if cached is not None:
@@ -503,6 +541,7 @@ class EIPanel(QWidget):
                 ei_maps.append(ei_map)
                 final_ids.append(orig_id)
                 final_ei.append(ei_data)
+                final_err.append(err_data)
 
         if not ei_maps:
             self.clear()
@@ -511,8 +550,16 @@ class EIPanel(QWidget):
         self.current_ei_map_list = ei_maps
         self.current_cluster_ids = final_ids
         self.current_ei_data = final_ei
+        self.current_ei_error = final_err
         self.n_frames = final_ei[0].shape[1]
         self.overlay_index = 0
+
+        # Resolve soma frame: prefer Vision nl_points; else fall back to the
+        # global trough (deepest negative sample across all channels), which
+        # is where the soma spike sits for a baseline-referenced EI.
+        if soma_frame is None or not (0 <= soma_frame < self.n_frames):
+            soma_frame = int(np.argmin(final_ei[0].min(axis=0)))
+        self._soma_frame = soma_frame
 
         top_ch = self._get_top_electrodes(
             final_ei[0], n_interval=2, n_markers=3, b_sort=True
@@ -521,7 +568,11 @@ class EIPanel(QWidget):
 
         self._setup_anim_controls()
         self._update_overlay_nav()
-        self._draw_heatmap_frame(self._anim_frame)
+        # Default the heatmap to MAX-PROJECTION (frame=-1): every electrode the
+        # cell ever drives — soma + full axon path — shown at once, so the
+        # whole footprint is visible on load. Pressing Play still animates
+        # through real time frames (starting at the soma spike).
+        self._draw_heatmap_frame(-1)
         self._draw_temporal(final_ei, final_ids, top_ch)
 
         # lazy 3-D: only render if that view is currently active
@@ -565,8 +616,13 @@ class EIPanel(QWidget):
         ei_data = lw["median_ei"]
         ch_pos = self.main_window.data_manager.channel_positions
         self.current_ei_data = [ei_data]
+        self.current_ei_error = [None]
         self.current_cluster_ids = [primary_id]
         self.n_frames = ei_data.shape[1]
+        # KS EIs use window=(-20, 60): trough ~sample 20. Derive robustly
+        # from the global minimum so it tracks whatever alignment is present.
+        self._soma_frame = int(np.argmin(ei_data.min(axis=0)))
+        self.current_ei_map_list = None
 
         top_ch = self._get_top_electrodes(
             ei_data, n_interval=2, n_markers=3, b_sort=True
@@ -584,41 +640,83 @@ class EIPanel(QWidget):
     # Internal: drawing
     # -----------------------------------------------------------------------
 
+    # cached electrode pitch so we don't recompute per frame during animation
+    _electrode_pitch: float | None = None
+
+    def _get_electrode_pitch(self, ch_pos: np.ndarray) -> float:
+        """Median nearest-neighbour spacing of the array (µm). Cached."""
+        if self._electrode_pitch is not None:
+            return self._electrode_pitch
+        pitch = 30.0
+        try:
+            if len(ch_pos) >= 2:
+                tree = cKDTree(ch_pos)
+                d, _ = tree.query(ch_pos, k=2)
+                nn = d[:, 1]
+                nn = nn[np.isfinite(nn) & (nn > 0)]
+                if nn.size:
+                    pitch = float(np.median(nn))
+        except Exception:
+            pass
+        self._electrode_pitch = pitch
+        return pitch
+
     def _draw_heatmap_frame(self, frame: int):
         """
-        Render one time frame of the EI on the spatial canvas (imshow).
-        Frame -1 means max-projection (used for static heatmap).
+        Render one time frame of the EI as per-electrode "bubbles": each
+        electrode is a soft, semi-transparent disc whose *radius* scales with
+        signal amplitude and whose *colour* encodes polarity (live frame) or
+        energy (max-projection). Unlike the old griddata→imshow rectangle,
+        the bubbles leave the gaps between electrodes empty, so the photo
+        underlay reads through and true array geometry (hex pitch) is visible.
+
+        Frame < 0 → max-projection (per-channel peak |amplitude|, sequential
+        colormap). Frame ≥ 0 → signed voltage at that time sample (diverging
+        colormap, size ∝ |voltage|).
         """
-        if not self.current_ei_data or not self.current_ei_map_list:
+        if not self.current_ei_data:
             return
 
         colors = self.main_window.get_current_colors()
         ch_pos = self._resolve_channel_positions()
+        if ch_pos is None or len(ch_pos) == 0:
+            return
         ei_data = self.current_ei_data[self.overlay_index]
         cluster_id = self.current_cluster_ids[self.overlay_index]
+        n_ch = min(ei_data.shape[0], len(ch_pos))
+        pos = ch_pos[:n_ch]
+
+        pitch = self._get_electrode_pitch(ch_pos)
 
         if frame < 0 or frame >= self.n_frames:
-            # static max-energy map
-            img = self.current_ei_map_list[self.overlay_index]
+            # per-channel peak amplitude (always positive) → energy view
+            values = np.max(np.abs(ei_data[:n_ch]), axis=1)
+            signed = False
             title = f"EI — cluster {cluster_id}"
         else:
-            # live voltage frame interpolated to the same grid as ei_map
-            xrange = (ch_pos[:, 0].min(), ch_pos[:, 0].max())
-            yrange = (ch_pos[:, 1].min(), ch_pos[:, 1].max())
-            y_dim = 30
-            x_dim = max(
-                1, int((xrange[1] - xrange[0]) / max(yrange[1] - yrange[0], 1) * y_dim)
-            )
-            gx = np.linspace(xrange[0], xrange[1], x_dim)
-            gy = np.linspace(yrange[0], yrange[1], y_dim)
-            mgx, mgy = np.meshgrid(gx, gy)
-            mgx, mgy = mgx.T, mgy.T
-            voltage_frame = ei_data[:, frame]
-            img = griddata(
-                ch_pos, voltage_frame, (mgx, mgy), method="linear", fill_value=0.0
-            ).T
+            values = ei_data[:n_ch, frame].astype(float)
+            signed = True
             t_ms = frame / self.main_window.data_manager.sampling_rate * 1000.0
             title = f"EI — cluster {cluster_id}  |  t = {t_ms:.2f} ms"
+
+        # amplitude used for bubble size — always magnitude
+        mag = np.abs(values).astype(float)
+
+        # GLOBAL spike scale: fixed across all frames so the animation is
+        # honest — a baseline (pre-spike) frame renders tiny/quiet and the
+        # soma-trough frame renders large/saturated. Using a per-frame
+        # percentile (the old bug) renormalised every frame to its own noise,
+        # so baseline looked identical to the spike. Scale is the 99.5th pct
+        # of |amplitude| at the soma frame, cached per selection.
+        ceil = getattr(self, "_global_ei_scale", None)
+        if ceil is None:
+            sf = int(np.clip(self._soma_frame, 0, self.n_frames - 1))
+            soma_mag = np.abs(ei_data[:n_ch, sf])
+            ceil = float(np.percentile(soma_mag, 99.5)) if soma_mag.size else 1.0
+            if ceil <= 0:
+                ceil = float(np.max(np.abs(ei_data[:n_ch]))) or 1.0
+            self._global_ei_scale = ceil
+        norm_mag = np.clip(mag / ceil, 0.0, 1.0)
 
         self.spatial_canvas.fig.clear()
         ax = self.spatial_canvas.fig.add_subplot(111)
@@ -635,52 +733,135 @@ class EIPanel(QWidget):
             ax.imshow(
                 self._overlay_image_rgba,
                 aspect="auto",
-                origin="upper",  # pixel row-0 maps to top of extent rect
-                extent=(xl, xr_img, yb, yt),  # (left, right, bottom, top) in microns
+                origin="upper",
+                extent=(xl, xr_img, yb, yt),
                 alpha=self._overlay_alpha,
                 interpolation="bilinear",
                 zorder=0,
             )
         # ── end photo underlay ─────────────────────────────────────────────
 
-        xr = (ch_pos[:, 0].min(), ch_pos[:, 0].max())
-        yr = (ch_pos[:, 1].min(), ch_pos[:, 1].max())
-        cmap = "bwr" if frame >= 0 else "hot"
-        ax.imshow(
-            img,
-            cmap=cmap,
-            aspect="auto",
-            origin="lower",
-            extent=(xr[0], xr[1], yr[0], yr[1]),
-            alpha=0.72 if self._overlay_enabled else 1.0,
-            zorder=1,
+        # colour mapping
+        if signed:
+            vmax = ceil
+            cnorm = Normalize(vmin=-vmax, vmax=vmax)
+            cmap = _get_cmap("RdBu_r")
+            face_rgba = cmap(cnorm(values))
+        else:
+            cnorm = Normalize(vmin=0.0, vmax=ceil)
+            cmap = _get_cmap("inferno")
+            face_rgba = cmap(cnorm(mag))
+
+        # Noise gate: below a fraction of the spike scale a channel is
+        # baseline noise, not signal. Clamp those to zero size so the
+        # animation isn't a field of jittering mid-size bubbles.
+        #
+        # In MAX-PROJECTION mode (frame < 0) use the SAME rule as the waveform
+        # view — per-channel peak over all time vs the global peak, at
+        # MAXPROJ_FRAC=0.06 — so both views show the identical footprint
+        # including the low-amplitude axon. In animated single-frame mode keep
+        # the soma-frame-scaled gate (a channel quiet *this frame* should be
+        # small, which is what makes propagation visible).
+        if frame < 0 or frame >= self.n_frames:
+            gmax_all = float(np.max(np.abs(ei_data[:n_ch]))) or 1.0
+            keep = mag > (0.06 * gmax_all)
+            gated = np.where(keep, norm_mag, 0.0)
+        else:
+            noise_gate = 0.12  # fraction of soma-frame spike scale
+            gated = np.where(norm_mag < noise_gate, 0.0, norm_mag)
+
+        # bubble radius in data (µm): silent electrodes are tiny dots, strong
+        # ones grow to ~0.42× pitch (disc ~0.84× pitch across) — readable but
+        # leaving clear gaps so the photo and neighbours stay visible.
+        r_min = pitch * 0.04
+        r_max = pitch * 0.42
+        radii = r_min + (r_max - r_min) * np.sqrt(gated)
+
+        from matplotlib.collections import EllipseCollection
+
+        # alpha: even the strongest bubble stays semi-transparent so the photo
+        # underlay always reads through; faint channels nearly vanish.
+        alphas = 0.10 + 0.42 * gated
+        face_rgba = np.array(face_rgba)
+        face_rgba[:, 3] = alphas
+
+        widths = radii * 2.0
+        heights = radii * 2.0
+
+        # soft glow underlay: larger, very transparent copy for a "hot" feel
+        glow = EllipseCollection(
+            widths=widths * 1.6,
+            heights=heights * 1.6,
+            angles=np.zeros(n_ch),
+            units="xy",
+            offsets=pos,
+            offset_transform=ax.transData,
+            facecolors=np.column_stack(
+                [face_rgba[:, :3], alphas * 0.25]
+            ),
+            edgecolors="none",
+            zorder=1.5,
         )
+        ax.add_collection(glow)
+
+        bubbles = EllipseCollection(
+            widths=widths,
+            heights=heights,
+            angles=np.zeros(n_ch),
+            units="xy",
+            offsets=pos,
+            offset_transform=ax.transData,
+            facecolors=face_rgba,
+            edgecolors=to_rgba(colors["bg_panel"], 0.35),
+            linewidths=0.4,
+            zorder=2,
+        )
+        ax.add_collection(bubbles)
+
+        # faint reference dots for every electrode so the array is legible
+        # even where the cell is silent
+        ax.scatter(
+            pos[:, 0], pos[:, 1],
+            s=1.5, color=to_rgba(colors["text_secondary"], 0.25),
+            zorder=1.6, rasterized=True,
+        )
+
+        pad = pitch * 1.5
+        ax.set_xlim(pos[:, 0].min() - pad, pos[:, 0].max() + pad)
+        ax.set_ylim(pos[:, 1].min() - pad, pos[:, 1].max() + pad)
+        ax.set_aspect("equal", adjustable="box")
         ax.axis("off")
 
-        # top-channel markers
+        # top-channel markers (ring + rank label)
         if self.current_channels is not None:
             for j, ch in enumerate(self.current_channels):
+                if ch >= len(ch_pos):
+                    continue
                 x, y = ch_pos[ch]
-                ax.plot(
-                    x,
-                    y,
-                    "o",
-                    markersize=4,
-                    markerfacecolor="none",
-                    markeredgecolor="cyan",
-                    markeredgewidth=1.5,
-                    zorder=2,
+                ax.add_patch(
+                    __import__("matplotlib.patches", fromlist=["Circle"]).Circle(
+                        (x, y), pitch * 0.7, fill=False,
+                        edgecolor="cyan", linewidth=1.4, zorder=3, alpha=0.9,
+                    )
                 )
                 ax.text(
-                    x,
-                    y,
-                    str(j),
-                    color="cyan",
-                    fontsize=6,
-                    ha="center",
-                    va="center",
-                    zorder=2,
+                    x, y + pitch * 0.9, str(j),
+                    color="cyan", fontsize=7, ha="center", va="bottom",
+                    zorder=3, fontweight="bold",
                 )
+
+        # colourbar for interpretability
+        sm = mpl_cm.ScalarMappable(norm=cnorm, cmap=cmap)
+        sm.set_array([])
+        cbar = self.spatial_canvas.fig.colorbar(
+            sm, ax=ax, fraction=0.025, pad=0.01
+        )
+        cbar.set_label(
+            "Voltage (µV)" if signed else "Peak |amplitude| (µV)",
+            color=colors["text_secondary"], fontsize=8,
+        )
+        cbar.ax.tick_params(colors=colors["text_secondary"], labelsize=7)
+        cbar.outline.set_edgecolor(colors["border_subtle"])
 
         self.spatial_canvas.fig.suptitle(
             title, color=colors["text_primary"], fontsize=13
@@ -721,14 +902,19 @@ class EIPanel(QWidget):
     # -----------------------------------------------------------------------
 
     def _setup_anim_controls(self):
-        """Enable slider based on current n_frames."""
+        """Enable slider based on current n_frames. Start on the soma frame
+        (the spike), not sample 0 — sample 0 is pre-spike baseline where the
+        EI is essentially flat/noise, which is why a fresh selection used to
+        show an empty map."""
         if self.n_frames > 0:
             self.frame_slider.setMaximum(self.n_frames - 1)
-            self.frame_slider.setValue(0)
+            start = int(np.clip(self._soma_frame, 0, self.n_frames - 1))
+            self.frame_slider.setValue(start)
             self.frame_slider.setEnabled(True)
+            self._anim_frame = start
         else:
             self.frame_slider.setEnabled(False)
-        self._anim_frame = 0
+            self._anim_frame = 0
         self.play_btn.setText("▶")
 
     def _toggle_animation(self):
@@ -750,7 +936,26 @@ class EIPanel(QWidget):
         self.play_btn.setText("▶")
 
     def _anim_step(self):
-        self._anim_frame = (self._anim_frame + 1) % self.n_frames
+        # Sweep a window bracketing the soma spike rather than the whole
+        # 6-7 ms trace — most of which is flat pre/post-spike baseline. The
+        # window runs from a few samples before the soma trough (to show the
+        # wavefront initiate) through the axon-propagation tail after it.
+        sr = (
+            self.main_window.data_manager.sampling_rate
+            if self.main_window.data_manager
+            else 20000
+        )
+        pre = max(1, int(round(0.4e-3 * sr)))   # ~0.4 ms before trough
+        post = max(2, int(round(2.5e-3 * sr)))  # ~2.5 ms after (axon tail)
+        lo = int(np.clip(self._soma_frame - pre, 0, self.n_frames - 1))
+        hi = int(np.clip(self._soma_frame + post, 0, self.n_frames - 1))
+        if hi <= lo:
+            lo, hi = 0, self.n_frames - 1
+
+        nxt = self._anim_frame + 1
+        if nxt > hi or nxt < lo:
+            nxt = lo
+        self._anim_frame = nxt
         # blockSignals so we don't re-trigger _on_frame_slider redundantly
         self.frame_slider.blockSignals(True)
         self.frame_slider.setValue(self._anim_frame)
@@ -767,6 +972,20 @@ class EIPanel(QWidget):
         t_ms = value / sr * 1000.0
         self.frame_label.setText(f"t: {t_ms:.2f} ms")
         self._render_anim_frame()
+
+    def _redraw_current_view(self):
+        """Redraw whichever view is active. Use this instead of calling
+        _draw_heatmap_frame directly from shared handlers (photo toggle,
+        alpha, canvas click, animation) — otherwise those handlers force the
+        canvas back to Heatmap even when the user is in Waveform view."""
+        if self.current_view == "Waveform":
+            self._draw_waveform_frame()
+        elif self.current_view == "3D":
+            if self.current_ei_data is not None:
+                ch_pos = self._resolve_channel_positions()
+                self.mountain_widget.plot_ei_3d(self.current_ei_data[0], ch_pos)
+        else:
+            self._draw_heatmap_frame(self._anim_frame)
 
     def _render_anim_frame(self):
         if self.current_view in ("Heatmap", "Waveform"):
@@ -820,7 +1039,7 @@ class EIPanel(QWidget):
             current.remove(nearest)
         new_channels = np.array([nearest] + current[:2], dtype=int)
         self.current_channels = new_channels
-        self._draw_heatmap_frame(self._anim_frame)
+        self._redraw_current_view()
         self._draw_temporal(
             self.current_ei_data, self.current_cluster_ids, new_channels
         )
@@ -859,39 +1078,33 @@ class EIPanel(QWidget):
 
     def _draw_waveform_frame(self):
         """
-        Paint EI waveforms for the currently selected cluster(s) directly
-        onto spatial_canvas in micron space, co-registered with the photo
-        underlay.  Uses plot_ei_waveforms from analysis_core — the same
-        primitive as CellTracerDialog.
+        Paint the full EI waveform footprint for the selected cluster(s) in
+        micron space, co-registered with the photo underlay.
 
-        Called when:
-          • User switches to Waveform view (via _on_view_changed)
-          • A new cluster loads while Waveform is active (_load_vision_ei,
-            _load_ks_ei)
-        Animation scrubbing stays on _draw_heatmap_frame (the interpolated
-        voltage grid) — switching back to Heatmap to animate is intentional
-        since per-frame waveform re-renders of 519 traces would be too slow.
+        Rendered as vector LineCollections (never rasterized) so traces stay
+        crisp at any zoom. Each electrode's trace is drawn in a small box
+        sized to the array pitch; per-trace brightness scales with that
+        channel's own amplitude so the propagating axon/soma signal reads as
+        a bright "comet" against dim, near-silent electrodes. The dominant
+        (reference) channel is highlighted thicker and fully opaque. A single
+        global normalization keeps relative amplitudes honest across the whole
+        array, and a scale bar reports the box size in µV/µm.
         """
         if not self.current_ei_data or not self.current_cluster_ids:
             return
-
-        from ...analysis.analysis_core import plot_ei_waveforms
 
         ch_pos = self._resolve_channel_positions()
         if ch_pos is None or len(ch_pos) == 0:
             return
 
         colors_ui = self.main_window.get_current_colors()
-        cluster_colors = ["#00e5ff", "#ff9800", "#69ff47", "#ff4081"]
 
-        # Full redraw of the canvas so photo underlay and axis limits are set
-        # correctly, then paint waveforms on top without clearing again.
         self.spatial_canvas.fig.clear()
         ax = self.spatial_canvas.fig.add_subplot(111)
         ax.set_facecolor(colors_ui["bg_panel"])
         self.spatial_canvas.fig.patch.set_facecolor(colors_ui["bg_panel"])
 
-        # ── photo underlay (same logic as _draw_heatmap_frame) ─────────────
+        # ── photo underlay ──────────────────────────────────────────────────
         if (
             self._overlay_enabled
             and self._overlay_image_rgba is not None
@@ -908,38 +1121,231 @@ class EIPanel(QWidget):
                 zorder=0,
             )
 
-        # ── set axis limits from electrode positions ────────────────────────
-        pad = 50.0
+        pitch = self._get_electrode_pitch(ch_pos)
+        # box geometry in µm. Box spans ~1.6× pitch so waveform shape is
+        # legible; the soma spike is allowed to overflow its box (that reads
+        # as intensity and is standard for EI footprints). Horizontal (time)
+        # axis kept a bit narrower than vertical so traces don't run into
+        # left/right neighbours.
+        box_w = pitch * 1.15
+        box_h = pitch * 1.85
+
+        pad = pitch * 1.5
         ax.set_xlim(ch_pos[:, 0].min() - pad, ch_pos[:, 0].max() + pad)
         ax.set_ylim(ch_pos[:, 1].min() - pad, ch_pos[:, 1].max() + pad)
+        ax.set_aspect("equal", adjustable="box")
         ax.axis("off")
 
-        # ── electrode scatter (dim, for spatial reference) ──────────────────
+        # ── dim electrode grid for spatial reference ────────────────────────
         ax.scatter(
-            ch_pos[:, 0], ch_pos[:, 1], s=2, c="#444444", zorder=2, rasterized=True
+            ch_pos[:, 0], ch_pos[:, 1],
+            s=3, color=to_rgba(colors_ui["text_secondary"], 0.30),
+            zorder=1.5, rasterized=True,
         )
 
-        # ── waveforms for each loaded cluster ───────────────────────────────
         self._waveform_artists = []
+        ref_ch = (
+            int(self.current_channels[0])
+            if self.current_channels is not None and len(self.current_channels)
+            else None
+        )
+        sr = (
+            self.main_window.data_manager.sampling_rate
+            if self.main_window.data_manager else 20000.0
+        )
+        multi = len(self.current_ei_data) > 1
+        # latency colormap: soma/early = magenta→blue, later (axon) = cyan→
+        # green→yellow, so a propagating axon reads as a colour sweep away
+        # from the soma. Only used in single-cluster mode; multi-cluster uses
+        # one solid colour per cluster to keep them distinguishable.
+        lat_cmap = _get_cmap("plasma")
+        cluster_solid = ["#00e5ff", "#ff9800", "#69ff47", "#ff4081"]
+
         for i, (ei_arr, cid) in enumerate(
             zip(self.current_ei_data, self.current_cluster_ids)
         ):
-            color = cluster_colors[i % len(cluster_colors)]
             n_ch = min(ei_arr.shape[0], len(ch_pos))
-            artists = plot_ei_waveforms(
-                ei_arr[:n_ch],
-                ch_pos[:n_ch],
-                ref_channel=(
-                    int(self.current_channels[0])
-                    if self.current_channels is not None
-                    else None
-                ),
-                ax=ax,
-                colors=color,
-                alpha=0.80,
-                linewidth=0.6,
+            ei = ei_arr[:n_ch].astype(float)
+            pos = ch_pos[:n_ch]
+            T = ei.shape[1]
+            soma_idx = int(np.clip(self._soma_frame, 0, T - 1))
+
+            # The EI is a spike-triggered average — already smooth and
+            # baseline-referenced. We plot ei as-is; the only question is which
+            # channels carry real signal (to draw) vs. baseline (to draw
+            # faint).
+            gmax = float(np.max(np.abs(ei)))
+            if gmax <= 0:
+                continue
+            p2p = ei.max(axis=1) - ei.min(axis=1)
+            p2p_max = float(p2p.max()) + 1e-12
+
+            # SIGNAL GATE = the heatmap's MAX-PROJECTION rule, identical here so
+            # the two views show exactly the same footprint: a channel is shown
+            # iff its peak |amplitude| across ALL time exceeds a fraction of the
+            # global peak. Max-projection (not a single-frame window) is what
+            # includes the axon — every electrode the cell ever drives — while
+            # excluding pure-noise electrodes. This both fixes "waveform shows
+            # fewer channels than heatmap" AND "waveform too noisy / too many":
+            # one threshold governs both views.
+            maxproj = np.max(np.abs(ei), axis=1)          # per-channel, all time
+            MAXPROJ_FRAC = 0.06                            # matches heatmap gate
+            signal_mask = maxproj > (MAXPROJ_FRAC * gmax)
+
+            # AMPLITUDE SCALING — mild compression to lift dendrites. gamma=0.7
+            # maps a 10%-of-soma dendrite to ~20% box height (visible) with
+            # minimal distortion of the (already clean) trace shape. Signal
+            # channels only; baseline channels draw flat.
+            gamma = 0.7
+            compressed = np.sign(ei) * np.power(np.abs(ei) / gmax, gamma)
+            compressed = compressed * signal_mask[:, None]
+            y_scaled = compressed * (box_h * 0.55)
+
+            active = signal_mask
+
+            # per-channel trough latency relative to the soma frame → ms
+            trough_idx = np.argmin(ei, axis=1)
+            latency_ms = (trough_idx - soma_idx) / sr * 1000.0
+            # colour scale spans the observed propagation delays
+            if active.any():
+                lo_l = float(np.percentile(latency_ms[active], 2))
+                hi_l = float(np.percentile(latency_ms[active], 98))
+            else:
+                lo_l, hi_l = -0.5, 1.5
+            if hi_l - lo_l < 1e-3:
+                lo_l, hi_l = lo_l - 0.5, hi_l + 0.5
+            lat_norm = Normalize(vmin=lo_l, vmax=hi_l)
+
+            # time axis in µm, centred on each electrode
+            t = np.linspace(-0.5, 0.5, T) * box_w
+
+            segments = []
+            seg_colors = []
+            seg_lws = []
+            ref_seg = None
+            for c in range(n_ch):
+                xs = t + pos[c, 0]
+                ys = y_scaled[c] + pos[c, 1]
+                seg = np.column_stack([xs, ys])
+                if ref_ch is not None and c == ref_ch:
+                    ref_seg = seg
+                    continue
+                segments.append(seg)
+
+                amp_w = float(p2p[c] / p2p_max)  # 0..1 relative amplitude
+                vis_w = float(np.sqrt(amp_w))
+                if not active[c]:
+                    # silent: flat faint baseline reference, thin and dim so
+                    # the array stays legible without adding a noise carpet
+                    rgba = list(to_rgba(colors_ui["text_secondary"]))
+                    rgba[3] = 0.18
+                    seg_colors.append(rgba)
+                    seg_lws.append(0.4)
+                    continue
+                if multi:
+                    rgba = list(to_rgba(cluster_solid[i % len(cluster_solid)]))
+                else:
+                    rgba = list(lat_cmap(lat_norm(latency_ms[c])))
+                # signal channels: opaque and thick enough to read clearly.
+                rgba[3] = float(np.clip(0.55 + 0.45 * vis_w, 0.55, 1.0))
+                seg_colors.append(rgba)
+                seg_lws.append(0.8 + 1.4 * vis_w)
+
+            if segments:
+                lc = LineCollection(
+                    segments, colors=seg_colors, linewidths=seg_lws,
+                    zorder=6, capstyle="round",
+                )
+                lc.set_antialiased(True)
+                ax.add_collection(lc)
+                self._waveform_artists.append(lc)
+
+            # reference / soma channel drawn last, bold and bright, on top
+            if ref_seg is not None:
+                ref_color = (
+                    cluster_solid[i % len(cluster_solid)] if multi else "#ffffff"
+                )
+                (line,) = ax.plot(
+                    ref_seg[:, 0], ref_seg[:, 1],
+                    color=ref_color, linewidth=2.2, alpha=1.0, zorder=8,
+                    solid_capstyle="round",
+                )
+                self._waveform_artists.append(line)
+                from matplotlib.patches import Circle
+                ax.add_patch(
+                    Circle(
+                        (pos[ref_ch, 0], pos[ref_ch, 1]), box_w * 0.5,
+                        fill=False, edgecolor=ref_color,
+                        linewidth=1.2, alpha=0.8, zorder=7,
+                    )
+                )
+
+            # latency colourbar (single-cluster only — it's what reveals the
+            # axon propagation direction/speed)
+            if not multi and active.any():
+                sm = mpl_cm.ScalarMappable(norm=lat_norm, cmap=lat_cmap)
+                sm.set_array([])
+                cbar = self.spatial_canvas.fig.colorbar(
+                    sm, ax=ax, fraction=0.025, pad=0.01
+                )
+                cbar.set_label(
+                    "Trough latency re: soma (ms)",
+                    color=colors_ui["text_secondary"], fontsize=8,
+                )
+                cbar.ax.tick_params(colors=colors_ui["text_secondary"], labelsize=7)
+                cbar.outline.set_edgecolor(colors_ui["border_subtle"])
+
+        # ── scale bars: one spatial (µm), one amplitude (µV) ────────────────
+        try:
+            x0 = ch_pos[:, 0].min()
+            y0 = ch_pos[:, 1].min() - pitch * 0.9
+            # spatial reference = one electrode pitch
+            ax.plot(
+                [x0, x0 + pitch], [y0, y0],
+                color=colors_ui["text_secondary"], linewidth=1.5, zorder=9,
             )
-            self._waveform_artists.extend(artists)
+            ax.text(
+                x0 + pitch / 2, y0 - pitch * 0.25,
+                f"{pitch:.0f} µm",
+                color=colors_ui["text_secondary"], fontsize=7,
+                ha="center", va="top", zorder=9,
+            )
+            # amplitude reference. Because the vertical scale is compressed
+            # (gamma=0.55), the full box height corresponds to the soma peak
+            # while the half-height mark corresponds to gmax*0.5**(1/gamma).
+            # Label both so the compression is legible rather than misleading.
+            gmax0 = float(np.max(np.abs(self.current_ei_data[0])))
+            half_uv = gmax0 * (0.5 ** (1.0 / 0.7))
+            x1 = x0 + pitch * 2.5
+            ax.plot(
+                [x1, x1], [y0, y0 + box_h], color=colors_ui["text_secondary"],
+                linewidth=1.5, zorder=9,
+            )
+            ax.plot(
+                [x1 - pitch * 0.06, x1 + pitch * 0.06],
+                [y0 + box_h / 2, y0 + box_h / 2],
+                color=colors_ui["text_secondary"], linewidth=1.0, zorder=9,
+            )
+            ax.text(
+                x1 + pitch * 0.15, y0 + box_h,
+                f"{gmax0:.0f} µV",
+                color=colors_ui["text_secondary"], fontsize=7,
+                ha="left", va="center", zorder=9,
+            )
+            ax.text(
+                x1 + pitch * 0.15, y0 + box_h / 2,
+                f"{half_uv:.0f} µV",
+                color=colors_ui["text_secondary"], fontsize=6.5,
+                ha="left", va="center", zorder=9, alpha=0.8,
+            )
+            ax.text(
+                x1 - pitch * 0.15, y0 + box_h * 1.12,
+                "√-compressed",
+                color=colors_ui["text_secondary"], fontsize=6, alpha=0.7,
+                ha="left", va="center", zorder=9, style="italic",
+            )
+        except Exception:
+            pass
 
         cluster_str = ", ".join(str(c) for c in self.current_cluster_ids)
         self.spatial_canvas.fig.suptitle(
@@ -1081,12 +1487,12 @@ class EIPanel(QWidget):
         self.overlay_alpha_slider.setEnabled(checked)
 
         if self.current_ei_data is not None:
-            self._draw_heatmap_frame(self._anim_frame)
+            self._redraw_current_view()
 
     def _on_overlay_alpha_changed(self, value: int) -> None:
         self._overlay_alpha = value / 100.0
         if self._overlay_enabled and self.current_ei_data is not None:
-            self._draw_heatmap_frame(self._anim_frame)
+            self._redraw_current_view()
 
     def _try_autoload_transform(self) -> None:
         dm = self.main_window.data_manager

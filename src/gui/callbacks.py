@@ -181,6 +181,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.save_action.setEnabled(True)
     main_window.save_classification_action.setEnabled(True)
     main_window.calibrate_array_action.setEnabled(True)
+    if hasattr(main_window, 'map_reference_action'):
+        main_window.map_reference_action.setEnabled(True)
 
     # 4. Handle Vision specific UI updates
     if main_window.data_manager.vision_stas:
@@ -193,6 +195,14 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         and main_window.data_manager.vision_available
     ):
         main_window.similarity_panel.on_vision_loaded()
+
+    # Re-gate the UMAP feature checkboxes now that a DataManager exists. The
+    # panel was constructed back in MainWindow.__init__ when data_manager was
+    # still None, so its chirp row came up disabled regardless of the dataset.
+    # load_chirp_data() runs inside KilosortLoadWorker.run(), so chirp_available
+    # is final by the time this slot fires.
+    if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.refresh_feature_availability()
 
     # 5. Array Transform check
     transform_path = (
@@ -281,6 +291,8 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     main_window.load_raw_action.setEnabled(True)
     main_window.save_action.setEnabled(True)
     main_window.save_classification_action.setEnabled(True)
+    if hasattr(main_window, 'map_reference_action'):
+        main_window.map_reference_action.setEnabled(True)
 
     # --- Show STA panel if data is available ---
     if main_window.data_manager.vision_stas:
@@ -730,6 +742,8 @@ def handle_refinement_results(
     populate_tree_view(main_window)
     main_window.refine_button.setEnabled(True)
     main_window.save_action.setEnabled(True)
+    if hasattr(main_window, 'map_reference_action'):
+        main_window.map_reference_action.setEnabled(True)
     main_window.setWindowTitle("*RGC Viewer (unsaved changes)")
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
@@ -1599,3 +1613,201 @@ def load_raw_data(main_window):
         cluster_id = main_window._get_selected_cluster_id()
         if cluster_id is not None:
             main_window.raw_panel.load_data(cluster_id)
+
+
+def map_reference_run(main_window):
+    """
+    Menu action: Map Reference Run.
+
+    Opens a directory picker for the reference Vision analysis directory,
+    runs EI-based cross-run matching, shows a summary dialog, and installs
+    the ReferenceBridge on the DataManager.
+    """
+    from ..analysis.cross_run_matcher import (
+        CrossRunMatcher,
+        MatchingReport,
+        get_mapping_path,
+    )
+    from ..analysis.reference_bridge import ReferenceBridge
+
+    dm = main_window.data_manager
+    if dm is None:
+        QMessageBox.warning(
+            main_window, "No Data", "Load a dataset first."
+        )
+        return
+
+    # --- Check for existing EIs in current run ---
+    if dm.vision_eis is None:
+        QMessageBox.warning(
+            main_window,
+            "No EI Data",
+            "The current run has no EI data loaded.\n"
+            "Load Vision files for the current run first, or ensure the .ei file exists.",
+        )
+        return
+
+    # --- Pick reference directory ---
+    ref_dir = QFileDialog.getExistingDirectory(
+        main_window, "Select Reference Run (Vision Analysis Directory)"
+    )
+    if not ref_dir:
+        return
+
+    ref_path = Path(ref_dir)
+
+    # Detect dataset name (Vision convention: files named <dataset_name>.ei, etc.)
+    ei_files = list(ref_path.glob("*.ei"))
+    if not ei_files:
+        QMessageBox.warning(
+            main_window,
+            "No EI File",
+            f"No .ei file found in:\n{ref_dir}\n\n"
+            "Select a directory containing Vision analysis output.",
+        )
+        return
+
+    ref_dataset = ei_files[0].stem
+
+    # --- Check for existing mapping JSON ---
+    current_run_path = str(dm.kilosort_dir) if hasattr(dm, 'kilosort_dir') else str(ref_path)
+    mapping_path = get_mapping_path(current_run_path, ref_dir)
+
+    report = None
+    if mapping_path.exists():
+        reply = QMessageBox.question(
+            main_window,
+            "Existing Mapping Found",
+            f"A saved mapping to this reference run already exists:\n"
+            f"{mapping_path.name}\n\n"
+            "Use the existing mapping, or re-run matching?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Cancel:
+            return
+        if reply == QMessageBox.Yes:
+            try:
+                report = MatchingReport.load(mapping_path)
+                main_window.status_bar.showMessage(
+                    f"Loaded existing mapping: {report.summary()}", 5000
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    main_window, "Load Failed",
+                    f"Could not load saved mapping:\n{e}\n\nRe-running matching.",
+                )
+                report = None
+
+    # --- Run matching if needed ---
+    if report is None:
+        main_window.status_bar.showMessage("Running cross-run EI matching...")
+        QApplication.processEvents()
+
+        try:
+            # Detect current dataset name
+            current_dataset = None
+            if hasattr(dm, 'vision_dataset_name'):
+                current_dataset = dm.vision_dataset_name
+            else:
+                # Try to detect from existing vision dir
+                current_vision_dir = getattr(dm, 'vision_dir', None)
+                if current_vision_dir:
+                    current_ei_files = list(Path(current_vision_dir).glob("*.ei"))
+                    if current_ei_files:
+                        current_dataset = current_ei_files[0].stem
+
+            # Build matcher from already-loaded EIs + reference directory
+            from ..analysis.vision_integration import load_ei_data
+            ref_ei_bundle = load_ei_data(ref_path, ref_dataset)
+            ref_eis = ref_ei_bundle.get("ei_data") if ref_ei_bundle else None
+
+            if ref_eis is None:
+                QMessageBox.warning(
+                    main_window, "EI Load Failed",
+                    "Could not load EI data from the reference run.",
+                )
+                return
+
+            matcher = CrossRunMatcher(
+                current_eis=dm.vision_eis,
+                reference_eis=ref_eis,
+                current_run_path=current_run_path,
+                reference_run_path=ref_dir,
+            )
+            report = matcher.run()
+
+            # Save mapping JSON
+            try:
+                report.save(mapping_path)
+            except Exception as e:
+                main_window.status_bar.showMessage(
+                    f"Warning: could not save mapping JSON: {e}", 5000
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                main_window, "Matching Failed",
+                f"Cross-run matching failed:\n{e}",
+            )
+            return
+
+    # --- Show summary dialog ---
+    summary = report.summary()
+    n_high = len(report.high_confidence)
+    n_marginal = len(report.marginal)
+    n_unmatched = len(report.unmatched)
+    n_conflicts = len(report.conflicts)
+
+    detail_lines = [summary, ""]
+    if n_marginal > 0:
+        detail_lines.append(f"Marginal matches (review recommended):")
+        for m in report.marginal[:20]:  # show first 20
+            detail_lines.append(
+                f"  {m.current_id} → {m.reference_id}  "
+                f"(corr={m.confidence:.3f}, next={m.next_best_corr:.3f})"
+            )
+        if n_marginal > 20:
+            detail_lines.append(f"  ... and {n_marginal - 20} more")
+
+    msg = QMessageBox(main_window)
+    msg.setWindowTitle("Cross-Run Matching Results")
+    msg.setText(summary)
+    msg.setDetailedText("\n".join(detail_lines))
+    msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+    msg.setDefaultButton(QMessageBox.Ok)
+    msg.button(QMessageBox.Ok).setText("Accept && Load RFs")
+    result = msg.exec_()
+
+    if result != QMessageBox.Ok:
+        return
+
+    # --- Install ReferenceBridge ---
+    main_window.status_bar.showMessage("Loading reference STAs and RF params...")
+    QApplication.processEvents()
+
+    try:
+        bridge = ReferenceBridge.from_matching_report(
+            report, ref_path, ref_dataset,
+            load_stas=True, load_params=True,
+        )
+        dm.reference_bridge = bridge
+        main_window.status_bar.showMessage(
+            f"Reference mapped: {bridge.summary()}", 8000
+        )
+    except Exception as e:
+        QMessageBox.critical(
+            main_window, "Bridge Failed",
+            f"Could not load reference data:\n{e}",
+        )
+        return
+
+    # --- Refresh population panel ---
+    try:
+        from .panels.population_panel import (
+            invalidate_population_caches,
+            draw_population_rfs_plot,
+        )
+        invalidate_population_caches()
+        draw_population_rfs_plot(main_window)
+    except Exception:
+        pass

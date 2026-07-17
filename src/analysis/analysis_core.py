@@ -576,7 +576,7 @@ def plot_ei_waveforms(
                 alpha=ch_alpha,
                 linewidth=ch_lw,
                 zorder=7,  # above photo (0), scatter (2), lasso poly (4)
-                rasterized=True,
+                rasterized=False,  # vector traces stay crisp at any zoom / DPI
             )
             added_artists.extend(lines)
 

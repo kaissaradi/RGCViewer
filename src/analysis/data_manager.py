@@ -265,6 +265,9 @@ class DataManager(QObject):
             None  # Initialize to None, will be set when vision data is loaded
         )
 
+        # --- Cross-Run Reference Bridge ---
+        self.reference_bridge = None  # Optional[ReferenceBridge]
+
         # --- MEA Similarity Data ---
         # (n_templates, n_templates) from Kilosort
         self.similar_templates = None
@@ -979,7 +982,7 @@ class DataManager(QObject):
         self.channel_positions = None
         self.n_channels = 512
         try:
-            import visionloader as vl
+            import src.analysis.visionloader as vl
 
             with vl.GlobalsFileReader(str(vision_path), dataset_name) as gbfr:
                 raw_positions, _ = gbfr.get_electrode_map()
@@ -1849,6 +1852,47 @@ class DataManager(QObject):
                         cluster_id,
                         exc_info=True,
                     )
+
+            # --- Fallback: borrow STA/RF from reference bridge ---
+            elif self.reference_bridge and self.reference_bridge.has_sta(vid):
+                sta_data = self.reference_bridge.get_sta(vid)
+                stafit = self.reference_bridge.get_stafit(vid)
+
+                if stafit:
+                    try:
+                        rf_area = np.pi * stafit.std_x * stafit.std_y
+                        if stafit.std_x > 0:
+                            ellipticity = stafit.std_y / stafit.std_x
+                        axis_a = stafit.std_x * 2
+                        axis_b = stafit.std_y * 2
+                        rf_long_diameter = max(axis_a, axis_b)
+                        rf_short_diameter = min(axis_a, axis_b)
+                    except Exception:
+                        logger.debug(
+                            "Failed to extract borrowed RF geometry for cluster %s",
+                            cluster_id, exc_info=True,
+                        )
+
+                if sta_data and stafit:
+                    try:
+                        time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                            sta_data, stafit, self.reference_bridge._ref_params, vid
+                        )
+                        if tc_matrix is not None and tc_matrix.size > 0:
+                            energies = np.sum(tc_matrix**2, axis=0)
+                            dom_idx = np.argmax(energies)
+                            dom_trace = tc_matrix[:, dom_idx]
+                            abs_max = np.max(np.abs(dom_trace))
+                            if abs_max > 0:
+                                timecourse = dom_trace / abs_max
+                            else:
+                                timecourse = dom_trace
+                            time_to_peak = int(np.argmax(np.abs(timecourse)))
+                    except Exception:
+                        logger.debug(
+                            "Failed to extract borrowed STA timecourse for cluster %s",
+                            cluster_id, exc_info=True,
+                        )
 
             metrics = {
                 "_computed": True,

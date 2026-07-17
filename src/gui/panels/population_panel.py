@@ -963,32 +963,9 @@ def _draw_dsos_markers(
             zorder=6,
         )
 
-    if ds_lines or os_lines:
-        ax.plot(
-            [],
-            [],
-            color=ds_color,
-            marker=">",
-            linestyle="-",
-            markersize=5,
-            label=f"DS (n={len(ds_lines)})",
-        )
-        ax.plot(
-            [],
-            [],
-            color=os_color,
-            marker="|",
-            linestyle="-",
-            markersize=7,
-            label=f"OS (n={len(os_lines)})",
-        )
-        ax.legend(
-            loc="upper right",
-            fontsize=7,
-            facecolor=colors["bg_panel"],
-            labelcolor=colors["text_primary"],
-            framealpha=0.7,
-        )
+    # DS/OS legend intentionally omitted — arrows (DS) and double-ended
+    # ticks (OS) are drawn directly on the RF plot above; the legend box
+    # was redundant and duplicated on redraws.
 
 
 def plot_rich_ei(
