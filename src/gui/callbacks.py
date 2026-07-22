@@ -1781,16 +1781,24 @@ def map_reference_run(main_window):
     if result != QMessageBox.Ok:
         return
 
-    # --- Install ReferenceBridge ---
-    main_window.status_bar.showMessage("Loading reference STAs and RF params...")
+    # --- Install ReferenceBridge (STA/params + chirp/grating if present) ---
+    main_window.status_bar.showMessage(
+        "Loading reference stimuli (STA/RF, chirp, grating)..."
+    )
     QApplication.processEvents()
 
     try:
         bridge = ReferenceBridge.from_matching_report(
-            report, ref_path, ref_dataset,
-            load_stas=True, load_params=True,
+            report,
+            ref_path,
+            ref_dataset,
+            load_stas=True,
+            load_params=True,
+            load_chirp=True,
+            load_grating=True,
+            ref_is_vision_only=bool(getattr(dm, "is_vision_only", False)),
         )
-        dm.reference_bridge = bridge
+        dm.install_reference_bridge(bridge, report=report)
         main_window.status_bar.showMessage(
             f"Reference mapped: {bridge.summary()}", 8000
         )
@@ -1801,7 +1809,14 @@ def map_reference_run(main_window):
         )
         return
 
-    # --- Refresh population panel ---
+    # --- Re-gate UMAP feature checkboxes (effective chirp/grating) ---
+    try:
+        if hasattr(main_window, "umap_panel") and main_window.umap_panel is not None:
+            main_window.umap_panel.refresh_feature_availability()
+    except Exception:
+        logger.debug("UMAP feature re-gate after map failed", exc_info=True)
+
+    # --- Refresh population panel (native + borrowed RFs) ---
     try:
         from .panels.population_panel import (
             invalidate_population_caches,
@@ -1810,4 +1825,4 @@ def map_reference_run(main_window):
         invalidate_population_caches()
         draw_population_rfs_plot(main_window)
     except Exception:
-        pass
+        logger.debug("Population RF redraw after map failed", exc_info=True)

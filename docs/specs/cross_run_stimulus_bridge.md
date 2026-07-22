@@ -10,10 +10,11 @@
 > Update after every stage so a fresh session can pick up here.
 
 - [x] **Stage 0 — Spec + context.** This document + PLAN.md Active Work entry.
-- [ ] **Stage 1 — ReferenceBridge stimulus load + per-cell caveats.** Extend bridge to load chirp/grating when present; expose remapped accessors and per-current-id caveat records.
-- [ ] **Stage 2 — Physics / feature pipeline integration.** `get_cell_physics` + `get_raw_feature_blocks` fill-gaps from bridge; provenance fields; invalidation on map install.
-- [ ] **Stage 3 — RF mosaic + GUI wiring.** Population panel draws borrowed ellipses; `map_reference_run` loads stimuli, invalidates caches, re-gates UMAP.
-- [ ] **Stage 4 — Tests + docs.** Unit tests for ID remap, fill-gap precedence, caveats; PLAN.md Completed Fix Registry.
+- [x] **Stage 1 — ReferenceBridge stimulus load + per-cell caveats.** Chirp/grating load in ref dir; `CellMatchCaveat` + `build_ui_caveats`; remapped accessors.
+- [x] **Stage 2 — Physics / feature pipeline integration.** `install_reference_bridge`, physics fill-gap + ref_id timecourse fix, `get_raw_feature_blocks` chirp/grating fill-gap, `effective_*_available`.
+- [x] **Stage 3 — RF mosaic + GUI wiring.** Borrowed dashed ellipses; map Accept installs + invalidates + UMAP re-gate.
+- [x] **Stage 4 — Tests.** `test_reference_bridge.py` (9) + `test_cross_run_stimulus_bridge.py` (7) green; mosaic tests updated for EllipseCollection.
+- [ ] **Stage 5 (optional follow-up).** Single-cell Chirp/Grating panel display of borrowed curves; second file dialog if npy not in ref Vision dir; real-data manual AC.
 
 ---
 
@@ -26,7 +27,7 @@
 | **Commit hash when spec was written** | `7fb457a` |
 | **Branch** | `feat/cross-run-stimulus-bridge` (create from current work branch before coding) |
 | **Author** | Kais + agent |
-| **Spec status** | Draft — awaiting design decisions (Block 11) |
+| **Spec status** | In Progress — Stages 1–4 implemented on `feat/cross-run-stimulus-bridge` (D1–D5 accepted as recommended) |
 
 ---
 

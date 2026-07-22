@@ -87,24 +87,20 @@ Before modifying any file in the "changed files" column, run the corresponding t
 
 ### Priority 0 — Cross-Run Stimulus Bridge (map any run → physics / RF mosaic / UMAP)
 - **Spec:** `docs/specs/cross_run_stimulus_bridge.md`
-- **Branch:** `feat/cross-run-stimulus-bridge` (to create; exploration on `tsting`)
-- **Status:** Spec draft — **not ready for implementation** until Block 11 design decisions are confirmed
-- **Goal:** EI-map any other run of the same retina; load whatever stimulus products exist on the reference (white-noise STA/RF, chirp, grating); fill-gap into `get_cell_physics` / `get_raw_feature_blocks`; update RF mosaic; re-gate UMAP; attach **per current-run cell_id caveats** (match status, confidence, provenance).
-- **What already exists:**
-  - `CrossRunMatcher` + `MatchingReport` JSON sidecar (`cross_run_matcher.py`)
-  - `ReferenceBridge` STA/params only (`reference_bridge.py`)
-  - Menu action `map_reference_run` installs bridge and redraws population panel (`callbacks.py`)
-  - `get_cell_physics` partial STA borrow path (has ID bug on params timecourse lookup)
-- **What remains (see spec stages):**
-  - Bridge load of chirp/grating + stimulus inventory
-  - Per-cell `CellMatchCaveat` keyed by original-run UI IDs
-  - Physics cache invalidation after map; fill-gap precedence (current > reference)
-  - `get_raw_feature_blocks` bridge fallback for chirp/grating
-  - RF mosaic borrowed ellipses (bridge currently unused by population panel)
-  - UMAP `refresh_feature_availability` for effective chirp/grating from bridge
-  - Unit tests in `test_reference_bridge.py` / `test_cross_run_stimulus_bridge.py`
-- **Open decisions (spec Block 11):** borrowed ellipse style; caveat storage; chirp path glob rules; effective availability flags
-- **Fragile zone overlap:** Touches `data_manager.py` (`get_cell_physics`, `get_raw_feature_blocks`). Rebase before every push. Run Vision ID offset + chirp raw-block tests after Stage 2.
+- **Branch:** `feat/cross-run-stimulus-bridge`
+- **Status:** Stages 1–4 implemented (unit tests green). Manual lab AC + optional panel borrow still open.
+- **Goal:** EI-map any other run; load STA/RF + chirp + grating from reference when present; fill-gap into physics/UMAP; dashed borrowed RF mosaic; per-UI-id `match_caveats`.
+- **What landed:**
+  - `ReferenceBridge`: chirp/grating load, `CellMatchCaveat`, `build_ui_caveats`, stimulus inventory
+  - `DataManager.install_reference_bridge` / `invalidate_physics_for_reference_bridge` / `effective_chirp_available` / `effective_grating_available`
+  - `get_cell_physics` borrows with **ref_id** for params timecourse; provenance + match fields
+  - `get_raw_feature_blocks` chirp/grating fill-gap
+  - Population mosaic draws dashed borrowed ellipses; map Accept re-gates UMAP
+  - Tests: `tests/unit/test_reference_bridge.py`, `tests/unit/test_cross_run_stimulus_bridge.py`
+- **What remains:**
+  - Manual AC on lab data (sibling runs with mixed stimuli)
+  - Optional: ChirpPanel/GratingPanel show borrowed curves; second file dialog if npy not in Vision dir
+- **Fragile zone overlap:** Touches `data_manager.py`. Rebase before every push.
 
 ### Priority 1 — Standalone Vision Integration
 - **Spec:** `docs/specs/vision_standalone.md`

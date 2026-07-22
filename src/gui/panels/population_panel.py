@@ -463,13 +463,18 @@ def draw_population_rfs_plot(
             pass
 
     colors = main_window.get_current_colors()
-    vision_params = main_window.data_manager.vision_params
+    dm = main_window.data_manager
+    vision_params = dm.vision_params
+    bridge = getattr(dm, "reference_bridge", None)
+    has_borrowed_rfs = bool(bridge and bridge.get_all_rf_ellipses())
 
     logger.debug(
-        f"draw_population_rfs_plot: vision_params={vision_params is not None}, selected_cell={selected_cell_id}, subset={len(subset_cell_ids) if subset_cell_ids else None}"
+        f"draw_population_rfs_plot: vision_params={vision_params is not None}, "
+        f"borrowed_rfs={has_borrowed_rfs}, selected_cell={selected_cell_id}, "
+        f"subset={len(subset_cell_ids) if subset_cell_ids else None}"
     )
 
-    if not vision_params:
+    if not vision_params and not has_borrowed_rfs:
         canvas.fig.clear()
         canvas.fig.set_facecolor(colors["bg_panel"])
         canvas.fig.text(
@@ -595,22 +600,60 @@ def _update_highlight_patch(patch, data_manager, cell_id):
         patch.set_visible(False)
         return
 
-    # Now data_manager is defined because we passed it in!
     vision_id = data_manager.get_vision_id_for_cluster(cell_id)
     vision_params = data_manager.vision_params
     sta_height = data_manager.vision_sta_height
 
     try:
-        stafit = vision_params.get_stafit_for_cell(vision_id)
-        adjusted_y = (
-            sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-        )
+        stafit = None
+        if vision_params is not None:
+            try:
+                stafit = vision_params.get_stafit_for_cell(vision_id)
+            except Exception:
+                stafit = None
 
-        patch.center = (stafit.center_x, adjusted_y)
-        patch.width = 2 * stafit.std_x
-        patch.height = 2 * stafit.std_y
-        patch.angle = np.rad2deg(stafit.rot)
-        patch.set_visible(True)
+        if stafit is not None:
+            fit_ok = all(
+                np.isfinite(v)
+                for v in (
+                    stafit.center_x,
+                    stafit.center_y,
+                    stafit.std_x,
+                    stafit.std_y,
+                    stafit.rot,
+                )
+            ) and stafit.std_x > 0 and stafit.std_y > 0
+            if fit_ok:
+                adjusted_y = (
+                    sta_height - stafit.center_y
+                    if sta_height is not None
+                    else stafit.center_y
+                )
+                patch.center = (stafit.center_x, adjusted_y)
+                patch.width = 2 * stafit.std_x
+                patch.height = 2 * stafit.std_y
+                patch.angle = np.rad2deg(stafit.rot)
+                patch.set_visible(True)
+                return
+
+        # Fill-gap: borrowed RF from reference bridge
+        bridge = getattr(data_manager, "reference_bridge", None)
+        if bridge is not None:
+            params = bridge.get_rf_ellipse_params(vision_id)
+            if params is not None:
+                adjusted_y = (
+                    sta_height - params["y0"]
+                    if sta_height is not None
+                    else params["y0"]
+                )
+                patch.center = (params["x0"], adjusted_y)
+                patch.width = 2 * params["std_x"]
+                patch.height = 2 * params["std_y"]
+                patch.angle = np.rad2deg(params["angle"])
+                patch.set_visible(True)
+                return
+
+        patch.set_visible(False)
     except Exception as e:
         logger.debug(f"Failed to get stafit for cell {vision_id}: {e}")
         patch.set_visible(False)
@@ -671,92 +714,134 @@ def _tight_limits(ellipses, frac_margin=0.05):
 def plot_population_rfs_background(
     ax, vision_params, main_window, sta_height, subset_cell_ids, colors
 ):
+    """Draw native RF ellipses plus dashed borrowed RFs from ReferenceBridge."""
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
-    getattr(main_window.data_manager, "is_vision_only", False)
+    dm = main_window.data_manager
+    is_vision_only = bool(getattr(dm, "is_vision_only", False))
 
-    all_cell_ids = set(vision_params.get_cell_ids())
+    # reference_bridge may be a MagicMock on test doubles — only use a real bridge
+    bridge = getattr(dm, "reference_bridge", None)
+    if bridge is not None and not callable(
+        getattr(bridge, "get_all_rf_ellipses", None)
+    ):
+        bridge = None
 
-    # Determine whether a meaningful subset is active.
-    # subset_cell_ids uses Kilosort (0-based) IDs; translate to Vision IDs for comparison.
-    # Determine whether a meaningful subset is active.
+    def _vision_id(cid):
+        """UI cluster_id → Vision id; tolerate incomplete test mocks."""
+        fn = getattr(dm, "get_vision_id_for_cluster", None)
+        if callable(fn):
+            try:
+                vid = fn(cid)
+                if isinstance(vid, (int, np.integer)):
+                    return int(vid)
+            except Exception:
+                pass
+        return int(cid) if is_vision_only else int(cid) + 1
+
+    native_ids = set()
+    if vision_params is not None:
+        try:
+            native_ids = set(vision_params.get_cell_ids())
+        except Exception:
+            native_ids = set()
+
+    borrowed_map = {}
+    if bridge is not None:
+        try:
+            raw = bridge.get_all_rf_ellipses()
+            if isinstance(raw, dict):
+                borrowed_map = raw
+        except Exception:
+            borrowed_map = {}
+
+    # subset_cell_ids are UI/Kilosort ids → Vision ids
     if subset_cell_ids is not None and len(subset_cell_ids) > 0:
-        # Convert subset to Vision IDs safely
-        subset_vision_ids = {
-            main_window.data_manager.get_vision_id_for_cluster(cid)
-            for cid in subset_cell_ids
-        }
-        has_subset = len(subset_vision_ids) < len(all_cell_ids)
+        subset_vision_ids = {_vision_id(cid) for cid in subset_cell_ids}
+        universe = native_ids | set(borrowed_map.keys())
+        has_subset = len(universe) > 0 and len(subset_vision_ids) < len(universe)
     else:
-        subset_vision_ids = all_cell_ids
+        subset_vision_ids = native_ids | set(borrowed_map.keys())
         has_subset = False
 
-    bg_ellipses = []  # (cx, cy, w, h, angle_deg) for non-subset cells
-    target_ellipses = []  # (cx, cy, w, h, angle_deg) for subset cells
+    bg_ellipses = []
+    target_ellipses = []
+    borrowed_bg = []
+    borrowed_target = []
+    native_drawn = set()
 
-    for cell_id in all_cell_ids:
-        try:
-            stafit = vision_params.get_stafit_for_cell(cell_id)
-        except KeyError:
-            continue
-
-        # Vision returns a stafit object (not a KeyError) for cells where the
-        # Gaussian RF fit failed or degenerated — center/std/rot can be NaN,
-        # or std can be 0/negative. These cells have no usable RF geometry;
-        # including them here propagates NaN all the way into
-        # ax.set_xlim()/set_ylim() via _tight_limits() and crashes the panel.
-        # Skip them here, at the source, instead of trying to sanitize later.
-        fit_vals = (
-            stafit.center_x,
-            stafit.center_y,
-            stafit.std_x,
-            stafit.std_y,
-            stafit.rot,
-        )
-        if not all(np.isfinite(v) for v in fit_vals):
-            continue
-        if stafit.std_x <= 0 or stafit.std_y <= 0:
-            continue
-
-        adjusted_y = (
-            sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+    def _label(cx, cy, vision_id):
+        if not show_labels:
+            return
+        display_id = vision_id if is_vision_only else vision_id - 1
+        ax.text(
+            cx,
+            cy,
+            str(display_id),
+            color=colors.get("text_secondary", "#9B9DA6"),
+            fontsize=8,
+            ha="center",
+            va="center",
+            alpha=0.8,
         )
 
-        entry = (
-            stafit.center_x,
-            adjusted_y,
-            stafit.std_x * 2,
-            stafit.std_y * 2,
-            np.degrees(stafit.rot),
-        )
+    if vision_params is not None:
+        for cell_id in native_ids:
+            try:
+                stafit = vision_params.get_stafit_for_cell(cell_id)
+            except Exception:
+                continue
+            fit_vals = (
+                stafit.center_x,
+                stafit.center_y,
+                stafit.std_x,
+                stafit.std_y,
+                stafit.rot,
+            )
+            if not all(np.isfinite(v) for v in fit_vals):
+                continue
+            if stafit.std_x <= 0 or stafit.std_y <= 0:
+                continue
+            adjusted_y = (
+                sta_height - stafit.center_y
+                if sta_height is not None
+                else stafit.center_y
+            )
+            entry = (
+                stafit.center_x,
+                adjusted_y,
+                stafit.std_x * 2,
+                stafit.std_y * 2,
+                np.degrees(stafit.rot),
+            )
+            native_drawn.add(cell_id)
+            if cell_id in subset_vision_ids:
+                target_ellipses.append(entry)
+                _label(stafit.center_x, adjusted_y, cell_id)
+            else:
+                bg_ellipses.append(entry)
 
-        if cell_id in subset_vision_ids:
-            target_ellipses.append(entry)
-            if show_labels:
-                # Map internal Vision ID back to UI ID for the label
-                display_id = (
-                    cell_id
-                    if getattr(main_window.data_manager, "is_vision_only", False)
-                    else cell_id - 1
-                )
-                ax.text(
-                    stafit.center_x,
-                    adjusted_y,
-                    str(display_id),
-                    color=colors.get("text_secondary", "#9B9DA6"),
-                    fontsize=8,
-                    ha="center",
-                    va="center",
-                    alpha=0.8,
-                )
+    # Borrowed only when native RF is missing for that Vision id
+    for vision_id, params in borrowed_map.items():
+        if vision_id in native_drawn:
+            continue
+        cx = params["x0"]
+        cy = params["y0"]
+        sx = params["std_x"]
+        sy = params["std_y"]
+        rot = params["angle"]
+        if not all(np.isfinite(v) for v in (cx, cy, sx, sy, rot)):
+            continue
+        if sx <= 0 or sy <= 0:
+            continue
+        adjusted_y = sta_height - cy if sta_height is not None else cy
+        entry = (cx, adjusted_y, sx * 2, sy * 2, np.degrees(rot))
+        if vision_id in subset_vision_ids:
+            borrowed_target.append(entry)
+            _label(cx, adjusted_y, vision_id)
         else:
-            bg_ellipses.append(entry)
+            borrowed_bg.append(entry)
 
-    # Build EllipseCollections (so _snapshot_rf_background can capture them).
-    # In light mode 'border_subtle' is very light (#DEE2E6) and alpha=0.15
-    # makes it completely invisible against the white panel background.
-    # Detect light mode by checking whether bg_panel is white/near-white and
-    # use a medium gray with higher opacity instead.
     is_light = colors.get("bg_panel", "").upper() in ("#FFFFFF", "#FAFAFA", "#F8F9FA")
     bg_edgecolor = (
         colors.get("text_tertiary", "#ADB5BD")
@@ -783,25 +868,49 @@ def plot_population_rfs_background(
         ax.add_collection(target_coll)
         target_coll.set_offset_transform(ax.transData)
 
-    # --- Tight axis limits ---
-    # When a non-trivial subset is active, zoom to the subset ellipses only.
-    # When showing all cells (or subset == all), zoom to all ellipses.
-    # In both cases use ellipse extent (center ± semi-axis) rather than just
-    # the center coordinates so that outermost ellipses are never clipped.
+    # Spec D1: dashed + slightly lower alpha for borrowed ellipses
+    borrowed_bg_coll = _build_ellipse_collection(
+        borrowed_bg,
+        edgecolor=bg_edgecolor,
+        alpha=max(0.2, bg_alpha * 0.85),
+        lw=0.75,
+        zorder=1,
+    )
+    if borrowed_bg_coll is not None:
+        borrowed_bg_coll.set_linestyle("--")
+        ax.add_collection(borrowed_bg_coll)
+        borrowed_bg_coll.set_offset_transform(ax.transData)
+
+    borrowed_target_coll = _build_ellipse_collection(
+        borrowed_target,
+        edgecolor=colors.get("plot_highlight", "#00FFFF"),
+        alpha=0.40,
+        lw=1.0,
+        zorder=2,
+    )
+    if borrowed_target_coll is not None:
+        borrowed_target_coll.set_linestyle("--")
+        ax.add_collection(borrowed_target_coll)
+        borrowed_target_coll.set_offset_transform(ax.transData)
+
     zoom_ellipses = (
-        target_ellipses
-        if (has_subset and target_ellipses)
-        else (target_ellipses + bg_ellipses)
+        target_ellipses + borrowed_target
+        if (has_subset and (target_ellipses or borrowed_target))
+        else (target_ellipses + bg_ellipses + borrowed_target + borrowed_bg)
     )
     limits = _tight_limits(zoom_ellipses, frac_margin=0.05)
     if limits is not None:
         ax.set_xlim(limits[0], limits[1])
         ax.set_ylim(limits[2], limits[3])
 
-    n_target = len(target_ellipses)
-    _apply_rf_axes_style(
-        ax, colors, title=f"Population Receptive Fields (n={n_target})"
-    )
+    n_target = len(target_ellipses) + len(borrowed_target)
+    n_borrowed = len(borrowed_target) + len(borrowed_bg)
+    title = f"Population Receptive Fields (n={n_target}"
+    if n_borrowed:
+        title += f", {n_borrowed} borrowed"
+    title += ")"
+    _apply_rf_axes_style(ax, colors, title=title)
+
 
 
 def _clear_dsos_artists(ax):

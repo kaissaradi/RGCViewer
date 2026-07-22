@@ -331,10 +331,16 @@ class UMAPPanel(QWidget):
         following a chirp-bearing one has to re-disable the row.
         """
         dm = getattr(self.main_window, "data_manager", None)
+        # Prefer effective_* so a reference-bridge-only chirp still enables
+        # the row (docs/specs/cross_run_stimulus_bridge.md D5).
+        if dm is not None and hasattr(dm, "effective_chirp_available"):
+            chirp_ok = bool(dm.effective_chirp_available())
+        else:
+            chirp_ok = bool(getattr(dm, "chirp_available", False))
         self._set_feature_enabled(
             "use_chirp",
-            bool(getattr(dm, "chirp_available", False)),
-            "No chirp data loaded for this dataset",
+            chirp_ok,
+            "No chirp data loaded for this dataset (or mapped reference)",
         )
 
     def _set_feature_enabled(self, use_key, enabled, disabled_tooltip=""):

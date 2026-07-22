@@ -267,6 +267,8 @@ class DataManager(QObject):
 
         # --- Cross-Run Reference Bridge ---
         self.reference_bridge = None  # Optional[ReferenceBridge]
+        # Per original-run UI cluster_id → CellMatchCaveat (match quality + provenance)
+        self.match_caveats = {}
 
         # --- MEA Similarity Data ---
         # (n_templates, n_templates) from Kilosort
@@ -1854,11 +1856,15 @@ class DataManager(QObject):
                     )
 
             # --- Fallback: borrow STA/RF from reference bridge ---
-            elif self.reference_bridge and self.reference_bridge.has_sta(vid):
-                sta_data = self.reference_bridge.get_sta(vid)
-                stafit = self.reference_bridge.get_stafit(vid)
+            # Mapping keys are Vision IDs. Params timecourse lookup MUST use
+            # the reference Vision ID (not current vid) — Law 1 on ref table.
+            elif self.reference_bridge and self.reference_bridge.has_match(vid):
+                bridge = self.reference_bridge
+                ref_id = bridge.get_reference_id(vid)
+                sta_data = bridge.get_sta(vid) if bridge.has_sta(vid) else None
+                stafit = bridge.get_stafit(vid)
 
-                if stafit:
+                if stafit is not None:
                     try:
                         rf_area = np.pi * stafit.std_x * stafit.std_y
                         if stafit.std_x > 0:
@@ -1870,13 +1876,17 @@ class DataManager(QObject):
                     except Exception:
                         logger.debug(
                             "Failed to extract borrowed RF geometry for cluster %s",
-                            cluster_id, exc_info=True,
+                            cluster_id,
+                            exc_info=True,
                         )
 
-                if sta_data and stafit:
+                if sta_data is not None or stafit is not None:
                     try:
                         time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                            sta_data, stafit, self.reference_bridge._ref_params, vid
+                            sta_data,
+                            stafit,
+                            bridge._ref_params,
+                            ref_id if ref_id is not None else vid,
                         )
                         if tc_matrix is not None and tc_matrix.size > 0:
                             energies = np.sum(tc_matrix**2, axis=0)
@@ -1891,8 +1901,42 @@ class DataManager(QObject):
                     except Exception:
                         logger.debug(
                             "Failed to extract borrowed STA timecourse for cluster %s",
-                            cluster_id, exc_info=True,
+                            cluster_id,
+                            exc_info=True,
                         )
+
+            # Provenance: which source supplied each STA-derived field
+            used_current_sta = bool(
+                self.vision_stas and vid in self.vision_stas
+            )
+            provenance = {
+                "timecourse": None,
+                "rf_geometry": None,
+                "chirp": None,
+                "grating": None,
+            }
+            if timecourse is not None:
+                provenance["timecourse"] = "current" if used_current_sta else "reference"
+            if rf_area and float(rf_area) > 0:
+                provenance["rf_geometry"] = (
+                    "current" if used_current_sta else "reference"
+                )
+
+            # Match metadata for this cell (UI id space)
+            match_status = ""
+            match_confidence = 0.0
+            reference_id = None
+            caveat = getattr(self, "match_caveats", {}).get(int(cluster_id))
+            if caveat is not None:
+                match_status = caveat.status or ""
+                match_confidence = float(caveat.confidence or 0.0)
+                reference_id = caveat.reference_id
+                caveat.provenance["timecourse"] = provenance["timecourse"]
+                caveat.provenance["rf_geometry"] = provenance["rf_geometry"]
+            elif self.reference_bridge and self.reference_bridge.has_match(vid):
+                match_status = self.reference_bridge.get_status(vid)
+                match_confidence = self.reference_bridge.get_confidence(vid)
+                reference_id = self.reference_bridge.get_reference_id(vid)
 
             metrics = {
                 "_computed": True,
@@ -1903,6 +1947,10 @@ class DataManager(QObject):
                 "rf_long_diameter": rf_long_diameter,
                 "rf_short_diameter": rf_short_diameter,
                 "time_to_peak": time_to_peak,
+                "provenance": provenance,
+                "match_status": match_status,
+                "match_confidence": match_confidence,
+                "reference_id": reference_id,
             }
 
             # 4. Store in global cache safely, even when Vision STA is missing.
@@ -2149,18 +2197,25 @@ class DataManager(QObject):
         # so indexing it here is Law-1-safe and never re-derives the offset.
         # psth_mean is one fixed-width (n_cells, n_bins) array, so the sentinel
         # width is known up front — unlike grating, no per-cell interpolation.
+        # Effective availability also includes reference-bridge chirp (fill-gap).
         from .constants import CHIRP_MIN_QI
 
-        chirp_available = (
+        local_chirp = (
             getattr(self, "chirp_available", False)
             and getattr(self, "chirp_data", None) is not None
             and getattr(self, "chirp_id_to_row", None) is not None
         )
-        chirp_n_bins = (
-            int(np.asarray(self.chirp_data["psth_mean"]).shape[1])
-            if chirp_available
-            else 0
-        )
+        bridge = getattr(self, "reference_bridge", None)
+        bridge_chirp = bool(bridge and bridge.has_any_chirp())
+        chirp_available = local_chirp or bridge_chirp
+        if local_chirp:
+            chirp_n_bins = int(np.asarray(self.chirp_data["psth_mean"]).shape[1])
+        elif bridge_chirp:
+            chirp_n_bins = int(
+                np.asarray(bridge._ref_chirp_data["psth_mean"]).shape[1]
+            )
+        else:
+            chirp_n_bins = 0
 
         # Recording duration, needed for the firing_rate metadata column
         # below. firing_rate/isi_violations are NOT embedding features
@@ -2208,16 +2263,32 @@ class DataManager(QObject):
 
             # Grating direction-tuning curve shape — for the EMBEDDING (PCA
             # block in build_feature_matrix, see GRATING_PCA_COMPONENTS).
-            # Replaces the old DSI/OSI scalar approach: a single DSI/OSI
-            # number can't distinguish differently-shaped tuning curves
-            # that happen to share a value, so we PCA the curve shape
-            # itself instead — see grating_calc.pooled_direction_tuning_
-            # curve's docstring for the peak-weighted pooling method across
-            # a cell's conditions. None (no dsos data, or no condition with
-            # usable peak response) becomes an all-zero sentinel row, same
-            # "guard in build_feature_matrix, not a per-cell special case
-            # here" pattern as the timecourse=None handling above.
-            grating_entry = self.grating_computed_cache.get(cid)
+            # Fill-gap: current analyzed/computed entry first, else bridge.
+            grating_entry = None
+            grating_source = None
+            grating_status = getattr(self, "grating_status", "missing")
+            grating_data = getattr(self, "grating_data", None)
+            grating_cache = getattr(self, "grating_computed_cache", None) or {}
+            grating_lock = getattr(self, "_grating_cache_lock", None)
+            if grating_status == "ok" and grating_data is not None:
+                grating_entry = grating_data.get(cid)
+                if grating_entry is not None:
+                    grating_source = "current"
+            if grating_entry is None:
+                if grating_lock is not None:
+                    with grating_lock:
+                        grating_entry = grating_cache.get(cid)
+                else:
+                    grating_entry = grating_cache.get(cid)
+                if grating_entry is not None:
+                    grating_source = "current"
+            if grating_entry is None and bridge is not None:
+                vid = self.get_vision_id_for_cluster(cid)
+                if bridge.has_match(vid):
+                    grating_entry = bridge.get_grating_entry(vid)
+                    if grating_entry is not None:
+                        grating_source = "reference"
+
             pooled_curve = (
                 grating_calc.pooled_direction_tuning_curve(grating_entry)
                 if grating_entry
@@ -2229,33 +2300,52 @@ class DataManager(QObject):
                 grating_list.append(
                     np.zeros(grating_calc.POOLED_CURVE_N_BINS, dtype=np.float64)
                 )
+                grating_source = None
 
-            # Chirp PSTH SHAPE — for the EMBEDDING (PCA block in
-            # build_feature_matrix, see CHIRP_PCA_COMPONENTS). L2-normalize so
-            # the block encodes response shape, not firing rate (firing rate is
-            # deliberately excluded from the embedding). Cells missing from the
-            # chirp file, or with QI below CHIRP_MIN_QI (noise / no real chirp
-            # response), get an all-zero sentinel row — same "guard in
-            # build_feature_matrix via std==0, not a per-cell special case"
-            # pattern as timecourse=None / no-grating above. Not peak-aligned:
-            # the chirp stimulus is time-locked across all cells.
+            # Chirp PSTH SHAPE — fill-gap: current file first, else bridge.
+            # L2-normalize; QI gate via CHIRP_MIN_QI; zero sentinel if missing.
+            chirp_source = None
             if chirp_available:
                 sentinel = np.zeros(chirp_n_bins, dtype=np.float64)
-                row = self.chirp_id_to_row.get(int(cid))
-                if row is None:
+                used = False
+                if local_chirp:
+                    row = self.chirp_id_to_row.get(int(cid))
+                    if row is not None:
+                        qi = float(self.chirp_data["quality_index"][row])
+                        if np.isfinite(qi) and qi >= CHIRP_MIN_QI:
+                            psth = np.asarray(
+                                self.chirp_data["psth_mean"][row], dtype=np.float64
+                            ).copy()
+                            norm = np.linalg.norm(psth)
+                            chirp_list.append(psth / norm if norm > 0 else sentinel)
+                            chirp_source = "current" if norm > 0 else None
+                            used = True
+                if not used and bridge_chirp:
+                    vid = self.get_vision_id_for_cluster(cid)
+                    row_pack = bridge.get_chirp_row(vid) if bridge.has_match(vid) else None
+                    if row_pack is not None:
+                        psth, qi = row_pack
+                        if np.isfinite(qi) and qi >= CHIRP_MIN_QI:
+                            psth = np.asarray(psth, dtype=np.float64).copy()
+                            # Align width if reference bins differ (pad/truncate)
+                            if len(psth) < chirp_n_bins:
+                                psth = np.pad(psth, (0, chirp_n_bins - len(psth)))
+                            elif len(psth) > chirp_n_bins:
+                                psth = psth[:chirp_n_bins]
+                            norm = np.linalg.norm(psth)
+                            chirp_list.append(psth / norm if norm > 0 else sentinel)
+                            chirp_source = "reference" if norm > 0 else None
+                            used = True
+                if not used:
                     chirp_list.append(sentinel)
-                else:
-                    qi = float(self.chirp_data["quality_index"][row])
-                    if np.isfinite(qi) and qi >= CHIRP_MIN_QI:
-                        psth = np.asarray(
-                            self.chirp_data["psth_mean"][row], dtype=np.float64
-                        ).copy()
-                        norm = np.linalg.norm(psth)
-                        chirp_list.append(psth / norm if norm > 0 else sentinel)
-                    else:
-                        chirp_list.append(sentinel)
             else:
                 chirp_list.append(np.zeros(chirp_n_bins, dtype=np.float64))
+
+            # Sync chirp/grating provenance onto match_caveats when present
+            caveat = getattr(self, "match_caveats", {}).get(int(cid))
+            if caveat is not None:
+                caveat.provenance["chirp"] = chirp_source
+                caveat.provenance["grating"] = grating_source
 
             # Scalar features for the EMBEDDING (fed into build_feature_matrix
             # via analysis_core.py's scalar_features table): RF long/short
@@ -3776,3 +3866,102 @@ class DataManager(QObject):
         if getattr(self, "is_vision_only", False):
             return int(cluster_id)
         return int(cluster_id) + 1
+
+    # ------------------------------------------------------------------
+    # Cross-run reference bridge install / availability
+    # ------------------------------------------------------------------
+
+    def install_reference_bridge(self, bridge, report=None):
+        """
+        Install a ReferenceBridge, build per-UI-id match caveats, and
+        invalidate physics entries that can now fill-gap from the reference.
+
+        Safe to call from the main thread after Map Reference Run accepts.
+        """
+        self.reference_bridge = bridge
+        is_vo = bool(getattr(self, "is_vision_only", False))
+        if bridge is not None:
+            self.match_caveats = bridge.build_ui_caveats(is_vision_only=is_vo)
+        else:
+            self.match_caveats = {}
+        self.invalidate_physics_for_reference_bridge()
+        logger.info(
+            "Installed reference bridge: %s (%d caveats)",
+            bridge.summary() if bridge else "None",
+            len(self.match_caveats),
+        )
+        return self.match_caveats
+
+    def invalidate_physics_for_reference_bridge(self):
+        """
+        Clear sticky `_computed` physics for cells that lack STA-derived
+        fields but can now borrow them from the reference bridge.
+
+        Preserves ACG when present so we do not recompute pure spike metrics.
+        """
+        bridge = getattr(self, "reference_bridge", None)
+        if bridge is None:
+            return 0
+
+        ids = set()
+        with self._feature_lock:
+            ids.update(int(k) for k in self.feature_cache.keys())
+        if (
+            hasattr(self, "cluster_df")
+            and self.cluster_df is not None
+            and not self.cluster_df.empty
+            and "cluster_id" in self.cluster_df.columns
+        ):
+            ids.update(int(x) for x in self.cluster_df["cluster_id"].tolist())
+
+        n_invalidated = 0
+        with self._feature_lock:
+            for cid in ids:
+                vid = self.get_vision_id_for_cluster(cid)
+                if not bridge.has_match(vid):
+                    continue
+                can_borrow = bridge.has_sta(vid) or bridge.has_rf(vid)
+                if not can_borrow:
+                    continue
+                entry = self.feature_cache.get(cid)
+                if entry is None:
+                    continue
+                if not entry.get("_computed"):
+                    continue
+                missing_tc = entry.get("timecourse") is None
+                missing_rf = float(entry.get("rf_area") or 0.0) == 0.0
+                # Only recompute when STA-derived fields are empty and the
+                # bridge can supply them. Cells that already have native STA
+                # products are left alone.
+                if not (missing_tc or missing_rf):
+                    continue
+                acg = entry.get("acg")
+                self.feature_cache[cid] = (
+                    {"acg": acg, "_computed": False} if acg is not None else {}
+                )
+                n_invalidated += 1
+
+        if n_invalidated:
+            logger.info(
+                "Invalidated %d physics cache entries for reference fill-gap",
+                n_invalidated,
+            )
+        return n_invalidated
+
+    def effective_chirp_available(self) -> bool:
+        """True if current run or reference bridge has chirp product."""
+        if getattr(self, "chirp_available", False):
+            return True
+        bridge = getattr(self, "reference_bridge", None)
+        return bool(bridge and bridge.has_any_chirp())
+
+    def effective_grating_available(self) -> bool:
+        """True if current run or reference bridge has grating product."""
+        if getattr(self, "grating_available", False):
+            return True
+        bridge = getattr(self, "reference_bridge", None)
+        return bool(bridge and bridge.has_any_grating())
+
+    def get_match_caveat(self, cluster_id: int):
+        """Return CellMatchCaveat for a UI cluster_id, or None."""
+        return getattr(self, "match_caveats", {}).get(int(cluster_id))
