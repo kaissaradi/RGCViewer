@@ -1325,6 +1325,10 @@ class MainWindow(QMainWindow):
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
 
+        file_menu.addSeparator()
+        self.map_reference_action = file_menu.addAction("Map &Reference Run...")
+        self.map_reference_action.setEnabled(False)
+
         # --- Array Menu ---
         array_menu = menu.addMenu("&Array")
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
@@ -1345,6 +1349,7 @@ class MainWindow(QMainWindow):
             self.on_save_classification_action
         )
         self.save_action.triggered.connect(self.on_save_action)
+        self.map_reference_action.triggered.connect(self.map_reference_run)
 
         # Connect New Left Panel Buttons
         self.filter_all_btn.clicked.connect(self.reset_views)
@@ -1916,6 +1921,9 @@ class MainWindow(QMainWindow):
 
     def load_vision_directory(self):
         callbacks.load_vision_directory(self)
+
+    def map_reference_run(self):
+        callbacks.map_reference_run(self)
 
     def load_raw_data_file(self):
         callbacks.load_raw_data(self)

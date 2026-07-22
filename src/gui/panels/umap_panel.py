@@ -251,25 +251,11 @@ class UMAPPanel(QWidget):
             chk.toggled.connect(slider.setEnabled)
             chk.toggled.connect(value_label.setEnabled)
 
-            # Availability gate: chirp has no in-GUI fallback (it's precomputed
-            # offline, unlike grating). If no chirp file is loaded, disable and
-            # uncheck the row so the user can't enable a dead feature. The
-            # embedding would skip it anyway (get_raw_feature_blocks emits a
-            # width-0 chirp block → build_feature_matrix's size==0 guard), but
-            # graying it out makes the "no data" state visible rather than
-            # silently no-op.
-            if use_key == "use_chirp":
-                dm = getattr(self.main_window, "data_manager", None)
-                if not getattr(dm, "chirp_available", False):
-                    chk.setChecked(False)
-                    chk.setEnabled(False)
-                    slider.setEnabled(False)
-                    value_label.setEnabled(False)
-                    chk.setToolTip("No chirp data loaded for this dataset")
-
             # Store widget references — get_feature_config() reads
             # slider.value()/10.0 rather than spin.value() directly now.
-            self.feature_widgets[use_key] = (chk, slider, w_key)
+            # value_label is kept too so refresh_feature_availability() can
+            # drive the whole row without re-deriving it from the layout.
+            self.feature_widgets[use_key] = (chk, slider, w_key, value_label)
 
             # Add to grid layout: checkbox, slider, readout per feature
             row = idx // 3
@@ -277,6 +263,12 @@ class UMAPPanel(QWidget):
             weights_grid.addWidget(chk, row, col)
             weights_grid.addWidget(slider, row, col + 1)
             weights_grid.addWidget(value_label, row, col + 2)
+
+        # Set the initial gate state. data_manager is still None at construction
+        # (MainWindow.__init__ builds the panels before any dataset is picked),
+        # so this lands on "chirp disabled" — correct for the pre-load state.
+        # callbacks._on_kilosort_loaded() calls this again once a dataset is in.
+        self.refresh_feature_availability()
 
         # --- Controls Row 4 (Pre-Filter Thresholds) ---
         filter_group = QGroupBox("Quality Pre-Filtering")
@@ -320,9 +312,52 @@ class UMAPPanel(QWidget):
         )
         self.layout.addWidget(self.controls_widget)
 
+    def refresh_feature_availability(self):
+        """Re-gate data-dependent feature rows against the CURRENT DataManager.
+
+        Chirp has no in-GUI fallback (it's precomputed offline, unlike grating),
+        so the row is only live when a chirp file was actually loaded.
+
+        Called once at construction — when main_window.data_manager is still
+        None, so chirp starts disabled — and again from
+        callbacks._on_kilosort_loaded() once loading is done and
+        chirp_available is final (load_chirp_data runs inside
+        KilosortLoadWorker.run, so the flag is settled by the time that slot
+        fires). Without the second call the checkbox stays dead on every
+        dataset, chirp or not.
+
+        Bidirectional on purpose: panels are built once and persist, while
+        data_manager is replaced on every load, so a chirp-less dataset
+        following a chirp-bearing one has to re-disable the row.
+        """
+        dm = getattr(self.main_window, "data_manager", None)
+        # Prefer effective_* so a reference-bridge-only chirp still enables
+        # the row (docs/specs/cross_run_stimulus_bridge.md D5).
+        if dm is not None and hasattr(dm, "effective_chirp_available"):
+            chirp_ok = bool(dm.effective_chirp_available())
+        else:
+            chirp_ok = bool(getattr(dm, "chirp_available", False))
+        self._set_feature_enabled(
+            "use_chirp",
+            chirp_ok,
+            "No chirp data loaded for this dataset (or mapped reference)",
+        )
+
+    def _set_feature_enabled(self, use_key, enabled, disabled_tooltip=""):
+        """Enable/disable one feature row: checkbox, weight slider, readout."""
+        entry = self.feature_widgets.get(use_key)
+        if entry is None:
+            return
+        chk, slider, _w_key, value_label = entry
+        chk.setEnabled(enabled)
+        chk.setChecked(enabled)
+        slider.setEnabled(enabled)
+        value_label.setEnabled(enabled)
+        chk.setToolTip("" if enabled else disabled_tooltip)
+
     def get_feature_config(self):
         config = {}
-        for use_key, (chk, slider, w_key) in self.feature_widgets.items():
+        for use_key, (chk, slider, w_key, _lbl) in self.feature_widgets.items():
             config[use_key] = chk.isChecked()
             # slider is an integer QSlider on a 0-100 range representing a
             # 0.0-10.0 float weight — see the slider construction above.
@@ -712,7 +747,7 @@ class UMAPPanel(QWidget):
 
         # Display weights used in status bar
         weight_strs = []
-        for use_key, (chk, slider, w_key) in self.feature_widgets.items():
+        for use_key, (chk, slider, w_key, _lbl) in self.feature_widgets.items():
             if chk.isChecked():
                 name_short = use_key.replace("use_", "")
                 weight_strs.append(f"{name_short}={slider.value() / 10.0:.1f}")

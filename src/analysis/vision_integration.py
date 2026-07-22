@@ -5,7 +5,7 @@ logger = logging.getLogger(__name__)
 
 # Guard import of visionloader so the app can run without it installed
 try:
-    import visionloader as vl
+    import src.analysis.visionloader as vl
     VISION_LOADER_AVAILABLE = True
 except Exception:
     vl = None
@@ -244,7 +244,10 @@ def load_ei_data(vision_dir: Path, dataset_name: str):
             logger.info(f"Loaded EIs for {len(eis_by_cell_id)} cells")
             return {'ei_data': eis_by_cell_id, 'electrode_map': electrode_map}
     except FileNotFoundError:
-        logger.error(f"EI file not found in {vision_dir}")
+        logger.warning(f"EI file not found in {vision_dir}; skipping EI")
+        return None
+    except AssertionError as e:
+        logger.warning(f"EI file missing/invalid ({e}); skipping EI")
         return None
     except Exception:
         logger.exception("Unexpected error loading EI data")
@@ -264,7 +267,7 @@ def load_sta_data(vision_dir: Path, dataset_name: str):
         logger.info(f"Initialized Lazy STA Reader for {len(lazy_sta_dict)} cells")
         return lazy_sta_dict
     except FileNotFoundError:
-        logger.error(f"STA file not found in {vision_dir}")
+        logger.warning(f"STA file not found in {vision_dir}; skipping STA")
         return None
     except Exception:
         logger.exception("Unexpected error initializing Lazy STA Reader")

@@ -4,7 +4,7 @@
 > Read AGENTS.md before this document.
 > This is a **snapshot of the current codebase state**, not a roadmap narrative.
 > Update this file every time a spec completes or a new untested behavior is discovered.
-> Last updated: 2026-07-08 | Branch: tsting
+> Last updated: 2026-07-16 | Branch: tsting (spec work: cross-run stimulus bridge)
 
 ---
 
@@ -84,6 +84,23 @@ Before modifying any file in the "changed files" column, run the corresponding t
 ---
 
 ## 4. Active Work
+
+### Priority 0 — Cross-Run Stimulus Bridge (map any run → physics / RF mosaic / UMAP)
+- **Spec:** `docs/specs/cross_run_stimulus_bridge.md`
+- **Branch:** `feat/cross-run-stimulus-bridge`
+- **Status:** Stages 1–4 implemented (unit tests green). Manual lab AC + optional panel borrow still open.
+- **Goal:** EI-map any other run; load STA/RF + chirp + grating from reference when present; fill-gap into physics/UMAP; dashed borrowed RF mosaic; per-UI-id `match_caveats`.
+- **What landed:**
+  - `ReferenceBridge`: chirp/grating load, `CellMatchCaveat`, `build_ui_caveats`, stimulus inventory
+  - `DataManager.install_reference_bridge` / `invalidate_physics_for_reference_bridge` / `effective_chirp_available` / `effective_grating_available`
+  - `get_cell_physics` borrows with **ref_id** for params timecourse; provenance + match fields
+  - `get_raw_feature_blocks` chirp/grating fill-gap
+  - Population mosaic draws dashed borrowed ellipses; map Accept re-gates UMAP
+  - Tests: `tests/unit/test_reference_bridge.py`, `tests/unit/test_cross_run_stimulus_bridge.py`
+- **What remains:**
+  - Manual AC on lab data (sibling runs with mixed stimuli)
+  - Optional: ChirpPanel/GratingPanel show borrowed curves; second file dialog if npy not in Vision dir
+- **Fragile zone overlap:** Touches `data_manager.py`. Rebase before every push.
 
 ### Priority 1 — Standalone Vision Integration
 - **Spec:** `docs/specs/vision_standalone.md`
