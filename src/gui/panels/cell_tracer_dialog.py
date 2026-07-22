@@ -20,31 +20,45 @@ Public API consumed by EIPanel:
 from __future__ import annotations
 
 import numpy as np
-from matplotlib.path import Path as MplPath       # lasso polygon hit-test
+from matplotlib.path import Path as MplPath  # lasso polygon hit-test
 from matplotlib.patches import Polygon as MplPolygon
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from qtpy.QtCore import Qt, Signal, QThread, QObject
 from qtpy.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QSplitter, QSizePolicy, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QComboBox, QSlider,
-    QProgressBar, QFrame,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QSplitter,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QComboBox,
+    QSlider,
+    QProgressBar,
+    QFrame,
 )
-from qtpy.QtGui import QColor, QFont
+from qtpy.QtGui import QColor
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from .ei_panel import EIPanel
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Worker — correlation computation off the UI thread
 # ---------------------------------------------------------------------------
+
 
 class _CorrelationWorker(QObject):
     """
@@ -67,8 +81,8 @@ class _CorrelationWorker(QObject):
     This runs in < 100 ms for 512-channel / 500-cluster datasets.
     """
 
-    finished = Signal(list)   # list of (ks_cluster_id, score, best_chan)
-    error    = Signal(str)
+    finished = Signal(list)  # list of (ks_cluster_id, score, best_chan)
+    error = Signal(str)
 
     def __init__(self, dm, selected_ch_indices: np.ndarray):
         """
@@ -76,7 +90,7 @@ class _CorrelationWorker(QObject):
         selected_ch_indices — 1-D int array of electrode indices inside lasso
         """
         super().__init__()
-        self._dm  = dm
+        self._dm = dm
         self._sel = selected_ch_indices
 
     def run(self):
@@ -96,29 +110,29 @@ class _CorrelationWorker(QObject):
         best_chan is looked up from cluster_df to match the CH column in the
         main sidebar table.
         """
-        dm  = self._dm
+        dm = self._dm
         sel = self._sel
-        is_vision_only = getattr(dm, 'is_vision_only', False)
+        is_vision_only = getattr(dm, "is_vision_only", False)
 
         if dm.vision_eis is None:
             return []
 
         # Pre-build vision_id → best_chan from cluster_df
         best_chan_map: dict[int, int] = {}
-        if hasattr(dm, 'cluster_df') and dm.cluster_df is not None:
+        if hasattr(dm, "cluster_df") and dm.cluster_df is not None:
             df = dm.cluster_df
-            id_col  = 'cluster_id' if 'cluster_id' in df.columns else None
-            chan_col = 'best_chan'  if 'best_chan'   in df.columns else None
+            id_col = "cluster_id" if "cluster_id" in df.columns else None
+            chan_col = "best_chan" if "best_chan" in df.columns else None
             if id_col and chan_col:
                 for _, row in df[[id_col, chan_col]].iterrows():
                     ks_id = int(row[id_col])
-                    vid   = ks_id if is_vision_only else ks_id + 1
+                    vid = ks_id if is_vision_only else ks_id + 1
                     best_chan_map[vid] = int(row[chan_col])
 
         results = []
         for vision_id, entry in dm.vision_eis.items():
             try:
-                ei_arr = getattr(entry, 'ei', None)
+                ei_arr = getattr(entry, "ei", None)
                 if not isinstance(ei_arr, np.ndarray) or ei_arr.size == 0:
                     continue
 
@@ -129,7 +143,7 @@ class _CorrelationWorker(QObject):
                 spatial = np.max(np.abs(ei_arr), axis=1)
 
                 # Clamp lasso indices to valid channel range
-                valid_sel  = sel[sel < len(spatial)]
+                valid_sel = sel[sel < len(spatial)]
 
                 total_norm = np.linalg.norm(spatial)
                 if total_norm == 0 or len(valid_sel) == 0:
@@ -152,6 +166,7 @@ class _CorrelationWorker(QObject):
 # Main dialog
 # ---------------------------------------------------------------------------
 
+
 class CellTracerDialog(QDialog):
     """
     Floating tool dialog.
@@ -171,16 +186,16 @@ class CellTracerDialog(QDialog):
 
     def __init__(self, parent=None, ei_panel: "EIPanel | None" = None):
         super().__init__(parent, Qt.Window)
-        self.ei_panel   = ei_panel
+        self.ei_panel = ei_panel
         self.setWindowTitle("Cell Tracer — EI Correlation Search")
         self.setMinimumSize(1050, 640)
         self.resize(1200, 720)
 
         # ── state ────────────────────────────────────────────────────────
         self._lasso_verts: list[tuple[float, float]] = []
-        self._drawing    = False
+        self._drawing = False
         self._selected_ch_indices: np.ndarray = np.array([], dtype=int)
-        self._worker_thread: QThread | None   = None
+        self._worker_thread: QThread | None = None
         self._worker: _CorrelationWorker | None = None
 
         # EI waveform overlay state
@@ -188,7 +203,7 @@ class CellTracerDialog(QDialog):
         # hit-test and waveform overlay always use the exact same positions
         # array — immune to any mid-session reload of dm.vision_channel_positions.
         self._cached_ch_pos: np.ndarray | None = None
-        self._ei_waveform_artists: list = []   # Line2D objects on self._ax
+        self._ei_waveform_artists: list = []  # Line2D objects on self._ax
         self._ei_overlay_ks_id: int | None = None  # which cluster is displayed
 
         # ── UI ───────────────────────────────────────────────────────────
@@ -252,7 +267,7 @@ class CellTracerDialog(QDialog):
         left_layout.addLayout(ctrl_row)
 
         # matplotlib canvas
-        self._fig = Figure(figsize=(5, 5), dpi=100, facecolor='#1e1e2e')
+        self._fig = Figure(figsize=(5, 5), dpi=100, facecolor="#1e1e2e")
         self._canvas = FigureCanvas(self._fig)
         self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self._canvas)
@@ -283,7 +298,7 @@ class CellTracerDialog(QDialog):
         right_layout.addLayout(res_hdr)
 
         self._progress = QProgressBar()
-        self._progress.setRange(0, 0)   # indeterminate
+        self._progress.setRange(0, 0)  # indeterminate
         self._progress.setFixedHeight(4)
         self._progress.setVisible(False)
         right_layout.addWidget(self._progress)
@@ -360,13 +375,20 @@ class CellTracerDialog(QDialog):
         """
         self._fig.clear()
         self._ax = self._fig.add_subplot(111)
-        self._ax.set_facecolor('#1e1e2e')
-        self._fig.patch.set_facecolor('#1e1e2e')
+        self._ax.set_facecolor("#1e1e2e")
+        self._fig.patch.set_facecolor("#1e1e2e")
 
         ei_panel = self.ei_panel
         if ei_panel is None:
-            self._ax.text(0.5, 0.5, "No EI data", ha='center', va='center',
-                          color='#aaa', transform=self._ax.transAxes)
+            self._ax.text(
+                0.5,
+                0.5,
+                "No EI data",
+                ha="center",
+                va="center",
+                color="#aaa",
+                transform=self._ax.transAxes,
+            )
             self._canvas.draw()
             return
 
@@ -394,29 +416,41 @@ class CellTracerDialog(QDialog):
         # aspect='equal' keeps the photo spatially honest so the user can
         # trust that what they see corresponds to what the lasso selects.
         alpha = self._alpha_slider.value() / 100.0
-        if (ei_panel._overlay_image_rgba is not None
-                and ei_panel._overlay_extent_um is not None):
+        if (
+            ei_panel._overlay_image_rgba is not None
+            and ei_panel._overlay_extent_um is not None
+        ):
             xl, xr, yb, yt = ei_panel._overlay_extent_um
             self._ax.imshow(
                 ei_panel._overlay_image_rgba,
-                aspect='equal',
-                origin='upper',
+                aspect="equal",
+                origin="upper",
                 extent=(xl, xr, yb, yt),
                 alpha=alpha,
-                interpolation='bilinear',
+                interpolation="bilinear",
                 zorder=0,
             )
         else:
-            self._ax.text(0.5, 0.97,
-                          "No photo loaded — load transform first",
-                          ha='center', va='top', color='#e94560',
-                          fontsize=9, transform=self._ax.transAxes)
+            self._ax.text(
+                0.5,
+                0.97,
+                "No photo loaded — load transform first",
+                ha="center",
+                va="top",
+                color="#e94560",
+                fontsize=9,
+                transform=self._ax.transAxes,
+            )
 
         # ── electrode scatter ────────────────────────────────────────────
         if has_electrodes:
             self._electrode_scatter = self._ax.scatter(
-                ch_pos[:, 0], ch_pos[:, 1],
-                s=6, c='#4488ff', alpha=0.5, zorder=2,
+                ch_pos[:, 0],
+                ch_pos[:, 1],
+                s=6,
+                c="#4488ff",
+                alpha=0.5,
+                zorder=2,
                 linewidths=0,
             )
         else:
@@ -429,15 +463,16 @@ class CellTracerDialog(QDialog):
         if ax_xlim is not None:
             self._ax.set_xlim(ax_xlim)
             self._ax.set_ylim(ax_ylim)
-            self._ax.set_aspect('equal', adjustable='datalim')
+            self._ax.set_aspect("equal", adjustable="datalim")
 
         # ── lasso line (empty at start) ──────────────────────────────────
-        self._lasso_line, = self._ax.plot([], [], '-', color='#00ffcc',
-                                          linewidth=1.5, zorder=5)
+        (self._lasso_line,) = self._ax.plot(
+            [], [], "-", color="#00ffcc", linewidth=1.5, zorder=5
+        )
         self._lasso_poly_patch = None
         self._sel_scatter = None
 
-        self._ax.axis('off')
+        self._ax.axis("off")
         self._fig.tight_layout(pad=0.2)
         self._canvas.draw()
 
@@ -451,9 +486,9 @@ class CellTracerDialog(QDialog):
     # ===================================================================
 
     def _connect_canvas_events(self):
-        self._canvas.mpl_connect('button_press_event',   self._on_press)
-        self._canvas.mpl_connect('motion_notify_event',  self._on_motion)
-        self._canvas.mpl_connect('button_release_event', self._on_release)
+        self._canvas.mpl_connect("button_press_event", self._on_press)
+        self._canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self._canvas.mpl_connect("button_release_event", self._on_release)
 
     def _on_press(self, event):
         if event.inaxes != self._ax or event.button != 1:
@@ -498,13 +533,18 @@ class CellTracerDialog(QDialog):
             self._lasso_poly_patch = None
 
         verts = np.array(self._lasso_verts)
-        patch = MplPolygon(verts, closed=True,
-                           facecolor='#00ffcc', alpha=0.15,
-                           edgecolor='#00ffcc', linewidth=1.5,
-                           zorder=4)
+        patch = MplPolygon(
+            verts,
+            closed=True,
+            facecolor="#00ffcc",
+            alpha=0.15,
+            edgecolor="#00ffcc",
+            linewidth=1.5,
+            zorder=4,
+        )
         self._ax.add_patch(patch)
         self._lasso_poly_patch = patch
-        self._lasso_line.set_data([], [])   # hide raw line
+        self._lasso_line.set_data([], [])  # hide raw line
         self._canvas.draw_idle()
 
     def _compute_selected_electrodes(self):
@@ -537,10 +577,15 @@ class CellTracerDialog(QDialog):
         if len(self._selected_ch_indices) > 0:
             sel_pos = ch_pos[self._selected_ch_indices]
             self._sel_scatter = self._ax.scatter(
-                sel_pos[:, 0], sel_pos[:, 1],
-                s=28, c='#ffd700', alpha=0.9, zorder=6,
-                linewidths=1.2, edgecolors='#ffffff',
-                marker='o',
+                sel_pos[:, 0],
+                sel_pos[:, 1],
+                s=28,
+                c="#ffd700",
+                alpha=0.9,
+                zorder=6,
+                linewidths=1.2,
+                edgecolors="#ffffff",
+                marker="o",
             )
 
         self._canvas.draw_idle()
@@ -619,7 +664,7 @@ class CellTracerDialog(QDialog):
             self._table.setItem(i, 0, self._make_cell(str(cid)))
             score_item = self._make_cell(f"{score:.4f}")
             # colour-code by score: green → yellow → red via HSV hue
-            h = int(score * 120)          # 0 = red, 120 = green
+            h = int(score * 120)  # 0 = red, 120 = green
             score_item.setForeground(QColor.fromHsv(h, 200, 220))
             self._table.setItem(i, 1, score_item)
             chan_str = str(best_chan) if best_chan >= 0 else "—"
@@ -653,9 +698,9 @@ class CellTracerDialog(QDialog):
             return
         self.cluster_selected.emit(cid)
         # Also reflect in the EI panel directly if accessible
-        if self.ei_panel is not None and hasattr(self.ei_panel, 'main_window'):
+        if self.ei_panel is not None and hasattr(self.ei_panel, "main_window"):
             mw = self.ei_panel.main_window
-            if hasattr(mw, '_select_cluster_by_id'):
+            if hasattr(mw, "_select_cluster_by_id"):
                 mw._select_cluster_by_id(cid)
 
     def _on_table_selection_changed(self):
@@ -706,13 +751,13 @@ class CellTracerDialog(QDialog):
             return
 
         # Translate ks_id → vision_id (LAW 1)
-        is_vision_only = getattr(dm, 'is_vision_only', False)
+        is_vision_only = getattr(dm, "is_vision_only", False)
         vid = ks_id if is_vision_only else ks_id + 1
 
         entry = dm.vision_eis.get(int(vid))
         if entry is None:
             return
-        ei_arr = getattr(entry, 'ei', None)
+        ei_arr = getattr(entry, "ei", None)
         if not isinstance(ei_arr, np.ndarray) or ei_arr.ndim != 2:
             return
 
@@ -725,7 +770,7 @@ class CellTracerDialog(QDialog):
 
         # Best channel from result cache for ref highlight
         best_chan: int | None = None
-        for (cid, _score, bchan) in self._result_cache:
+        for cid, _score, bchan in self._result_cache:
             if cid == ks_id:
                 best_chan = bchan if bchan >= 0 else None
                 break
@@ -740,7 +785,7 @@ class CellTracerDialog(QDialog):
             positions,
             ref_channel=best_chan,
             ax=self._ax,
-            colors='#00e5ff',
+            colors="#00e5ff",
             alpha=0.75,
             linewidth=0.6,
             # box geometry auto-derived from array spacing in plot_ei_waveforms
@@ -785,10 +830,10 @@ class CellTracerDialog(QDialog):
     def _get_dm(self):
         if self.ei_panel is None:
             return None
-        mw = getattr(self.ei_panel, 'main_window', None)
+        mw = getattr(self.ei_panel, "main_window", None)
         if mw is None:
             return None
-        return getattr(mw, 'data_manager', None)
+        return getattr(mw, "data_manager", None)
 
     def closeEvent(self, event):
         if self._worker_thread is not None and self._worker_thread.isRunning():

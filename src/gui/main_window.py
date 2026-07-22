@@ -1,28 +1,56 @@
 import os
 import logging
 from qtpy.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSplitter, QStatusBar,
-    QHeaderView, QMessageBox, QTabWidget,
-    QTreeView, QAbstractItemView, QLabel,
-    QMenu, QInputDialog, QStackedWidget, QApplication,
-    QCheckBox, QProgressBar, QButtonGroup, QLineEdit, QShortcut,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QSplitter,
+    QStatusBar,
+    QHeaderView,
+    QMessageBox,
+    QTabWidget,
+    QTreeView,
+    QAbstractItemView,
+    QLabel,
+    QMenu,
+    QInputDialog,
+    QStackedWidget,
+    QApplication,
+    QCheckBox,
+    QProgressBar,
+    QButtonGroup,
+    QLineEdit,
+    QShortcut,
+    QSlider,
 )
-from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer, QSortFilterProxyModel
+from qtpy.QtCore import (
+    Qt,
+    QItemSelectionModel,
+    QThread,
+    QTimer,
+    QSortFilterProxyModel,
+    Signal,
+)
 from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
 from ..analysis.data_manager import DataManager
 from typing import Optional
+
 # Custom GUI Modules
 from .widgets.widgets import (
-    MplCanvas, HighlightStatusPandasModel, CustomTableView, ClusterTreeDelegate,
+    MplCanvas,
+    HighlightStatusPandasModel,
+    CustomTableView,
+    ClusterTreeDelegate,
 )
 from . import callbacks
-from .panels.population_panel import (
-    draw_population_rfs_plot
-)
+from .panels.population_panel import draw_population_rfs_plot
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
+from .panels.chirp_panel import ChirpPanel
+from .panels.grating_panel import GratingPanel
 from .panels.ei_panel import EIPanel
 from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
@@ -38,6 +66,7 @@ from .theme import (
     configure_pyqtgraph_theme,
     get_theme_colors,
 )
+
 # Array calibration dialog
 from .panels.array_calibration_panel import ArrayCalibrationDialog
 
@@ -50,6 +79,17 @@ SIDEBAR_COLLAPSED_WIDTH = 22
 
 
 class MainWindow(QMainWindow):
+    # Emitted from the _warm_physics background thread (a plain
+    # threading.Thread, not a QThread) once physics-cache warming
+    # completes, to safely hop back onto the GUI thread and start the
+    # grating batch QThread there. A Qt Signal, unlike QTimer.singleShot(),
+    # can be emitted from any thread and is guaranteed to be delivered on
+    # the thread of the connected slot's receiver (here, MainWindow itself,
+    # which lives on the GUI thread) via Qt's normal queued-connection
+    # mechanism — this is the actually-reliable cross-thread marshaling
+    # primitive, not a timer that needs an event loop on the emitting side.
+    physics_warm_done = Signal()
+
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
         self.setWindowTitle("RGC Viewer")
@@ -95,7 +135,8 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
         self.status_bar.showMessage(
-            "Welcome to RGC Viewer. Please load a Kilosort directory to begin.")
+            "Welcome to RGC Viewer. Please load a Kilosort directory to begin."
+        )
 
         # selection timer for debouncing rapid selections
         self.selection_timer = QTimer(self)
@@ -125,12 +166,13 @@ class MainWindow(QMainWindow):
             return
 
         current = view.currentIndex()
-        
+
         # If nothing is selected, select the first visible row
         if not current.isValid():
             index = model.index(0, 0)
             sel_model.setCurrentIndex(
-                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
             view.scrollTo(index)
             return
 
@@ -140,11 +182,13 @@ class MainWindow(QMainWindow):
                 new_idx = view.indexAbove(current)
             else:
                 new_idx = view.indexBelow(current)
-                
+
             # Only move if the new index is valid (prevents scrolling off the edge)
             if new_idx.isValid():
                 sel_model.setCurrentIndex(
-                    new_idx, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                    new_idx,
+                    QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+                )
                 view.scrollTo(new_idx)
 
         # Table View Logic (Flat list)
@@ -154,10 +198,11 @@ class MainWindow(QMainWindow):
                 new_row = max(0, current_row - 1)
             else:
                 new_row = min(model.rowCount() - 1, current_row + 1)
-                
+
             index = model.index(new_row, 0)
             sel_model.setCurrentIndex(
-                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
             view.scrollTo(index)
 
     def _setup_style(self, colors):
@@ -447,28 +492,30 @@ class MainWindow(QMainWindow):
         """Toggles between light and dark themes."""
         self.theme = "light" if self.theme == "dark" else "dark"
         colors = self.get_current_colors()
-        
+
         # 1. Update Application-wide Stylesheet
         self._setup_style(colors)
         self._apply_theme_widget_styles(colors)
-        
+
         # 2. Update Global pyqtgraph options
         configure_pyqtgraph_theme(colors)
-        
+
         # 3. Notify all panels to restyle their internal plots
         panels = [
             self.standard_plots_panel,
+            self.chirp_panel,
+            self.grating_panel,
             self.ei_panel,
             self.waveforms_panel,
             self.raw_panel,
             self.sta_panel,
-            self.umap_panel
+            self.umap_panel,
         ]
-        
+
         for panel in panels:
-            if hasattr(panel, 'restyle_plots'):
+            if hasattr(panel, "restyle_plots"):
                 panel.restyle_plots(colors)
-        
+
         # 4. Refresh similarity panel
         self.similarity_panel.restyle_plots(colors)
 
@@ -478,21 +525,27 @@ class MainWindow(QMainWindow):
         self.pop_acg_canvas.restyle(colors)
 
         # Update population header styles
-        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
-        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
-        
-        if hasattr(self, 'sidebar_toggle_btn'):
+        self.pop_tc_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
+        self.pop_acg_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
+
+        if hasattr(self, "sidebar_toggle_btn"):
             self._style_sidebar_toggle_btn(colors)
 
         # 5. Refresh data models if they use custom colors
-        if self.table_view.model() and hasattr(self.table_view.model(), 'update_colors'):
+        if self.table_view.model() and hasattr(
+            self.table_view.model(), "update_colors"
+        ):
             self.table_view.model().update_colors(colors)
-        
+
         # 6. Re-load current cluster to ensure plot colors update
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is not None:
             self.on_tab_changed(self.analysis_tabs.currentIndex())
-            
+
         self.status_bar.showMessage(f"Switched to {self.theme} mode.")
 
     def _apply_theme_widget_styles(self, colors):
@@ -525,15 +578,23 @@ class MainWindow(QMainWindow):
             """)
 
         if hasattr(self, "pop_expand_btn"):
-            bg = colors['accent_positive'] if self.pop_expand_btn.isChecked() else colors['accent']
+            bg = (
+                colors["accent_positive"]
+                if self.pop_expand_btn.isChecked()
+                else colors["accent"]
+            )
             self.pop_expand_btn.setStyleSheet(
                 f"font-weight: bold; background-color: {bg}; padding: 4px 10px;"
             )
 
         if hasattr(self, "pop_tc_label"):
-            self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+            self.pop_tc_label.setStyleSheet(
+                f"font-weight:bold; color: {colors['text_primary']};"
+            )
         if hasattr(self, "pop_acg_label"):
-            self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+            self.pop_acg_label.setStyleSheet(
+                f"font-weight:bold; color: {colors['text_primary']};"
+            )
 
         if hasattr(self, "tree_model"):
             self._apply_tree_item_theme(colors)
@@ -564,7 +625,7 @@ class MainWindow(QMainWindow):
                 image: none;
             }}
         """)
-        if hasattr(self, '_cluster_tree_delegate'):
+        if hasattr(self, "_cluster_tree_delegate"):
             self._cluster_tree_delegate.update_colors(colors)
 
     def _apply_tree_item_theme(self, colors):
@@ -573,9 +634,9 @@ class MainWindow(QMainWindow):
         if self.tree_model is None:
             return
 
-        group_bg = QColor(colors['bg_elevated'])
-        group_fg = QColor(colors['text_primary'])
-        cell_fg = QColor(colors['text_primary'])
+        group_bg = QColor(colors["bg_elevated"])
+        group_fg = QColor(colors["text_primary"])
+        cell_fg = QColor(colors["text_primary"])
 
         def visit(item):
             is_group = item.data(Qt.ItemDataRole.UserRole) is None
@@ -583,7 +644,7 @@ class MainWindow(QMainWindow):
             if is_group:
                 item.setBackground(group_bg)
             else:
-                item.setBackground(QColor(colors['bg_panel']))
+                item.setBackground(QColor(colors["bg_panel"]))
 
             for row in range(item.rowCount()):
                 child = item.child(row)
@@ -613,8 +674,8 @@ class MainWindow(QMainWindow):
             # Quick check if we can hot-swap (check if canvas already has state)
             canvas = self.pop_mosaic_canvas
             can_hot_swap = (
-                hasattr(canvas, '_pop_plot_state') and
-                canvas._pop_plot_state.get('ax') in canvas.fig.axes
+                hasattr(canvas, "_pop_plot_state")
+                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
             )
             if can_hot_swap:
                 # Fast update - update existing ellipse geometry only
@@ -622,7 +683,7 @@ class MainWindow(QMainWindow):
                     draw_population_rfs_plot(
                         main_window=self,
                         selected_cell_id=cluster_id,
-                        canvas=self.pop_mosaic_canvas
+                        canvas=self.pop_mosaic_canvas,
                     )
                 except Exception as e:
                     logger.error(f"Tier 1 Pop Split update failed: {e}")
@@ -634,9 +695,9 @@ class MainWindow(QMainWindow):
         # 3. Electrical Image (EI) - Only if cached
         has_cached_ei = False
         if self.data_manager:
-            if hasattr(self.data_manager, 'has_cached_ei'):
+            if hasattr(self.data_manager, "has_cached_ei"):
                 has_cached_ei = self.data_manager.has_cached_ei(cluster_id)
-            elif hasattr(self.data_manager, 'ei_cache'):
+            elif hasattr(self.data_manager, "ei_cache"):
                 has_cached_ei = cluster_id in self.data_manager.ei_cache
 
         if self.ei_panel.isVisible() and has_cached_ei:
@@ -658,11 +719,9 @@ class MainWindow(QMainWindow):
         if cluster_id is None:
             return
 
-        self.status_bar.showMessage(
-            f"Loading data for Cluster ID: {cluster_id}...")
+        self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
 
-        cached_features = self.data_manager.get_lightweight_features(
-            cluster_id)
+        cached_features = self.data_manager.get_lightweight_features(cluster_id)
         if cached_features:
             self._draw_plots(cluster_id, cached_features)
             return
@@ -670,19 +729,21 @@ class MainWindow(QMainWindow):
         # Only run FeatureWorker if dat_path is available
         if self.data_manager.dat_path is not None:
             # Cleanup previous worker before starting a new one
-            self._cleanup_thread('feature_worker_thread')
+            self._cleanup_thread("feature_worker_thread")
 
             self.feature_worker_thread = QThread()
             self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
             self.feature_worker.moveToThread(self.feature_worker_thread)
             self.feature_worker.features_ready.connect(self.on_features_ready)
             self.feature_worker.error.connect(
-                lambda msg: self.status_bar.showMessage(msg, 4000))
+                lambda msg: self.status_bar.showMessage(msg, 4000)
+            )
             self.feature_worker_thread.started.connect(self.feature_worker.run)
             self.feature_worker_thread.start()
         else:
             self.status_bar.showMessage(
-                "Raw data file not loaded: waveform plot disabled.", 4000)
+                "Raw data file not loaded: waveform plot disabled.", 4000
+            )
             self._draw_plots(cluster_id, None)
 
     def _process_folder_selection(self):
@@ -698,7 +759,7 @@ class MainWindow(QMainWindow):
         # Skip if Qt fired a duplicate selectionChanged for the same folder
         # (happens on focus changes and arrow-key repeats landing on the same item).
         current_sig = frozenset(group_ids)
-        if getattr(self, '_last_pop_folder_sig', None) == current_sig:
+        if getattr(self, "_last_pop_folder_sig", None) == current_sig:
             return
         self._last_pop_folder_sig = current_sig
 
@@ -718,7 +779,9 @@ class MainWindow(QMainWindow):
 
         # CRITICAL: Discard stale results BEFORE caching
         if cluster_id != current_selection:
-            logger.debug(f"Discarding stale features for C{cluster_id} (now viewing C{current_selection})")
+            logger.debug(
+                f"Discarding stale features for C{cluster_id} (now viewing C{current_selection})"
+            )
             return
 
         # Cache the newly computed features
@@ -726,11 +789,15 @@ class MainWindow(QMainWindow):
 
         # Only draw if still on a tab that needs these features
         current_tab = self.analysis_tabs.currentWidget()
-        if current_tab in (self.ei_panel, self.waveforms_panel, self.standard_plots_panel):
+        if current_tab in (
+            self.ei_panel,
+            self.waveforms_panel,
+            self.standard_plots_panel,
+        ):
             self._draw_plots(cluster_id, features)
 
         # Cleanup with timeout to prevent hangs
-        self._cleanup_thread('feature_worker_thread')
+        self._cleanup_thread("feature_worker_thread")
 
     def _cleanup_thread(self, thread_attr: str, timeout_ms: int = 2000):
         """
@@ -769,6 +836,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Tab change EI update failed: {e}")
 
+        elif current_panel == self.chirp_panel:
+            self.chirp_panel.update_all(cluster_id)
+
+        elif current_panel == self.grating_panel:
+            self.grating_panel.update_all(cluster_id)
+
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
 
@@ -788,8 +861,8 @@ class MainWindow(QMainWindow):
         if self.population_view_enabled:
             canvas = self.pop_mosaic_canvas
             can_hot_swap = (
-                hasattr(canvas, '_pop_plot_state') and
-                canvas._pop_plot_state.get('ax') in canvas.fig.axes
+                hasattr(canvas, "_pop_plot_state")
+                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
             )
             if not can_hot_swap:
                 # Full rebuild needed - do it in Tier 2
@@ -797,7 +870,7 @@ class MainWindow(QMainWindow):
                     draw_population_rfs_plot(
                         main_window=self,
                         selected_cell_id=cluster_id,
-                        canvas=self.pop_mosaic_canvas
+                        canvas=self.pop_mosaic_canvas,
                     )
                 except Exception as e:
                     logger.error(f"Tier 2 Pop Split rebuild failed: {e}")
@@ -814,7 +887,9 @@ class MainWindow(QMainWindow):
                 subset = self._get_pop_subset_ids()
                 callbacks.redraw_population_panels(self, subset=subset)
             except Exception as e:
-                logger.error(f"Failed to update population panels on cell selection: {e}")
+                logger.error(
+                    f"Failed to update population panels on cell selection: {e}"
+                )
 
         # --- ONLY UPDATE STANDARD PLOTS WHEN THAT TAB IS VISIBLE ---
         if current_tab == self.standard_plots_panel:
@@ -828,6 +903,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Draw plots EI update failed: {e}")
             self.similarity_panel.update_main_cluster_id(cluster_id)
+
+        elif current_tab == self.chirp_panel:
+            self.chirp_panel.update_all(cluster_id)
+
+        elif current_tab == self.grating_panel:
+            self.grating_panel.update_all(cluster_id)
 
         elif current_tab == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
@@ -868,7 +949,9 @@ class MainWindow(QMainWindow):
         # Create a widget to contain the filter box and views
         left_content = QWidget()
         left_content_layout = QVBoxLayout(left_content)
-        left_content_layout.setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, PANEL_PADDING)
+        left_content_layout.setContentsMargins(
+            PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, PANEL_PADDING
+        )
         left_content_layout.setSpacing(CTRL_SPACING)
 
         # --- Filter + View Toggle Row ---
@@ -881,18 +964,16 @@ class MainWindow(QMainWindow):
         self.filter_all_btn.setCheckable(True)
         self.filter_all_btn.setFixedHeight(26)
         self.filter_all_btn.setChecked(True)
-        self.filter_all_btn.setStyleSheet(
-            "border-radius: 5px;"
-        )
+        self.filter_all_btn.setStyleSheet("border-radius: 5px;")
 
         # Segmented view toggle
         self.view_group = QButtonGroup(self)
         self.table_view_button = QPushButton("Table")
-        self.tree_view_button  = QPushButton("Tree")
+        self.tree_view_button = QPushButton("Tree")
         self.view_group.addButton(self.table_view_button)
         self.view_group.addButton(self.tree_view_button)
         self.view_group.setExclusive(True)
-        
+
         for btn in (self.table_view_button, self.tree_view_button):
             btn.setCheckable(True)
             btn.setFixedHeight(26)
@@ -925,25 +1006,24 @@ class MainWindow(QMainWindow):
         self.tree_view.setAnimated(True)
         self.tree_view.setUniformRowHeights(True)
         self._cluster_tree_delegate = ClusterTreeDelegate(
-            self.tree_view, self.get_current_colors())
+            self.tree_view, self.get_current_colors()
+        )
         self.tree_view.setItemDelegate(self._cluster_tree_delegate)
         self._apply_tree_view_style(self.get_current_colors())
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
-        self.tree_view.setDragDropMode(
-            QAbstractItemView.DragDropMode.InternalMove)
-        self.tree_view.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(
-            self.open_tree_context_menu)
+        self.tree_view.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
 
         # Table View
         self.table_view = CustomTableView()
         self.table_view.setSortingEnabled(True)
         self.table_view.setAlternatingRowColors(True)
         self.table_view.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive)
+            QHeaderView.ResizeMode.Interactive
+        )
 
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
@@ -966,7 +1046,8 @@ class MainWindow(QMainWindow):
         self.similarity_panel = SimilarityPanel(self)
         left_content_layout.addWidget(self.similarity_panel)
         self.similarity_panel.selection_changed.connect(
-            self.on_similarity_selection_changed)
+            self.on_similarity_selection_changed
+        )
 
         left_pane_layout.addWidget(left_content, stretch=1)
 
@@ -1032,11 +1113,38 @@ class MainWindow(QMainWindow):
         self.pop_show_ids_checkbox.setChecked(False)
         self.pop_show_ids_checkbox.stateChanged.connect(self._on_pop_show_ids_toggled)
         pop_ctrl_layout.addWidget(self.pop_show_ids_checkbox)
+
+        # DS/OS classification threshold slider. Controls how strong DSI/OSI
+        # must be (after already passing grating_calc's significance/
+        # amplitude gate — this does NOT loosen that gate, only how
+        # strongly-tuned a cell must be to get drawn as DS/OS) — see
+        # population_panel.py's _best_dsos_condition. Range 0.1-0.9 in
+        # integer-slider units of 0.01 (Qt's QSlider is integer-only);
+        # default 0.3 matches grating_calc.DSI_THRESHOLD/OSI_THRESHOLD.
+        self.dsos_threshold = 0.3
+        pop_ctrl_layout.addWidget(QLabel("DS/OS threshold:"))
+        self.pop_dsos_threshold_slider = QSlider(Qt.Horizontal)
+        self.pop_dsos_threshold_slider.setRange(10, 90)
+        self.pop_dsos_threshold_slider.setValue(30)
+        self.pop_dsos_threshold_slider.setFixedWidth(100)
+        self.pop_dsos_threshold_slider.setToolTip(
+            "How strong DSI/OSI must be to count as DS/OS (0.10-0.90)"
+        )
+        pop_ctrl_layout.addWidget(self.pop_dsos_threshold_slider)
+        self.pop_dsos_threshold_label = QLabel("0.30")
+        self.pop_dsos_threshold_label.setFixedWidth(32)
+        pop_ctrl_layout.addWidget(self.pop_dsos_threshold_label)
+        self.pop_dsos_threshold_slider.valueChanged.connect(
+            self._on_dsos_threshold_changed
+        )
+
         self.pop_expand_btn = QPushButton("⛶ Full Screen")
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
         self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
-        self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;")
+        self.pop_expand_btn.setStyleSheet(
+            f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
+        )
         pop_ctrl_layout.addStretch()
         pop_ctrl_layout.addWidget(self.pop_expand_btn)
         pop_layout.addLayout(pop_ctrl_layout)
@@ -1052,24 +1160,28 @@ class MainWindow(QMainWindow):
         mosaic_layout.addWidget(self.pop_mosaic_canvas)
         # AC4: Zoom & Pan toolbar for the RF mosaic
         from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-        self.pop_mosaic_toolbar = NavigationToolbar2QT(self.pop_mosaic_canvas, self.pop_mosaic_widget)
+
+        self.pop_mosaic_toolbar = NavigationToolbar2QT(
+            self.pop_mosaic_canvas, self.pop_mosaic_widget
+        )
         self.pop_mosaic_toolbar.setMaximumHeight(28)
         mosaic_layout.addWidget(self.pop_mosaic_toolbar)
         self.pop_master_splitter.addWidget(self.pop_mosaic_widget)
-        
+
         # Default to Pan tool and implement mouse-wheel zoom
         self.pop_mosaic_toolbar.pan()
-        
+
         def on_mosaic_scroll(event):
-            if not event.inaxes: return
+            if not event.inaxes:
+                return
             ax = event.inaxes
             base_scale = 1.2
             cur_xlim = ax.get_xlim()
             cur_ylim = ax.get_ylim()
             xdata, ydata = event.xdata, event.ydata
-            if event.button == 'up':
+            if event.button == "up":
                 scale_factor = 1 / base_scale
-            elif event.button == 'down':
+            elif event.button == "down":
                 scale_factor = base_scale
             else:
                 scale_factor = 1
@@ -1077,11 +1189,11 @@ class MainWindow(QMainWindow):
             new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
             relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
             rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
-            ax.set_xlim([xdata - new_width * (1-relx), xdata + new_width * (relx)])
-            ax.set_ylim([ydata - new_height * (1-rely), ydata + new_height * (rely)])
+            ax.set_xlim([xdata - new_width * (1 - relx), xdata + new_width * (relx)])
+            ax.set_ylim([ydata - new_height * (1 - rely), ydata + new_height * (rely)])
             ax.figure.canvas.draw_idle()
-            
-        self.pop_mosaic_canvas.mpl_connect('scroll_event', on_mosaic_scroll)
+
+        self.pop_mosaic_canvas.mpl_connect("scroll_event", on_mosaic_scroll)
 
         # 2. Timecourse Panel
         self.pop_timecourse_widget = QWidget()
@@ -1089,7 +1201,9 @@ class MainWindow(QMainWindow):
         tc_layout.setContentsMargins(0, 0, 0, 0)
         tc_hdr = QHBoxLayout()
         self.pop_tc_label = QLabel("Population Dynamics")
-        self.pop_tc_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        self.pop_tc_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
         self.pop_timecourse_summary = QLabel("n=0  mean_t2p: N/A  mean_fwhm: N/A")
         tc_hdr.addWidget(self.pop_tc_label)
         tc_hdr.addStretch()
@@ -1105,7 +1219,9 @@ class MainWindow(QMainWindow):
         acg_layout.setContentsMargins(0, 0, 0, 0)
         acg_hdr = QHBoxLayout()
         self.pop_acg_label = QLabel("Population Autocorrelation")
-        self.pop_acg_label.setStyleSheet(f"font-weight:bold; color: {colors['text_primary']};")
+        self.pop_acg_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
         self.pop_acg_summary = QLabel("n=0")
         acg_hdr.addWidget(self.pop_acg_label)
         acg_hdr.addStretch()
@@ -1115,8 +1231,16 @@ class MainWindow(QMainWindow):
         acg_layout.addWidget(self.pop_acg_canvas)
         self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
+        # Standalone "DS/OS Probe Map" panel removed — DS/OS is now shown
+        # directly on the Population Receptive Fields plot (arrows/ticks at
+        # each classified cell's RF center via _draw_dsos_markers), which
+        # doesn't require cross-referencing a separate array-space panel.
+
         # Add master splitter to layout
         pop_layout.addWidget(self.pop_master_splitter, stretch=1)
+        # 3 panes now (RF mosaic, timecourse, ACG) — was 4 before the
+        # standalone DS/OS Probe Map pane was removed. Same proportions as
+        # before (RF mosaic gets double weight), just one fewer entry.
         self.pop_master_splitter.setSizes([400, 200, 200])
 
         # --- NEW: right-side splitter containing tabs and pop widget ---
@@ -1133,6 +1257,8 @@ class MainWindow(QMainWindow):
 
         # --- Panels ---
         self.standard_plots_panel = StandardPlotsPanel(self)
+        self.chirp_panel = ChirpPanel(self)
+        self.grating_panel = GratingPanel(self)
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
@@ -1141,6 +1267,8 @@ class MainWindow(QMainWindow):
 
         # --- Tab Order (Short Labels) ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
+        self.analysis_tabs.addTab(self.chirp_panel, "Chirp")
+        self.analysis_tabs.addTab(self.grating_panel, "Grating")
         self.analysis_tabs.addTab(self.ei_panel, "EI")
         self.analysis_tabs.addTab(self.sta_panel, "STA")
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")
@@ -1155,8 +1283,10 @@ class MainWindow(QMainWindow):
         self.main_splitter.setStretchFactor(0, 0)  # Left panel doesn't stretch
         self.main_splitter.setStretchFactor(1, 1)  # Right panel takes remaining space
         self.main_splitter.setHandleWidth(5)
-        self.main_splitter.handle(1).mouseDoubleClickEvent = lambda e: self.toggle_sidebar()
-        
+        self.main_splitter.handle(1).mouseDoubleClickEvent = (
+            lambda e: self.toggle_sidebar()
+        )
+
         main_layout.addWidget(self.main_splitter)
 
         self.status_bar = QStatusBar()
@@ -1172,24 +1302,32 @@ class MainWindow(QMainWindow):
         # --- Menu Bar ---
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
-        
+
         load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
-        
+
         # NEW: Separate Raw Data Loader
         self.load_raw_action = file_menu.addAction("Load &Raw Data File...")
-        self.load_raw_action.setEnabled(False) # Disabled until KS is loaded
-        
+        self.load_raw_action.setEnabled(False)  # Disabled until KS is loaded
+
         self.load_vision_action = file_menu.addAction("&Load Vision Files...")
         self.load_vision_action.setEnabled(True)
-        
-        self.load_classification_action = file_menu.addAction("&Load Classification File...")
+
+        self.load_classification_action = file_menu.addAction(
+            "&Load Classification File..."
+        )
         self.load_classification_action.setEnabled(True)
-        
-        self.save_classification_action = file_menu.addAction("Save Classification Text File...")
+
+        self.save_classification_action = file_menu.addAction(
+            "Save Classification Text File..."
+        )
         self.save_classification_action.setEnabled(False)
 
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
+
+        file_menu.addSeparator()
+        self.map_reference_action = file_menu.addAction("Map &Reference Run...")
+        self.map_reference_action.setEnabled(False)
 
         # --- Array Menu ---
         array_menu = menu.addMenu("&Array")
@@ -1207,14 +1345,17 @@ class MainWindow(QMainWindow):
         self.load_raw_action.triggered.connect(self.load_raw_data_file)
         self.load_vision_action.triggered.connect(self.load_vision_directory)
         self.load_classification_action.triggered.connect(self.load_classification_file)
-        self.save_classification_action.triggered.connect(self.on_save_classification_action)
+        self.save_classification_action.triggered.connect(
+            self.on_save_classification_action
+        )
         self.save_action.triggered.connect(self.on_save_action)
+        self.map_reference_action.triggered.connect(self.map_reference_run)
 
         # Connect New Left Panel Buttons
         self.filter_all_btn.clicked.connect(self.reset_views)
         self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
         self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
-        
+
         self.reset_button.clicked.connect(self.reset_views)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
@@ -1224,9 +1365,11 @@ class MainWindow(QMainWindow):
 
         # Connect the raw panel's status and error messages to the status bar
         self.raw_panel.status_message.connect(
-            lambda msg: self.status_bar.showMessage(msg, 3000))
+            lambda msg: self.status_bar.showMessage(msg, 3000)
+        )
         self.raw_panel.error_message.connect(
-            lambda msg: self.status_bar.showMessage(msg, 4000))
+            lambda msg: self.status_bar.showMessage(msg, 4000)
+        )
 
     def _open_array_calibration(self):
         """Open the Map Image to Array calibration dialog."""
@@ -1236,7 +1379,7 @@ class MainWindow(QMainWindow):
 
     def _on_transform_saved(self, transform_path: str):
         """Called after user saves a new transform — refresh image overlay."""
-        if hasattr(self, 'standard_plots_panel'):
+        if hasattr(self, "standard_plots_panel"):
             self.standard_plots_panel.refresh_array_image(transform_path=transform_path)
             # re-draw the grid for the currently selected cluster (if any)
             cid = self._get_selected_cluster_id()
@@ -1244,7 +1387,7 @@ class MainWindow(QMainWindow):
                 self.standard_plots_panel.update_all(cid)
 
         # Also push to the EI panel so Photo overlay is immediately available
-        if hasattr(self, 'ei_panel'):
+        if hasattr(self, "ei_panel"):
             self.ei_panel.refresh_array_image(transform_path)
 
         self.status_bar.showMessage(f"Array transform saved: {transform_path}", 4000)
@@ -1280,35 +1423,65 @@ class MainWindow(QMainWindow):
             selected = None
 
         draw_population_rfs_plot(
-            main_window=self,
-            selected_cell_id=selected,
-            canvas=self.pop_mosaic_canvas)
+            main_window=self, selected_cell_id=selected, canvas=self.pop_mosaic_canvas
+        )
         callbacks.redraw_population_panels(self)
 
     def _on_pop_show_ids_toggled(self, state):
         """Force a redraw of the population mosaic when Show IDs is toggled."""
-        if hasattr(self, 'pop_mosaic_canvas'):
+        if hasattr(self, "pop_mosaic_canvas"):
             # Invalidate the hot-swap cache to force a full background rebuild
-            if hasattr(self.pop_mosaic_canvas, '_pop_plot_state'):
+            if hasattr(self.pop_mosaic_canvas, "_pop_plot_state"):
                 del self.pop_mosaic_canvas._pop_plot_state
-            
+
             selected = None
             try:
                 selected = self._get_selected_cluster_id()
             except Exception:
                 pass
-                
+
             draw_population_rfs_plot(
                 main_window=self,
                 selected_cell_id=selected,
-                canvas=self.pop_mosaic_canvas
+                canvas=self.pop_mosaic_canvas,
+            )
+
+    def _on_dsos_threshold_changed(self, slider_value):
+        """
+        DS/OS threshold slider moved. Updates self.dsos_threshold (read by
+        population_panel.py's _draw_dsos_markers on every redraw) and
+        forces a full redraw so the change is visible immediately, using
+        the same cache-invalidation approach as _on_pop_show_ids_toggled —
+        DS/OS markers are already always redrawn fresh regardless of cache
+        state (see _draw_dsos_markers docstring), but invalidating
+        _pop_plot_state here too guarantees a clean full redraw rather than
+        depending on the hot-swap path's DS/OS-always-fresh behavior for
+        this specific interaction.
+        """
+        self.dsos_threshold = slider_value / 100.0
+        self.pop_dsos_threshold_label.setText(f"{self.dsos_threshold:.2f}")
+
+        if hasattr(self, "pop_mosaic_canvas"):
+            if hasattr(self.pop_mosaic_canvas, "_pop_plot_state"):
+                del self.pop_mosaic_canvas._pop_plot_state
+
+            selected = None
+            try:
+                selected = self._get_selected_cluster_id()
+            except Exception:
+                pass
+
+            draw_population_rfs_plot(
+                main_window=self,
+                selected_cell_id=selected,
+                canvas=self.pop_mosaic_canvas,
             )
 
     def _switch_left_view(self, index):
         """Switches between the tree (0) and table (1) views in the left pane."""
         self.view_stack.setCurrentIndex(index)
         # Re-apply any active search query to whichever view just became active
-        if hasattr(self, 'cluster_search_bar'):
+        if hasattr(self, "cluster_search_bar"):
             self._filter_sidebar(self.cluster_search_bar.text())
 
     # --- Helper Method ---
@@ -1335,21 +1508,26 @@ class MainWindow(QMainWindow):
         # Case 2: Table View is active
         elif current_view_index == 1:
             selection_model = self.table_view.selectionModel()
-            if selection_model is None or not selection_model.hasSelection() or self.main_cluster_model is None:
+            if (
+                selection_model is None
+                or not selection_model.hasSelection()
+                or self.main_cluster_model is None
+            ):
                 return None
 
             selected_row = selection_model.selectedIndexes()[0].row()
 
             # Check if the model has mapToSource method (for proxy models)
             model = self.table_view.model()
-            if hasattr(model, 'mapToSource'):
+            if hasattr(model, "mapToSource"):
                 # Map the view's sorted/filtered row back to the source model row
                 source_index = model.mapToSource(model.index(selected_row, 0))
-                cluster_id = model.sourceModel()._dataframe.iloc[
-                    source_index.row()]['cluster_id']
+                cluster_id = model.sourceModel()._dataframe.iloc[source_index.row()][
+                    "cluster_id"
+                ]
             else:
                 # Bare model (no proxy), use the row directly
-                cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
+                cluster_id = model._dataframe.iloc[selected_row]["cluster_id"]
             return cluster_id
 
         return None
@@ -1361,6 +1539,7 @@ class MainWindow(QMainWindow):
     def _get_group_cluster_ids(self, item):
         """Recursively gets all cluster IDs from a folder and all its sub-folders."""
         cluster_ids = []
+
         def recurse(node):
             for i in range(node.rowCount()):
                 child = node.child(i)
@@ -1372,6 +1551,7 @@ class MainWindow(QMainWindow):
                 # Keep digging if it's a sub-folder
                 if child.hasChildren():
                     recurse(child)
+
         recurse(item)
         return cluster_ids
 
@@ -1395,22 +1575,28 @@ class MainWindow(QMainWindow):
         if cluster_id is not None:
             # Always trust the Tree Model first, as it perfectly reflects nested folders
             model = self.tree_model
-            matches = model.match(model.index(0, 0), Qt.ItemDataRole.UserRole, cluster_id, 1, Qt.MatchExactly | Qt.MatchRecursive)
-            
+            matches = model.match(
+                model.index(0, 0),
+                Qt.ItemDataRole.UserRole,
+                cluster_id,
+                1,
+                Qt.MatchExactly | Qt.MatchRecursive,
+            )
+
             if matches:
                 item = model.itemFromIndex(matches[0])
                 parent_item = item.parent()
                 if parent_item is None:
                     parent_item = model.invisibleRootItem()
                 return self._get_group_cluster_ids(parent_item)
-                
+
             return [cluster_id]  # Fallback
 
         return []
 
     def setup_table_model(self, model):
         """Sets up the table view model, wrapping it in a search proxy."""
-        if hasattr(model, 'update_colors'):
+        if hasattr(model, "update_colors"):
             model.update_colors(self.get_current_colors())
 
         proxy = QSortFilterProxyModel(self)
@@ -1423,34 +1609,36 @@ class MainWindow(QMainWindow):
         self.table_view.verticalHeader().setVisible(False)
         try:
             self.table_view.selectionModel().selectionChanged.disconnect(
-                self.on_view_selection_changed)
+                self.on_view_selection_changed
+            )
         except (TypeError, RuntimeError):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
-            self.on_view_selection_changed)
+            self.on_view_selection_changed
+        )
 
         # Re-apply any active search query to the new proxy
-        if hasattr(self, 'cluster_search_bar') and self.cluster_search_bar.text():
+        if hasattr(self, "cluster_search_bar") and self.cluster_search_bar.text():
             proxy.setFilterFixedString(self.cluster_search_bar.text())
 
         # Column header labels override (keeps internal df names intact)
         HEADER_LABELS = {
-            'cluster_id':        'ID',
-            'n_spikes':          '# Spikes',
-            'best_chan':         'Ch',
-            'KSLabel':           'KS Label',
-            'isi_violations_pct':'ISI Viol%',
-            'contam_pct':        'Contam%',
-            'amp_median':        'Amp (µV)',
-            'firing_rate_hz':    'FR (Hz)',
-            'template_amp':      'Tpl Amp',
-            'max_dup_r':         'Max Dup R',
-            'potential_dups':    'Dup?',
-            'cell_type':         'Type',
-            'status':            'Status',
-            'x_um':              'X (µm)',
-            'y_um':              'Y (µm)',
-            'set':               'Set',
+            "cluster_id": "ID",
+            "n_spikes": "# Spikes",
+            "best_chan": "Ch",
+            "KSLabel": "KS Label",
+            "isi_violations_pct": "ISI Viol%",
+            "contam_pct": "Contam%",
+            "amp_median": "Amp (µV)",
+            "firing_rate_hz": "FR (Hz)",
+            "template_amp": "Tpl Amp",
+            "max_dup_r": "Max Dup R",
+            "potential_dups": "Dup?",
+            "cell_type": "Type",
+            "status": "Status",
+            "x_um": "X (µm)",
+            "y_um": "Y (µm)",
+            "set": "Set",
         }
 
         df_cols = list(model._dataframe.columns)
@@ -1467,10 +1655,12 @@ class MainWindow(QMainWindow):
                     if col_name and col_name in overrides:
                         return overrides[col_name]
                 return orig(section, orientation, role)
+
             return patched
 
         model.headerData = _make_patched(
-            _orig_headerData, model._header_overrides, df_cols)
+            _orig_headerData, model._header_overrides, df_cols
+        )
 
         for col_name, label in HEADER_LABELS.items():
             model._header_overrides[col_name] = label
@@ -1479,7 +1669,7 @@ class MainWindow(QMainWindow):
         header = self.table_view.horizontalHeader()
         header.setSectionsMovable(True)
 
-        if not getattr(self, '_table_columns_initialized', False):
+        if not getattr(self, "_table_columns_initialized", False):
             self._apply_default_column_order(header, df_cols, col_index)
             self._table_columns_initialized = True
 
@@ -1488,22 +1678,22 @@ class MainWindow(QMainWindow):
     def _apply_default_column_order(self, header, df_cols, col_index):
         """Apply the desired default visual column order. Called only once."""
         ORDERED_COLS = [
-            'cluster_id',       # shown as "ID" — thin
-            'n_spikes',
-            'best_chan',
-            'KSLabel',
-            'isi_violations_pct',
-            'contam_pct',
-            'amp_median',
-            'firing_rate_hz',
-            'template_amp',
-            'max_dup_r',
-            'potential_dups',
-            'cell_type',
-            'status',
-            'x_um',
-            'y_um',
-            'set',
+            "cluster_id",  # shown as "ID" — thin
+            "n_spikes",
+            "best_chan",
+            "KSLabel",
+            "isi_violations_pct",
+            "contam_pct",
+            "amp_median",
+            "firing_rate_hz",
+            "template_amp",
+            "max_dup_r",
+            "potential_dups",
+            "cell_type",
+            "status",
+            "x_um",
+            "y_um",
+            "set",
         ]
         visual_order = [c for c in ORDERED_COLS if c in col_index]
         listed = set(ORDERED_COLS)
@@ -1530,10 +1720,12 @@ class MainWindow(QMainWindow):
         old_view_model = self.table_view.model()
         if old_view_model is not None:
             # Unwrap proxy if present
-            old_source = (old_view_model.sourceModel()
-                          if hasattr(old_view_model, 'sourceModel')
-                          else old_view_model)
-            if hasattr(old_source, '_dataframe'):
+            old_source = (
+                old_view_model.sourceModel()
+                if hasattr(old_view_model, "sourceModel")
+                else old_view_model
+            )
+            if hasattr(old_source, "_dataframe"):
                 old_cols = list(old_source._dataframe.columns)
                 old_visual_order = [
                     old_cols[header.logicalIndex(v)]
@@ -1560,26 +1752,37 @@ class MainWindow(QMainWindow):
         self.table_view.verticalHeader().setVisible(False)
         try:
             self.table_view.selectionModel().selectionChanged.disconnect(
-                self.on_view_selection_changed)
+                self.on_view_selection_changed
+            )
         except (TypeError, RuntimeError):
             pass
         self.table_view.selectionModel().selectionChanged.connect(
-            self.on_view_selection_changed)
+            self.on_view_selection_changed
+        )
 
         # Re-apply any active search filter to the new proxy
-        if hasattr(self, 'cluster_search_bar') and self.cluster_search_bar.text():
+        if hasattr(self, "cluster_search_bar") and self.cluster_search_bar.text():
             proxy.setFilterFixedString(self.cluster_search_bar.text())
 
         # Re-apply header labels
         new_df_cols = list(df.columns)
         HEADER_LABELS = {
-            'cluster_id': 'ID', 'n_spikes': '# Spikes', 'best_chan': 'Ch',
-            'KSLabel': 'KS Label', 'isi_violations_pct': 'ISI Viol%',
-            'contam_pct': 'Contam%', 'amp_median': 'Amp (µV)',
-            'firing_rate_hz': 'FR (Hz)', 'template_amp': 'Tpl Amp',
-            'max_dup_r': 'Max Dup R', 'potential_dups': 'Dup?',
-            'cell_type': 'Type', 'status': 'Status',
-            'x_um': 'X (µm)', 'y_um': 'Y (µm)', 'set': 'Set',
+            "cluster_id": "ID",
+            "n_spikes": "# Spikes",
+            "best_chan": "Ch",
+            "KSLabel": "KS Label",
+            "isi_violations_pct": "ISI Viol%",
+            "contam_pct": "Contam%",
+            "amp_median": "Amp (µV)",
+            "firing_rate_hz": "FR (Hz)",
+            "template_amp": "Tpl Amp",
+            "max_dup_r": "Max Dup R",
+            "potential_dups": "Dup?",
+            "cell_type": "Type",
+            "status": "Status",
+            "x_um": "X (µm)",
+            "y_um": "Y (µm)",
+            "set": "Set",
         }
         model._header_overrides = {}
         _orig = model.headerData
@@ -1591,6 +1794,7 @@ class MainWindow(QMainWindow):
                     if col_name and col_name in overrides:
                         return overrides[col_name]
                 return orig(section, orientation, role)
+
             return patched
 
         model.headerData = _make_patched(_orig, model._header_overrides, new_df_cols)
@@ -1620,23 +1824,23 @@ class MainWindow(QMainWindow):
                 if current_visual != target_visual:
                     new_header.moveSection(current_visual, target_visual)
         else:
-            self._apply_default_column_order(
-                new_header, new_df_cols, new_col_index)
+            self._apply_default_column_order(new_header, new_df_cols, new_col_index)
 
         self.table_view.resizeColumnsToContents()
 
-    
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
         self._apply_tree_item_theme(self.get_current_colors())
         try:
             self.tree_view.selectionModel().selectionChanged.disconnect(
-                self.on_view_selection_changed)
+                self.on_view_selection_changed
+            )
         except (TypeError, RuntimeError):
             pass
         self.tree_view.selectionModel().selectionChanged.connect(
-            self.on_view_selection_changed)
+            self.on_view_selection_changed
+        )
 
     # ── Sidebar Search ────────────────────────────────────────────────────────
 
@@ -1687,7 +1891,9 @@ class MainWindow(QMainWindow):
             else:
                 # Group node: recurse first, then decide own visibility
                 child_matched = self._apply_tree_filter_recursive(child, query)
-                self.tree_view.setRowHidden(index.row(), index.parent(), not child_matched)
+                self.tree_view.setRowHidden(
+                    index.row(), index.parent(), not child_matched
+                )
                 if child_matched:
                     self.tree_view.setExpanded(index, True)
                     any_visible = True
@@ -1702,7 +1908,7 @@ class MainWindow(QMainWindow):
         (respecting the proxy's filterCaseSensitivity setting).
         """
         model = self.table_view.model()
-        if model is None or not hasattr(model, 'setFilterFixedString'):
+        if model is None or not hasattr(model, "setFilterFixedString"):
             # Proxy not yet installed (before first data load) — nothing to do
             return
         model.setFilterFixedString(query)
@@ -1715,6 +1921,9 @@ class MainWindow(QMainWindow):
 
     def load_vision_directory(self):
         callbacks.load_vision_directory(self)
+
+    def map_reference_run(self):
+        callbacks.map_reference_run(self)
 
     def load_raw_data_file(self):
         callbacks.load_raw_data(self)
@@ -1736,23 +1945,30 @@ class MainWindow(QMainWindow):
             # Sync from Tree to Table
             if sender == self.tree_view.selectionModel():
                 model = self.table_view.model()
-                if hasattr(model, '_data'):
+                if hasattr(model, "_data"):
                     df = model._data
-                    if cluster_id in df['cluster_id'].values:
-                        row_indices = df.index[df['cluster_id']
-                                               == cluster_id].tolist()
+                    if cluster_id in df["cluster_id"].values:
+                        row_indices = df.index[df["cluster_id"] == cluster_id].tolist()
                         if row_indices:
                             model_row = df.index.get_loc(row_indices[0])
                             source_index = model.index(model_row, 0)
                             # This assumes the model is a proxy model if
                             # sorting is enabled
-                            view_index = model.mapFromSource(source_index) if hasattr(
-                                model, 'mapFromSource') else source_index
+                            view_index = (
+                                model.mapFromSource(source_index)
+                                if hasattr(model, "mapFromSource")
+                                else source_index
+                            )
                             if view_index.isValid():
                                 self.table_view.selectionModel().select(
-                                    view_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                                    view_index,
+                                    QItemSelectionModel.ClearAndSelect
+                                    | QItemSelectionModel.Rows,
+                                )
                                 self.table_view.scrollTo(
-                                    view_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                                    view_index,
+                                    QAbstractItemView.ScrollHint.PositionAtCenter,
+                                )
 
             # Sync from Table to Tree
             elif sender == self.table_view.selectionModel():
@@ -1760,18 +1976,21 @@ class MainWindow(QMainWindow):
                 start_index = self.tree_model.index(0, 0)
                 matches = self.tree_model.match(
                     start_index,
-                    Qt.ItemDataRole.UserRole,           # What role to search (Cluster ID)
-                    cluster_id,                         # What value to look for
-                    1,                                  # Stop after 1 match is found
-                    Qt.MatchExactly | Qt.MatchRecursive # Tell it to search sub-folders
+                    Qt.ItemDataRole.UserRole,  # What role to search (Cluster ID)
+                    cluster_id,  # What value to look for
+                    1,  # Stop after 1 match is found
+                    Qt.MatchExactly
+                    | Qt.MatchRecursive,  # Tell it to search sub-folders
                 )
-                
+
                 if matches:
                     index = matches[0]
                     self.tree_view.selectionModel().select(
-                        index, QItemSelectionModel.ClearAndSelect)
+                        index, QItemSelectionModel.ClearAndSelect
+                    )
                     self.tree_view.scrollTo(
-                        index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                        index, QAbstractItemView.ScrollHint.PositionAtCenter
+                    )
 
         # Now that views are synced, trigger the update callbacks
         callbacks.on_cluster_selection_changed(self)
@@ -1791,10 +2010,10 @@ class MainWindow(QMainWindow):
             # If no main cluster is selected, just plot the selected similar
             # clusters
             clusters_to_plot = selected_cluster_ids
+        logger.debug(f"on_similarity_selection_changed: main_cluster = {main_cluster}")
         logger.debug(
-            f'on_similarity_selection_changed: main_cluster = {main_cluster}')
-        logger.debug(
-            f'on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
+            f"on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}"
+        )
 
         self.ei_panel.update_ei(clusters_to_plot)
         self.waveforms_panel.update_all(main_cluster)
@@ -1809,15 +2028,14 @@ class MainWindow(QMainWindow):
         # Collect all duplicate IDs
         colors = self.get_current_colors()
         sdf = self.data_manager.status_df
-        duplicate_ids = sdf[sdf['status'] ==
-                            'Duplicate']['cluster_id'].tolist()
+        duplicate_ids = sdf[sdf["status"] == "Duplicate"]["cluster_id"].tolist()
         duplicate_ids = set(duplicate_ids)
         self._apply_tree_item_theme(colors)
 
         def visit(item):
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
             if cluster_id in duplicate_ids:
-                item.setForeground(QColor(colors['status_noise_text']))
+                item.setForeground(QColor(colors["status_noise_text"]))
             for child_row in range(item.rowCount()):
                 child_item = item.child(child_row)
                 if child_item is not None:
@@ -1857,7 +2075,9 @@ class MainWindow(QMainWindow):
         self.current_sta_view = view_type
 
         # Update button text based on current view
-        if hasattr(self.sta_panel, 'sta_animation_button'):  # Check if STAPanel is initialized
+        if hasattr(
+            self.sta_panel, "sta_animation_button"
+        ):  # Check if STAPanel is initialized
             if view_type == "rf":
                 self.sta_panel.sta_animation_button.setText("Play Animation")
             elif view_type == "animation":
@@ -1895,12 +2115,13 @@ class MainWindow(QMainWindow):
         menu = QMenu()
         index = self.tree_view.indexAt(position)
         item = self.tree_model.itemFromIndex(index)
-        if not item: return
+        if not item:
+            return
 
         add_group_action = menu.addAction("Add New Group")
 
         # Only show folder options if clicking a folder (hasChildren or no UserRole)
-        if item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:  
+        if item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:
             rename_action = menu.addAction("Rename")
             feature_extraction_action = menu.addAction("Feature Extraction")
             menu.addSeparator()
@@ -1910,15 +2131,15 @@ class MainWindow(QMainWindow):
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
         if action == add_group_action:
-            text, ok = QInputDialog.getText(
-                self, 'New Group', 'Enter group name:')
+            text, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
             if ok and text:
                 callbacks.add_new_group(self, text, parent_item=item)
-                
-        elif item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:  
+
+        elif item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:
             if action == rename_action:
                 new_group_name, ok = QInputDialog.getText(
-                    self, 'Rename Group', 'Enter group name:', text=item.text())
+                    self, "Rename Group", "Enter group name:", text=item.text()
+                )
                 if ok and new_group_name:
                     original_group_name = item.text()
                     callbacks.rename_class(self, original_group_name, new_group_name)
@@ -1982,6 +2203,7 @@ class MainWindow(QMainWindow):
 
         def tick():
             import sip
+
             if sip.isdeleted(self.main_splitter):
                 return
             step[0] += 1
@@ -2020,7 +2242,9 @@ class MainWindow(QMainWindow):
             # Full screen mode: Collapse the main tabs completely
             self.right_splitter.setSizes([0, 1000])
             self.pop_expand_btn.setText("🗗 Restore")
-            self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent_positive']}; padding: 4px 10px;")
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: bold; background-color: {colors['accent_positive']}; padding: 4px 10px;"
+            )
         else:
             # Restore mode: 75/25 split
             total = sum(self.right_splitter.sizes()) or 1400
@@ -2028,16 +2252,21 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
             self.pop_expand_btn.setText("⛶ Full Screen")
-            self.pop_expand_btn.setStyleSheet(f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;")
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
+            )
 
     def closeEvent(self, event):
         """Handles the window close event."""
         if self.data_manager and self.data_manager.is_dirty:
             reply = QMessageBox.question(
                 self,
-                'Unsaved Changes',
+                "Unsaved Changes",
                 "You have unsaved refinement changes. Do you want to save before exiting?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
             if reply == QMessageBox.StandardButton.Save:
                 self.on_save_action()
             elif reply == QMessageBox.StandardButton.Cancel:
@@ -2049,19 +2278,22 @@ class MainWindow(QMainWindow):
 
         # Cleanup all threads with timeout to prevent hangs
         for thread_attr in [
-            'feature_worker_thread', 'worker_thread',
-            'standard_worker_thread', 'ks_load_thread',
-            'vision_load_thread', 'refine_thread'
+            "feature_worker_thread",
+            "worker_thread",
+            "standard_worker_thread",
+            "ks_load_thread",
+            "vision_load_thread",
+            "refine_thread",
         ]:
             self._cleanup_thread(thread_attr, timeout_ms=1000)
-        
+
         # Also cleanup vision_load_worker if it exists
-        if hasattr(self, 'vision_load_worker') and self.vision_load_worker:
+        if hasattr(self, "vision_load_worker") and self.vision_load_worker:
             self.vision_load_worker.deleteLater()
             self.vision_load_worker = None
 
         # Stop any running raw trace worker
-        if hasattr(self, 'raw_panel'):
+        if hasattr(self, "raw_panel"):
             self.raw_panel._stop_worker()
 
         # Close any open PyBinFileReader file handles to avoid leaking OS-level
@@ -2075,17 +2307,18 @@ class MainWindow(QMainWindow):
             if self.data_manager and self.data_manager.kilosort_dir:
                 import glob
                 import os
+
                 ks_dir = str(self.data_manager.kilosort_dir)
                 # Find all .tmp files in the Kilosort directory
-                tmp_files = glob.glob(os.path.join(ks_dir, '*.tmp'))
+                tmp_files = glob.glob(os.path.join(ks_dir, "*.tmp"))
                 for tmp_file in tmp_files:
                     try:
                         os.remove(tmp_file)
                         logging.info(f"Cleaned up orphaned temp file: {tmp_file}")
                     except OSError:
-                        pass # File might be locked, just skip it
+                        pass  # File might be locked, just skip it
         except Exception as e:
             logging.error(f"Error during temp file cleanup: {e}")
         # ----------------------------------------------
-        
+
         event.accept()

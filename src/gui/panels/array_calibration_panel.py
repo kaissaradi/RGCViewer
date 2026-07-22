@@ -15,10 +15,22 @@ from typing import Optional, List, Tuple
 
 import pyqtgraph as pg
 from qtpy.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QFileDialog, QTableWidget, QTableWidgetItem, QSplitter,
-    QHeaderView, QMessageBox, QWidget, QGroupBox, QCheckBox, 
-    QAbstractItemView, QStatusBar
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QSplitter,
+    QHeaderView,
+    QMessageBox,
+    QWidget,
+    QGroupBox,
+    QCheckBox,
+    QAbstractItemView,
+    QStatusBar,
 )
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFont
@@ -29,39 +41,53 @@ logger = logging.getLogger(__name__)
 # Coordinate transform
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def fit_transform(pixel_pts: np.ndarray, micron_pts: np.ndarray) -> Optional[dict]:
     """Fit per-axis linear transform: pixel = scale * micron + offset."""
     if len(pixel_pts) < 2:
         return None
-    pixel_pts  = np.array(pixel_pts,  dtype=float)
+    pixel_pts = np.array(pixel_pts, dtype=float)
     micron_pts = np.array(micron_pts, dtype=float)
 
     def fit_axis(micro, pix):
         A = np.column_stack([micro, np.ones(len(micro))])
         res, _, _, _ = np.linalg.lstsq(A, pix, rcond=None)
-        rmse = float(np.sqrt(np.mean((pix - (res[0] * micro + res[1]))**2)))
+        rmse = float(np.sqrt(np.mean((pix - (res[0] * micro + res[1])) ** 2)))
         return float(res[0]), float(res[1]), rmse
 
     sx, ox, rmse_x = fit_axis(micron_pts[:, 0], pixel_pts[:, 0])
     sy, oy, rmse_y = fit_axis(micron_pts[:, 1], pixel_pts[:, 1])
-    return dict(scale_x=sx, offset_x=ox, scale_y=sy, offset_y=oy,
-                rmse_x_px=rmse_x, rmse_y_px=rmse_y, n_points=len(pixel_pts))
+    return dict(
+        scale_x=sx,
+        offset_x=ox,
+        scale_y=sy,
+        offset_y=oy,
+        rmse_x_px=rmse_x,
+        rmse_y_px=rmse_y,
+        n_points=len(pixel_pts),
+    )
+
 
 def microns_to_pixels(xy_microns: np.ndarray, t: dict) -> np.ndarray:
     scalar = np.ndim(xy_microns) == 1
     xy = np.atleast_2d(xy_microns).astype(float)
-    result = np.column_stack([
-        t['scale_x'] * xy[:, 0] + t['offset_x'],
-        t['scale_y'] * xy[:, 1] + t['offset_y'],
-    ])
+    result = np.column_stack(
+        [
+            t["scale_x"] * xy[:, 0] + t["offset_x"],
+            t["scale_y"] * xy[:, 1] + t["offset_y"],
+        ]
+    )
     return result[0] if scalar else result
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Custom pyqtgraph ViewBox
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ClickableViewBox(pg.ViewBox):
     """ViewBox that emits image pixel coords on left-click."""
+
     sigImageClicked = Signal(float, float)
 
     def __init__(self, *args, **kwargs):
@@ -80,9 +106,11 @@ class ClickableViewBox(pg.ViewBox):
         else:
             super().mousePressEvent(ev)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The main dialog
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ArrayCalibrationDialog(QDialog):
     transformSaved = Signal(str)
@@ -96,17 +124,17 @@ class ArrayCalibrationDialog(QDialog):
         self.dm = data_manager
 
         self._image_array: Optional[np.ndarray] = None
-        self._image_path:  Optional[Path]        = None
+        self._image_path: Optional[Path] = None
         self._img_h = 0
         self._img_w = 0
         self._adding_point = False
 
-        self._pixel_pts:  List[Tuple[float, float]] = []
+        self._pixel_pts: List[Tuple[float, float]] = []
         self._micron_pts: List[Tuple[float, float]] = []
-        self._elec_nums:  List[int]                 = []
+        self._elec_nums: List[int] = []
 
         self._marker_items: List[pg.ScatterPlotItem] = []
-        self._label_items:  List[pg.TextItem]         = []
+        self._label_items: List[pg.TextItem] = []
         self._preview_scatter: Optional[pg.ScatterPlotItem] = None
 
         self._setup_ui()
@@ -132,7 +160,9 @@ class ArrayCalibrationDialog(QDialog):
         self.btn_add_point = QPushButton("➕  Add Point")
         self.btn_add_point.setCheckable(True)
         self.btn_add_point.setMinimumHeight(30)
-        self.btn_add_point.setStyleSheet("QPushButton:checked { background:#2a6f2a; border:1px solid #5aaf5a; }")
+        self.btn_add_point.setStyleSheet(
+            "QPushButton:checked { background:#2a6f2a; border:1px solid #5aaf5a; }"
+        )
         toolbar.addWidget(self.btn_add_point)
 
         self.btn_clear_all = QPushButton("🗑  Clear All")
@@ -145,16 +175,18 @@ class ArrayCalibrationDialog(QDialog):
         root.addWidget(splitter, stretch=1)
 
         self.gfx = pg.GraphicsLayoutWidget()
-        self.gfx.setBackground('#1a1a1a')
+        self.gfx.setBackground("#1a1a1a")
         self.vb = ClickableViewBox(lockAspect=True, invertY=True)
         self.plot = self.gfx.addPlot(viewBox=self.vb)
-        self.plot.hideAxis('bottom')
-        self.plot.hideAxis('left')
+        self.plot.hideAxis("bottom")
+        self.plot.hideAxis("left")
 
         self.img_item = pg.ImageItem()
         self.plot.addItem(self.img_item)
 
-        self.placeholder = pg.TextItem("Click  'Load Image'  to begin", color=(120, 120, 120), anchor=(0.5, 0.5))
+        self.placeholder = pg.TextItem(
+            "Click  'Load Image'  to begin", color=(120, 120, 120), anchor=(0.5, 0.5)
+        )
         self.placeholder.setFont(QFont("Arial", 14))
         self.plot.addItem(self.placeholder)
 
@@ -193,7 +225,9 @@ class ArrayCalibrationDialog(QDialog):
         q_layout.addWidget(self.chk_show_preview)
         right_layout.addWidget(quality_group)
 
-        tips = QLabel("<b>Tips:</b><br>• Click <i>Add Point</i>, then click an electrode<br>• Enter its electrode number when prompted<br>• Add 3+ points for best accuracy")
+        tips = QLabel(
+            "<b>Tips:</b><br>• Click <i>Add Point</i>, then click an electrode<br>• Enter its electrode number when prompted<br>• Add 3+ points for best accuracy"
+        )
         tips.setWordWrap(True)
         right_layout.addWidget(tips)
         right_layout.addStretch()
@@ -221,8 +255,12 @@ class ArrayCalibrationDialog(QDialog):
         self._set_status("Load an image to begin")
 
         self._save_path: Optional[Path] = None
-        if self.dm is not None and hasattr(self.dm, 'kilosort_dir'):
-            default = Path(self.dm.kilosort_dir).parent / 'transforms' / 'array_transform.json'
+        if self.dm is not None and hasattr(self.dm, "kilosort_dir"):
+            default = (
+                Path(self.dm.kilosort_dir).parent
+                / "transforms"
+                / "array_transform.json"
+            )
             self._set_save_path(default)
 
     def _connect_signals(self):
@@ -238,14 +276,21 @@ class ArrayCalibrationDialog(QDialog):
         self.table.itemChanged.connect(self._on_table_item_changed)
 
     def _on_load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Array Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)")
-        if not path: return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Array Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
         self._load_image_from_path(Path(path))
 
     def _load_image_from_path(self, path: Path):
         try:
             from PIL import Image
-            img = Image.open(path).convert('RGB')
+
+            img = Image.open(path).convert("RGB")
             self._image_array = np.array(img, dtype=np.uint8)
         except Exception as e:
             QMessageBox.critical(self, "Image Load Error", str(e))
@@ -259,19 +304,23 @@ class ArrayCalibrationDialog(QDialog):
         self.plot.autoRange()
 
         if self._save_path is None:
-            self._set_save_path(path.parent / 'array_transform.json')
+            self._set_save_path(path.parent / "array_transform.json")
 
         self._set_status(f"Loaded: {path.name}  ({self._img_w}×{self._img_h} px)")
         self._refresh_state()
 
     def _on_load_transform(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Transform", "", "JSON (*.json);;All Files (*)")
-        if not path: return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Transform", "", "JSON (*.json);;All Files (*)"
+        )
+        if not path:
+            return
         try:
-            with open(path) as f: data = json.load(f)
-            pixel_pts  = data.get('pixel_pts',  [])
-            micron_pts = data.get('micron_pts', [])
-            elec_nums  = data.get('electrode_nums_used', [None] * len(pixel_pts))
+            with open(path) as f:
+                data = json.load(f)
+            pixel_pts = data.get("pixel_pts", [])
+            micron_pts = data.get("micron_pts", [])
+            elec_nums = data.get("electrode_nums_used", [None] * len(pixel_pts))
         except Exception as e:
             QMessageBox.critical(self, "Load Error", str(e))
             return
@@ -289,16 +338,22 @@ class ArrayCalibrationDialog(QDialog):
         self.vb.set_click_mode(checked)
 
     def _on_image_clicked(self, px_x: float, px_y: float):
-        if not self._adding_point or self._image_array is None: return
+        if not self._adding_point or self._image_array is None:
+            return
         px_x = max(0.0, min(float(self._img_w - 1), px_x))
         px_y = max(0.0, min(float(self._img_h - 1), px_y))
 
         elec_num = self._ask_electrode_number(px_x, px_y)
-        if elec_num is None: return
+        if elec_num is None:
+            return
 
         um_x, um_y = self._electrode_to_microns(elec_num)
         if um_x is None:
-            QMessageBox.warning(self, "Electrode Not Found", f"Electrode {elec_num} not found in channel_map.")
+            QMessageBox.warning(
+                self,
+                "Electrode Not Found",
+                f"Electrode {elec_num} not found in channel_map.",
+            )
             return
 
         self._add_calibration_point(px_x, px_y, elec_num, um_x, um_y)
@@ -306,28 +361,49 @@ class ArrayCalibrationDialog(QDialog):
 
     def _ask_electrode_number(self, px_x: float, px_y: float) -> Optional[int]:
         from qtpy.QtWidgets import QInputDialog
-        val, ok = QInputDialog.getInt(self, "Electrode Number", f"Enter electrode number for point ({px_x:.0f}, {px_y:.0f}):", value=1, min=0, max=10000)
+
+        val, ok = QInputDialog.getInt(
+            self,
+            "Electrode Number",
+            f"Enter electrode number for point ({px_x:.0f}, {px_y:.0f}):",
+            value=1,
+            min=0,
+            max=10000,
+        )
         return val if ok else None
 
-    def _electrode_to_microns(self, elec_num: int) -> Tuple[Optional[float], Optional[float]]:
-        if self.dm is None: return None, None
+    def _electrode_to_microns(
+        self, elec_num: int
+    ) -> Tuple[Optional[float], Optional[float]]:
+        if self.dm is None:
+            return None, None
         try:
             chan_map = np.array(self.dm.channel_map).flatten()
             chan_pos = np.array(self.dm.channel_positions)
-            matches  = np.where(chan_map == elec_num)[0]
-            if len(matches) == 0: return None, None
+            matches = np.where(chan_map == elec_num)[0]
+            if len(matches) == 0:
+                return None, None
             idx = matches[0]
             return float(chan_pos[idx, 0]), float(chan_pos[idx, 1])
         except Exception as e:
             logger.warning(f"Could not look up electrode {elec_num}: {e}")
             return None, None
 
-    def _add_calibration_point(self, px_x: float, px_y: float, elec_num: int, um_x: float, um_y: float):
+    def _add_calibration_point(
+        self, px_x: float, px_y: float, elec_num: int, um_x: float, um_y: float
+    ):
         self._pixel_pts.append((px_x, px_y))
         self._micron_pts.append((um_x, um_y))
         self._elec_nums.append(elec_num)
 
-        marker = pg.ScatterPlotItem([px_x], [px_y], symbol='o', size=14, brush=pg.mkBrush(255, 80, 80, 200), pen=pg.mkPen('w', width=1.5))
+        marker = pg.ScatterPlotItem(
+            [px_x],
+            [px_y],
+            symbol="o",
+            size=14,
+            brush=pg.mkBrush(255, 80, 80, 200),
+            pen=pg.mkPen("w", width=1.5),
+        )
         self.plot.addItem(marker)
         self._marker_items.append(marker)
 
@@ -345,24 +421,31 @@ class ArrayCalibrationDialog(QDialog):
         elec_item = QTableWidgetItem(str(elec_num))
         elec_item.setForeground(QColor(255, 220, 80))
         self.table.setItem(row, 2, elec_item)
-        for col in (0, 1): self.table.item(row, col).setFlags(self.table.item(row, col).flags() & ~Qt.ItemIsEditable)
+        for col in (0, 1):
+            self.table.item(row, col).setFlags(
+                self.table.item(row, col).flags() & ~Qt.ItemIsEditable
+            )
         self.table.blockSignals(False)
 
     def _on_table_item_changed(self, item: QTableWidgetItem):
-        if item.column() != 2: return
+        if item.column() != 2:
+            return
         row = item.row()
-        try: new_num = int(item.text())
+        try:
+            new_num = int(item.text())
         except ValueError:
             item.setText(str(self._elec_nums[row]))
             return
 
         um_x, um_y = self._electrode_to_microns(new_num)
         if um_x is None:
-            QMessageBox.warning(self, "Not Found", f"Electrode {new_num} not in channel_map.")
+            QMessageBox.warning(
+                self, "Not Found", f"Electrode {new_num} not in channel_map."
+            )
             item.setText(str(self._elec_nums[row]))
             return
 
-        self._elec_nums[row]  = new_num
+        self._elec_nums[row] = new_num
         self._micron_pts[row] = (um_x, um_y)
         self._label_items[row].setText(str(new_num))
         self._refresh_state()
@@ -372,30 +455,63 @@ class ArrayCalibrationDialog(QDialog):
         for row in rows:
             self.plot.removeItem(self._marker_items[row])
             self.plot.removeItem(self._label_items[row])
-            del self._marker_items[row]; del self._label_items[row]
-            del self._pixel_pts[row]; del self._micron_pts[row]; del self._elec_nums[row]
+            del self._marker_items[row]
+            del self._label_items[row]
+            del self._pixel_pts[row]
+            del self._micron_pts[row]
+            del self._elec_nums[row]
             self.table.removeRow(row)
         self._refresh_state()
 
     def _on_clear_all(self, confirm=True):
         if confirm and self._pixel_pts:
-            if QMessageBox.question(self, "Clear All", "Remove all calibration points?", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes: return
-        for item in self._marker_items + self._label_items: self.plot.removeItem(item)
-        self._marker_items.clear(); self._label_items.clear()
-        self._pixel_pts.clear(); self._micron_pts.clear(); self._elec_nums.clear()
-        self.table.blockSignals(True); self.table.setRowCount(0); self.table.blockSignals(False)
+            if (
+                QMessageBox.question(
+                    self,
+                    "Clear All",
+                    "Remove all calibration points?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                != QMessageBox.Yes
+            ):
+                return
+        for item in self._marker_items + self._label_items:
+            self.plot.removeItem(item)
+        self._marker_items.clear()
+        self._label_items.clear()
+        self._pixel_pts.clear()
+        self._micron_pts.clear()
+        self._elec_nums.clear()
+        self.table.blockSignals(True)
+        self.table.setRowCount(0)
+        self.table.blockSignals(False)
         self._remove_preview()
         self._refresh_state()
 
     def _refresh_preview(self):
         self._remove_preview()
-        if not self.chk_show_preview.isChecked() or len(self._pixel_pts) < 2 or self.dm is None: return
+        if (
+            not self.chk_show_preview.isChecked()
+            or len(self._pixel_pts) < 2
+            or self.dm is None
+        ):
+            return
         t = fit_transform(np.array(self._pixel_pts), np.array(self._micron_pts))
-        if t is None: return
-        try: chan_pos = np.array(self.dm.channel_positions)
-        except Exception: return
+        if t is None:
+            return
+        try:
+            chan_pos = np.array(self.dm.channel_positions)
+        except Exception:
+            return
         px = microns_to_pixels(chan_pos, t)
-        self._preview_scatter = pg.ScatterPlotItem(px[:, 0], px[:, 1], symbol='o', size=6, brush=pg.mkBrush(0, 200, 255, 140), pen=pg.mkPen(None))
+        self._preview_scatter = pg.ScatterPlotItem(
+            px[:, 0],
+            px[:, 1],
+            symbol="o",
+            size=6,
+            brush=pg.mkBrush(0, 200, 255, 140),
+            pen=pg.mkPen(None),
+        )
         self._preview_scatter.setZValue(-5)
         self.plot.addItem(self._preview_scatter)
 
@@ -410,10 +526,17 @@ class ArrayCalibrationDialog(QDialog):
         if n >= 2:
             t = fit_transform(np.array(self._pixel_pts), np.array(self._micron_pts))
             if t:
-                rx, ry = t['rmse_x_px'], t['rmse_y_px']
-                color = "#5af55a" if max(rx, ry) < 5 else "#f5a84a" if max(rx, ry) < 15 else "#f55a5a"
-                self.lbl_rmse.setText(f"<span style='color:{color}'>RMSE X: {rx:.2f} px | Y: {ry:.2f} px</span>")
-        else: self.lbl_rmse.setText("RMSE: — (need ≥ 2 points)")
+                rx, ry = t["rmse_x_px"], t["rmse_y_px"]
+                color = (
+                    "#5af55a"
+                    if max(rx, ry) < 5
+                    else "#f5a84a" if max(rx, ry) < 15 else "#f55a5a"
+                )
+                self.lbl_rmse.setText(
+                    f"<span style='color:{color}'>RMSE X: {rx:.2f} px | Y: {ry:.2f} px</span>"
+                )
+        else:
+            self.lbl_rmse.setText("RMSE: — (need ≥ 2 points)")
 
         self.btn_save.setEnabled(n >= 2 and self._save_path is not None)
         self.btn_clear_all.setEnabled(n > 0)
@@ -422,8 +545,14 @@ class ArrayCalibrationDialog(QDialog):
         self._refresh_preview()
 
     def _on_set_save_path(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Transform As", str(self._save_path) if self._save_path else "", "JSON (*.json);;All Files (*)")
-        if path: self._set_save_path(Path(path))
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Transform As",
+            str(self._save_path) if self._save_path else "",
+            "JSON (*.json);;All Files (*)",
+        )
+        if path:
+            self._set_save_path(Path(path))
 
     def _set_save_path(self, path: Path):
         self._save_path = path
@@ -431,12 +560,14 @@ class ArrayCalibrationDialog(QDialog):
         self._refresh_state()
 
     def _on_save(self):
-        if not self._save_path or len(self._pixel_pts) < 2: return
+        if not self._save_path or len(self._pixel_pts) < 2:
+            return
         t = fit_transform(np.array(self._pixel_pts), np.array(self._micron_pts))
-        if t is None: return
+        if t is None:
+            return
 
         self._save_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # --- NEW: Copy the image to the transforms folder ---
         if self._image_path and self._image_path.exists():
             dest_img_path = self._save_path.parent / self._image_path.name
@@ -454,13 +585,19 @@ class ArrayCalibrationDialog(QDialog):
             **t,
         }
         try:
-            with open(self._save_path, 'w') as f: json.dump(data, f, indent=2)
+            with open(self._save_path, "w") as f:
+                json.dump(data, f, indent=2)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
             return
 
         self._set_status(f"✓ Saved → {self._save_path}")
         self.transformSaved.emit(str(self._save_path))
-        QMessageBox.information(self, "Saved", f"Transform saved to:\n{self._save_path}\n\nRMSE X: {t['rmse_x_px']:.2f} px Y: {t['rmse_y_px']:.2f} px")
+        QMessageBox.information(
+            self,
+            "Saved",
+            f"Transform saved to:\n{self._save_path}\n\nRMSE X: {t['rmse_x_px']:.2f} px Y: {t['rmse_y_px']:.2f} px",
+        )
+
     def _set_status(self, msg: str):
         self.status.showMessage(msg)

@@ -13,3 +13,4 @@ htmlcov/
 .codex_artifacts
 docs/
 tests/
+.claude

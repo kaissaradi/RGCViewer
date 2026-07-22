@@ -1,4 +1,4 @@
 from . import analysis
 from . import gui
 
-__all__ = ['analysis', 'gui']
+__all__ = ["analysis", "gui"]

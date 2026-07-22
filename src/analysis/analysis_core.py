@@ -24,6 +24,7 @@ except ImportError:
 # Snippet extraction
 # ---------------------------------------------------------------------------
 
+
 def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
     """
     Extract snippets from a PyBinFileReader.
@@ -35,8 +36,8 @@ def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
 
     Returns array of shape (n_channels, snip_len, n_spikes).
     """
-    snip_len      = int(window[1] - window[0])
-    n_spikes      = len(spike_times)
+    snip_len = int(window[1] - window[0])
+    n_spikes = len(spike_times)
     total_samples = reader.length
 
     snips = np.zeros((n_spikes, n_channels, snip_len), dtype=np.float32)
@@ -47,7 +48,7 @@ def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
 
     for i, spike_time in enumerate(spike_times):
         start_sample = int(spike_time) + int(window[0])
-        end_sample   = start_sample + snip_len
+        end_sample = start_sample + snip_len
 
         if start_sample < 0 or end_sample > total_samples:
             continue
@@ -58,14 +59,17 @@ def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
         except Exception:
             logger.debug(
                 "PyBinFileReader.get_data failed for spike %d at sample %d",
-                i, start_sample, exc_info=True,
+                i,
+                start_sample,
+                exc_info=True,
             )
 
     return snips.transpose(1, 2, 0)  # → (n_channels, snip_len, n_spikes)
 
 
-def extract_snippets(dat_path_or_memmap, spike_times,
-                     window=(-20, 60), n_channels=512, dtype='int16'):
+def extract_snippets(
+    dat_path_or_memmap, spike_times, window=(-20, 60), n_channels=512, dtype="int16"
+):
     """Extracts snippets of raw data around each spike time.
 
     Accepts one of three source types:
@@ -79,19 +83,21 @@ def extract_snippets(dat_path_or_memmap, spike_times,
     Returns:
         np.ndarray of shape ``(n_channels, snip_len, n_spikes)``, dtype float32.
     """
-    snip_len    = int(window[1] - window[0])
+    snip_len = int(window[1] - window[0])
     spike_count = len(spike_times)
 
     if spike_count == 0:
         return np.zeros((n_channels, snip_len, 0), dtype=np.float32)
 
-    if _PyBinFileReader is not None and isinstance(dat_path_or_memmap, _PyBinFileReader):
+    if _PyBinFileReader is not None and isinstance(
+        dat_path_or_memmap, _PyBinFileReader
+    ):
         return _extract_snippets_from_reader(
             dat_path_or_memmap, spike_times, window, n_channels
         )
 
     if isinstance(dat_path_or_memmap, (str, Path)):
-        raw_data = np.memmap(str(dat_path_or_memmap), dtype=dtype, mode='r')
+        raw_data = np.memmap(str(dat_path_or_memmap), dtype=dtype, mode="r")
         raw_data = raw_data.reshape(-1, n_channels)
     else:
         raw_data = dat_path_or_memmap
@@ -104,7 +110,7 @@ def extract_snippets(dat_path_or_memmap, spike_times,
 
     for i, spike_time in enumerate(spike_times):
         start_sample = int(spike_time) + int(window[0])
-        end_sample   = start_sample + snip_len
+        end_sample = start_sample + snip_len
 
         if start_sample < 0 or end_sample > total_samples:
             continue
@@ -118,6 +124,7 @@ def extract_snippets(dat_path_or_memmap, spike_times,
 # EI utilities
 # ---------------------------------------------------------------------------
 
+
 def baseline_correct(snips, pre_samples=20):
     """Subtract pre-spike baseline mean from each channel."""
     if snips.ndim == 3:
@@ -129,6 +136,7 @@ def baseline_correct(snips, pre_samples=20):
 def compute_ei(snips, pre_samples=20):
     """Compute the Electrical Image (median waveform) from snippets."""
     import torch
+
     snips = baseline_correct(snips, pre_samples=pre_samples)
     snips_torch = torch.from_numpy(snips)
     return torch.median(snips_torch, dim=2).values.numpy()
@@ -166,8 +174,8 @@ def compute_spatial_features(ei, channel_positions, _sampling_rate):
         }
 
     amplitudes = np.ptp(ei, axis=1)
-    max_amp    = np.max(amplitudes)
-    total_amp  = np.sum(amplitudes)
+    max_amp = np.max(amplitudes)
+    total_amp = np.sum(amplitudes)
 
     if total_amp > 0:
         com_x = np.dot(channel_positions[:, 0], amplitudes) / total_amp
@@ -191,6 +199,7 @@ def compute_spatial_features(ei, channel_positions, _sampling_rate):
 # STA timecourse retrieval
 # ---------------------------------------------------------------------------
 
+
 def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
     """
     Retrieve or calculate the STA timecourse for a cell.
@@ -209,9 +218,9 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
     source = "precalculated"
 
     try:
-        red_tc   = vision_params.get_data_for_cell(cell_id, 'RedTimeCourse')
-        green_tc = vision_params.get_data_for_cell(cell_id, 'GreenTimeCourse')
-        blue_tc  = vision_params.get_data_for_cell(cell_id, 'BlueTimeCourse')
+        red_tc = vision_params.get_data_for_cell(cell_id, "RedTimeCourse")
+        green_tc = vision_params.get_data_for_cell(cell_id, "GreenTimeCourse")
+        blue_tc = vision_params.get_data_for_cell(cell_id, "BlueTimeCourse")
         if red_tc is not None and green_tc is not None and blue_tc is not None:
             timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
     except Exception:
@@ -228,13 +237,13 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
             sy = int(max(1, stafit.std_y))
             x0, x1 = max(0, cx - sx), min(r.shape[1], cx + sx + 1)
             y0, y1 = max(0, cy - sy), min(r.shape[0], cy + sy + 1)
-            red_tc   = np.mean(r[y0:y1, x0:x1], axis=(0, 1))
+            red_tc = np.mean(r[y0:y1, x0:x1], axis=(0, 1))
             green_tc = np.mean(g[y0:y1, x0:x1], axis=(0, 1))
-            blue_tc  = np.mean(b[y0:y1, x0:x1], axis=(0, 1))
+            blue_tc = np.mean(b[y0:y1, x0:x1], axis=(0, 1))
         else:
             # No fit: extract from the peak pixel of the red channel
             peak_idx = np.unravel_index(np.argmax(np.abs(r)), r.shape)
-            yi, xi   = peak_idx[0], peak_idx[1]
+            yi, xi = peak_idx[0], peak_idx[1]
             red_tc, green_tc, blue_tc = r[yi, xi, :], g[yi, xi, :], b[yi, xi, :]
 
         timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
@@ -243,8 +252,10 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
         return None, None, None
 
     n_timepoints = timecourse_matrix.shape[0]
-    refresh_ms   = getattr(sta_data, 'refresh_time', 1000.0 / 60.0) if sta_data else 1000.0 / 60.0
-    time_axis    = np.linspace(-(n_timepoints - 1) * refresh_ms, 0, n_timepoints)
+    refresh_ms = (
+        getattr(sta_data, "refresh_time", 1000.0 / 60.0) if sta_data else 1000.0 / 60.0
+    )
+    time_axis = np.linspace(-(n_timepoints - 1) * refresh_ms, 0, n_timepoints)
 
     return time_axis, timecourse_matrix, source
 
@@ -252,6 +263,7 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
 # ---------------------------------------------------------------------------
 # STA metrics  ← the canonical single source of truth
 # ---------------------------------------------------------------------------
+
 
 def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
     """
@@ -293,23 +305,23 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
     if tc_matrix is not None:
         # Dominant channel
         if tc_matrix.shape[1] == 1:
-            dom_idx  = 2          # treat B/W as blue
+            dom_idx = 2  # treat B/W as blue
             dom_trace = tc_matrix[:, 0]
         else:
-            energies  = np.sum(tc_matrix ** 2, axis=0)
+            energies = np.sum(tc_matrix**2, axis=0)
             # Intercept duplicated B/W signal across R/G/B and force Blue
             if np.isclose(energies[0], energies[2], rtol=1e-5):
                 dom_idx = 2
             else:
-                dom_idx   = int(np.argmax(energies))
+                dom_idx = int(np.argmax(energies))
             dom_trace = tc_matrix[:, dom_idx]
 
         channel_names = ["Red", "Green", "Blue"]
         dom_name = "Blue (B/W)" if tc_matrix.shape[1] == 1 else channel_names[dom_idx]
 
         # Smooth once — every derived quantity uses this trace
-        sigma_samples  = max(1, int(0.02 * len(dom_trace)))
-        smoothed       = gaussian_filter1d(dom_trace, sigma=sigma_samples)
+        sigma_samples = max(1, int(0.02 * len(dom_trace)))
+        smoothed = gaussian_filter1d(dom_trace, sigma=sigma_samples)
 
         abs_max = np.max(np.abs(smoothed))
         if abs_max > 0:
@@ -318,18 +330,18 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
             norm = smoothed.copy()
 
         # Polarity
-        peak_val   = np.max(norm)
+        peak_val = np.max(norm)
         trough_val = np.min(norm)
-        is_off     = abs(trough_val) > abs(peak_val)
-        polarity   = "OFF" if is_off else "ON"
+        is_off = abs(trough_val) > abs(peak_val)
+        polarity = "OFF" if is_off else "ON"
 
         # Primary peak index and time
         primary_idx = int(np.argmin(norm) if is_off else np.argmax(norm))
         primary_val = norm[primary_idx]
-        peak_ms     = float(time_axis[primary_idx])
+        peak_ms = float(time_axis[primary_idx])
 
         # FWHM  ── single calculation, used by both table and plot annotation
-        fwhm_ms = float('nan')
+        fwhm_ms = float("nan")
         try:
             trace_for_width = -norm if is_off else norm
             if not np.isclose(trace_for_width[primary_idx], 0.0):
@@ -340,79 +352,81 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
                     )
                 if len(widths) > 0:
                     sample_interval = abs(time_axis[1] - time_axis[0])
-                    fwhm_ms         = float(widths[0] * sample_interval)
+                    fwhm_ms = float(widths[0] * sample_interval)
                     # Compute real-time endpoints for the plot annotation
-                    fwhm_t_start = float(time_axis[0] + left_ips[0]  * sample_interval)
-                    fwhm_t_end   = float(time_axis[0] + right_ips[0] * sample_interval)
-                    fwhm_h       = float(width_heights[0] * (-1 if is_off else 1))
+                    fwhm_t_start = float(time_axis[0] + left_ips[0] * sample_interval)
+                    fwhm_t_end = float(time_axis[0] + right_ips[0] * sample_interval)
+                    fwhm_h = float(width_heights[0] * (-1 if is_off else 1))
                 else:
-                    fwhm_t_start = fwhm_t_end = fwhm_h = float('nan')
+                    fwhm_t_start = fwhm_t_end = fwhm_h = float("nan")
             else:
-                fwhm_t_start = fwhm_t_end = fwhm_h = float('nan')
+                fwhm_t_start = fwhm_t_end = fwhm_h = float("nan")
         except Exception as exc:
             logger.debug("FWHM calculation failed: %s", exc)
-            fwhm_t_start = fwhm_t_end = fwhm_h = float('nan')
+            fwhm_t_start = fwhm_t_end = fwhm_h = float("nan")
 
         # Biphasic index
-        post = norm[primary_idx + 1:]
+        post = norm[primary_idx + 1 :]
         if len(post) > 0:
             secondary_val = float(np.max(post) if is_off else np.min(post))
-            biphasic      = abs(secondary_val / primary_val) if primary_val != 0 else 0.0
+            biphasic = abs(secondary_val / primary_val) if primary_val != 0 else 0.0
         else:
             biphasic = 0.0
 
         # SNR: response std vs. early-baseline std
         baseline_len = int(0.25 * len(norm))
         if baseline_len > 5:
-            baseline_std  = float(np.std(norm[:baseline_len]))
-            response_std  = float(np.std(norm[baseline_len:]))
-            snr = response_std / baseline_std if baseline_std > 0 else float('inf')
+            baseline_std = float(np.std(norm[:baseline_len]))
+            response_std = float(np.std(norm[baseline_len:]))
+            snr = response_std / baseline_std if baseline_std > 0 else float("inf")
         else:
-            snr = float('nan')
+            snr = float("nan")
 
         # ── Store display strings ────────────────────────────────────────────
         metrics["Dominant Channel"] = dom_name
-        metrics["Polarity"]         = polarity
-        metrics["Peak (ms)"]        = f"{peak_ms:.1f}"
-        metrics["FWHM (ms)"]        = f"{fwhm_ms:.1f}" if not np.isnan(fwhm_ms) else "N/A"
-        metrics["Biphasic Index"]   = f"{biphasic:.3f}"
-        metrics["SNR"]              = f"{snr:.2f}"   if not np.isnan(snr) else "N/A"
+        metrics["Polarity"] = polarity
+        metrics["Peak (ms)"] = f"{peak_ms:.1f}"
+        metrics["FWHM (ms)"] = f"{fwhm_ms:.1f}" if not np.isnan(fwhm_ms) else "N/A"
+        metrics["Biphasic Index"] = f"{biphasic:.3f}"
+        metrics["SNR"] = f"{snr:.2f}" if not np.isnan(snr) else "N/A"
 
         # ── Raw floats for plot annotation ───────────────────────────────────
         # The temporal filter plot reads these directly so it never has to
         # recompute — table and annotation are guaranteed identical.
         metrics["_raw_temporal"] = {
-            "dom_idx":      dom_idx,
-            "dom_name":     dom_name,
-            "is_off":       is_off,
-            "norm_trace":   norm,           # smoothed, normalised
-            "raw_tc":       tc_matrix,      # all channels, un-normalised
-            "time_axis":    time_axis,
-            "primary_idx":  primary_idx,
-            "peak_ms":      peak_ms,
-            "peak_val":     float(primary_val),
-            "fwhm_ms":      fwhm_ms,
+            "dom_idx": dom_idx,
+            "dom_name": dom_name,
+            "is_off": is_off,
+            "norm_trace": norm,  # smoothed, normalised
+            "raw_tc": tc_matrix,  # all channels, un-normalised
+            "time_axis": time_axis,
+            "primary_idx": primary_idx,
+            "peak_ms": peak_ms,
+            "peak_val": float(primary_val),
+            "fwhm_ms": fwhm_ms,
             "fwhm_t_start": fwhm_t_start,
-            "fwhm_t_end":   fwhm_t_end,
-            "fwhm_h":       fwhm_h,
-            "biphasic":     biphasic,
-            "snr":          snr,
-            "source":       source,
+            "fwhm_t_end": fwhm_t_end,
+            "fwhm_h": fwhm_h,
+            "biphasic": biphasic,
+            "snr": snr,
+            "source": source,
         }
 
     # ── Spatial block ────────────────────────────────────────────────────────
     if stafit:
         sx, sy = stafit.std_x, stafit.std_y
 
-        orientation_deg = np.rad2deg(stafit.rot) % 180   # keep in [0, 180)
-        area            = np.pi * sx * sy
-        ellipticity     = (sy / sx) if sx > 0 else float('inf')
+        orientation_deg = np.rad2deg(stafit.rot) % 180  # keep in [0, 180)
+        area = np.pi * sx * sy
+        ellipticity = (sy / sx) if sx > 0 else float("inf")
 
-        metrics["RF σx (stix)"]    = f"{sx:.2f}"
-        metrics["RF σy (stix)"]    = f"{sy:.2f}"
+        metrics["RF σx (stix)"] = f"{sx:.2f}"
+        metrics["RF σy (stix)"] = f"{sy:.2f}"
         metrics["RF Area (stix²)"] = f"{area:.1f}"
         metrics["Orientation (°)"] = f"{orientation_deg:.1f}"
-        metrics["Ellipticity"]     = f"{ellipticity:.2f}" if not np.isinf(ellipticity) else "∞"
+        metrics["Ellipticity"] = (
+            f"{ellipticity:.2f}" if not np.isinf(ellipticity) else "∞"
+        )
 
     return metrics
 
@@ -421,13 +435,14 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
 # EI spatial waveform plot
 # ---------------------------------------------------------------------------
 
+
 def plot_ei_waveforms(
     ei,
     positions,
     ref_channel=None,
     scale=1.0,
     ax=None,
-    colors='white',
+    colors="white",
     alpha=1.0,
     linewidth=0.5,
     box_height=None,
@@ -497,7 +512,7 @@ def plot_ei_waveforms(
         if len(y_vals) >= 2:
             spacing = float(np.median(np.diff(np.sort(y_vals))))
         else:
-            spacing = 30.0   # safe fallback
+            spacing = 30.0  # safe fallback
         box_height = spacing * 0.8
 
     if box_width is None:
@@ -540,19 +555,19 @@ def plot_ei_waveforms(
 
         for i in range(ei_array.shape[0]):
             if i >= len(positions):
-                break   # guard against shape mismatch
+                break  # guard against shape mismatch
             x_offset, y_offset = positions[i]
 
             if p2ps[i] < p2p_thresh:
                 ch_alpha = 0.25
-                ch_lw    = 0.3
+                ch_lw = 0.3
             else:
                 ch_alpha = this_alpha
-                ch_lw    = this_lw
+                ch_lw = this_lw
 
             if ref_channel is not None and int(i) == int(ref_channel):
                 ch_alpha = 1.0
-                ch_lw    = this_lw * 3
+                ch_lw = this_lw * 3
 
             lines = ax.plot(
                 t + x_offset,
@@ -560,8 +575,8 @@ def plot_ei_waveforms(
                 color=color,
                 alpha=ch_alpha,
                 linewidth=ch_lw,
-                zorder=7,      # above photo (0), scatter (2), lasso poly (4)
-                rasterized=True,
+                zorder=7,  # above photo (0), scatter (2), lasso poly (4)
+                rasterized=False,  # vector traces stay crisp at any zoom / DPI
             )
             added_artists.extend(lines)
 
@@ -571,6 +586,7 @@ def plot_ei_waveforms(
 # ---------------------------------------------------------------------------
 # Dynamic clustering helpers — pure numpy, no Qt, no I/O
 # ---------------------------------------------------------------------------
+
 
 def peak_align_timecourse(tc):
     """
@@ -597,7 +613,7 @@ def peak_align_timecourse(tc):
         return tc
 
     if np.std(tc) < DEFAULT_MIN_STA_STD:
-        return tc                       # flat — nothing to align
+        return tc  # flat — nothing to align
 
     centre = len(tc) // 2
     peak_idx = int(np.argmax(np.abs(tc)))
@@ -636,14 +652,14 @@ def apply_prefilter(physics_entries, filter_config):
     (valid_ids, discarded_ids) : (list[int], list[int])
         Both lists are sorted for deterministic ordering.
     """
-    min_sta_std = filter_config.get('min_sta_std', 1e-5)
-    max_rf_area = filter_config.get('max_rf_area', 300.0)
+    min_sta_std = filter_config.get("min_sta_std", 1e-5)
+    max_rf_area = filter_config.get("max_rf_area", 300.0)
 
     valid_ids = []
     discarded_ids = []
 
     for cid, phys in physics_entries.items():
-        tc = phys.get('timecourse')
+        tc = phys.get("timecourse")
 
         # --- reject only if STA exists but is flat/uninformative ---
         # timecourse=None means no STA data, which is fine — cell still
@@ -657,7 +673,7 @@ def apply_prefilter(physics_entries, filter_config):
         # --- reject if RF area is explicitly fitted and too large ---
         # rf_area=0.0 is the default when no fit exists, not a real measurement,
         # so skip the area gate entirely when area is zero.
-        rf_area = float(phys.get('rf_area', 0.0))
+        rf_area = float(phys.get("rf_area", 0.0))
         if rf_area > 0.0 and rf_area > max_rf_area:
             discarded_ids.append(cid)
             continue
@@ -702,16 +718,21 @@ def build_feature_matrix(raw_blocks, feature_config):
     """
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import RobustScaler, StandardScaler
-    from .constants import TEMPORAL_PCA_COMPONENTS, ACG_PCA_COMPONENTS
+    from .constants import (
+        TEMPORAL_PCA_COMPONENTS,
+        ACG_PCA_COMPONENTS,
+        GRATING_PCA_COMPONENTS,
+        CHIRP_PCA_COMPONENTS,
+    )
 
-    N = raw_blocks['temporal'].shape[0]   # guaranteed same N across all blocks
+    N = raw_blocks["temporal"].shape[0]  # guaranteed same N across all blocks
     blocks = []
     labels = []
 
     # ── Temporal STA ─────────────────────────────────────────────────────────
-    if feature_config.get('use_temporal', True):
-        w = feature_config.get('w_temporal', 3.0)
-        tc_matrix = raw_blocks['temporal'].copy()
+    if feature_config.get("use_temporal", True):
+        w = feature_config.get("w_temporal", 3.0)
+        tc_matrix = raw_blocks["temporal"].copy()
 
         # Guard: skip the entire temporal block when no STA data is available.
         # get_raw_feature_blocks fills timecourse=None cells with a zero-length
@@ -732,7 +753,7 @@ def build_feature_matrix(raw_blocks, feature_config):
                 # before the user weight is applied).
                 tc_pca = StandardScaler().fit_transform(tc_pca)
                 blocks.append(tc_pca * w)
-                labels.extend([f'tc_pc{j}' for j in range(n_comp)])
+                labels.extend([f"tc_pc{j}" for j in range(n_comp)])
         else:
             logger.debug(
                 "build_feature_matrix: skipping temporal STA block — "
@@ -740,9 +761,9 @@ def build_feature_matrix(raw_blocks, feature_config):
             )
 
     # ── ACG ──────────────────────────────────────────────────────────────────
-    if feature_config.get('use_acg', True):
-        w = feature_config.get('w_acg', 2.0)
-        acg_matrix = raw_blocks['acg'].copy()
+    if feature_config.get("use_acg", True):
+        w = feature_config.get("w_acg", 2.0)
+        acg_matrix = raw_blocks["acg"].copy()
 
         n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
         if n_comp >= 1:
@@ -751,18 +772,106 @@ def build_feature_matrix(raw_blocks, feature_config):
             # and scalar features — weight slider is then interpretable.
             acg_pca = StandardScaler().fit_transform(acg_pca)
             blocks.append(acg_pca * w)
-            labels.extend([f'acg_pc{j}' for j in range(n_comp)])
+            labels.extend([f"acg_pc{j}" for j in range(n_comp)])
+
+    # ── Grating direction-tuning-curve shape ────────────────────────────────
+    # PCA on grating_calc.pooled_direction_tuning_curve — a peak-weighted,
+    # shape-normalized tuning curve pooled across every dsos condition per
+    # cell (see that function's docstring for the pooling method) — rather
+    # than the DSI/OSI scalar summary. DSI/OSI collapse an entire tuning
+    # curve to "how concentrated around one harmonic," which can't
+    # distinguish a narrow single-peaked curve from a broad lopsided one if
+    # they happen to share a DSI value; PCA on the curve shape itself
+    # preserves that distinction the same way temporal/ACG PCA preserve STA/
+    # autocorrelogram shape rather than collapsing them to summary scalars.
+    # Cells with no dsos conditions (or none with usable peak response) get
+    # an all-zero sentinel row from get_raw_feature_blocks — same "guard
+    # against zero-variance / all-zero matrix" pattern as the temporal
+    # block above, not a per-cell special case here.
+    if feature_config.get("use_grating_dsos", True):
+        w = feature_config.get("w_grating_dsos", 3.0)
+        grating_matrix = raw_blocks.get("grating")
+        # Defensive: 'grating' is always present from the current
+        # get_raw_feature_blocks, but this is a public API (__all__) so
+        # guard rather than KeyError if a caller passes an older/partial
+        # raw_blocks dict.
+        if grating_matrix is None or grating_matrix.size == 0:
+            grating_available = False
+        else:
+            grating_matrix = grating_matrix.copy()
+            # Unlike temporal (which collapses to width-1 when no STA),
+            # grating is always POOLED_CURVE_N_BINS wide — so the real
+            # "no usable data" signal is an all-zero matrix (every cell got
+            # the zero sentinel), i.e. np.std == 0. A width check would be
+            # meaningless here.
+            grating_available = np.std(grating_matrix) > 0
+
+        if grating_available:
+            n_comp = min(GRATING_PCA_COMPONENTS, N - 1, grating_matrix.shape[1])
+            if n_comp >= 1:
+                grating_pca = PCA(n_components=n_comp).fit_transform(grating_matrix)
+                grating_pca = StandardScaler().fit_transform(grating_pca)
+                blocks.append(grating_pca * w)
+                labels.extend([f"grating_pc{j}" for j in range(n_comp)])
+        else:
+            logger.debug(
+                "build_feature_matrix: skipping grating block — no cells "
+                "with usable direction-tuning curves (all-zero matrix)."
+            )
+
+    # ── Chirp PSTH shape ─────────────────────────────────────────────────────
+    # PCA on the L2-normalized chirp response PSTH
+    # (get_chirp_data_for_cluster['psth_mean']), gated on availability. Same
+    # "shape not scalar" rationale as the grating block above: the chirp QI
+    # scalar collapses the whole ON/OFF-step + frequency/contrast-sweep
+    # response into one reliability number, which can't tell an ON-transient
+    # cell from a sustained-OFF cell that happen to share a QI. Cells with no
+    # chirp response (missing, or QI below CHIRP_MIN_QI) get an all-zero
+    # sentinel row from get_raw_feature_blocks — same std==0 guard as grating,
+    # not a per-cell special case here. Absent entirely when no chirp file is
+    # loaded (raw_blocks['chirp'] empty / missing key), so the block simply
+    # disappears rather than breaking the embedding.
+    if feature_config.get("use_chirp", True):
+        w = feature_config.get("w_chirp", 3.0)
+        chirp_matrix = raw_blocks.get("chirp")
+        if chirp_matrix is None or chirp_matrix.size == 0:
+            chirp_available = False
+        else:
+            chirp_matrix = chirp_matrix.copy()
+            chirp_available = np.std(chirp_matrix) > 0
+
+        if chirp_available:
+            n_comp = min(CHIRP_PCA_COMPONENTS, N - 1, chirp_matrix.shape[1])
+            if n_comp >= 1:
+                chirp_pca = PCA(n_components=n_comp).fit_transform(chirp_matrix)
+                chirp_pca = StandardScaler().fit_transform(chirp_pca)
+                blocks.append(chirp_pca * w)
+                labels.extend([f"chirp_pc{j}" for j in range(n_comp)])
+        else:
+            logger.debug(
+                "build_feature_matrix: skipping chirp block — no cells with "
+                "usable chirp responses (all-zero/absent matrix)."
+            )
 
     # ── Scalar features ──────────────────────────────────────────────────────
+    # Consolidated set: firing_rate, isi_violations, time_to_peak, and
+    # ellipticity removed (see constants.py DEFAULT_WEIGHT_* comments).
+    # RF area replaced by long/short axis diameters — two independent
+    # scalars rather than one derived area+ratio pair, so PCA/UMAP can find
+    # whatever size/shape relationship actually matters rather than the
+    # relationship being pre-baked into a single ellipticity ratio.
+    #
+    # NOTE on weight semantics: w_rf_diameter is applied independently to
+    # both rf_long_diameter/rf_short_diameter (one checkbox/slider controls
+    # both columns at once). Since scaled Euclidean distance sums
+    # weight**2 per column, a block's total contribution to distance scales
+    # with (n_columns * weight**2), not weight alone.
     scalar_features = [
-        ('firing_rate',     'use_firing_rate',     'w_firing_rate',     1.5),
-        ('isi_violations',  'use_isi_violations',  'w_isi_violations',  1.0),
-        ('time_to_peak',    'use_time_to_peak',    'w_time_to_peak',    1.0),
-        ('rf_area',         'use_rf_area',         'w_rf_area',         1.0),
-        ('ellipticity',     'use_ellipticity',     'w_ellipticity',     1.0),
+        ("rf_long_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
+        ("rf_short_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
     ]
 
-    scalars_df = raw_blocks['scalars']
+    scalars_df = raw_blocks["scalars"]
     enabled_scalars = []
     scalar_weights = []
     scalar_labels = []
@@ -799,15 +908,15 @@ def build_feature_matrix(raw_blocks, feature_config):
 # ---------------------------------------------------------------------------
 
 __all__ = [
-    'extract_snippets',
-    'baseline_correct',
-    'compute_ei',
-    'select_channels',
-    'get_sta_timecourse_data',
-    'compute_sta_metrics',
-    'compute_spatial_features',
-    'plot_ei_waveforms',
-    'peak_align_timecourse',
-    'apply_prefilter',
-    'build_feature_matrix',
+    "extract_snippets",
+    "baseline_correct",
+    "compute_ei",
+    "select_channels",
+    "get_sta_timecourse_data",
+    "compute_sta_metrics",
+    "compute_spatial_features",
+    "plot_ei_waveforms",
+    "peak_align_timecourse",
+    "apply_prefilter",
+    "build_feature_matrix",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 from qtpy.QtCore import QEvent, QObject
 from qtpy.QtCore import Qt
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
 
@@ -23,27 +24,29 @@ class KeyForwarder(QObject):
                 current_view = self.main_window.view_stack.currentWidget()
                 if current_view is self.main_window.tree_view:
                     self.main_window._move_selection_in_view(
-                        self.main_window.tree_view, event.key())
+                        self.main_window.tree_view, event.key()
+                    )
                 elif current_view is self.main_window.table_view:
                     self.main_window._move_selection_in_view(
-                        self.main_window.table_view, event.key())
+                        self.main_window.table_view, event.key()
+                    )
                 return True
             # Add Cmd+D / Ctrl+D shortcut for marking duplicates
-            elif (event.modifiers() & Qt.ControlModifier):
+            elif event.modifiers() & Qt.ControlModifier:
                 if event.key() == Qt.Key_D:
-                    status = 'Duplicate'
+                    status = "Duplicate"
                 elif event.key() == Qt.Key_C:
-                    status = 'Clean'
+                    status = "Clean"
                 elif event.key() == Qt.Key_E:
-                    status = 'Edge'
+                    status = "Edge"
                 elif event.key() == Qt.Key_W:
-                    status = 'Unsure'
+                    status = "Unsure"
                 elif event.key() == Qt.Key_S:
-                    status = 'Noisy'
+                    status = "Noisy"
                 elif event.key() == Qt.Key_X:
-                    status = 'Contaminated'
+                    status = "Contaminated"
                 elif event.key() == Qt.Key_A:
-                    status = 'Off Array'
+                    status = "Off Array"
                 else:
                     return False
                 self.main_window.similarity_panel._mark_status(status)

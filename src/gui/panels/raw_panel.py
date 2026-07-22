@@ -50,30 +50,30 @@ logger = logging.getLogger(__name__)
 # background and not clash with the white trace.
 # ──────────────────────────────────────────────────────────────────────────────
 _UNIT_PALETTE: list[tuple[int, int, int]] = [
-    (74,  144, 226),   # blue          – primary unit (index 0 = selected unit)
-    (240, 180,  40),   # amber
-    (80,  200, 120),   # green
-    (220,  80,  80),   # red
-    (160, 100, 220),   # purple
-    (240, 140,  40),   # orange
-    ( 60, 200, 200),   # teal
-    (220,  80, 160),   # pink
-    (140, 200,  60),   # lime
-    (100, 160, 240),   # cornflower
-    (240, 220,  80),   # yellow
-    ( 80, 220, 180),   # mint
-    (200, 100,  60),   # brown-orange
-    (180, 100, 200),   # lavender
-    (100, 220, 100),   # light-green
-    (220, 160, 100),   # tan
+    (74, 144, 226),  # blue          – primary unit (index 0 = selected unit)
+    (240, 180, 40),  # amber
+    (80, 200, 120),  # green
+    (220, 80, 80),  # red
+    (160, 100, 220),  # purple
+    (240, 140, 40),  # orange
+    (60, 200, 200),  # teal
+    (220, 80, 160),  # pink
+    (140, 200, 60),  # lime
+    (100, 160, 240),  # cornflower
+    (240, 220, 80),  # yellow
+    (80, 220, 180),  # mint
+    (200, 100, 60),  # brown-orange
+    (180, 100, 200),  # lavender
+    (100, 220, 100),  # light-green
+    (220, 160, 100),  # tan
 ]
 
 # Alpha values for non-selected vs selected units (0-255)
-_ALPHA_SELECTED   = 220
-_ALPHA_OTHER      = 100
+_ALPHA_SELECTED = 220
+_ALPHA_OTHER = 100
 # Height fraction of the tick strip relative to the total Y range of the plot
-_TICK_STRIP_FRAC  = 0.07   # tick strip = 7 % of total Y range, below zero line
-_TICK_HEIGHT_FRAC = 0.05   # individual tick = 5 %
+_TICK_STRIP_FRAC = 0.07  # tick strip = 7 % of total Y range, below zero line
+_TICK_HEIGHT_FRAC = 0.05  # individual tick = 5 %
 
 # Number of FR-density bins in the minimap
 _MINIMAP_FR_BINS = 500
@@ -88,6 +88,7 @@ def _unit_color(index: int, alpha: int = 255) -> tuple[int, int, int, int]:
 # Background worker
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class _RawLoadWorker(pg.QtCore.QObject):
     """
     Loads a raw trace window + ALL-channel spike info on a background thread.
@@ -101,7 +102,7 @@ class _RawLoadWorker(pg.QtCore.QObject):
     """
 
     finished = Signal(int, object, object, float, float)
-    error    = Signal(str)
+    error = Signal(str)
 
     def __init__(
         self,
@@ -114,20 +115,20 @@ class _RawLoadWorker(pg.QtCore.QObject):
         load_neighbours: bool = True,
     ):
         super().__init__()
-        self._dm              = dm
-        self._cluster_id      = cluster_id
-        self._dom_chan         = dom_chan
+        self._dm = dm
+        self._cluster_id = cluster_id
+        self._dom_chan = dom_chan
         self._neighbour_chans = neighbour_chans
-        self._start_time      = start_time
-        self._end_time        = end_time
+        self._start_time = start_time
+        self._end_time = end_time
         self._load_neighbours = load_neighbours
 
     def run(self):
         try:
-            dm  = self._dm
-            sr  = dm.sampling_rate
-            s0  = int(self._start_time * sr)
-            s1  = int(self._end_time   * sr)
+            dm = self._dm
+            sr = dm.sampling_rate
+            s0 = int(self._start_time * sr)
+            s1 = int(self._end_time * sr)
 
             if self._load_neighbours:
                 chans = [self._dom_chan] + [
@@ -158,6 +159,7 @@ class _RawLoadWorker(pg.QtCore.QObject):
 # Main panel
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class RawPanel(QWidget):
     """
     Full-featured raw trace viewer with multi-unit spike overlay,
@@ -165,7 +167,7 @@ class RawPanel(QWidget):
     """
 
     status_message = Signal(str)
-    error_message  = Signal(str)
+    error_message = Signal(str)
 
     # ── Window-duration presets (seconds) ─────────────────────────────────────
     _WINDOW_PRESETS = [0.5, 1.0, 2.0, 5.0, 10.0]
@@ -175,20 +177,20 @@ class RawPanel(QWidget):
         self.main_window = main_window
 
         # ── Core state ────────────────────────────────────────────────────────
-        self.current_cluster_id: Optional[int]  = None
-        self.dom_chan:            int             = 0
-        self.neighbour_chans:    list[int]       = []
-        self.spike_times_sec:    np.ndarray      = np.empty(0, dtype=np.float64)
-        self.spike_amplitudes:   np.ndarray      = np.empty(0, dtype=np.float64)
+        self.current_cluster_id: Optional[int] = None
+        self.dom_chan: int = 0
+        self.neighbour_chans: list[int] = []
+        self.spike_times_sec: np.ndarray = np.empty(0, dtype=np.float64)
+        self.spike_amplitudes: np.ndarray = np.empty(0, dtype=np.float64)
 
         # other-unit spike data on dom_chan: {cluster_id: spike_times_sec}
-        self.other_unit_spikes:  dict[int, np.ndarray] = {}
+        self.other_unit_spikes: dict[int, np.ndarray] = {}
         # ordered list of other cluster ids (for colour assignment)
-        self.other_unit_ids:     list[int]       = []
+        self.other_unit_ids: list[int] = []
 
         # view state
-        self.window_center:   float = 0.0
-        self.window_duration: float = 2.0        # seconds
+        self.window_center: float = 0.0
+        self.window_duration: float = 2.0  # seconds
 
         # navigation state
         self.current_spike_index: int = 0
@@ -197,23 +199,23 @@ class RawPanel(QWidget):
         self._jump_targets: dict = {}
 
         # FR density for the minimap (set in _compute_minimap_fr)
-        self._minimap_fr_bins:  Optional[np.ndarray] = None
-        self._minimap_fr_rate:  Optional[np.ndarray] = None
+        self._minimap_fr_bins: Optional[np.ndarray] = None
+        self._minimap_fr_rate: Optional[np.ndarray] = None
         self._recording_duration: float = 0.0
 
         # worker thread
         self._worker_thread: Optional[QThread] = None
-        self._worker:        Optional[_RawLoadWorker] = None
+        self._worker: Optional[_RawLoadWorker] = None
 
         # debounce timer to avoid hammering the worker on rapid navigation
         self._nav_debounce = QTimer(self)
         self._nav_debounce.setSingleShot(True)
-        self._nav_debounce.setInterval(40)   # 40 ms
+        self._nav_debounce.setInterval(40)  # 40 ms
         self._nav_debounce.timeout.connect(self._execute_load)
 
         # pending load parameters (set by _request_load)
-        self._pending_center:    float = 0.0
-        self._pending_duration:  float = 2.0
+        self._pending_center: float = 0.0
+        self._pending_duration: float = 2.0
 
         # suppress re-entrant signals while programmatically updating controls
         self._updating_controls: bool = False
@@ -256,16 +258,16 @@ class RawPanel(QWidget):
         )
 
         # ── Recording duration ────────────────────────────────────────────────
-        rec_dur = getattr(dm, 'n_samples', 0) / max(dm.sampling_rate, 1)
+        rec_dur = getattr(dm, "n_samples", 0) / max(dm.sampling_rate, 1)
 
         # ── Commit state ──────────────────────────────────────────────────────
         self.current_cluster_id = cluster_id
-        self.dom_chan            = dom_chan
-        self.neighbour_chans     = neighbour_chans
-        self.spike_times_sec     = spike_times_sec
-        self.spike_amplitudes    = spike_amps
-        self.other_unit_spikes   = other_unit_spikes
-        self.other_unit_ids      = other_unit_ids
+        self.dom_chan = dom_chan
+        self.neighbour_chans = neighbour_chans
+        self.spike_times_sec = spike_times_sec
+        self.spike_amplitudes = spike_amps
+        self.other_unit_spikes = other_unit_spikes
+        self.other_unit_ids = other_unit_ids
         self._recording_duration = rec_dur
         self.current_spike_index = 0
 
@@ -283,13 +285,13 @@ class RawPanel(QWidget):
 
     def restyle_plots(self, colors: dict) -> None:
         """Called by MainWindow when the theme changes."""
-        bg = colors.get('bg_panel', '#18191C')
-        ax_pen   = pg.mkPen(colors.get('border_default', '#3D3F48'))
-        text_pen = pg.mkPen(colors.get('text_secondary', '#9B9DA6'))
+        bg = colors.get("bg_panel", "#18191C")
+        ax_pen = pg.mkPen(colors.get("border_default", "#3D3F48"))
+        text_pen = pg.mkPen(colors.get("text_secondary", "#9B9DA6"))
 
         for pw in (self._minimap_plot, self._main_plot):
             pw.setBackground(bg)
-            for axis in ('bottom', 'left'):
+            for axis in ("bottom", "left"):
                 ax = pw.getAxis(axis)
                 ax.setPen(ax_pen)
                 ax.setTextPen(text_pen)
@@ -311,16 +313,15 @@ class RawPanel(QWidget):
         # ── Zone 1: Minimap ───────────────────────────────────────────────────
         self._minimap_plot = pg.PlotWidget()
         self._minimap_plot.setFixedHeight(60)
-        self._minimap_plot.setBackground('#18191C')
-        self._minimap_plot.hideAxis('left')
+        self._minimap_plot.setBackground("#18191C")
+        self._minimap_plot.hideAxis("left")
         self._minimap_plot.setMenuEnabled(False)
         self._minimap_plot.getViewBox().setMouseEnabled(x=False, y=False)
-        self._minimap_plot.setLabel('bottom', 'Time (s)', **{'font-size': '9pt'})
+        self._minimap_plot.setLabel("bottom", "Time (s)", **{"font-size": "9pt"})
 
         # FR area fill + line
         self._mm_fill = pg.FillBetweenItem(
-            pg.PlotDataItem(), pg.PlotDataItem(),
-            brush=pg.mkBrush(_unit_color(0, 45))
+            pg.PlotDataItem(), pg.PlotDataItem(), brush=pg.mkBrush(_unit_color(0, 45))
         )
         self._mm_line = self._minimap_plot.plot(
             pen=pg.mkPen(_unit_color(0, 180), width=1)
@@ -341,7 +342,7 @@ class RawPanel(QWidget):
             pos=0.0,
             angle=90,
             movable=False,
-            pen=pg.mkPen((255, 200, 60, 220), width=1.5),   # warm amber, always visible
+            pen=pg.mkPen((255, 200, 60, 220), width=1.5),  # warm amber, always visible
         )
         self._minimap_plot.addItem(self._mm_pos_line)
 
@@ -352,9 +353,9 @@ class RawPanel(QWidget):
 
         # ── Zone 2: Main plot ─────────────────────────────────────────────────
         self._main_plot = pg.PlotWidget()
-        self._main_plot.setBackground('#18191C')
-        self._main_plot.setLabel('bottom', 'Time (s)')
-        self._main_plot.setLabel('left', 'Amplitude (µV)')
+        self._main_plot.setBackground("#18191C")
+        self._main_plot.setLabel("bottom", "Time (s)")
+        self._main_plot.setLabel("left", "Amplitude (µV)")
         self._main_plot.plotItem.getViewBox().setMouseEnabled(y=False)
         self._main_plot.plotItem.getViewBox().setMouseEnabled(x=True)
         self._main_plot.getViewBox().sigXRangeChanged.connect(
@@ -365,12 +366,13 @@ class RawPanel(QWidget):
 
         # Floating info label for spike identification (hidden until a click)
         self._spike_info_label = pg.TextItem(
-            text='', anchor=(0, 1),
+            text="",
+            anchor=(0, 1),
             border=pg.mkPen((60, 65, 80), width=1),
             fill=pg.mkBrush(30, 32, 40, 220),
             color=(230, 230, 240),
         )
-        self._spike_info_label.setFont(pg.QtGui.QFont('monospace', 9))
+        self._spike_info_label.setFont(pg.QtGui.QFont("monospace", 9))
         self._main_plot.addItem(self._spike_info_label)
         self._spike_info_label.hide()
 
@@ -384,23 +386,25 @@ class RawPanel(QWidget):
 
         # Raw trace – dominant channel (bright white, rendered last = on top)
         self._trace_n2 = self._main_plot.plot(
-            pen=pg.mkPen((100, 120, 160, 110), width=1)   # neighbour 2 — dimmest, bottom
+            pen=pg.mkPen((100, 120, 160, 110), width=1)  # neighbour 2 — dimmest, bottom
         )
         self._trace_n1 = self._main_plot.plot(
-            pen=pg.mkPen((130, 150, 200, 140), width=1)   # neighbour 1 — mid
+            pen=pg.mkPen((130, 150, 200, 140), width=1)  # neighbour 1 — mid
         )
         self._trace_dom = self._main_plot.plot(
-            pen=pg.mkPen((240, 240, 245, 230), width=1)   # dom channel — brightest
+            pen=pg.mkPen((240, 240, 245, 230), width=1)  # dom channel — brightest
         )
         self._trace_n1.hide()
         self._trace_n2.hide()
 
         # Channel labels for neighbour traces (shown when neighbours are on)
-        self._chan_label_dom = pg.TextItem('', anchor=(0, 1), color=(200, 200, 210, 180))
-        self._chan_label_n1  = pg.TextItem('', anchor=(0, 1), color=(130, 150, 200, 160))
-        self._chan_label_n2  = pg.TextItem('', anchor=(0, 1), color=(100, 120, 160, 140))
+        self._chan_label_dom = pg.TextItem(
+            "", anchor=(0, 1), color=(200, 200, 210, 180)
+        )
+        self._chan_label_n1 = pg.TextItem("", anchor=(0, 1), color=(130, 150, 200, 160))
+        self._chan_label_n2 = pg.TextItem("", anchor=(0, 1), color=(100, 120, 160, 140))
         for lbl in (self._chan_label_dom, self._chan_label_n1, self._chan_label_n2):
-            lbl.setFont(pg.QtGui.QFont('monospace', 8))
+            lbl.setFont(pg.QtGui.QFont("monospace", 8))
             self._main_plot.addItem(lbl)
             lbl.hide()
 
@@ -433,10 +437,10 @@ class RawPanel(QWidget):
         row_a = QHBoxLayout()
         row_a.setSpacing(4)
 
-        self._btn_first   = self._small_btn("⏮ First")
-        self._btn_prev    = self._small_btn("◀ Prev")
-        self._btn_next    = self._small_btn("Next ▶")
-        self._btn_last    = self._small_btn("Last ⏭")
+        self._btn_first = self._small_btn("⏮ First")
+        self._btn_prev = self._small_btn("◀ Prev")
+        self._btn_next = self._small_btn("Next ▶")
+        self._btn_last = self._small_btn("Last ⏭")
 
         self._btn_first.setToolTip("Go to first spike")
         self._btn_prev.setToolTip("Previous spike  (←)")
@@ -452,9 +456,7 @@ class RawPanel(QWidget):
         self._jump_label = QLabel("Jump:")
         self._jump_combo = QComboBox()
         self._jump_combo.setFixedWidth(200)
-        self._jump_combo.setToolTip(
-            "Jump to a pre-computed interesting moment"
-        )
+        self._jump_combo.setToolTip("Jump to a pre-computed interesting moment")
         self._jump_combo.currentIndexChanged.connect(self._on_jump_selected)
 
         row_a.addWidget(self._btn_first)
@@ -483,7 +485,7 @@ class RawPanel(QWidget):
         self._duration_combo = QComboBox()
         for d in self._WINDOW_PRESETS:
             self._duration_combo.addItem(f"{d:g} s", d)
-        self._duration_combo.setCurrentIndex(2)   # default: 2 s
+        self._duration_combo.setCurrentIndex(2)  # default: 2 s
         self._duration_combo.setFixedWidth(72)
         self._duration_combo.currentIndexChanged.connect(self._on_duration_changed)
         row_b.addWidget(self._duration_combo)
@@ -503,7 +505,7 @@ class RawPanel(QWidget):
 
         # ± window step buttons
         self._btn_time_back = self._small_btn("← 1×")
-        self._btn_time_fwd  = self._small_btn("1× →")
+        self._btn_time_fwd = self._small_btn("1× →")
         self._btn_time_back.setToolTip("Step back by one window duration")
         self._btn_time_fwd.setToolTip("Step forward by one window duration")
         self._btn_time_back.clicked.connect(self._nav_time_back)
@@ -526,8 +528,12 @@ class RawPanel(QWidget):
         row_c.setSpacing(12)
 
         self._chk_neighbours = QCheckBox("Neighbour ch.")
-        self._chk_neighbours.setChecked(True)   # on by default — key context for spike QC
-        self._chk_neighbours.setToolTip("Show the 2 nearest channels stacked above (dimmed)")
+        self._chk_neighbours.setChecked(
+            True
+        )  # on by default — key context for spike QC
+        self._chk_neighbours.setToolTip(
+            "Show the 2 nearest channels stacked above (dimmed)"
+        )
         self._chk_neighbours.stateChanged.connect(self._on_toggle_neighbours)
 
         self._chk_other_units = QCheckBox("Other units")
@@ -567,8 +573,8 @@ class RawPanel(QWidget):
         if dm is None:
             return False
         return (
-            getattr(dm, 'raw_reader',      None) is not None
-            or getattr(dm, 'raw_data_memmap', None) is not None
+            getattr(dm, "raw_reader", None) is not None
+            or getattr(dm, "raw_data_memmap", None) is not None
         )
 
     def _resolve_channels(self, dm, cluster_id: int) -> tuple[int, list[int]]:
@@ -583,11 +589,12 @@ class RawPanel(QWidget):
         features = dm.get_lightweight_features(cluster_id)
         if features is not None:
             try:
-                median_ei = features['median_ei']
-                p2p       = median_ei.max(axis=1) - median_ei.min(axis=1)
-                dom_chan   = int(np.argmax(p2p))
+                median_ei = features["median_ei"]
+                p2p = median_ei.max(axis=1) - median_ei.min(axis=1)
+                dom_chan = int(np.argmax(p2p))
                 neighbours = [
-                    c for c in dm.get_nearest_channels(dom_chan, n_channels=3)
+                    c
+                    for c in dm.get_nearest_channels(dom_chan, n_channels=3)
                     if c != dom_chan
                 ]
                 return dom_chan, neighbours
@@ -596,12 +603,15 @@ class RawPanel(QWidget):
 
         # Fallback: templates
         try:
-            templates = getattr(dm, 'templates', None)
+            templates = getattr(dm, "templates", None)
             if templates is not None and cluster_id < templates.shape[0]:
-                ptp      = templates[cluster_id].max(axis=0) - templates[cluster_id].min(axis=0)
-                dom_chan  = int(np.argmax(ptp))
+                ptp = templates[cluster_id].max(axis=0) - templates[cluster_id].min(
+                    axis=0
+                )
+                dom_chan = int(np.argmax(ptp))
                 neighbours = [
-                    c for c in dm.get_nearest_channels(dom_chan, n_channels=3)
+                    c
+                    for c in dm.get_nearest_channels(dom_chan, n_channels=3)
                     if c != dom_chan
                 ]
                 return dom_chan, neighbours
@@ -625,7 +635,7 @@ class RawPanel(QWidget):
         honest: you see only spikes that would realistically be visible on the
         trace you are looking at.
         """
-        chan_to_templates = getattr(dm, 'channel_to_templates', {})
+        chan_to_templates = getattr(dm, "channel_to_templates", {})
         if not chan_to_templates:
             return {}, []
 
@@ -640,8 +650,10 @@ class RawPanel(QWidget):
             if cid == selected_id:
                 continue
             # Verify the cluster actually has spikes in the index
-            if dm.cluster_spike_indices.get(cid) is not None and \
-               len(dm.cluster_spike_indices[cid]) > 0:
+            if (
+                dm.cluster_spike_indices.get(cid) is not None
+                and len(dm.cluster_spike_indices[cid]) > 0
+            ):
                 cluster_ids_on_chan.append(cid)
 
         # Sort by spike count descending so the most-active units get
@@ -681,25 +693,25 @@ class RawPanel(QWidget):
         targets: dict[str, float] = {}
 
         # ── First / Last ──────────────────────────────────────────────────────
-        targets['First spike'] = float(st[0])
-        targets['Last spike']  = float(st[-1])
+        targets["First spike"] = float(st[0])
+        targets["Last spike"] = float(st[-1])
 
         # ── Highest FR window (10 s sliding window with 1 s step) ─────────────
         try:
-            bin_size   = 1.0    # 1 s bins
-            window_s   = 10.0   # 10 s sliding window
-            rec_dur    = self._recording_duration
+            bin_size = 1.0  # 1 s bins
+            window_s = 10.0  # 10 s sliding window
+            rec_dur = self._recording_duration
             if rec_dur > window_s:
-                bins       = np.arange(0.0, rec_dur + bin_size, bin_size)
-                counts, _  = np.histogram(st, bins=bins)
+                bins = np.arange(0.0, rec_dur + bin_size, bin_size)
+                counts, _ = np.histogram(st, bins=bins)
                 # convolve with window to get 10-bin rolling sum
-                kernel        = np.ones(int(window_s / bin_size))
-                rolling_count = np.convolve(counts, kernel, mode='valid')
-                best_bin      = int(np.argmax(rolling_count))
+                kernel = np.ones(int(window_s / bin_size))
+                rolling_count = np.convolve(counts, kernel, mode="valid")
+                best_bin = int(np.argmax(rolling_count))
                 # centre of the best window
                 best_t = bins[best_bin] + window_s / 2.0
                 best_fr = rolling_count[best_bin] / window_s
-                targets[f'Highest FR ({best_fr:.1f} Hz)'] = float(best_t)
+                targets[f"Highest FR ({best_fr:.1f} Hz)"] = float(best_t)
         except Exception:
             pass
 
@@ -707,20 +719,20 @@ class RawPanel(QWidget):
         if self.spike_amplitudes.size == len(st) and self.spike_amplitudes.size > 0:
             try:
                 idx_max = int(np.argmax(self.spike_amplitudes))
-                targets['Largest amplitude spike'] = float(st[idx_max])
+                targets["Largest amplitude spike"] = float(st[idx_max])
             except Exception:
                 pass
 
         # ── Most isolated spike (largest pre-ISI) ─────────────────────────────
         if len(st) > 1:
             try:
-                isis   = np.diff(st)
+                isis = np.diff(st)
                 # Use the geometric mean of pre and post ISI for isolation
-                pre_isi  = np.concatenate(([isis[0]], isis[:-1]))
+                pre_isi = np.concatenate(([isis[0]], isis[:-1]))
                 post_isi = np.concatenate((isis[1:], [isis[-1]]))
                 isolation = pre_isi + post_isi
-                idx_iso   = int(np.argmax(isolation))
-                targets['Most isolated spike'] = float(st[idx_iso])
+                idx_iso = int(np.argmax(isolation))
+                targets["Most isolated spike"] = float(st[idx_iso])
             except Exception:
                 pass
 
@@ -733,19 +745,20 @@ class RawPanel(QWidget):
 
     def _compute_minimap_fr(self) -> None:
         """Bin spike times into _MINIMAP_FR_BINS evenly spaced bins."""
-        st      = self.spike_times_sec
+        st = self.spike_times_sec
         rec_dur = self._recording_duration
         if len(st) == 0 or rec_dur <= 0:
             self._minimap_fr_bins = None
             self._minimap_fr_rate = None
             return
 
-        bins    = np.linspace(0.0, rec_dur, _MINIMAP_FR_BINS + 1)
-        counts, _  = np.histogram(st, bins=bins)
-        bin_width  = rec_dur / _MINIMAP_FR_BINS
+        bins = np.linspace(0.0, rec_dur, _MINIMAP_FR_BINS + 1)
+        counts, _ = np.histogram(st, bins=bins)
+        bin_width = rec_dur / _MINIMAP_FR_BINS
 
         # Rate in Hz, lightly smoothed (Gaussian σ = 3 bins)
         from scipy.ndimage import gaussian_filter1d
+
         rate = gaussian_filter1d(counts.astype(float) / max(bin_width, 1e-9), sigma=3)
 
         self._minimap_fr_bins = (bins[:-1] + bins[1:]) / 2.0
@@ -760,8 +773,8 @@ class RawPanel(QWidget):
         if self._minimap_fr_bins is None or len(self._minimap_fr_bins) == 0:
             return
 
-        x   = self._minimap_fr_bins
-        y   = self._minimap_fr_rate
+        x = self._minimap_fr_bins
+        y = self._minimap_fr_rate
         rec = self._recording_duration
 
         self._mm_line.setData(x, y)
@@ -780,8 +793,8 @@ class RawPanel(QWidget):
     def _sync_minimap_region(self) -> None:
         """Move the minimap viewport rect and position marker to match the current window."""
         half = self.window_duration / 2.0
-        lo   = self.window_center - half
-        hi   = self.window_center + half
+        lo = self.window_center - half
+        hi = self.window_center + half
         self._mm_region.blockSignals(True)
         self._mm_region.setRegion((lo, hi))
         self._mm_region.blockSignals(False)
@@ -798,7 +811,7 @@ class RawPanel(QWidget):
         if event.button() != Qt.LeftButton:
             return
         pos = event.scenePos()
-        vb  = self._minimap_plot.getViewBox()
+        vb = self._minimap_plot.getViewBox()
         if not vb.sceneBoundingRect().contains(pos):
             return
         data_pt = vb.mapSceneToView(pos)
@@ -834,7 +847,7 @@ class RawPanel(QWidget):
         # Find the last spike whose time is strictly before the left edge
         candidates = np.where(self.spike_times_sec < left_edge - 1e-9)[0]
         if len(candidates) == 0:
-            return   # already at or before the first spike — nothing to do
+            return  # already at or before the first spike — nothing to do
         self.current_spike_index = int(candidates[-1])
         self._request_load(
             float(self.spike_times_sec[self.current_spike_index]),
@@ -854,7 +867,7 @@ class RawPanel(QWidget):
         # Find the first spike whose time is strictly after the right edge
         candidates = np.where(self.spike_times_sec > right_edge + 1e-9)[0]
         if len(candidates) == 0:
-            return   # already at or past the last spike — nothing to do
+            return  # already at or past the last spike — nothing to do
         self.current_spike_index = int(candidates[0])
         self._request_load(
             float(self.spike_times_sec[self.current_spike_index]),
@@ -898,9 +911,7 @@ class RawPanel(QWidget):
         """User typed a time and pressed Enter."""
         t = self._time_spin.value()
         if len(self.spike_times_sec) > 0:
-            self.current_spike_index = int(
-                np.argmin(np.abs(self.spike_times_sec - t))
-            )
+            self.current_spike_index = int(np.argmin(np.abs(self.spike_times_sec - t)))
             self._update_info_label()
         self._request_load(t, self.window_duration)
 
@@ -950,24 +961,24 @@ class RawPanel(QWidget):
             return
 
         pos = event.scenePos()
-        vb  = self._main_plot.getViewBox()
+        vb = self._main_plot.getViewBox()
         if not vb.sceneBoundingRect().contains(pos):
             return
 
-        data_pt  = vb.mapSceneToView(pos)
-        click_t  = float(data_pt.x())
+        data_pt = vb.mapSceneToView(pos)
+        click_t = float(data_pt.x())
 
         # tolerance = 2 % of current window width
         tol = self.window_duration * 0.02
 
         # Search across all units in the current window: selected + others
-        half    = self.window_duration / 2.0
+        half = self.window_duration / 2.0
         start_t = self.window_center - half
-        end_t   = self.window_center + half
+        end_t = self.window_center + half
 
-        best_dt  = tol
+        best_dt = tol
         best_cid = None
-        best_t   = None
+        best_t = None
 
         # Selected unit
         mask = (self.spike_times_sec >= start_t) & (self.spike_times_sec <= end_t)
@@ -976,9 +987,9 @@ class RawPanel(QWidget):
             dt = np.abs(win_st - click_t)
             idx = int(np.argmin(dt))
             if dt[idx] < best_dt:
-                best_dt  = dt[idx]
+                best_dt = dt[idx]
                 best_cid = self.current_cluster_id
-                best_t   = float(win_st[idx])
+                best_t = float(win_st[idx])
 
         # Other units
         for other_cid, other_spikes in self.other_unit_spikes.items():
@@ -988,9 +999,9 @@ class RawPanel(QWidget):
             dt = np.abs(win_os - click_t)
             idx = int(np.argmin(dt))
             if dt[idx] < best_dt:
-                best_dt  = dt[idx]
+                best_dt = dt[idx]
                 best_cid = other_cid
-                best_t   = float(win_os[idx])
+                best_t = float(win_os[idx])
 
         if best_cid is None:
             self._spike_info_label.hide()
@@ -999,9 +1010,13 @@ class RawPanel(QWidget):
         # Gather info from data_manager
         info = self._get_cluster_info(best_cid)
         color_idx = (
-            0 if best_cid == self.current_cluster_id
-            else (self.other_unit_ids.index(best_cid) + 1
-                  if best_cid in self.other_unit_ids else 1)
+            0
+            if best_cid == self.current_cluster_id
+            else (
+                self.other_unit_ids.index(best_cid) + 1
+                if best_cid in self.other_unit_ids
+                else 1
+            )
         )
         r, g, b, _ = _unit_color(color_idx, 255)
 
@@ -1010,15 +1025,19 @@ class RawPanel(QWidget):
             f"label: {info['label']}   n={info['n_spikes']}",
             f"ISI viol: {info['isi']:.2f}%",
         ]
-        self._spike_info_label.setText('\n'.join(lines))
+        self._spike_info_label.setText("\n".join(lines))
         self._spike_info_label.setColor((r, g, b))
 
         # Position label near the click, nudged so it stays inside the view
         x_range = vb.viewRange()[0]
         y_range = vb.viewRange()[1]
-        x_frac  = (click_t - x_range[0]) / max(x_range[1] - x_range[0], 1e-9)
+        x_frac = (click_t - x_range[0]) / max(x_range[1] - x_range[0], 1e-9)
         anchor_x = 0 if x_frac < 0.7 else 1
-        anchor_y = 0 if (data_pt.y() - y_range[0]) / max(y_range[1] - y_range[0], 1e-9) < 0.8 else 1
+        anchor_y = (
+            0
+            if (data_pt.y() - y_range[0]) / max(y_range[1] - y_range[0], 1e-9) < 0.8
+            else 1
+        )
         self._spike_info_label.setAnchor((anchor_x, anchor_y))
         self._spike_info_label.setPos(click_t, float(data_pt.y()))
         self._spike_info_label.show()
@@ -1029,18 +1048,18 @@ class RawPanel(QWidget):
     def _get_cluster_info(self, cluster_id: int) -> dict:
         """Pull label, n_spikes, ISI from cluster_df. Safe — never raises."""
         dm = self.main_window.data_manager
-        out = {'label': '?', 'n_spikes': 0, 'isi': 0.0}
+        out = {"label": "?", "n_spikes": 0, "isi": 0.0}
         try:
-            row = dm.cluster_df[dm.cluster_df['cluster_id'] == cluster_id]
+            row = dm.cluster_df[dm.cluster_df["cluster_id"] == cluster_id]
             if not row.empty:
                 r = row.iloc[0]
                 # KSLabel or group column
-                for col in ('KSLabel', 'group', 'status'):
+                for col in ("KSLabel", "group", "status"):
                     if col in dm.cluster_df.columns:
-                        out['label'] = str(r.get(col, '?'))
+                        out["label"] = str(r.get(col, "?"))
                         break
-                out['n_spikes'] = int(r.get('n_spikes', 0))
-                out['isi']      = float(r.get('isi_violations_pct', 0.0))
+                out["n_spikes"] = int(r.get("n_spikes", 0))
+                out["isi"] = float(r.get("isi_violations_pct", 0.0))
         except Exception:
             pass
         return out
@@ -1053,17 +1072,17 @@ class RawPanel(QWidget):
         if self.current_cluster_id is None:
             return
 
-        dm      = self.main_window.data_manager
+        dm = self.main_window.data_manager
         rec_dur = self._recording_duration or (
-            getattr(dm, 'n_samples', 0) / max(dm.sampling_rate, 1)
+            getattr(dm, "n_samples", 0) / max(dm.sampling_rate, 1)
         )
-        half   = duration / 2.0
+        half = duration / 2.0
         center = float(np.clip(center, half, max(rec_dur - half, half)))
 
-        self._pending_center   = center
+        self._pending_center = center
         self._pending_duration = duration
-        self.window_center     = center
-        self.window_duration   = duration
+        self.window_center = center
+        self.window_duration = duration
 
         self._update_time_label()
         self._sync_minimap_region()
@@ -1074,11 +1093,11 @@ class RawPanel(QWidget):
         if self.current_cluster_id is None:
             return
 
-        center   = self._pending_center
+        center = self._pending_center
         duration = self._pending_duration
-        half     = duration / 2.0
-        start_t  = max(0.0, center - half)
-        end_t    = center + half
+        half = duration / 2.0
+        start_t = max(0.0, center - half)
+        end_t = center + half
 
         self._stop_worker()
 
@@ -1100,7 +1119,7 @@ class RawPanel(QWidget):
         worker.error.connect(self._on_data_error)
         thread.started.connect(worker.run)
 
-        self._worker        = worker
+        self._worker = worker
         self._worker_thread = thread
         thread.start()
 
@@ -1112,7 +1131,7 @@ class RawPanel(QWidget):
                 self._worker_thread.terminate()
                 self._worker_thread.wait(500)
         self._worker_thread = None
-        self._worker        = None
+        self._worker = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Worker finished → render
@@ -1124,7 +1143,7 @@ class RawPanel(QWidget):
         raw_data: np.ndarray,
         channels: list,
         start_t: float,
-        end_t:   float,
+        end_t: float,
     ) -> None:
         """Runs on the main thread (via Qt signal). Renders the loaded data."""
         # Guard: stale result from a previous selection
@@ -1132,20 +1151,22 @@ class RawPanel(QWidget):
             return
 
         try:
-            dm  = self.main_window.data_manager
+            dm = self.main_window.data_manager
             dm.sampling_rate
-            n   = raw_data.shape[1]
-            t   = np.linspace(start_t, end_t, n)
+            n = raw_data.shape[1]
+            t = np.linspace(start_t, end_t, n)
 
             # ── Compute shared vertical scale from dom trace ───────────────────
-            dom_row  = 0   # row 0 is always dom_chan (see worker)
+            dom_row = 0  # row 0 is always dom_chan (see worker)
             dom_data = raw_data[dom_row]
 
             # Use robust range: 5th–95th percentile to avoid huge outlier spikes
             # dominating the scale, then add headroom.
-            p05, p95    = float(np.percentile(dom_data, 5)), float(np.percentile(dom_data, 95))
+            p05, p95 = float(np.percentile(dom_data, 5)), float(
+                np.percentile(dom_data, 95)
+            )
             trace_range = max(p95 - p05, 10.0)
-            offset_step = trace_range * 1.4   # gap between stacked traces
+            offset_step = trace_range * 1.4  # gap between stacked traces
 
             # ── Dom channel trace ─────────────────────────────────────────────
             self._trace_dom.setData(t, dom_data)
@@ -1154,37 +1175,41 @@ class RawPanel(QWidget):
             show_nb = self._chk_neighbours.isChecked() and len(channels) > 1
 
             if show_nb and len(channels) > 1:
-                nb1_data = raw_data[1] + offset_step        # one step above dom
+                nb1_data = raw_data[1] + offset_step  # one step above dom
                 self._trace_n1.setData(t, nb1_data)
                 self._trace_n1.show()
             else:
                 self._trace_n1.hide()
 
             if show_nb and len(channels) > 2:
-                nb2_data = raw_data[2] + offset_step * 2   # two steps above dom
+                nb2_data = raw_data[2] + offset_step * 2  # two steps above dom
                 self._trace_n2.setData(t, nb2_data)
                 self._trace_n2.show()
             else:
                 self._trace_n2.hide()
 
             # ── Channel labels (left edge of plot, at each trace baseline) ────
-            label_x = start_t + (end_t - start_t) * 0.002   # 0.2% from left
-            self._chan_label_dom.setText(f' ch{self.dom_chan}')
+            label_x = start_t + (end_t - start_t) * 0.002  # 0.2% from left
+            self._chan_label_dom.setText(f" ch{self.dom_chan}")
             self._chan_label_dom.setPos(label_x, float(np.mean(dom_data)))
             self._chan_label_dom.show()
 
             if show_nb and len(channels) > 1:
                 ch1 = channels[1]
-                self._chan_label_n1.setText(f' ch{ch1}')
-                self._chan_label_n1.setPos(label_x, float(np.mean(raw_data[1])) + offset_step)
+                self._chan_label_n1.setText(f" ch{ch1}")
+                self._chan_label_n1.setPos(
+                    label_x, float(np.mean(raw_data[1])) + offset_step
+                )
                 self._chan_label_n1.show()
             else:
                 self._chan_label_n1.hide()
 
             if show_nb and len(channels) > 2:
                 ch2 = channels[2]
-                self._chan_label_n2.setText(f' ch{ch2}')
-                self._chan_label_n2.setPos(label_x, float(np.mean(raw_data[2])) + offset_step * 2)
+                self._chan_label_n2.setText(f" ch{ch2}")
+                self._chan_label_n2.setPos(
+                    label_x, float(np.mean(raw_data[2])) + offset_step * 2
+                )
                 self._chan_label_n2.show()
             else:
                 self._chan_label_n2.hide()
@@ -1207,38 +1232,40 @@ class RawPanel(QWidget):
 
             # Reserve a strip below y_min for other-unit ticks
             tick_strip_h = (plot_y_max - y_min + 2 * y_pad) * _TICK_STRIP_FRAC
-            tick_h       = (plot_y_max - y_min + 2 * y_pad) * _TICK_HEIGHT_FRAC
-            plot_y_min   = y_min - y_pad - tick_strip_h
+            tick_h = (plot_y_max - y_min + 2 * y_pad) * _TICK_HEIGHT_FRAC
+            plot_y_min = y_min - y_pad - tick_strip_h
 
             self._main_plot.setXRange(start_t, end_t, padding=0)
             self._main_plot.setYRange(plot_y_min, plot_y_max, padding=0)
 
             # Cache strip coords for spike rendering and click detection
             self._tick_bottom = plot_y_min
-            self._tick_top    = y_min - y_pad
-            self._tick_h      = tick_h
-            self._y_min_plot  = plot_y_min
-            self._y_max_plot  = plot_y_max
+            self._tick_top = y_min - y_pad
+            self._tick_h = tick_h
+            self._y_min_plot = plot_y_min
+            self._y_max_plot = plot_y_max
             # Cache raw data for click-identification (dom channel only needed)
-            self._last_start_t   = start_t
-            self._last_end_t     = end_t
-            self._last_raw_dom   = dom_data
-            self._last_channels  = channels
+            self._last_start_t = start_t
+            self._last_end_t = end_t
+            self._last_raw_dom = dom_data
+            self._last_channels = channels
 
             # Update title
-            nb_str = ''
+            nb_str = ""
             if show_nb and len(channels) > 1:
-                nb_str = '  +  ch' + ', ch'.join(str(c) for c in channels[1:])
+                nb_str = "  +  ch" + ", ch".join(str(c) for c in channels[1:])
             self._main_plot.setTitle(
                 f"Cluster {cluster_id}  –  ch {self.dom_chan}{nb_str}  "
                 f"  {start_t:.3f}s – {end_t:.3f}s",
-                size='10pt',
+                size="10pt",
             )
 
             # ── Spike overlays ────────────────────────────────────────────────
             self._render_spike_overlays(
-                start_t, end_t,
-                y_min=plot_y_min, y_max=plot_y_max,
+                start_t,
+                end_t,
+                y_min=plot_y_min,
+                y_max=plot_y_max,
                 tick_bottom=self._tick_bottom,
             )
 
@@ -1263,7 +1290,7 @@ class RawPanel(QWidget):
                 self._worker_thread.terminate()
                 self._worker_thread.wait(500)
             self._worker_thread = None
-            self._worker        = None
+            self._worker = None
 
     def _on_data_error(self, msg: str) -> None:
         logger.error("RawPanel worker error: %s", msg)
@@ -1277,9 +1304,9 @@ class RawPanel(QWidget):
     def _render_spike_overlays(
         self,
         start_t: float,
-        end_t:   float,
-        y_min:   float,
-        y_max:   float,
+        end_t: float,
+        y_min: float,
+        y_max: float,
         tick_bottom: float,
     ) -> None:
         """
@@ -1293,9 +1320,7 @@ class RawPanel(QWidget):
         sel_in_win = self.spike_times_sec[
             (self.spike_times_sec >= start_t) & (self.spike_times_sec <= end_t)
         ]
-        self._sel_spike_plot.setData(
-            *self._make_vline_data(sel_in_win, y_min, y_max)
-        )
+        self._sel_spike_plot.setData(*self._make_vline_data(sel_in_win, y_min, y_max))
         color = _unit_color(0, _ALPHA_SELECTED)
         self._sel_spike_plot.setPen(pg.mkPen(color, width=1.2))
 
@@ -1306,15 +1331,13 @@ class RawPanel(QWidget):
                 plot_item.hide()
                 continue
 
-            other_cid    = self.other_unit_ids[slot_idx]
+            other_cid = self.other_unit_ids[slot_idx]
             other_spikes = self.other_unit_spikes.get(other_cid)
             if other_spikes is None or len(other_spikes) == 0:
                 plot_item.hide()
                 continue
 
-            in_win = other_spikes[
-                (other_spikes >= start_t) & (other_spikes <= end_t)
-            ]
+            in_win = other_spikes[(other_spikes >= start_t) & (other_spikes <= end_t)]
             if len(in_win) == 0:
                 plot_item.hide()
                 continue
@@ -1331,14 +1354,16 @@ class RawPanel(QWidget):
 
     def _redraw_spike_overlays_from_cache(self) -> None:
         """Re-render spike overlays using cached window bounds (no I/O)."""
-        if not hasattr(self, '_tick_bottom'):
+        if not hasattr(self, "_tick_bottom"):
             return
-        half    = self.window_duration / 2.0
+        half = self.window_duration / 2.0
         start_t = self.window_center - half
-        end_t   = self.window_center + half
+        end_t = self.window_center + half
         self._render_spike_overlays(
-            start_t, end_t,
-            y_min=self._y_min_plot, y_max=self._y_max_plot,
+            start_t,
+            end_t,
+            y_min=self._y_min_plot,
+            y_max=self._y_max_plot,
             tick_bottom=self._tick_bottom,
         )
 
@@ -1392,26 +1417,32 @@ class RawPanel(QWidget):
         def _ks_badge(label: str) -> str:
             """Return a small inline HTML badge for a KSLabel."""
             label_lc = str(label).lower()
-            if label_lc == 'good':
-                bg, fg = '#1A5C3A', '#6EE7B7'
-            elif label_lc == 'mua':
-                bg, fg = '#5C3A00', '#F0C060'
-            elif label_lc in ('noise', 'bad'):
-                bg, fg = '#5C1A1A', '#F08080'
+            if label_lc == "good":
+                bg, fg = "#1A5C3A", "#6EE7B7"
+            elif label_lc == "mua":
+                bg, fg = "#5C3A00", "#F0C060"
+            elif label_lc in ("noise", "bad"):
+                bg, fg = "#5C1A1A", "#F08080"
             else:
-                bg, fg = '#2A2D36', '#9B9DA6'
+                bg, fg = "#2A2D36", "#9B9DA6"
             short = label_lc[:3].upper()
-            return (f"<span style='background:{bg};color:{fg};"
-                    f"border-radius:2px;padding:0 2px;font-size:9px;'>"
-                    f"{short}</span>")
+            return (
+                f"<span style='background:{bg};color:{fg};"
+                f"border-radius:2px;padding:0 2px;font-size:9px;'>"
+                f"{short}</span>"
+            )
 
-        def _make_swatch(color_idx: int, cluster_id: int,
-                         n_in_win: int, n_total: int,
-                         bold: bool = False) -> QLabel:
+        def _make_swatch(
+            color_idx: int,
+            cluster_id: int,
+            n_in_win: int,
+            n_total: int,
+            bold: bool = False,
+        ) -> QLabel:
             r, g, b, _ = _unit_color(color_idx, 255)
-            weight = 'bold' if bold else 'normal'
-            info   = self._get_cluster_info(cluster_id)
-            badge  = _ks_badge(info['label'])
+            weight = "bold" if bold else "normal"
+            info = self._get_cluster_info(cluster_id)
+            badge = _ks_badge(info["label"])
             lbl = QLabel(
                 f"<span style='color:rgb({r},{g},{b});'>●</span>"
                 f"&nbsp;C{cluster_id}&nbsp;{badge}"
@@ -1427,14 +1458,15 @@ class RawPanel(QWidget):
             return lbl
 
         # --- selected unit ---
-        n_sel_win = int(np.sum(
-            (self.spike_times_sec >= start_t) & (self.spike_times_sec <= end_t)
-        ))
+        n_sel_win = int(
+            np.sum((self.spike_times_sec >= start_t) & (self.spike_times_sec <= end_t))
+        )
         if n_sel_win > 0 and self.current_cluster_id is not None:
             n_sel_total = len(self.spike_times_sec)
             self._legend_layout.addWidget(
-                _make_swatch(0, self.current_cluster_id,
-                             n_sel_win, n_sel_total, bold=True)
+                _make_swatch(
+                    0, self.current_cluster_id, n_sel_win, n_sel_total, bold=True
+                )
             )
 
         # --- other units (only if toggle is on, max 8 shown in legend) ---
@@ -1443,19 +1475,18 @@ class RawPanel(QWidget):
             for slot_idx in range(len(self.other_unit_ids)):
                 if shown >= 8:
                     break
-                other_cid    = self.other_unit_ids[slot_idx]
+                other_cid = self.other_unit_ids[slot_idx]
                 other_spikes = self.other_unit_spikes.get(other_cid)
                 if other_spikes is None:
                     continue
-                n_in_win = int(np.sum(
-                    (other_spikes >= start_t) & (other_spikes <= end_t)
-                ))
+                n_in_win = int(
+                    np.sum((other_spikes >= start_t) & (other_spikes <= end_t))
+                )
                 if n_in_win == 0:
                     continue
                 n_total = len(other_spikes)
                 self._legend_layout.addWidget(
-                    _make_swatch(slot_idx + 1, other_cid,
-                                 n_in_win, n_total, bold=False)
+                    _make_swatch(slot_idx + 1, other_cid, n_in_win, n_total, bold=False)
                 )
                 shown += 1
 
@@ -1469,9 +1500,7 @@ class RawPanel(QWidget):
             self._jump_combo.clear()
             self._jump_combo.addItem("— Jump to —", None)
             for label, t in self._jump_targets.items():
-                self._jump_combo.addItem(
-                    f"{label}  ({t:.2f} s)", float(t)
-                )
+                self._jump_combo.addItem(f"{label}  ({t:.2f} s)", float(t))
         finally:
             self._updating_controls = False
 
@@ -1481,23 +1510,21 @@ class RawPanel(QWidget):
         if n_total == 0:
             self._spike_counter.setText("No spikes")
             return
-        idx  = self.current_spike_index + 1
+        idx = self.current_spike_index + 1
         half = self.window_duration / 2.0
-        lo   = self.window_center - half
-        hi   = self.window_center + half
-        in_view = int(np.sum(
-            (self.spike_times_sec >= lo) & (self.spike_times_sec <= hi)
-        ))
-        self._spike_counter.setText(
-            f"Spike {idx} / {n_total}  ({in_view} in view)"
+        lo = self.window_center - half
+        hi = self.window_center + half
+        in_view = int(
+            np.sum((self.spike_times_sec >= lo) & (self.spike_times_sec <= hi))
         )
+        self._spike_counter.setText(f"Spike {idx} / {n_total}  ({in_view} in view)")
 
     def _update_time_label(self) -> None:
-        if not hasattr(self, '_time_label'):
+        if not hasattr(self, "_time_label"):
             return
         half = self.window_duration / 2.0
-        lo   = self.window_center - half
-        hi   = self.window_center + half
+        lo = self.window_center - half
+        hi = self.window_center + half
         self._time_label.setText(f"{lo:.3f} s  –  {hi:.3f} s")
         # Sync spin box without triggering its callback
         self._updating_controls = True

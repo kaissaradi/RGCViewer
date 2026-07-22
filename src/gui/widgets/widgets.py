@@ -3,11 +3,17 @@ from PyQt5.QtGui import QColor, QPainter, QPen
 from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal, QRect, QEvent
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from qtpy.QtWidgets import QTableView, QStyledItemDelegate, QTreeView, QStyleOptionViewItem
+from qtpy.QtWidgets import (
+    QTableView,
+    QStyledItemDelegate,
+    QTreeView,
+    QStyleOptionViewItem,
+)
 
 from ..theme import DARK_COLORS
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,8 +63,9 @@ class PandasModel(QAbstractTableModel):
     def sort(self, column, order):
         self.layoutAboutToBeChanged.emit()
         colname = self._dataframe.columns[column]
-        self._dataframe.sort_values(colname, ascending=(
-            order == Qt.SortOrder.AscendingOrder), inplace=True)
+        self._dataframe.sort_values(
+            colname, ascending=(order == Qt.SortOrder.AscendingOrder), inplace=True
+        )
         self._dataframe.reset_index(inplace=True, drop=True)
         if hasattr(self, "refresh_view"):
             self.refresh_view()
@@ -67,20 +74,20 @@ class PandasModel(QAbstractTableModel):
 
 class MplCanvas(FigureCanvas):
     """A canvas that displays a matplotlib figure."""
+
     clicked = Signal()
 
     def __init__(self, parent=None, width=5, height=4, dpi=100):
         self.fig = Figure(
-            figsize=(width, height),
-            dpi=dpi,
-            facecolor=DARK_COLORS['bg_panel'])
+            figsize=(width, height), dpi=dpi, facecolor=DARK_COLORS["bg_panel"]
+        )
         super().__init__(self.fig)
         self.setCursor(Qt.PointingHandCursor)
-        self.mpl_connect('button_press_event', self._on_click)
+        self.mpl_connect("button_press_event", self._on_click)
 
     def restyle(self, colors):
         """Updates the canvas background based on the provided color scheme."""
-        self.fig.patch.set_facecolor(colors['bg_panel'])
+        self.fig.patch.set_facecolor(colors["bg_panel"])
         self.draw()
 
     def _on_click(self, _event):
@@ -111,9 +118,13 @@ class HighlightStatusPandasModel(PandasModel):
         self.STATUS_COLORS = {
             "Clean": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
             "Edge": colors.get("status_mua_text", DARK_COLORS["status_mua_text"]),
-            "Duplicate": colors.get("status_noise_text", DARK_COLORS["status_noise_text"]),
+            "Duplicate": colors.get(
+                "status_noise_text", DARK_COLORS["status_noise_text"]
+            ),
             "Noise": colors.get("status_noise_text", DARK_COLORS["status_noise_text"]),
-            "Unsure": colors.get("status_unsort_text", DARK_COLORS["status_unsort_text"]),
+            "Unsure": colors.get(
+                "status_unsort_text", DARK_COLORS["status_unsort_text"]
+            ),
             "Original": colors.get("text_primary", DARK_COLORS["text_primary"]),
         }
         self.refresh_view()
@@ -126,7 +137,11 @@ class HighlightStatusPandasModel(PandasModel):
             self._display_cache.clear()
         else:
             for row in row_indices:
-                for cache in [self._background_cache, self._foreground_cache, self._display_cache]:
+                for cache in [
+                    self._background_cache,
+                    self._foreground_cache,
+                    self._display_cache,
+                ]:
                     keys_to_remove = [k for k in cache if k[0] == row]
                     for k in keys_to_remove:
                         cache.pop(k, None)
@@ -139,8 +154,10 @@ class HighlightStatusPandasModel(PandasModel):
         top_left = self.index(min(row_indices), 0)
         bottom_right = self.index(max(row_indices), self.columnCount() - 1)
         self.dataChanged.emit(
-            top_left, bottom_right,
-            [Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole])
+            top_left,
+            bottom_right,
+            [Qt.BackgroundRole, Qt.ForegroundRole, Qt.DisplayRole],
+        )
 
     def data(self, index, role=Qt.DisplayRole):
         """Return cached data if available, otherwise compute and cache."""
@@ -178,18 +195,22 @@ class HighlightStatusPandasModel(PandasModel):
             return value
 
         try:
-            if 'status' not in self._dataframe.columns:
+            if "status" not in self._dataframe.columns:
                 return value
 
             col_name = self._dataframe.columns[index.column()]
-            status_col_idx = self._dataframe.columns.get_loc('status')
+            status_col_idx = self._dataframe.columns.get_loc("status")
             status_value = str(self._dataframe.iloc[index.row(), status_col_idx])
 
             if role == Qt.ForegroundRole:
-                if col_name == 'status':
-                    color = self.STATUS_COLORS.get(status_value, DARK_COLORS["text_primary"])
+                if col_name == "status":
+                    color = self.STATUS_COLORS.get(
+                        status_value, DARK_COLORS["text_primary"]
+                    )
                     return QColor(color)
-                return QColor(self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"]))
+                return QColor(
+                    self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"])
+                )
 
             if role == Qt.BackgroundRole:
                 return None
@@ -249,7 +270,7 @@ class ClusterTreeDelegate(QStyledItemDelegate):
 
         indent = self._tree.indentation()
         model = index.model()
-        line = QColor(self._colors['border_default'])
+        line = QColor(self._colors["border_default"])
         painter.setPen(QPen(line, 1))
 
         for level in range(depth):
@@ -264,10 +285,12 @@ class ClusterTreeDelegate(QStyledItemDelegate):
 
         parent_level = depth - 1
         x = parent_level * indent + indent // 2
-        painter.drawLine(x, row_rect.center().y(), row_rect.left(), row_rect.center().y())
+        painter.drawLine(
+            x, row_rect.center().y(), row_rect.left(), row_rect.center().y()
+        )
 
     def _draw_toggle(self, painter: QPainter, rect: QRect, expanded: bool):
-        accent = QColor(self._colors['text_secondary'])
+        accent = QColor(self._colors["text_secondary"])
         painter.setPen(QPen(accent, 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect, 2, 2)
@@ -291,13 +314,20 @@ class ClusterTreeDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
-        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+        if (
+            event.type() == QEvent.MouseButtonRelease
+            and event.button() == Qt.LeftButton
+        ):
             # In headless/test environments visualRect may return a null rect.
             # Fall back to a synthetic row_rect derived from the event position
             # so that _toggle_rect produces coords in the same space as event.pos().
             row_rect = self._tree.visualRect(index)
             if not row_rect.isValid() or row_rect.isEmpty():
-                pos = event.pos() if not hasattr(event, "position") else event.position().toPoint()
+                pos = (
+                    event.pos()
+                    if not hasattr(event, "position")
+                    else event.position().toPoint()
+                )
                 row_rect = QRect(0, pos.y() - 14, 300, 28)
             toggle = self._toggle_rect(index, row_rect)
             if toggle is not None:
@@ -309,7 +339,8 @@ class ClusterTreeDelegate(QStyledItemDelegate):
                     self._tree.setExpanded(index, not self._tree.isExpanded(index))
                     return True
         return super().editorEvent(
-            event, model,
+            event,
+            model,
             option if option is not None else QStyleOptionViewItem(),
-            index
+            index,
         )
