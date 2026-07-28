@@ -20,6 +20,7 @@ from .panels.population_panel import (
     invalidate_population_caches,
 )
 from .panels.feature_extraction import FeatureExtractionWindow
+from . import recent_paths
 from typing import TYPE_CHECKING
 import logging
 
@@ -86,19 +87,22 @@ def update_cache_progress(main_window):
 
 def load_directory(main_window, kilosort_dir=None, dat_file=None):
     """Triggers the background loading of a Kilosort directory."""
-    default_dir = Path("/home/localadmin/Documents/Development/data/sorted")
-    if not default_dir.exists():
-        default_dir = Path.home()
-
     if kilosort_dir is None:
         ks_dir_name = QFileDialog.getExistingDirectory(
-            main_window, "Select Kilosort Output Directory", str(default_dir)
+            main_window,
+            "Select Kilosort Output Directory",
+            recent_paths.last_dir(main_window, "kilosort"),
         )
     else:
         ks_dir_name = kilosort_dir
 
     if not ks_dir_name:
         return
+
+    # Remember the *parent*: run folders sit side by side (data006, data007…),
+    # so reopening the dialog inside the run you just picked would show only
+    # its contents. The parent is where the next run actually lives.
+    recent_paths.remember_dir(Path(ks_dir_name).parent, "kilosort")
 
     # 1. Lock UI and Prep DataManager
     main_window.central_widget.setEnabled(False)
@@ -418,10 +422,14 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
 def load_vision_directory(main_window):
     """Smart router: Loads Vision-only if no KS exists, otherwise appends Vision to KS."""
     vision_dir_name = QFileDialog.getExistingDirectory(
-        main_window, "Select Vision Analysis Directory"
+        main_window,
+        "Select Vision Analysis Directory",
+        recent_paths.last_dir(main_window, "vision"),
     )
     if not vision_dir_name:
         return
+
+    recent_paths.remember_dir(Path(vision_dir_name).parent, "vision")
 
     main_window.central_widget.setEnabled(False)
 
@@ -767,22 +775,31 @@ def on_save_action(main_window: MainWindow):
         )
         return
 
-    # Create a safe default path regardless of whether info_path exists
+    # Default beside the data it describes; fall back to wherever the user last
+    # saved when no dataset path is available.
     if main_window.data_manager.info_path:
         original_path = main_window.data_manager.info_path
-        suggested_path = str(original_path.parent / f"{original_path.stem}_refined.tsv")
+        suggested = recent_paths.suggested_path(
+            main_window,
+            "export",
+            f"{original_path.stem}_refined.tsv",
+            preferred_dir=original_path.parent,
+        )
     else:
-        # Fallback to the Kilosort directory if info_path is missing
-        suggested_path = str(
-            main_window.data_manager.kilosort_dir / "classification_export.tsv"
+        suggested = recent_paths.suggested_path(
+            main_window,
+            "export",
+            "classification_export.tsv",
+            preferred_dir=main_window.data_manager.kilosort_dir,
         )
 
     # This dialog MUST appear if the function is reached
     save_path, _ = QFileDialog.getSaveFileName(
-        main_window, "Save Classification Results", suggested_path, "TSV Files (*.tsv)"
+        main_window, "Save Classification Results", suggested, "TSV Files (*.tsv)"
     )
 
     if save_path:
+        recent_paths.remember_dir(save_path, "export")
         # This calls the actual file-writing logic
         save_results(main_window, save_path)
 
@@ -1524,12 +1541,14 @@ def load_classification_file(main_window: MainWindow):
     file_path, _ = QFileDialog.getOpenFileName(
         main_window,
         "Select Classification File",
-        str(Path.home()),
+        recent_paths.last_dir(main_window, "classification"),
         "Text Files (*.txt);;All Files (*)",
     )
 
     if not file_path:
         return
+
+    recent_paths.remember_dir(file_path, "classification")
 
     try:
         main_window.status_bar.showMessage("Loading classification file...")
@@ -1730,11 +1749,12 @@ def save_classification_to_file(main_window: MainWindow):
         return
 
     # 1. Dialog for user to choose location and name
-    suggested_name = "classification.txt"
-    if main_window.data_manager.kilosort_dir:
-        suggested_name = str(
-            main_window.data_manager.kilosort_dir / "classification.txt"
-        )
+    suggested_name = recent_paths.suggested_path(
+        main_window,
+        "classification",
+        "classification.txt",
+        preferred_dir=main_window.data_manager.kilosort_dir,
+    )
 
     file_path, _ = QFileDialog.getSaveFileName(
         main_window,
@@ -1745,6 +1765,8 @@ def save_classification_to_file(main_window: MainWindow):
 
     if not file_path:
         return  # User cancelled
+
+    recent_paths.remember_dir(file_path, "classification")
 
     lines_to_write = []
 
@@ -1817,11 +1839,7 @@ def load_raw_data(main_window):
         )
         return
 
-    start_dir = (
-        str(main_window.data_manager.kilosort_dir)
-        if main_window.data_manager.kilosort_dir
-        else str(Path.home())
-    )
+    start_dir = recent_paths.last_dir(main_window, "raw")
 
     # Ask the user which format they are loading.
     choice = QMessageBox(main_window)
@@ -1860,6 +1878,12 @@ def load_raw_data(main_window):
 
     if not raw_path:
         return  # user cancelled the file/folder dialog
+
+    # Directory pick: remember its parent (sibling runs live there). File pick:
+    # remember_dir already stores the containing folder.
+    recent_paths.remember_dir(
+        raw_path.parent if raw_path.is_dir() else raw_path, "raw"
+    )
 
     main_window.status_bar.showMessage("Loading raw data...")
     QApplication.processEvents()
@@ -1915,10 +1939,14 @@ def map_reference_run(main_window):
 
     # --- Pick reference directory ---
     ref_dir = QFileDialog.getExistingDirectory(
-        main_window, "Select Reference Run (Vision Analysis Directory)"
+        main_window,
+        "Select Reference Run (Vision Analysis Directory)",
+        recent_paths.last_dir(main_window, "reference"),
     )
     if not ref_dir:
         return
+
+    recent_paths.remember_dir(Path(ref_dir).parent, "reference")
 
     ref_path = Path(ref_dir)
 
