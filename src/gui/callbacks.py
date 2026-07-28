@@ -1192,6 +1192,272 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
         main_window.tree_view.expand(parent_item.index())
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Moving items between groups (multi-select aware)
+# ─────────────────────────────────────────────────────────────────────────────
+
+TRASH_GROUP_NAME = "Trash"
+
+
+def is_group_item(item) -> bool:
+    """True when *item* is a folder rather than a cell.
+
+    Cells carry their cluster_id in UserRole; folders carry None. Note that
+    ``hasChildren()`` is NOT a reliable test on its own — an empty folder has
+    no children but is still a folder.
+    """
+    return item is not None and item.data(Qt.ItemDataRole.UserRole) is None
+
+
+def iter_cluster_ids(item) -> list:
+    """Every cluster_id at or below *item*, in tree order."""
+    out = []
+
+    def recurse(node):
+        cid = node.data(Qt.ItemDataRole.UserRole)
+        if cid is not None:
+            out.append(int(cid))
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if child is not None:
+                recurse(child)
+
+    recurse(item)
+    return out
+
+
+def _is_descendant_of(item, possible_ancestor) -> bool:
+    """True when *item* sits anywhere beneath *possible_ancestor*."""
+    node = item.parent()
+    while node is not None:
+        if node is possible_ancestor:
+            return True
+        node = node.parent()
+    return False
+
+
+def prune_redundant_items(items: list) -> list:
+    """Drop any item that already sits inside another item in the list.
+
+    Moving both a folder and one of its children would move the child twice —
+    the second take would pull it out of the folder it just travelled with.
+    Keeping only the topmost items makes the move idempotent.
+    """
+    kept = []
+    for item in items:
+        if any(_is_descendant_of(item, other) for other in items if other is not item):
+            continue
+        kept.append(item)
+    return kept
+
+
+def move_items_to_group(main_window, items: list, target_item) -> int:
+    """Move *items* (cells and/or folders) into *target_item*.
+
+    ``target_item`` may be a folder item or the model's invisible root. Returns
+    the number of top-level items actually moved.
+
+    Items already sitting directly in the target are skipped, and a folder can
+    never be moved into itself or one of its own descendants — that would
+    detach the whole subtree from the model.
+    """
+    model = main_window.tree_model
+    root = model.invisibleRootItem()
+
+    if target_item is None:
+        target_item = root
+    if target_item is not root and not is_group_item(target_item):
+        return 0  # cells cannot contain other items
+
+    movable = []
+    for item in prune_redundant_items([i for i in items if i is not None]):
+        if item is target_item or _is_descendant_of(target_item, item):
+            continue  # would re-parent a folder beneath itself
+        parent = item.parent() or root
+        if parent is target_item:
+            continue  # already there
+        movable.append(item)
+
+    if not movable:
+        return 0
+
+    moved_cluster_ids = []
+    for item in movable:
+        moved_cluster_ids.extend(iter_cluster_ids(item))
+        parent = item.parent() or root
+        row = item.row()
+        if row < 0:
+            continue
+        # Re-read item.row() per iteration: taking a row shifts its siblings.
+        target_item.appendRow(parent.takeRow(row))
+
+    # Keep cluster_df in step so saving and the table view reflect the move.
+    group_name = target_item.text() if target_item is not root else "Unclassified"
+    if moved_cluster_ids and main_window.data_manager is not None:
+        df = main_window.data_manager.cluster_df
+        df.loc[df["cluster_id"].isin(moved_cluster_ids), "KSLabel"] = group_name
+
+    if target_item is not root:
+        main_window.tree_view.expand(target_item.index())
+    return len(movable)
+
+
+def get_or_create_trash(main_window):
+    """Return the Trash folder, creating it pinned to the bottom of the root."""
+    model = main_window.tree_model
+    root = model.invisibleRootItem()
+
+    for i in range(root.rowCount()):
+        child = root.child(i)
+        if child is not None and is_group_item(child):
+            if child.text() == TRASH_GROUP_NAME:
+                return child
+
+    trash = QStandardItem(TRASH_GROUP_NAME)
+    trash.setEditable(False)
+    trash.setDropEnabled(True)
+
+    font = trash.font()
+    font.setBold(True)
+    trash.setFont(font)
+    # Muted red so discarded units read as set-aside at a glance.
+    trash.setBackground(QColor("#4A2C2C"))
+
+    app = QApplication.instance()
+    if app:
+        trash.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+
+    root.appendRow(trash)
+    return trash
+
+
+def find_trash(main_window):
+    """Return the Trash folder if it exists, else None (never creates it)."""
+    root = main_window.tree_model.invisibleRootItem()
+    for i in range(root.rowCount()):
+        child = root.child(i)
+        if child is not None and is_group_item(child):
+            if child.text() == TRASH_GROUP_NAME:
+                return child
+    return None
+
+
+def get_trashed_cluster_ids(main_window) -> set:
+    """Cluster IDs currently sitting in Trash — used to exclude them from analyses."""
+    trash = find_trash(main_window)
+    if trash is None:
+        return set()
+    return set(iter_cluster_ids(trash))
+
+
+def items_are_in_trash(main_window, items: list) -> bool:
+    """True when every item in *items* sits strictly inside the Trash folder.
+
+    The Trash folder itself does not count as being in the trash — otherwise
+    right-clicking it would offer to restore it out of itself.
+    """
+    trash = find_trash(main_window)
+    if trash is None or not items:
+        return False
+    return all(_is_descendant_of(item, trash) for item in items)
+
+
+def move_items_to_trash(main_window, items: list) -> int:
+    """Move *items* into the Trash folder, creating it on first use."""
+    trash = get_or_create_trash(main_window)
+    n = move_items_to_group(main_window, items, trash)
+    if n:
+        main_window.status_bar.showMessage(
+            f"Moved {n} item{'s' if n != 1 else ''} to {TRASH_GROUP_NAME}", 4000
+        )
+    return n
+
+
+def find_items_by_cluster_ids(main_window, cluster_ids) -> list:
+    """Locate the tree cell items for *cluster_ids*, wherever they currently sit.
+
+    Lets the table view — which knows only cluster IDs, not tree items — drive
+    the same move operations the tree context menu uses.
+    """
+    targets = {int(c) for c in cluster_ids}
+    found = []
+
+    def recurse(node):
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if child is None:
+                continue
+            cid = child.data(Qt.ItemDataRole.UserRole)
+            if cid is not None:
+                try:
+                    if int(cid) in targets:
+                        found.append(child)
+                except (TypeError, ValueError):
+                    pass
+            elif child.hasChildren():
+                recurse(child)
+
+    recurse(main_window.tree_model.invisibleRootItem())
+    return found
+
+
+def move_cluster_ids_to_group(main_window, cluster_ids, target_item) -> int:
+    """Move cells named by ID into *target_item*."""
+    items = find_items_by_cluster_ids(main_window, cluster_ids)
+    if not items:
+        return 0
+    return move_items_to_group(main_window, items, target_item)
+
+
+def move_cluster_ids_to_trash(main_window, cluster_ids) -> int:
+    """Move cells named by ID into Trash — the table view's entry point."""
+    items = find_items_by_cluster_ids(main_window, cluster_ids)
+    if not items:
+        main_window.status_bar.showMessage(
+            "Those cells were not found in the tree — nothing moved.", 4000
+        )
+        return 0
+    return move_items_to_trash(main_window, items)
+
+
+def restore_items_from_trash(main_window, items: list) -> int:
+    """Move *items* out of Trash and back to the top level of the tree."""
+    root = main_window.tree_model.invisibleRootItem()
+    n = move_items_to_group(main_window, items, root)
+    if n:
+        main_window.status_bar.showMessage(
+            f"Restored {n} item{'s' if n != 1 else ''} from {TRASH_GROUP_NAME}", 4000
+        )
+    return n
+
+
+def collect_group_items(main_window, exclude: list = None) -> list:
+    """All folders in the tree as ``(display_path, item)``, in tree order.
+
+    ``exclude`` suppresses a folder *and its whole subtree* — used to keep the
+    "Move to group" menu from offering a destination inside the very items the
+    user is moving.
+    """
+    exclude = exclude or []
+    out = []
+
+    def recurse(node, path):
+        for i in range(node.rowCount()):
+            child = node.child(i)
+            if child is None or not is_group_item(child):
+                continue
+            if any(
+                child is ex or _is_descendant_of(child, ex) for ex in exclude
+            ):
+                continue
+            child_path = f"{path}/{child.text()}" if path else child.text()
+            out.append((child_path, child))
+            recurse(child, child_path)
+
+    recurse(main_window.tree_model.invisibleRootItem(), "")
+    return out
+
+
 def rename_class(
     main_window: MainWindow, original_group_name: str, new_group_name: str
 ):

@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
     QSlider,
+    QSplitter,
 )
 from qtpy.QtCore import QThread, QTimer, Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -28,6 +29,7 @@ import logging
 
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
+from .rf_map_widget import RFMapWidget
 from ...analysis.constants import (
     DEFAULT_MIN_STA_STD,
     DEFAULT_MAX_RF_AREA,
@@ -66,7 +68,18 @@ class UMAPPanel(QWidget):
         # Plot Initialization
         self.fig = Figure(facecolor=self._umap_colors["bg_panel"])
         self.canvas = FigureCanvas(self.fig)
-        self.layout.addWidget(self.canvas)
+
+        # RF mosaic beside the embedding: lassoing a blob is only half the
+        # question — whether those cells tile the array is the other half.
+        self.rf_map = RFMapWidget(colors=self._rf_map_colors(colors), title="RF Mosaic")
+
+        self.plot_splitter = QSplitter(Qt.Horizontal)
+        self.plot_splitter.addWidget(self.canvas)
+        self.plot_splitter.addWidget(self.rf_map)
+        self.plot_splitter.setStretchFactor(0, 3)
+        self.plot_splitter.setStretchFactor(1, 1)
+        self.plot_splitter.setSizes([900, 300])
+        self.layout.addWidget(self.plot_splitter)
 
         # Initialize default 2D axes
         self.ax = self.fig.add_subplot(111)
@@ -75,11 +88,26 @@ class UMAPPanel(QWidget):
         # NEW: Initialize empty selector state
         self.current_selector = None
 
+        # Right-click picks a point (and its cluster) for the RF mosaic.
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+
         # Worker refs
         self.worker_thread = None
         self.worker = None
         self.cluster_worker_thread = None
         self.cluster_worker = None
+
+    @staticmethod
+    def _rf_map_colors(colors):
+        """Translate the app theme into the RF map's colour keys."""
+        return {
+            "bg": colors["bg_panel"],
+            "surface": colors["bg_panel"],
+            "border": colors.get("border_subtle", "#2a2d3e"),
+            "text_primary": colors.get("text_primary", "#e8eaf0"),
+            "text_muted": colors.get("text_secondary", "#6b7280"),
+            "highlight": "#f97316",
+        }
 
     def _build_control_panel(self, colors):
         # --- Controls Row 1 ---
@@ -174,6 +202,17 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(self.show_ids_btn)
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
+
+        pick_hint = QLabel("Right-click a point to highlight its cluster →")
+        pick_hint.setStyleSheet(
+            f"color: {colors['text_secondary']}; font-size: 11px; font-style: italic;"
+        )
+        pick_hint.setToolTip(
+            "Right-clicking a point highlights every cell in its cluster on the "
+            "RF mosaic. Before clustering has been run, it highlights just that "
+            "cell. Left-drag still lassoes."
+        )
+        cluster_layout.addWidget(pick_hint)
 
         # --- Controls Row 3 (Feature Selection & Weights Grid) ---
         weights_group = QGroupBox("Feature Selection & Weights")
@@ -479,8 +518,24 @@ class UMAPPanel(QWidget):
 
             selected_indexes = tree_view.selectionModel().selectedIndexes()
             if not selected_indexes:
-                logger.info("No cells selected, using all clusters")
-                return None
+                # Nothing selected means "use everything" — but everything the
+                # user explicitly threw away is not part of everything. When
+                # Trash is empty this returns None exactly as before.
+                from .. import callbacks
+
+                trashed = callbacks.get_trashed_cluster_ids(self.main_window)
+                if not trashed:
+                    logger.info("No cells selected, using all clusters")
+                    return None
+
+                dm = self.main_window.data_manager
+                all_ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+                kept = [c for c in all_ids if c not in trashed]
+                logger.info(
+                    "No cells selected, using all clusters except %d in Trash",
+                    len(all_ids) - len(kept),
+                )
+                return kept
 
             # Use a set to prevent duplicates if a user selects both a parent AND its child
             selected_ids = set()
@@ -738,6 +793,10 @@ class UMAPPanel(QWidget):
             self.worker_thread = None
         self.worker = None
 
+        # Rebuild the RF mosaic for exactly the cells that made it into this
+        # embedding, so the two panels always describe the same population.
+        self.rf_map.set_cells(self.main_window.data_manager, list(self.cluster_ids))
+
         self.update_plot()
 
         mode_str = "3D UMAP" if self.is_3d else "2D UMAP"
@@ -836,6 +895,9 @@ class UMAPPanel(QWidget):
             "accent_positive": colors["accent_positive"],
             "bg_panel": colors["bg_panel"],
         }
+
+        if getattr(self, "rf_map", None) is not None:
+            self.rf_map.restyle(self._rf_map_colors(colors))
 
         self.update_plot()
 
@@ -1076,6 +1138,12 @@ class UMAPPanel(QWidget):
             mask = path.contains_points(self.embedding)
             selected_ids = self.cluster_ids[mask]
 
+        # Paint the RF mosaic before prompting: the whole point is to see
+        # whether the selection tiles the array *while* deciding whether it is
+        # a real group. QMessageBox below is modal, so this must happen first.
+        self.rf_map.highlight(list(selected_ids))
+        self.rf_map.repaint()
+
         if len(selected_ids) > 0:
             reply = QMessageBox.question(
                 self,
@@ -1086,6 +1154,90 @@ class UMAPPanel(QWidget):
 
             if reply == QMessageBox.Yes:
                 self.create_group(selected_ids)
+
+    # Colour modes that hold integer cluster assignments rather than a
+    # continuous metric — only these support "highlight this whole cluster".
+    _CLUSTER_COLOR_MODES = ("Ward", "K-Means")
+
+    def _current_cluster_labels(self):
+        """Labels for the clustering currently being displayed, or None.
+
+        Keyed off the colour mode rather than the last run, so the pick always
+        matches the grouping actually on screen.
+        """
+        mode = self.color_combo.currentText()
+        if mode not in self._CLUSTER_COLOR_MODES:
+            return None
+        if self.metadata_df is None or mode not in self.metadata_df:
+            return None
+        return np.asarray(self.metadata_df[mode])
+
+    def _embedding_2d(self):
+        """Screen-plane coordinates for every point, or None if unavailable."""
+        if self.embedding is None:
+            return None
+        if not self.is_3d:
+            return self.embedding[:, :2]
+        try:
+            xs, ys, zs = (
+                self.embedding[:, 0],
+                self.embedding[:, 1],
+                self.embedding[:, 2],
+            )
+            x2, y2, _ = proj3d.proj_transform(xs, ys, zs, self.ax.get_proj())
+            return np.column_stack((x2, y2))
+        except Exception:
+            logger.debug("3D projection for click-pick failed", exc_info=True)
+            return None
+
+    def _on_canvas_click(self, event):
+        """Right-click a point to light up its whole cluster on the RF mosaic.
+
+        Falls back to the single nearest cell when no clustering is displayed,
+        so the pick is still useful straight after a UMAP run.
+        """
+        if event.button != 3 or event.inaxes is not self.ax:
+            return
+        if self.embedding is None or event.xdata is None or event.ydata is None:
+            return
+
+        pts = self._embedding_2d()
+        if pts is None or len(pts) == 0:
+            return
+
+        d2 = (pts[:, 0] - event.xdata) ** 2 + (pts[:, 1] - event.ydata) ** 2
+        idx = int(np.argmin(d2))
+
+        # Ignore clicks in empty space: without this, a click anywhere on the
+        # canvas would light up whichever cluster happened to be least far away.
+        span = max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1]))
+        if span > 0 and np.sqrt(d2[idx]) > 0.05 * span:
+            self.rf_map.clear_highlight()
+            self.main_window.status_bar.showMessage(
+                "No cell near that point — highlight cleared.", 3000
+            )
+            return
+
+        labels = self._current_cluster_labels()
+        if labels is not None and len(labels) == len(self.cluster_ids):
+            label = labels[idx]
+            if label >= 0:  # -1 is noise, which is not a cluster
+                members = np.where(labels == label)[0]
+                ids = list(np.asarray(self.cluster_ids)[members])
+                self.rf_map.highlight(ids)
+                self.main_window.status_bar.showMessage(
+                    f"Highlighted {len(ids)} cells in "
+                    f"{self.color_combo.currentText()} cluster {label}.",
+                    5000,
+                )
+                return
+
+        single = [int(np.asarray(self.cluster_ids)[idx])]
+        self.rf_map.highlight(single)
+        self.main_window.status_bar.showMessage(
+            f"Highlighted cell {single[0]} (run clustering to pick whole clusters).",
+            5000,
+        )
 
     def create_group(self, ids):
         from qtpy.QtWidgets import QInputDialog
@@ -1116,7 +1268,12 @@ class UMAPPanel(QWidget):
             self.selector = None
 
         if self.selector_combo.currentText() == "Lasso Tool":
-            self.current_selector = LassoSelector(self.ax, onselect=self.on_select)
+            # button=[1] so right-click stays free for _on_canvas_click's
+            # "highlight this point's cluster" pick; LassoSelector otherwise
+            # grabs every mouse button and would swallow it.
+            self.current_selector = LassoSelector(
+                self.ax, onselect=self.on_select, button=[1]
+            )
         else:
             self.current_selector = RectangleSelector(
                 self.ax,

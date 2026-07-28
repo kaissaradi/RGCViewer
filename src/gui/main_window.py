@@ -43,6 +43,7 @@ from .widgets.widgets import (
     HighlightStatusPandasModel,
     CustomTableView,
     ClusterTreeDelegate,
+    PandasModel,
 )
 from . import callbacks
 from .panels.population_panel import draw_population_rfs_plot
@@ -1014,8 +1015,20 @@ class MainWindow(QMainWindow):
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
         self.tree_view.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        # ExtendedSelection gives shift-click ranges and ctrl-click toggles for
+        # free, and lets a drag carry the whole selection rather than the one
+        # row under the cursor.
+        self.tree_view.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
+
+        # Delete sends the selection to Trash. Scoped to the tree rather than
+        # the window so Delete keeps its normal meaning in text fields.
+        self._trash_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.tree_view)
+        self._trash_shortcut.setContext(Qt.WidgetShortcut)
+        self._trash_shortcut.activated.connect(self.move_tree_selection_to_trash)
 
         # Table View
         self.table_view = CustomTableView()
@@ -1023,6 +1036,26 @@ class MainWindow(QMainWindow):
         self.table_view.setAlternatingRowColors(True)
         self.table_view.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
+        )
+        # Same shift/ctrl selection as the tree, and select whole rows so a
+        # click anywhere in the row picks the cell it describes.
+        self.table_view.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.table_view.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table_view.customContextMenuRequested.connect(
+            self.open_table_context_menu
+        )
+
+        self._table_trash_shortcut = QShortcut(
+            QKeySequence(Qt.Key_Delete), self.table_view
+        )
+        self._table_trash_shortcut.setContext(Qt.WidgetShortcut)
+        self._table_trash_shortcut.activated.connect(
+            self.move_table_selection_to_trash
         )
 
         self.view_stack.addWidget(self.tree_view)
@@ -1495,7 +1528,13 @@ class MainWindow(QMainWindow):
             if selection_model is None or not selection_model.hasSelection():
                 return None
 
-            index = selection_model.selectedIndexes()[0]
+            # Prefer the focused row over the topmost selected one: under
+            # ExtendedSelection those differ, and the detail panels should
+            # follow the cell the user just clicked, not whichever sits
+            # highest in the tree.
+            index = self.tree_view.currentIndex()
+            if not index.isValid() or not selection_model.isSelected(index):
+                index = selection_model.selectedIndexes()[0]
             item = self.tree_model.itemFromIndex(index)
             if item is None:
                 return None
@@ -1535,6 +1574,144 @@ class MainWindow(QMainWindow):
     def on_save_classification_action(self):
         """Wrapper to call the callback function."""
         callbacks.save_classification_to_file(self)
+
+    def _get_selected_tree_items(self):
+        """Every distinct item currently selected in the tree, in tree order.
+
+        ``selectedIndexes()`` yields one index per column; the tree is single
+        -column so that is already one per row, but de-duplicating by index
+        keeps this correct if a column is ever added.
+        """
+        selection_model = self.tree_view.selectionModel()
+        if selection_model is None:
+            return []
+
+        seen = set()
+        items = []
+        for index in selection_model.selectedIndexes():
+            if index.column() != 0:
+                continue
+            key = (index.row(), index.internalId())
+            if key in seen:
+                continue
+            seen.add(key)
+            item = self.tree_model.itemFromIndex(index)
+            if item is not None:
+                items.append(item)
+        return items
+
+    def _tree_action_items(self, clicked_item=None):
+        """Items a tree action should apply to.
+
+        Follows the file-manager convention: act on the whole selection when
+        the right-clicked row is part of it, otherwise act on just that row.
+        """
+        selected = self._get_selected_tree_items()
+        if clicked_item is None:
+            return selected
+        if any(item is clicked_item for item in selected):
+            return selected
+        return [clicked_item]
+
+    def move_tree_selection_to_trash(self):
+        """Send the current tree selection to Trash (also bound to Delete)."""
+        if self.view_stack.currentIndex() != 0:
+            return
+        items = self._get_selected_tree_items()
+        if not items:
+            return
+        callbacks.move_items_to_trash(self, items)
+
+    def _get_selected_table_cluster_ids(self):
+        """Cluster IDs for every row selected in the table view.
+
+        Rows must be mapped back through the sort/filter proxy — the view's row
+        order is not the DataFrame's once a column has been sorted.
+        """
+        selection_model = self.table_view.selectionModel()
+        model = self.table_view.model()
+        if selection_model is None or model is None:
+            return []
+
+        source = model.sourceModel() if hasattr(model, "sourceModel") else model
+        df = getattr(source, "_dataframe", None)
+        if df is None or "cluster_id" not in df.columns:
+            return []
+
+        col = df.columns.get_loc("cluster_id")
+        ids = []
+        seen = set()
+        for index in selection_model.selectedRows():
+            src = (
+                model.mapToSource(index) if hasattr(model, "mapToSource") else index
+            )
+            row = src.row()
+            if row < 0 or row >= len(df):
+                continue
+            cid = int(df.iloc[row, col])
+            if cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+        return ids
+
+    def move_table_selection_to_trash(self):
+        """Send the current table selection to Trash (also bound to Delete)."""
+        if self.view_stack.currentIndex() != 1:
+            return
+        cluster_ids = self._get_selected_table_cluster_ids()
+        if not cluster_ids:
+            return
+        callbacks.move_cluster_ids_to_trash(self, cluster_ids)
+
+    def open_table_context_menu(self, position):
+        cluster_ids = self._get_selected_table_cluster_ids()
+        if not cluster_ids:
+            index = self.table_view.indexAt(position)
+            if not index.isValid():
+                return
+            self.table_view.selectRow(index.row())
+            cluster_ids = self._get_selected_table_cluster_ids()
+            if not cluster_ids:
+                return
+
+        n = len(cluster_ids)
+        noun = f"{n} cell{'s' if n != 1 else ''}"
+
+        menu = QMenu()
+        move_menu = menu.addMenu(f"Move {noun} to")
+        move_actions = {}
+        for path, group_item in callbacks.collect_group_items(self):
+            act = move_menu.addAction(path)
+            move_actions[act] = group_item
+        if move_actions:
+            move_menu.addSeparator()
+        move_new_action = move_menu.addAction("New group…")
+
+        trash_action = menu.addAction(f"Move {noun} to Trash")
+        menu.addSeparator()
+        group_action = menu.addAction(f"Group {noun} into new group…")
+        feature_action = menu.addAction("Feature Extraction")
+
+        action = menu.exec(self.table_view.viewport().mapToGlobal(position))
+        if action is None:
+            return
+
+        if action in move_actions:
+            callbacks.move_cluster_ids_to_group(
+                self, cluster_ids, move_actions[action]
+            )
+        elif action == move_new_action:
+            name, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
+            if ok and name:
+                callbacks.group_clusters_in_tree(self, cluster_ids, name)
+        elif action == trash_action:
+            callbacks.move_cluster_ids_to_trash(self, cluster_ids)
+        elif action == group_action:
+            name, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
+            if ok and name:
+                callbacks.group_clusters_in_tree(self, cluster_ids, name)
+        elif action == feature_action:
+            callbacks.feature_extraction(self, cluster_ids)
 
     def _get_group_cluster_ids(self, item):
         """Recursively gets all cluster IDs from a folder and all its sub-folders."""
@@ -1603,6 +1780,10 @@ class MainWindow(QMainWindow):
         proxy.setSourceModel(model)
         proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         proxy.setFilterKeyColumn(-1)  # search all columns
+        # Sort on the raw values, not the formatted text — otherwise "# Spikes"
+        # sorts lexicographically and 1000 lands before 999. Filtering stays on
+        # DisplayRole so the search bar still matches what is on screen.
+        proxy.setSortRole(PandasModel.SORT_ROLE)
 
         self.table_view.setModel(proxy)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
@@ -2112,44 +2293,112 @@ class MainWindow(QMainWindow):
         callbacks.load_classification_file(self)
 
     def open_tree_context_menu(self, position):
-        menu = QMenu()
         index = self.tree_view.indexAt(position)
         item = self.tree_model.itemFromIndex(index)
         if not item:
             return
 
-        add_group_action = menu.addAction("Add New Group")
+        # Act on the whole selection when the clicked row is part of it.
+        targets = self._tree_action_items(item)
+        n_cells = sum(1 for t in targets if not callbacks.is_group_item(t))
+        n_groups = len(targets) - n_cells
+        cluster_ids = []
+        for t in targets:
+            cluster_ids.extend(callbacks.iter_cluster_ids(t))
 
-        # Only show folder options if clicking a folder (hasChildren or no UserRole)
-        if item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:
-            rename_action = menu.addAction("Rename")
-            feature_extraction_action = menu.addAction("Feature Extraction")
+        in_trash = callbacks.items_are_in_trash(self, targets)
+
+        if len(targets) == 1:
+            noun = "group" if n_groups else "cell"
+        else:
+            parts = []
+            if n_cells:
+                parts.append(f"{n_cells} cell{'s' if n_cells != 1 else ''}")
+            if n_groups:
+                parts.append(f"{n_groups} group{'s' if n_groups != 1 else ''}")
+            noun = " + ".join(parts)
+
+        menu = QMenu()
+
+        # ── Move to… ─────────────────────────────────────────────────────────
+        move_menu = menu.addMenu(f"Move {noun} to")
+        move_actions = {}
+        for path, group_item in callbacks.collect_group_items(self, exclude=targets):
+            act = move_menu.addAction(path)
+            move_actions[act] = group_item
+        if move_actions:
+            move_menu.addSeparator()
+        move_top_action = move_menu.addAction("Top level")
+        move_new_action = move_menu.addAction("New group…")
+
+        # ── Trash ────────────────────────────────────────────────────────────
+        if in_trash:
+            trash_action = None
+            restore_action = menu.addAction(f"Restore {noun} from Trash")
+        else:
+            trash_action = menu.addAction(f"Move {noun} to Trash")
+            restore_action = None
+
+        menu.addSeparator()
+
+        # ── Actions on the selected cells ────────────────────────────────────
+        group_action = feature_action = None
+        if cluster_ids:
+            group_action = menu.addAction(
+                f"Group {len(cluster_ids)} cell"
+                f"{'s' if len(cluster_ids) != 1 else ''} into new group…"
+            )
+            feature_action = menu.addAction("Feature Extraction")
+
+        # ── Folder-only actions (single folder clicked) ──────────────────────
+        add_group_action = rename_action = flatten_action = delete_action = None
+        if len(targets) == 1 and callbacks.is_group_item(item):
             menu.addSeparator()
+            add_group_action = menu.addAction("Add New Group")
+            rename_action = menu.addAction("Rename")
             flatten_action = menu.addAction("Flatten Group (Remove Sub-folders)")
             delete_action = menu.addAction("Delete Group (Keep Units)")
 
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
+        if action is None:
+            return
 
-        if action == add_group_action:
+        if action in move_actions:
+            callbacks.move_items_to_group(self, targets, move_actions[action])
+        elif action == move_top_action:
+            callbacks.move_items_to_group(
+                self, targets, self.tree_model.invisibleRootItem()
+            )
+        elif action == move_new_action:
+            name, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
+            if ok and name:
+                callbacks.add_new_group(self, name)
+                new_group = self.tree_model.invisibleRootItem().child(0)
+                callbacks.move_items_to_group(self, targets, new_group)
+        elif trash_action is not None and action == trash_action:
+            callbacks.move_items_to_trash(self, targets)
+        elif restore_action is not None and action == restore_action:
+            callbacks.restore_items_from_trash(self, targets)
+        elif group_action is not None and action == group_action:
+            name, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
+            if ok and name:
+                callbacks.group_clusters_in_tree(self, cluster_ids, name)
+        elif feature_action is not None and action == feature_action:
+            callbacks.feature_extraction(self, cluster_ids)
+        elif add_group_action is not None and action == add_group_action:
             text, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
             if ok and text:
                 callbacks.add_new_group(self, text, parent_item=item)
-
-        elif item.hasChildren() or item.data(Qt.ItemDataRole.UserRole) is None:
-            if action == rename_action:
-                new_group_name, ok = QInputDialog.getText(
-                    self, "Rename Group", "Enter group name:", text=item.text()
-                )
-                if ok and new_group_name:
-                    original_group_name = item.text()
-                    callbacks.rename_class(self, original_group_name, new_group_name)
-            elif action == feature_extraction_action:
-                cluster_ids = self._get_group_cluster_ids(item)
-                callbacks.feature_extraction(self, cluster_ids)
-            elif action == flatten_action:
-                callbacks.flatten_group(self, item)
-            elif action == delete_action:
-                callbacks.delete_group(self, item)
+        elif rename_action is not None and action == rename_action:
+            new_group_name, ok = QInputDialog.getText(
+                self, "Rename Group", "Enter group name:", text=item.text()
+            )
+            if ok and new_group_name:
+                callbacks.rename_class(self, item.text(), new_group_name)
+        elif flatten_action is not None and action == flatten_action:
+            callbacks.flatten_group(self, item)
+        elif delete_action is not None and action == delete_action:
+            callbacks.delete_group(self, item)
 
     def toggle_animation(self):
         """Toggle the animation between play and pause."""
