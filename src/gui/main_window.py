@@ -1771,11 +1771,14 @@ class MainWindow(QMainWindow):
 
         return []
 
-    def setup_table_model(self, model):
-        """Sets up the table view model, wrapping it in a search proxy."""
-        if hasattr(model, "update_colors"):
-            model.update_colors(self.get_current_colors())
+    def _install_table_proxy(self, model):
+        """Wrap *model* in the search/sort proxy and install it on the table.
 
+        Single owner of the proxy's configuration. setup_table_model and
+        refresh_table_model both go through here — they used to configure a
+        proxy each, which is how refresh_table_model ended up without the sort
+        role and silently reverted "# Spikes" to string ordering.
+        """
         proxy = QSortFilterProxyModel(self)
         proxy.setSourceModel(model)
         proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -1801,6 +1804,15 @@ class MainWindow(QMainWindow):
         # Re-apply any active search query to the new proxy
         if hasattr(self, "cluster_search_bar") and self.cluster_search_bar.text():
             proxy.setFilterFixedString(self.cluster_search_bar.text())
+
+        return proxy
+
+    def setup_table_model(self, model):
+        """Sets up the table view model, wrapping it in a search proxy."""
+        if hasattr(model, "update_colors"):
+            model.update_colors(self.get_current_colors())
+
+        proxy = self._install_table_proxy(model)
 
         # Column header labels override (keeps internal df names intact)
         HEADER_LABELS = {
@@ -1898,6 +1910,11 @@ class MainWindow(QMainWindow):
         # Preserve the user's current visual column order across the rebuild.
         # The view may have a proxy installed, so unwrap to the source model.
         header = self.table_view.horizontalHeader()
+        # Installing a new proxy drops the active sort, so a background refresh
+        # would quietly reshuffle rows out from under the user. Capture the sort
+        # by *column name* — the rebuild can change column indices.
+        old_sort_col = None
+        old_sort_order = Qt.AscendingOrder
         old_view_model = self.table_view.model()
         if old_view_model is not None:
             # Unwrap proxy if present
@@ -1913,6 +1930,10 @@ class MainWindow(QMainWindow):
                     for v in range(header.count())
                     if header.logicalIndex(v) < len(old_cols)
                 ]
+                section = header.sortIndicatorSection()
+                if 0 <= section < len(old_cols):
+                    old_sort_col = old_cols[section]
+                    old_sort_order = header.sortIndicatorOrder()
             else:
                 old_visual_order = None
         else:
@@ -1923,23 +1944,7 @@ class MainWindow(QMainWindow):
         self.main_cluster_model = model
 
         # Wrap in proxy for search filtering, then install on the view
-        proxy = QSortFilterProxyModel(self)
-        proxy.setSourceModel(model)
-        proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        proxy.setFilterKeyColumn(-1)
-
-        self.table_view.setModel(proxy)
-        self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
-        self.table_view.verticalHeader().setVisible(False)
-        try:
-            self.table_view.selectionModel().selectionChanged.disconnect(
-                self.on_view_selection_changed
-            )
-        except (TypeError, RuntimeError):
-            pass
-        self.table_view.selectionModel().selectionChanged.connect(
-            self.on_view_selection_changed
-        )
+        proxy = self._install_table_proxy(model)
 
         # Re-apply any active search filter to the new proxy
         if hasattr(self, "cluster_search_bar") and self.cluster_search_bar.text():
@@ -2006,6 +2011,13 @@ class MainWindow(QMainWindow):
                     new_header.moveSection(current_visual, target_visual)
         else:
             self._apply_default_column_order(new_header, new_df_cols, new_col_index)
+
+        # Restore the sort the user had before the rebuild, by column name so a
+        # changed column layout cannot silently sort a different column.
+        if old_sort_col is not None and old_sort_col in new_col_index:
+            self.table_view.sortByColumn(
+                new_col_index[old_sort_col], old_sort_order
+            )
 
         self.table_view.resizeColumnsToContents()
 
