@@ -14,12 +14,15 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QSizePolicy,
+    QSplitter,
     QWidget,
     QPushButton,
 )
 from qtpy.QtGui import QCursor, QColor, QPalette
 from qtpy.QtCore import QThread, Signal, Qt
 from typing import TYPE_CHECKING, Optional, List
+
+from .rf_map_widget import RFMapWidget
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow
@@ -362,9 +365,20 @@ class FeatureExtractionWindow(QDialog):
 
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.canvas.hide()
 
-        self.main_layout.addWidget(self.canvas, stretch=1)
+        # RF mosaic alongside the scatters: a selection that is a real cell type
+        # should tile the array, and that is only checkable while brushing.
+        self.rf_map = RFMapWidget(colors=PALETTE, title="RF Mosaic")
+
+        self.plot_splitter = QSplitter(Qt.Horizontal)
+        self.plot_splitter.addWidget(self.canvas)
+        self.plot_splitter.addWidget(self.rf_map)
+        self.plot_splitter.setStretchFactor(0, 3)
+        self.plot_splitter.setStretchFactor(1, 1)
+        self.plot_splitter.setSizes([900, 300])
+        self.plot_splitter.hide()
+
+        self.main_layout.addWidget(self.plot_splitter, stretch=1)
 
         self.scatter_artists: List[Optional[any]] = [None] * 6
         # Overlay scatters: one per axes, holds ONLY selected points (orange, larger)
@@ -412,7 +426,8 @@ class FeatureExtractionWindow(QDialog):
             self.loading_widget.show()
             return
 
-        self.canvas.show()
+        self.plot_splitter.show()
+        self.rf_map.set_cells(self.main_window.data_manager, self.cluster_ids)
         self.draw_plots()
 
     # ── Plotting ──────────────────────────────────────────────────────────────
@@ -657,6 +672,14 @@ class FeatureExtractionWindow(QDialog):
 
         # Push the updated buffer to the screen — single GPU/X11 flush
         self.canvas.blit(self.fig.bbox)
+
+        # Mirror the selection onto the RF mosaic. Indices are positions in
+        # self.cluster_ids, so map them back to cluster IDs first.
+        if getattr(self, "rf_map", None) is not None:
+            selected_ids = [
+                self.cluster_ids[i] for i in indices if 0 <= i < len(self.cluster_ids)
+            ]
+            self.rf_map.highlight(selected_ids)
 
     # ── Context menu ──────────────────────────────────────────────────────────
 

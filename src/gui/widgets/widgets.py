@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from PyQt5.QtGui import QColor, QPainter, QPen
 from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal, QRect, QEvent
@@ -25,6 +26,12 @@ class CustomTableView(QTableView):
 class PandasModel(QAbstractTableModel):
     """A model to interface a pandas DataFrame with a QTableView."""
 
+    # DisplayRole is formatted text, so a proxy sorting on it compares strings
+    # and puts "1000" before "999". SORT_ROLE hands back the underlying value
+    # with its real type, so numeric columns sort numerically. The view's proxy
+    # opts in via setSortRole() — see MainWindow.setup_table_model.
+    SORT_ROLE = Qt.ItemDataRole.UserRole + 100
+
     def __init__(self, dataframe: pd.DataFrame, parent=None):
         super().__init__(parent)
         self.set_dataframe(dataframe)
@@ -49,6 +56,17 @@ class PandasModel(QAbstractTableModel):
                 return ""
             if isinstance(value, float):
                 return f"{value:.2f}"
+            return str(value)
+        if role == PandasModel.SORT_ROLE:
+            value = self._dataframe.iloc[index.row(), index.column()]
+            if pd.isna(value):
+                return None  # invalid QVariant — Qt groups these together
+            if isinstance(value, (bool, np.bool_)):
+                return bool(value)
+            if isinstance(value, (int, np.integer)):
+                return int(value)
+            if isinstance(value, (float, np.floating)):
+                return float(value)
             return str(value)
         return None
 
