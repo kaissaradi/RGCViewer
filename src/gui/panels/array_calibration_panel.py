@@ -11,6 +11,7 @@ import logging
 import numpy as np
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, List, Tuple
 
 import pyqtgraph as pg
@@ -34,6 +35,8 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFont
+
+from .. import recent_paths
 
 logger = logging.getLogger(__name__)
 
@@ -275,15 +278,25 @@ class ArrayCalibrationDialog(QDialog):
         self.vb.sigImageClicked.connect(self._on_image_clicked)
         self.table.itemChanged.connect(self._on_table_item_changed)
 
+    def _main_window(self):
+        """Adapter for recent_paths, which reads ``.data_manager``.
+
+        This dialog holds the manager as ``self.dm`` and has no main-window
+        reference, so hand over a stand-in exposing the expected attribute
+        rather than widening recent_paths' contract for one caller.
+        """
+        return SimpleNamespace(data_manager=self.dm)
+
     def _on_load_image(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Array Image",
-            "",
+            recent_paths.last_dir(self._main_window(), "array_image"),
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)",
         )
         if not path:
             return
+        recent_paths.remember_dir(path, "array_image")
         self._load_image_from_path(Path(path))
 
     def _load_image_from_path(self, path: Path):
@@ -311,10 +324,14 @@ class ArrayCalibrationDialog(QDialog):
 
     def _on_load_transform(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Transform", "", "JSON (*.json);;All Files (*)"
+            self,
+            "Load Transform",
+            recent_paths.last_dir(self._main_window(), "transform"),
+            "JSON (*.json);;All Files (*)",
         )
         if not path:
             return
+        recent_paths.remember_dir(path, "transform")
         try:
             with open(path) as f:
                 data = json.load(f)
@@ -545,13 +562,18 @@ class ArrayCalibrationDialog(QDialog):
         self._refresh_preview()
 
     def _on_set_save_path(self):
+        default = (
+            str(self._save_path)
+            if self._save_path
+            else recent_paths.suggested_path(
+                self._main_window(), "transform", "array_transform.json"
+            )
+        )
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Transform As",
-            str(self._save_path) if self._save_path else "",
-            "JSON (*.json);;All Files (*)",
+            self, "Save Transform As", default, "JSON (*.json);;All Files (*)"
         )
         if path:
+            recent_paths.remember_dir(path, "transform")
             self._set_save_path(Path(path))
 
     def _set_save_path(self, path: Path):
