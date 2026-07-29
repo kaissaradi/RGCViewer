@@ -125,11 +125,20 @@ class HighlightStatusPandasModel(PandasModel):
         "Original": DARK_COLORS["text_primary"],
     }
 
+    # Sort keys for chirp_qi values whose repeat count is too low to trust are
+    # shifted below this, so a descending sort puts every trustworthy cell
+    # first regardless of the raw numbers. Well clear of any real QI, which is
+    # a variance ratio and in practice stays under ~50.
+    UNTRUSTED_SORT_OFFSET = 1e6
+
     def __init__(self, dataframe: pd.DataFrame, parent=None):
         super().__init__(dataframe, parent)
         self._background_cache = {}
         self._foreground_cache = {}
         self._display_cache = {}
+        # Set by MainWindow once the chirp file's repeat count is known.
+        self._chirp_qi_trustworthy = True
+        self._chirp_n_repeats = None
 
     def update_colors(self, colors):
         """Updates status colors based on the current theme."""
@@ -145,6 +154,17 @@ class HighlightStatusPandasModel(PandasModel):
             ),
             "Original": colors.get("text_primary", DARK_COLORS["text_primary"]),
         }
+        self.refresh_view()
+
+    def set_chirp_qi_context(self, n_repeats, trustworthy):
+        """Tell the model how many stimulus repeats back the chirp QI column.
+
+        Below the repeat threshold the QI stops tracking anything real, so the
+        column is rendered in the warning colour and demoted in sort order
+        rather than being shown as an ordinary number.
+        """
+        self._chirp_n_repeats = n_repeats
+        self._chirp_qi_trustworthy = bool(trustworthy)
         self.refresh_view()
 
     def refresh_view(self, row_indices=None):
@@ -213,10 +233,32 @@ class HighlightStatusPandasModel(PandasModel):
             return value
 
         try:
+            col_name = self._dataframe.columns[index.column()]
+
+            # --- chirp QI: flag and demote when too few repeats back it ---
+            # Handled before the status lookup because it applies whether or
+            # not a status column exists.
+            if col_name == "chirp_qi" and not self._chirp_qi_trustworthy:
+                if role == Qt.ForegroundRole:
+                    return QColor(self.STATUS_COLORS.get("Noise", "#F08080"))
+                if role == PandasModel.SORT_ROLE and value is not None:
+                    return float(value) - self.UNTRUSTED_SORT_OFFSET
+                if role == Qt.ToolTipRole:
+                    n = self._chirp_n_repeats
+                    return (
+                        f"Quality index from only {n} stimulus repeats"
+                        if n is not None
+                        else "Quality index from an unknown number of repeats"
+                    ) + (
+                        ".\nThe QI is a ratio of two variances estimated from "
+                        "the repeats; below ~8 it stops tracking anything real "
+                        "and does not reproduce on a split-half test.\n"
+                        "Treat these values as unusable, not merely noisy."
+                    )
+
             if "status" not in self._dataframe.columns:
                 return value
 
-            col_name = self._dataframe.columns[index.column()]
             status_col_idx = self._dataframe.columns.get_loc("status")
             status_value = str(self._dataframe.iloc[index.row(), status_col_idx])
 

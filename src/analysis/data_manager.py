@@ -9,7 +9,13 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
 from . import vision_integration
-from .constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
+from .constants import (
+    ISI_REFRACTORY_PERIOD_MS,
+    EI_CORR_THRESHOLD,
+    LS_CELL_TYPE_LABELS,
+    CHIRP_MIN_REPEATS_FOR_QI,
+    STA_SNR_GOOD,
+)
 import pickle
 import os
 import tempfile
@@ -293,6 +299,10 @@ class DataManager(QObject):
         # space as cluster_df['cluster_id']) — no ID translation needed.
         self.chirp_data = None  # raw loaded dict (mdic) or None
         self.chirp_id_to_row = None  # dict[int cluster_id -> int row index]
+        self.chirp_n_repeats = None  # stimulus repeats behind quality_index
+        self.chirp_qi_is_baden = False  # True when chirp_qi was recomputed
+        self.sta_ids_consistent = True   # .sta matches this sort?
+        self.sta_consistency_message = ""
         self.chirp_available = False
 
         # --- Grating (DSOS / SF) Data ---
@@ -3588,6 +3598,7 @@ class DataManager(QObject):
                     self.chirp_available = False
                     self.chirp_data = None
                     self.chirp_id_to_row = None
+                    self.chirp_n_repeats = None
                     logger.info("No chirp analysis file found in %s", self.kilosort_dir)
                     return False, "No chirp analysis file found."
                 chirp_path = candidates[0]
@@ -3600,12 +3611,24 @@ class DataManager(QObject):
                 self.chirp_available = False
                 self.chirp_data = None
                 self.chirp_id_to_row = None
+                self.chirp_n_repeats = None
                 logger.warning(
                     "Chirp file %s missing required keys: %s", chirp_path.name, missing
                 )
                 return False, f"Chirp file missing required keys: {missing}"
 
             self.chirp_data = mdic
+            # Repeat count backs the trustworthiness of quality_index. It is
+            # not stored as a scalar in the file, but spikes_binned is
+            # (n_cells, n_trials, n_bins), so read it off there. Absent that
+            # array the count is unknown, which is treated as untrustworthy
+            # rather than assumed fine.
+            binned = mdic.get("spikes_binned")
+            self.chirp_n_repeats = (
+                int(binned.shape[1])
+                if binned is not None and np.asarray(binned).ndim == 3
+                else None
+            )
             self.chirp_id_to_row = {}
             for i, cid in enumerate(mdic["cluster_id"]):
                 # Translate incoming Vision IDs (1-indexed) to Kilosort IDs (0-indexed)
@@ -3623,7 +3646,195 @@ class DataManager(QObject):
             self.chirp_available = False
             self.chirp_data = None
             self.chirp_id_to_row = None
+            self.chirp_n_repeats = None
             return False, str(e)
+
+    def chirp_qi_is_trustworthy(self) -> bool:
+        """Whether the loaded chirp run has enough repeats for its QI to mean
+        anything. Unknown repeat count counts as untrustworthy."""
+        return (
+            self.chirp_n_repeats is not None
+            and self.chirp_n_repeats >= CHIRP_MIN_REPEATS_FOR_QI
+        )
+
+    @staticmethod
+    def _baden_quality_index(spikes_binned) -> np.ndarray:
+        """Baden et al. (2016) response quality: Var_t(<C>_r) / <Var_t(C)>_r.
+
+        ``spikes_binned`` is (n_cells, n_trials, n_bins). 1 means a perfectly
+        reproducible response across repeats, 0 means noise.
+        """
+        x = np.asarray(spikes_binned, dtype=float)
+        across = x.mean(axis=1).var(axis=1)     # variance of the trial-average
+        within = x.var(axis=1).mean(axis=1)     # mean within-bin variance
+        with np.errstate(divide="ignore", invalid="ignore"):
+            qi = np.where(within > 0, across / within, 0.0)
+        return np.nan_to_num(qi, nan=0.0, posinf=0.0)
+
+    def attach_chirp_qi_column(self) -> bool:
+        """Write the chirp quality index into ``cluster_df`` as ``chirp_qi``.
+
+        The QI already existed in the loaded file and was used to gate the
+        UMAP chirp block, but it never reached the table, so it could not be
+        sorted on or eyeballed against the other per-unit quality metrics.
+
+        **The value here is recomputed, not the file's ``quality_index``.**
+        That stored field is on an unknown scale — across the chirp files on
+        this drive it ranges roughly 200-2000 with a minimum near 217, and no
+        linear transform maps it onto Baden's index (best fit R^2 ~0.87). It
+        ranks almost identically (Spearman +0.999), so it is fine for
+        ordering, but its absolute values cannot be compared against the
+        literature, where the usual chirp cut is 0.45. Since ``spikes_binned``
+        (n_cells, n_trials, n_bins) is present in every chirp file checked,
+        the index is recomputed from it so the column means what its name
+        says. Files lacking that array fall back to the stored value.
+
+        Cells absent from the chirp file get NaN, which the table renders
+        blank and sorts into its own group. Returns False (leaving cluster_df
+        untouched) when there is no chirp data to attach.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        binned = self.chirp_data.get("spikes_binned")
+        if binned is not None and np.asarray(binned).ndim == 3:
+            qi_all = self._baden_quality_index(binned)
+            self.chirp_qi_is_baden = True
+        else:
+            qi_all = np.asarray(self.chirp_data["quality_index"], dtype=float)
+            self.chirp_qi_is_baden = False
+            logger.warning(
+                "Chirp file has no spikes_binned; falling back to its stored "
+                "quality_index, which is on an unknown scale — rank order is "
+                "usable but absolute thresholds are not."
+            )
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            row = self.chirp_id_to_row.get(int(cid))
+            if row is not None and 0 <= row < len(qi_all):
+                values[i] = qi_all[row]
+
+        self.cluster_df["chirp_qi"] = values
+        logger.debug(
+            "Attached chirp_qi to cluster_df: %d/%d cells, %d repeats (%s), "
+            "source=%s",
+            int(np.isfinite(values).sum()),
+            len(values),
+            self.chirp_n_repeats or -1,
+            "trustworthy" if self.chirp_qi_is_trustworthy() else "TOO FEW REPEATS",
+            "recomputed Baden" if self.chirp_qi_is_baden else "stored (unknown scale)",
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # STA quality
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def sta_peak_to_rms(vol) -> float:
+        """Peak-to-RMS ratio of an STA volume — how far the strongest stixel
+        stands above the volume's own noise.
+
+        A real receptive field is a compact blob in one or two frames and
+        near-zero everywhere else, so its peak towers over the RMS. A noise
+        STA has comparable energy in every stixel of every frame, so the two
+        are close. On 20260715A/data010 the measure is sharply bimodal:
+        noise cells sit near 4.5, cells with a receptive field near 35, with
+        an empty valley between roughly 10 and 25.
+
+        Scale-free, so Vision's peak-normalisation of the stored volumes does
+        not affect it.
+        """
+        v = np.asarray(vol, dtype=np.float64)
+        if v.size == 0:
+            return float("nan")
+        v = v - v.mean()
+        rms = float(np.sqrt((v * v).mean()))
+        if rms <= 0 or not np.isfinite(rms):
+            return float("nan")
+        return float(np.abs(v).max() / rms)
+
+    def check_sta_consistency(self):
+        """Does the .sta describe the cells in this sort?
+
+        Returns ``(ok, message)``. The decisive check is the id sets: an STA
+        for a cell the sort does not contain can only mean the STA file was
+        written against an earlier version of that sort. This is not
+        hypothetical — 20260715A/data007-010 ships an .sta holding 53 cells
+        absent from its own .neurons, and its receptive fields are attached
+        to the wrong units as a result.
+        """
+        if not self.vision_stas or self.cluster_df is None:
+            return True, ""
+        try:
+            sta_ids = {int(i) for i in self.vision_stas.keys()}
+        except Exception:
+            return True, ""
+        if not sta_ids:
+            return True, ""
+
+        vision_ids = {
+            self.get_vision_id_for_cluster(int(c))
+            for c in self.cluster_df["cluster_id"].to_numpy()
+        }
+        orphan = sta_ids - vision_ids
+        if orphan:
+            return False, (
+                f"{len(orphan)} of {len(sta_ids)} cells in the .sta do not exist "
+                f"in this sort. The STA file predates the spike sort, so "
+                f"receptive fields are attached to the wrong units. Read STAs "
+                f"from the noise run's own folder instead."
+            )
+        return True, ""
+
+    def attach_sta_quality_column(self) -> bool:
+        """Write ``sta_snr`` into ``cluster_df`` and check the .sta's provenance.
+
+        Separates cells with a real receptive field from cells whose STA is
+        noise — the two are indistinguishable from the KSLabel, which only
+        reports spike-sorting quality and knows nothing about visual response.
+        """
+        if not self.vision_stas:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        ok, msg = self.check_sta_consistency()
+        self.sta_ids_consistent = ok
+        self.sta_consistency_message = msg
+        if not ok:
+            logger.warning("STA provenance: %s", msg)
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            vid = self.get_vision_id_for_cluster(int(cid))
+            try:
+                sta = self.vision_stas[vid]
+            except (KeyError, TypeError):
+                continue
+            if sta is None:
+                continue
+            # Green carries the luminance signal for the achromatic noise used
+            # here; fall back if a file stores only one channel.
+            vol = getattr(sta, "green", None)
+            if vol is None:
+                vol = getattr(sta, "red", None)
+            if vol is None:
+                continue
+            values[i] = self.sta_peak_to_rms(vol)
+
+        self.cluster_df["sta_snr"] = values
+        n = int(np.isfinite(values).sum())
+        logger.debug(
+            "Attached sta_snr to cluster_df: %d/%d cells, %d above %.0f, "
+            "provenance %s",
+            n, len(values), int(np.nansum(values >= STA_SNR_GOOD)),
+            STA_SNR_GOOD, "OK" if ok else "SUSPECT",
+        )
+        return True
 
     def get_chirp_data_for_cluster(self, cluster_id):
         """
@@ -3866,6 +4077,18 @@ class DataManager(QObject):
         if getattr(self, "is_vision_only", False):
             return int(cluster_id)
         return int(cluster_id) + 1
+
+    def get_cluster_id_for_vision(self, vision_id: int) -> int:
+        """Translate Vision file key → UI cluster_id.
+
+        The exact inverse of get_vision_id_for_cluster. Anything reading an id
+        back out of Vision data (a picked RF, a parsed classification file)
+        must come through here rather than subtracting one by hand — the offset
+        does not apply in vision-only mode and getting it wrong is silent.
+        """
+        if getattr(self, "is_vision_only", False):
+            return int(vision_id)
+        return int(vision_id) - 1
 
     # ------------------------------------------------------------------
     # Cross-run reference bridge install / availability

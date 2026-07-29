@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.widgets import RectangleSelector, LassoSelector
 from matplotlib.path import Path
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.colors import to_rgba
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from qtpy.QtWidgets import (
     QDialog,
@@ -144,7 +146,147 @@ QPushButton#tool_btn[active="true"] {{
     color: #ffffff;
     border-color: {PALETTE["btn_active"]};
 }}
+
+QWidget#sel_panel {{
+    background-color: {PALETTE["surface"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 6px;
+}}
+QWidget#sel_panel[armed="true"] {{
+    border-color: {PALETTE["highlight"]};
+}}
+
+QLabel#sel_heading {{
+    color: {PALETTE["text_muted"]};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+}}
+QLabel#sel_count {{
+    color: {PALETTE["text_muted"]};
+    font-size: 12px;
+}}
+QLabel#sel_count[armed="true"] {{
+    color: {PALETTE["highlight"]};
+    font-size: 14px;
+    font-weight: 600;
+}}
+
+QPushButton#primary_btn {{
+    background-color: {PALETTE["accent"]};
+    color: #ffffff;
+    border: 1px solid {PALETTE["accent"]};
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QPushButton#primary_btn:hover {{
+    background-color: #6ba1f9;
+}}
+QPushButton#primary_btn:disabled {{
+    background-color: {PALETTE["btn_inactive"]};
+    border-color: {PALETTE["border"]};
+    color: {PALETTE["text_muted"]};
+}}
+
+QPushButton#ghost_btn {{
+    background-color: transparent;
+    color: {PALETTE["text_muted"]};
+    border: 1px solid {PALETTE["border"]};
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+}}
+QPushButton#ghost_btn:hover {{
+    color: {PALETTE["text_primary"]};
+    border-color: {PALETTE["text_muted"]};
+}}
+QPushButton#ghost_btn:disabled {{
+    color: {PALETTE["border"]};
+}}
 """
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Selector plumbing
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class _CompositedSelector:
+    """Mixin: hand every repaint to the owning window's single blit compositor.
+
+    Each matplotlib selector normally keeps its *own* background snapshot and
+    blits independently. With six rectangle selectors, six lassos and the
+    highlight overlay all sharing one canvas, whichever one painted last wiped
+    the others — which is why the rubber band vanished the moment a selection
+    landed. Routing everything through ``FeatureExtractionWindow._composite``
+    gives one artist stack with a fixed draw order instead.
+    """
+
+    _owner = None
+
+    def update(self):
+        owner = self._owner
+        if owner is None:
+            return super().update()
+        if not owner._defer_composite:
+            owner._composite()
+        return True
+
+    def update_background(self, event):
+        # The owner re-snapshots on draw_event. The base implementation forces
+        # a full canvas.draw() on every button press, which is the stall this
+        # panel used to have between clicking and seeing the rubber band.
+        return
+
+    def _press(self, event):
+        if self._owner is not None:
+            self._owner._begin_selection(self)
+        return super()._press(event)
+
+
+class LiveRectangleSelector(_CompositedSelector, RectangleSelector):
+    """Rectangle whose extents are reported on every move, not just on release.
+
+    That is what makes dragging an edge handle re-filter the population live
+    rather than only when the mouse comes up.
+    """
+
+    def _onmove(self, event):
+        owner = self._owner
+        if owner is None:
+            return super()._onmove(event)
+        # Suppress the intermediate composite the base class triggers; the
+        # selection is recomputed first so the shape and the points move together.
+        owner._defer_composite = True
+        try:
+            super()._onmove(event)
+        finally:
+            owner._defer_composite = False
+        owner._on_rect_live(self)
+
+
+class LiveLassoSelector(_CompositedSelector, LassoSelector):
+    """Lasso that previews its contents while you draw and stays on screen after."""
+
+    def _onmove(self, event):
+        owner = self._owner
+        if owner is None:
+            return super()._onmove(event)
+        owner._defer_composite = True
+        try:
+            super()._onmove(event)
+        finally:
+            owner._defer_composite = False
+        owner._on_lasso_live(self)
+
+    def _release(self, event):
+        verts = list(self.verts) if self.verts else []
+        # The base implementation fires onselect and then throws the path away.
+        super()._release(event)
+        if self._owner is not None and len(verts) >= 3:
+            self._owner._freeze_lasso(self, verts)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -252,6 +394,14 @@ class FeatureExtractionWindow(QDialog):
         # Selection tool state: 'rect' | 'lasso'
         self._selection_mode = "rect"
 
+        # Single-compositor state. Everything that paints on the canvas goes
+        # through _composite(); _defer_composite suppresses it while a selector
+        # is mid-update so one mouse move produces exactly one blit.
+        self._blit_bg = None
+        self._defer_composite = False
+        self._building = False
+        self._selection = np.empty(0, dtype=int)
+
         self._build_window()
         self._build_toolbar()
         self._build_loading_ui()
@@ -298,7 +448,7 @@ class FeatureExtractionWindow(QDialog):
         row.addWidget(self._btn_lasso)
         row.addStretch()
 
-        hint = QLabel("Drag to select · right-click selection to create cluster")
+        hint = QLabel("Drag to select · drag the handles to refine · group it on the right")
         hint.setStyleSheet(
             f"color: {PALETTE['text_muted']}; font-size: 11px; font-style: italic;"
         )
@@ -328,13 +478,23 @@ class FeatureExtractionWindow(QDialog):
         self._selection_mode = mode
         self._update_tool_buttons()
 
-        # Enable only the matching selector family; disable the other
+        # Enable only the matching selector family; disable the other. The
+        # outgoing family's shape is hidden so two selection outlines can never
+        # be on screen at once, but the selected cells themselves are kept.
         for sel in self._rect_selectors:
             sel.set_active(mode == "rect")
+            if mode != "rect":
+                self._retire(sel)
         for sel in self._lasso_selectors:
             sel.set_active(mode == "lasso")
+            if mode != "lasso":
+                self._retire(sel)
+        if mode != "lasso":
+            for poly in self._lasso_polys:
+                if poly is not None:
+                    poly.set_visible(False)
 
-        self.canvas.draw_idle()
+        self._composite()
 
     # ── Loading UI ────────────────────────────────────────────────────────────
 
@@ -366,13 +526,27 @@ class FeatureExtractionWindow(QDialog):
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        # A full redraw invalidates the cached background. Snapshotting from
+        # the draw_event (rather than only after resize) means the highlight
+        # and the selection shape survive every repaint Qt asks for.
+        self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_button)
+
         # RF mosaic alongside the scatters: a selection that is a real cell type
         # should tile the array, and that is only checkable while brushing.
         self.rf_map = RFMapWidget(colors=PALETTE, title="RF Mosaic")
+        self.rf_map.cell_clicked.connect(self._on_rf_cell_clicked)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(8)
+        side_layout.addWidget(self.rf_map, stretch=1)
+        side_layout.addWidget(self._build_selection_panel())
 
         self.plot_splitter = QSplitter(Qt.Horizontal)
         self.plot_splitter.addWidget(self.canvas)
-        self.plot_splitter.addWidget(self.rf_map)
+        self.plot_splitter.addWidget(side)
         self.plot_splitter.setStretchFactor(0, 3)
         self.plot_splitter.setStretchFactor(1, 1)
         self.plot_splitter.setSizes([900, 300])
@@ -381,15 +555,67 @@ class FeatureExtractionWindow(QDialog):
         self.main_layout.addWidget(self.plot_splitter, stretch=1)
 
         self.scatter_artists: List[Optional[any]] = [None] * 6
-        # Overlay scatters: one per axes, holds ONLY selected points (orange, larger)
-        # We update these via set_offsets() — much faster than recoloring the base scatter
+        # Overlay scatters: one per axes, holds ONLY selected points (orange, larger).
+        # animated=True keeps them out of the normal draw pass, so the cached
+        # background stays clean instead of baking in a stale selection.
         self._overlay_artists: List[Optional[any]] = [None] * 6
         # Per-axes (x, y) arrays stored so highlight_selection can look up coordinates
         self._plot_data: List[Optional[tuple]] = [None] * 6
+        # Frozen lasso outlines, one per axes — LassoSelector throws its own
+        # path away on release, so we keep a copy to draw.
+        self._lasso_polys: List[Optional[MplPolygon]] = [None] * 6
 
         # Separate lists so we can toggle them independently
         self._rect_selectors: list = []
         self._lasso_selectors: list = []
+
+    # ── Selection panel ───────────────────────────────────────────────────────
+
+    def _build_selection_panel(self) -> QWidget:
+        """The 'make a group out of this' prompt, as a panel instead of a popup.
+
+        It used to be a modal QMenu at the cursor, which froze the plot: you
+        could not nudge the rectangle without dismissing it first. As a panel
+        it stays out of the way and updates live while you drag.
+        """
+        panel = QWidget()
+        panel.setObjectName("sel_panel")
+        panel.setProperty("armed", "false")
+        self._sel_panel = panel
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(6)
+
+        heading = QLabel("SELECTION")
+        heading.setObjectName("sel_heading")
+        layout.addWidget(heading)
+
+        self.sel_count_label = QLabel("Drag on a plot to select cells")
+        self.sel_count_label.setObjectName("sel_count")
+        self.sel_count_label.setProperty("armed", "false")
+        self.sel_count_label.setWordWrap(True)
+        layout.addWidget(self.sel_count_label)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.btn_create_group = QPushButton("Create group")
+        self.btn_create_group.setObjectName("primary_btn")
+        self.btn_create_group.setCursor(Qt.PointingHandCursor)
+        self.btn_create_group.setEnabled(False)
+        self.btn_create_group.clicked.connect(self._create_group_from_selection)
+
+        self.btn_clear_selection = QPushButton("Clear")
+        self.btn_clear_selection.setObjectName("ghost_btn")
+        self.btn_clear_selection.setCursor(Qt.PointingHandCursor)
+        self.btn_clear_selection.setEnabled(False)
+        self.btn_clear_selection.clicked.connect(self.clear_selection)
+
+        buttons.addWidget(self.btn_create_group, stretch=2)
+        buttons.addWidget(self.btn_clear_selection, stretch=1)
+        layout.addLayout(buttons)
+
+        return panel
 
     # ── Worker ────────────────────────────────────────────────────────────────
 
@@ -467,9 +693,20 @@ class FeatureExtractionWindow(QDialog):
             ),
         ]
 
+        # Old selectors keep their canvas callbacks alive even after ax.clear(),
+        # so they must be disconnected or they go on handling events for axes
+        # that no longer hold their data.
+        for sel in self._rect_selectors + self._lasso_selectors:
+            try:
+                sel.disconnect_events()
+            except Exception:
+                logger.debug("selector disconnect failed", exc_info=True)
         self._rect_selectors.clear()
         self._lasso_selectors.clear()
+        self._lasso_polys = [None] * 6
+        self._selection = np.empty(0, dtype=int)
 
+        self._building = True
         for idx, ax in enumerate(self.axes.flat):
             ax.clear()
             title, xlabel, ylabel = self._PLOT_META[idx]
@@ -510,6 +747,7 @@ class FeatureExtractionWindow(QDialog):
                     color=PALETTE["highlight"],
                     alpha=0.95,
                     zorder=4,
+                    animated=True,
                 )
                 self._overlay_artists[idx] = overlay
 
@@ -521,8 +759,8 @@ class FeatureExtractionWindow(QDialog):
                 ax.set_xlim(x_data.min() - x_pad, x_data.max() + x_pad)
                 ax.set_ylim(y_data.min() - y_pad, y_data.max() + y_pad)
 
-                self._attach_rect_selector(ax, x_data, y_data)
-                self._attach_lasso_selector(ax, x_data, y_data)
+                self._attach_rect_selector(ax, idx, x_data, y_data)
+                self._attach_lasso_selector(ax, idx, x_data, y_data)
             else:
                 ax.text(
                     0.5,
@@ -540,174 +778,354 @@ class FeatureExtractionWindow(QDialog):
         # Apply initial active state
         for sel in self._lasso_selectors:
             sel.set_active(self._selection_mode == "lasso")
+            self._retire(sel)
         for sel in self._rect_selectors:
             sel.set_active(self._selection_mode == "rect")
+            self._retire(sel)
 
-        # Full render once — then snapshot the clean background for blitting
+        self._building = False
+        self._sync_selection_panel()
+        # Full render once; _on_canvas_draw snapshots the clean background.
         self.canvas.draw()
-        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
 
     # ── Selection: Rectangle ──────────────────────────────────────────────────
 
-    def _attach_rect_selector(self, ax, x_data: np.ndarray, y_data: np.ndarray):
-        """
-        Attach a RectangleSelector with useblit=True for instant rubber-banding.
-        The selector fires only on mouse release; no blocking work happens during drag.
-        """
+    def _attach_rect_selector(self, ax, idx: int, x_data: np.ndarray, y_data: np.ndarray):
+        """Attach an interactive rectangle whose extents drive the selection live."""
 
         def onselect(eclick, erelease):
-            if not self.cluster_ids:
-                return
-            x1, y1 = eclick.xdata, eclick.ydata
-            x2, y2 = erelease.xdata, erelease.ydata
-            if None in (x1, y1, x2, y2):
-                return
-            xmin, xmax = sorted([x1, x2])
-            ymin, ymax = sorted([y1, y2])
-            mask = (
-                (x_data >= xmin)
-                & (x_data <= xmax)
-                & (y_data >= ymin)
-                & (y_data <= ymax)
-            )
-            selected = np.where(mask)[0]
-            self.highlight_selection(selected)
-            self.show_context_menu(selected)
+            # The live handler has already applied this selection; the release
+            # callback only has to leave the shape on screen.
+            self._on_rect_live(rect)
 
-        rect = RectangleSelector(
+        rect = LiveRectangleSelector(
             ax,
             onselect,
-            useblit=True,  # ← key speed-up: XOR/blit rubber band
+            useblit=True,
             button=[1],
-            interactive=True,
+            interactive=True,      # corner/edge handles, draggable after release
             minspanx=5,
             minspany=5,
             spancoords="pixels",
+            drag_from_anywhere=True,
             props=dict(
-                edgecolor=PALETTE["accent"],
+                edgecolor=PALETTE["text_primary"],
                 facecolor=PALETTE["accent"],
-                alpha=0.12,
+                alpha=0.14,
                 linewidth=1.2,
                 linestyle="--",
             ),
+            handle_props=dict(
+                marker="s",
+                markersize=6,
+                markerfacecolor=PALETTE["text_primary"],
+                markeredgecolor=PALETTE["bg"],
+                alpha=0.95,
+            ),
         )
+        rect._owner = self
+        rect._plot_index = idx
         self._rect_selectors.append(rect)
 
     # ── Selection: Lasso ──────────────────────────────────────────────────────
 
-    def _attach_lasso_selector(self, ax, x_data: np.ndarray, y_data: np.ndarray):
-        """
-        Attach a LassoSelector with useblit=True.
-        Points inside the closed lasso path are selected on mouse release.
-        """
-        # Pre-build the (N, 2) array of point coordinates for this subplot
-        pts = np.column_stack([x_data, y_data])
+    def _attach_lasso_selector(self, ax, idx: int, x_data: np.ndarray, y_data: np.ndarray):
+        """Attach a lasso that previews as you draw and leaves its outline behind."""
 
         def onselect(verts):
-            if not self.cluster_ids or len(verts) < 3:
-                return
-            path = Path(verts)
-            mask = path.contains_points(pts)
-            selected = np.where(mask)[0]
-            self.highlight_selection(selected)
-            self.show_context_menu(selected)
+            self._apply_lasso_verts(idx, verts)
 
-        lasso = LassoSelector(
+        lasso = LiveLassoSelector(
             ax,
             onselect,
-            useblit=True,  # ← blitting keeps the lasso line fast
+            useblit=True,
             button=[1],
             props=dict(
-                color=PALETTE["highlight"],
-                linewidth=1.5,
+                color=PALETTE["text_primary"],
+                linewidth=1.4,
                 linestyle="-",
-                alpha=0.80,
+                alpha=0.85,
             ),
         )
+        lasso._owner = self
+        lasso._plot_index = idx
         lasso.set_active(False)  # starts inactive; activated by toolbar
         self._lasso_selectors.append(lasso)
 
     # ── Public aliases (keep external callers working) ────────────────────────
 
     def _setup_selector(self, ax, index, x_data, y_data):
-        self._attach_rect_selector(ax, x_data, y_data)
-        self._attach_lasso_selector(ax, x_data, y_data)
+        self._attach_rect_selector(ax, index, x_data, y_data)
+        self._attach_lasso_selector(ax, index, x_data, y_data)
 
     def setup_selector(self, ax, index, x_data, y_data):
         self._setup_selector(ax, index, x_data, y_data)
 
-    # ── Highlight ─────────────────────────────────────────────────────────────
+    # ── Live selection ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _retire(sel):
+        """Hide a selector's shape and reset it, so its next press starts fresh.
+
+        Hiding alone is not enough: matplotlib decides between "start a new
+        rectangle" and "grab an existing handle" from the artist's visibility
+        and ``_selection_completed``, so a merely-hidden selector goes on
+        offering invisible handles.
+        """
+        clear = getattr(sel, "_clear_without_update", None)
+        if callable(clear):
+            clear()
+        else:
+            sel.set_visible(False)
+
+    def _begin_selection(self, sel):
+        """A new gesture started: retire every other shape so only one is shown.
+
+        The pressed selector is deliberately left alone — matplotlib's own
+        _press reads its current visibility to tell a fresh drag from a handle
+        grab, and showing it here would make every new drag look like a grab.
+        """
+        for other in self._rect_selectors + self._lasso_selectors:
+            if other is not sel:
+                self._retire(other)
+        for poly in self._lasso_polys:
+            if poly is not None:
+                poly.set_visible(False)
+
+    def _on_rect_live(self, sel):
+        """Recompute the selection from the rectangle's current extents.
+
+        Called on every mouse move, so dragging an edge in or out re-filters
+        the population as you go instead of only on release.
+        """
+        idx = getattr(sel, "_plot_index", None)
+        plot_xy = self._plot_data[idx] if idx is not None else None
+        if plot_xy is None or not self.cluster_ids:
+            self._composite()
+            return
+        x_data, y_data = plot_xy
+        xmin, xmax, ymin, ymax = sel.extents
+        mask = (
+            (x_data >= xmin) & (x_data <= xmax) & (y_data >= ymin) & (y_data <= ymax)
+        )
+        self._set_selection(np.where(mask)[0])
+
+    def _on_lasso_live(self, sel):
+        """Preview the enclosed points while the lasso is still being drawn."""
+        idx = getattr(sel, "_plot_index", None)
+        verts = sel.verts
+        if idx is None or not verts or len(verts) < 3:
+            self._composite()
+            return
+        self._apply_lasso_verts(idx, verts)
+
+    def _apply_lasso_verts(self, idx: int, verts):
+        plot_xy = self._plot_data[idx]
+        if plot_xy is None or not self.cluster_ids or len(verts) < 3:
+            self._composite()
+            return
+        x_data, y_data = plot_xy
+        mask = Path(verts).contains_points(np.column_stack([x_data, y_data]))
+        self._set_selection(np.where(mask)[0])
+
+    def _freeze_lasso(self, sel, verts):
+        """Keep the drawn path on screen after release.
+
+        LassoSelector blanks its own line in ``_release``, so without this the
+        outline disappeared exactly when you wanted to look at it.
+        """
+        idx = getattr(sel, "_plot_index", None)
+        if idx is None:
+            return
+        xy = np.asarray(verts, dtype=float)
+        poly = self._lasso_polys[idx]
+        if poly is None:
+            poly = MplPolygon(
+                xy,
+                closed=True,
+                facecolor=to_rgba(PALETTE["accent"], 0.14),
+                edgecolor=to_rgba(PALETTE["text_primary"], 0.85),
+                linewidth=1.4,
+                zorder=5,
+                animated=True,
+            )
+            self.axes.flat[idx].add_patch(poly)
+            self._lasso_polys[idx] = poly
+        else:
+            poly.set_xy(xy)
+        poly.set_visible(True)
+        self._composite()
+
+    # ── Highlight / compositing ───────────────────────────────────────────────
+
+    def _set_selection(self, indices):
+        """Adopt *indices* as the selection and repaint everything that shows it."""
+        indices = np.asarray(indices, dtype=int)
+        if not np.array_equal(indices, self._selection):
+            self._selection = indices
+            self._sync_overlays(indices)
+            self._sync_selection_panel()
+            if getattr(self, "rf_map", None) is not None:
+                self.rf_map.highlight(
+                    [
+                        self.cluster_ids[i]
+                        for i in indices
+                        if 0 <= i < len(self.cluster_ids)
+                    ]
+                )
+        self._composite()
 
     def highlight_selection(self, indices: np.ndarray):
-        """
-        True blit highlight — genuinely instant regardless of N.
+        """Public entry point kept for external callers."""
+        self._set_selection(indices)
 
-        Pattern:
-          1. Restore the clean background snapshot (no redraw)
-          2. Update overlay scatter offsets (O(k), k = selected points)
-          3. draw_artist() each overlay directly onto the canvas pixels
-          4. blit() — pushes only the dirty rectangle to the screen
-
-        The matplotlib render pipeline is never invoked.
-        """
+    def _sync_overlays(self, indices: np.ndarray):
         for idx, overlay in enumerate(self._overlay_artists):
             if overlay is None:
                 continue
-            if len(indices) == 0:
+            plot_xy = self._plot_data[idx]
+            if plot_xy is None or len(indices) == 0:
                 overlay.set_offsets(np.empty((0, 2)))
-            else:
-                plot_xy = self._plot_data[idx]
-                if plot_xy is None:
-                    continue
-                x_data, y_data = plot_xy
-                overlay.set_offsets(np.column_stack([x_data[indices], y_data[indices]]))
+                continue
+            x_data, y_data = plot_xy
+            overlay.set_offsets(np.column_stack([x_data[indices], y_data[indices]]))
 
-        # Restore clean background — wipes previous orange dots in one memcpy
+    def _composite(self):
+        """The single painter for this canvas.
+
+        Restore the clean background, then stamp the animated layers back on in
+        a fixed order: selected points, frozen lasso outlines, then whatever
+        the live selector is drawing. Because every repaint goes through here,
+        no layer can wipe another — which is what the selectors did to the
+        highlight (and to each other) when they each blitted on their own.
+        """
+        if self._building or not hasattr(self, "canvas"):
+            return
+        if self._blit_bg is None:
+            # No usable snapshot (first paint or post-resize). draw() re-enters
+            # _on_canvas_draw, which snapshots and composites for us.
+            self.canvas.draw()
+            return
+
         self.canvas.restore_region(self._blit_bg)
 
-        # Stamp each overlay artist directly onto the canvas buffer
-        for idx, overlay in enumerate(self._overlay_artists):
+        for idx, ax in enumerate(self.axes.flat):
+            overlay = self._overlay_artists[idx]
             if overlay is not None:
-                self.axes.flat[idx].draw_artist(overlay)
+                ax.draw_artist(overlay)
+            poly = self._lasso_polys[idx]
+            if poly is not None and poly.get_visible():
+                ax.draw_artist(poly)
 
-        # Push the updated buffer to the screen — single GPU/X11 flush
+        for sel in self._rect_selectors + self._lasso_selectors:
+            if not sel.active:
+                continue
+            for artist in sel.artists:
+                if artist.get_visible() and artist.axes is not None:
+                    artist.axes.draw_artist(artist)
+
         self.canvas.blit(self.fig.bbox)
 
-        # Mirror the selection onto the RF mosaic. Indices are positions in
-        # self.cluster_ids, so map them back to cluster IDs first.
-        if getattr(self, "rf_map", None) is not None:
-            selected_ids = [
-                self.cluster_ids[i] for i in indices if 0 <= i < len(self.cluster_ids)
-            ]
-            self.rf_map.highlight(selected_ids)
+    def _on_canvas_draw(self, event):
+        """Cache the freshly rendered background, then repaint the live layers.
+
+        Every animated artist is excluded from the draw that just finished, so
+        the snapshot is clean by construction.
+        """
+        if self._building:
+            return
+        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+        self._composite()
+
+    # ── Selection panel ───────────────────────────────────────────────────────
+
+    def _next_group_name(self) -> str:
+        dm = self.main_window.data_manager
+        if dm is None:
+            return "group"
+        return f"Nc{dm.new_class_id}"
+
+    def _sync_selection_panel(self):
+        n = len(self._selection)
+        armed = "true" if n > 0 else "false"
+
+        if n:
+            plural = "s" if n != 1 else ""
+            self.sel_count_label.setText(f"{n} cell{plural} selected")
+            self.btn_create_group.setText(f"Create {self._next_group_name()}")
+        else:
+            self.sel_count_label.setText("Drag on a plot to select cells")
+            self.btn_create_group.setText("Create group")
+
+        self.btn_create_group.setEnabled(n > 0)
+        self.btn_clear_selection.setEnabled(n > 0)
+
+        for widget in (self._sel_panel, self.sel_count_label):
+            if widget.property("armed") != armed:
+                widget.setProperty("armed", armed)
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+
+    def clear_selection(self):
+        """Drop the selection and every selection shape."""
+        for sel in self._rect_selectors + self._lasso_selectors:
+            self._retire(sel)
+        for poly in self._lasso_polys:
+            if poly is not None:
+                poly.set_visible(False)
+        self._set_selection(np.empty(0, dtype=int))
+
+    def _create_group_from_selection(self):
+        indices = self._selection
+        if len(indices) == 0:
+            return
+        selected_ids = [
+            self.cluster_ids[i] for i in indices if 0 <= i < len(self.cluster_ids)
+        ]
+        if not selected_ids:
+            return
+        name = self._create_new_class(selected_ids)
+        # Keep the shape and the selection: refining and regrouping is the
+        # normal workflow, so nothing is torn down here.
+        self.sel_count_label.setText(f"{name} created — {len(selected_ids)} cells")
+        self.btn_create_group.setText(f"Create {self._next_group_name()}")
 
     # ── Context menu ──────────────────────────────────────────────────────────
+
+    def _on_canvas_button(self, event):
+        """Right-click offers the same actions as the panel, at the cursor."""
+        if event.button == 3 and len(self._selection):
+            self.show_context_menu(self._selection)
 
     def show_context_menu(self, selected_indices: np.ndarray):
         if len(selected_indices) == 0:
             return
-        selected_ids = [self.cluster_ids[i] for i in selected_indices]
+        selected_ids = [
+            self.cluster_ids[i]
+            for i in selected_indices
+            if 0 <= i < len(self.cluster_ids)
+        ]
+        if not selected_ids:
+            return
         menu = QMenu(self)
         n = len(selected_ids)
-        label = f"Create group from {n} cluster{'s' if n != 1 else ''}"
-        create_action = menu.addAction(label)
-
-        # Add a "Clear selection" option as a convenience
+        plural = "s" if n != 1 else ""
+        create_action = menu.addAction(f"Create group from {n} cluster{plural}")
         clear_action = menu.addAction("Clear selection")
 
         action = menu.exec(QCursor.pos())
         if action == create_action:
-            self._create_new_class(selected_ids)
+            self._create_group_from_selection()
         elif action == clear_action:
-            self.highlight_selection(np.array([], dtype=int))
+            self.clear_selection()
 
     # Keep old name as alias
     def create_new_class(self, selected_ids):
         self._create_new_class(selected_ids)
 
-    def _create_new_class(self, selected_ids: list):
+    def _create_new_class(self, selected_ids: list) -> str:
         if self.main_window.data_manager is None:
-            return
+            return ""
         current_new_class_id = self.main_window.data_manager.new_class_id
         group_name = f"Nc{current_new_class_id}"
         self.main_window.data_manager.new_class_id += 1
@@ -716,20 +1134,32 @@ class FeatureExtractionWindow(QDialog):
         group_clusters_in_tree(self.main_window, selected_ids, group_name)
         logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
         # ← self.close() removed: window stays open so you can keep selecting
+        return group_name
+
+    # ── RF mosaic click-through ───────────────────────────────────────────────
+
+    def _on_rf_cell_clicked(self, cluster_id: int):
+        """Clicking an RF in the mosaic selects that one cell everywhere."""
+        try:
+            idx = list(self.cluster_ids).index(int(cluster_id))
+        except (ValueError, TypeError):
+            return
+        for sel in self._rect_selectors + self._lasso_selectors:
+            self._retire(sel)
+        for poly in self._lasso_polys:
+            if poly is not None:
+                poly.set_visible(False)
+        self._set_selection(np.array([idx], dtype=int))
+        focus = getattr(self.main_window, "focus_cluster", None)
+        if callable(focus):
+            focus(int(cluster_id))
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def resizeEvent(self, event):
-        """Invalidate the blit background cache whenever the window is resized."""
+        """Invalidate the blit cache; the following draw_event re-snapshots it."""
         super().resizeEvent(event)
-        # After resize matplotlib will redraw; re-snapshot on the next draw event
-        if hasattr(self, "_blit_bg") and self._blit_bg is not None:
-            self._blit_bg = None
-            self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
-
-    def _on_canvas_draw(self, event):
-        """Re-snapshot the background after a full redraw (e.g. after resize)."""
-        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+        self._blit_bg = None
 
     def closeEvent(self, event):
         if self.worker.isRunning():

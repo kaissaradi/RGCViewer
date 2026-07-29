@@ -41,6 +41,36 @@ CHIRP_PCA_COMPONENTS = 4  # PCA on the L2-normalized chirp PSTH SHAPE
 # default of 0.0 gates out only NaN/silent cells; raise per data.
 CHIRP_MIN_QI = 0.0
 
+# Minimum stimulus repeats for the chirp quality index to mean anything.
+#
+# The QI is a ratio of two variances both estimated from the repeats, so with
+# few repeats it is not merely noisy — it stops tracking anything real. A
+# split-half check on this data (compute the QI on odd trials, again on even
+# trials, correlate) gives Spearman +0.86 on a 10-repeat run and -0.14 on a
+# 5-repeat run: at 5 repeats the measure does not predict itself, and half the
+# cells clearing a 0.25 threshold do so on under 25 spikes per trial.
+#
+# Runs below this are not hidden — the QI column still shows its values, but
+# flagged (see HighlightStatusPandasModel) so the number is never read as a
+# clean criterion. Baden et al. (2016) used 0.45 on chirp with many repeats.
+CHIRP_MIN_REPEATS_FOR_QI = 8
+
+
+# STA peak-to-RMS above which a cell is taken to have a real receptive field.
+#
+# The measure is max|STA| / RMS(STA) over the whole volume. It is bimodal on
+# real data: on 20260715A/data010 (670 cells) noise STAs pile up at ~4.5 and
+# cells with a receptive field spread from ~25 to ~50, with an almost empty
+# valley between 10 and 25. Anything in that valley is a defensible cut; 15
+# sits in the middle of it.
+#
+# Validated against the one thing that must hold if an STA belongs to its
+# cell: spike count predicts STA quality (Spearman +0.57 there), and no cell
+# with under 100 spikes clears the threshold. Where that relationship is
+# absent the .sta does not belong to the sort — see
+# DataManager.check_sta_consistency.
+STA_SNR_GOOD = 15.0
+
 # Pre-filter thresholds (The Bouncer)
 DEFAULT_MIN_STA_STD = 1e-5  # Below this std, STA is considered flat noise
 DEFAULT_MAX_RF_AREA = 300.0  # Above this, RF is artifact-scale

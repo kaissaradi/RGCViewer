@@ -117,6 +117,9 @@ class KilosortLoadWorker(QObject):
             chirp_success, chirp_msg = self.dm.load_chirp_data()
             if chirp_success:
                 logger.debug(chirp_msg)
+                # Surface the quality index as a sortable table column. Runs
+                # off cluster_df, which is already built by this point.
+                self.dm.attach_chirp_qi_column()
 
             # --- GRATING DATA (optional) ---
             # Same colocated-with-kilosort_dir convention as chirp. Unlike
@@ -521,9 +524,12 @@ class StandaloneVisionWorker(QObject):
 class UMAPWorker(QObject):
     """Background worker to compute features and run UMAP."""
 
+    # raw_blocks rides along so the panel can overlay the feature traces the
+    # embedding was actually built from (temporal STA, ACG, chirp PSTH) without
+    # re-deriving them on the GUI thread.
     finished = Signal(
-        object, object, object, object, object
-    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df
+        object, object, object, object, object, object
+    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df, raw_blocks
     error = Signal(str)
     progress = Signal(str)
 
@@ -645,7 +651,9 @@ class UMAPWorker(QObject):
             meta_df["Color Opponency"] = 0.0
 
             self.progress.emit(f"UMAP complete for {len(valid_ids)} cells")
-            self.finished.emit(embedding, matrix, valid_ids, discarded_ids, meta_df)
+            self.finished.emit(
+                embedding, matrix, valid_ids, discarded_ids, meta_df, raw_blocks
+            )
 
         except Exception as e:
             logger.exception("UMAP Worker failed")

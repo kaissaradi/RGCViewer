@@ -521,6 +521,20 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # Show STA panel if data is now available
     if main_window.data_manager.vision_stas:
         main_window.sta_panel.show()
+        # Surface STA quality as a sortable column, and check that the .sta
+        # actually belongs to this sort — a stale one silently attaches
+        # receptive fields to the wrong units.
+        if main_window.data_manager.attach_sta_quality_column():
+            main_window.refresh_table_model()
+        if not main_window.data_manager.sta_ids_consistent:
+            QMessageBox.warning(
+                main_window,
+                "STA file does not match this sort",
+                main_window.data_manager.sta_consistency_message
+                + "\n\nThe STA panel, the RF mosaic and the temporal STA "
+                  "features in the UMAP are all affected. Spike-derived "
+                  "analyses (chirp, grating, contrast) are not.",
+            )
 
     # BUG-6 fix: kick off EI correlation precompute on a background thread
     # so it's ready before the user opens the similarity panel.

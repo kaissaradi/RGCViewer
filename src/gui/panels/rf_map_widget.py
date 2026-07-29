@@ -19,6 +19,7 @@ import numpy as np
 from matplotlib.collections import EllipseCollection
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QVBoxLayout, QLabel, QWidget, QSizePolicy
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,12 @@ DEFAULT_COLORS = {
     "border": "#2a2d3e",
     "text_primary": "#e8eaf0",
     "text_muted": "#6b7280",
+    "accent": "#4f8ef7",
     "highlight": "#f97316",
 }
+
+# How close (in screen pixels) a click has to land to an RF outline to count.
+_CLICK_TOLERANCE_PX = 8.0
 
 
 def collect_rf_ellipses(data_manager, cluster_ids) -> dict:
@@ -127,7 +132,11 @@ class RFMapWidget(QWidget):
         rf_map = RFMapWidget(colors=...)
         rf_map.set_cells(data_manager, cluster_ids)   # once, when data loads
         rf_map.highlight([12, 44, 91])                # cheap, per selection
+        rf_map.cell_clicked.connect(...)              # click an outline
     """
+
+    #: Emitted with the cluster_id of the RF whose outline was clicked.
+    cell_clicked = Signal(int)
 
     def __init__(self, parent=None, colors: dict = None, title: str = "RF Mosaic"):
         super().__init__(parent)
@@ -164,6 +173,7 @@ class RFMapWidget(QWidget):
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.setMinimumWidth(220)
+        self.canvas.setToolTip("Click an RF outline to jump to that cell")
         layout.addWidget(self.canvas, stretch=1)
 
         self._ax = self.fig.add_subplot(111)
@@ -172,6 +182,7 @@ class RFMapWidget(QWidget):
         # (resize, theme change) — otherwise the first highlight after a resize
         # would restore a stale, wrongly-sized background.
         self.canvas.mpl_connect("draw_event", self._on_draw)
+        self.canvas.mpl_connect("button_press_event", self._on_click)
 
     def _style_axes(self):
         ax = self._ax
@@ -238,9 +249,9 @@ class RFMapWidget(QWidget):
             units="x",
             offsets=geom[:, :2],
             offset_transform=ax.transData,
-            edgecolors=self._colors["border"],
+            edgecolors=self._colors.get("accent", DEFAULT_COLORS["accent"]),
             facecolors="none",
-            linewidths=0.7,
+            linewidths=0.8,
             alpha=0.55,
             zorder=1,
         )
@@ -337,6 +348,60 @@ class RFMapWidget(QWidget):
         self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
         self._ax.draw_artist(self._overlay)
         self.canvas.blit(self.fig.bbox)
+
+    # ── click-through ────────────────────────────────────────────────────────
+
+    def _on_click(self, event):
+        if event.button != 1:
+            return
+        cid = self.cell_at(event.xdata, event.ydata, inaxes=event.inaxes)
+        if cid is not None:
+            self.cell_clicked.emit(int(cid))
+
+    def cell_at(self, x, y, inaxes=None):
+        """The cluster whose RF outline sits nearest to *(x, y)*, or None.
+
+        Ellipses overlap heavily in a mosaic, so "inside" is ambiguous and the
+        boundary is what the user actually aims at. Each candidate is scored by
+        how far the click is from *its* outline (r == 1 in the ellipse's own
+        normalised frame), which picks the small RF whose edge you clicked over
+        the large one you merely happened to be inside.
+        """
+        if self._geometry.shape[0] == 0 or x is None or y is None:
+            return None
+        if inaxes is not None and inaxes is not self._ax:
+            return None
+
+        cx, cy, w, h, ang = self._geometry.T
+        a = np.maximum(w / 2.0, 1e-9)
+        b = np.maximum(h / 2.0, 1e-9)
+        theta = np.radians(ang)
+        dx, dy = x - cx, y - cy
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        u = (dx * cos_t + dy * sin_t) / a
+        v = (-dx * sin_t + dy * cos_t) / b
+        r = np.hypot(u, v)
+
+        # A fixed pixel tolerance becomes a different radial tolerance for
+        # every ellipse, so convert once and scale per-cell.
+        tol_data = self._pixel_tolerance_in_data_units()
+        tol = tol_data / np.minimum(a, b)
+
+        candidates = np.where(r <= 1.0 + tol)[0]
+        if candidates.size == 0:
+            return None
+        best = candidates[np.argmin(np.abs(r[candidates] - 1.0))]
+        return self._cluster_ids[int(best)]
+
+    def _pixel_tolerance_in_data_units(self) -> float:
+        try:
+            inv = self._ax.transData.inverted()
+            x0, y0 = inv.transform((0.0, 0.0))
+            x1, y1 = inv.transform((_CLICK_TOLERANCE_PX, _CLICK_TOLERANCE_PX))
+            return float(max(abs(x1 - x0), abs(y1 - y0)))
+        except Exception:
+            logger.debug("RF click tolerance transform failed", exc_info=True)
+            return 0.0
 
     # ── chrome ───────────────────────────────────────────────────────────────
 

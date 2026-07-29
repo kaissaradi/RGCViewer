@@ -128,10 +128,76 @@ def _snapshot_rf_background(ax, colors, show_ids):
         "show_ids": show_ids,
         "collections": collections_data,
         "texts": texts,
+        # Carried so a cache hit stays clickable; the geometry alone cannot say
+        # which cell an outline belongs to.
+        "hit_ids": np.array(getattr(ax, "_rf_hit_ids", np.empty(0, dtype=int))),
+        "hit_geom": np.array(getattr(ax, "_rf_hit_geom", np.empty((0, 5)))),
         "xlim": _safe_axis_limits(ax.get_xlim),
         "ylim": _safe_axis_limits(ax.get_ylim),
         "title": title,
     }
+
+
+# How close (in screen pixels) a click has to land to an RF outline to count.
+_RF_CLICK_TOLERANCE_PX = 8.0
+
+
+def set_rf_hit_entries(ax, entries):
+    """Record ``(vision_id, cx, cy, width, height, angle_deg)`` per drawn RF.
+
+    Stashed on the axes because the ellipses are drawn as EllipseCollections,
+    which carry geometry but no identity — there is otherwise nothing to map a
+    click back to a cell with.
+    """
+    ax._rf_hit_ids = np.array([e[0] for e in entries], dtype=int)
+    ax._rf_hit_geom = (
+        np.array([e[1:] for e in entries], dtype=float)
+        if entries
+        else np.empty((0, 5))
+    )
+
+
+def rf_vision_id_at(ax, x, y, tolerance_px=_RF_CLICK_TOLERANCE_PX):
+    """Vision id of the RF whose outline is nearest ``(x, y)``, or None.
+
+    RFs in a mosaic overlap heavily, so "inside" is ambiguous and the boundary
+    is what a user actually aims at. Candidates are ranked by distance from
+    *their own* outline (r == 1 in each ellipse's normalised frame), which
+    picks the small RF whose edge was clicked over the large one the click
+    merely happens to fall inside.
+    """
+    geom = getattr(ax, "_rf_hit_geom", None)
+    ids = getattr(ax, "_rf_hit_ids", None)
+    if geom is None or ids is None or geom.shape[0] == 0:
+        return None
+    if x is None or y is None:
+        return None
+
+    cx, cy, w, h, ang = geom.T
+    a = np.maximum(w / 2.0, 1e-9)
+    b = np.maximum(h / 2.0, 1e-9)
+    theta = np.radians(ang)
+    dx, dy = x - cx, y - cy
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    u = (dx * cos_t + dy * sin_t) / a
+    v = (-dx * sin_t + dy * cos_t) / b
+    r = np.hypot(u, v)
+
+    # One pixel tolerance means a different radial tolerance for every ellipse.
+    try:
+        inv = ax.transData.inverted()
+        x0, y0 = inv.transform((0.0, 0.0))
+        x1, y1 = inv.transform((tolerance_px, tolerance_px))
+        tol_data = max(abs(x1 - x0), abs(y1 - y0))
+    except Exception:
+        logger.debug("RF click tolerance transform failed", exc_info=True)
+        tol_data = 0.0
+    tol = tol_data / np.minimum(a, b)
+
+    candidates = np.where(r <= 1.0 + tol)[0]
+    if candidates.size == 0:
+        return None
+    return int(ids[candidates[np.argmin(np.abs(r[candidates] - 1.0))]])
 
 
 def _apply_rf_axes_style(ax, colors, title=None):
@@ -174,6 +240,9 @@ def _draw_cached_rf_background(ax, cache_entry, colors):
             va=text_data["va"],
             alpha=text_data["alpha"],
         )
+
+    ax._rf_hit_ids = np.array(cache_entry.get("hit_ids", np.empty(0, dtype=int)))
+    ax._rf_hit_geom = np.array(cache_entry.get("hit_geom", np.empty((0, 5))))
 
     if cache_entry["xlim"] is not None:
         ax.set_xlim(*cache_entry["xlim"])
@@ -769,6 +838,10 @@ def plot_population_rfs_background(
     borrowed_bg = []
     borrowed_target = []
     native_drawn = set()
+    # (vision_id, cx, cy, width, height, angle_deg) for every ellipse actually
+    # drawn — the EllipseCollections themselves keep no identity, so without
+    # this a click on an outline could not be traced back to a cell.
+    hit_entries = []
 
     def _label(cx, cy, vision_id):
         if not show_labels:
@@ -815,6 +888,7 @@ def plot_population_rfs_background(
                 np.degrees(stafit.rot),
             )
             native_drawn.add(cell_id)
+            hit_entries.append((cell_id,) + entry)
             if cell_id in subset_vision_ids:
                 target_ellipses.append(entry)
                 _label(stafit.center_x, adjusted_y, cell_id)
@@ -836,6 +910,7 @@ def plot_population_rfs_background(
             continue
         adjusted_y = sta_height - cy if sta_height is not None else cy
         entry = (cx, adjusted_y, sx * 2, sy * 2, np.degrees(rot))
+        hit_entries.append((vision_id,) + entry)
         if vision_id in subset_vision_ids:
             borrowed_target.append(entry)
             _label(cx, adjusted_y, vision_id)
@@ -902,6 +977,8 @@ def plot_population_rfs_background(
     if limits is not None:
         ax.set_xlim(limits[0], limits[1])
         ax.set_ylim(limits[2], limits[3])
+
+    set_rf_hit_entries(ax, hit_entries)
 
     n_target = len(target_ellipses) + len(borrowed_target)
     n_borrowed = len(borrowed_target) + len(borrowed_bg)

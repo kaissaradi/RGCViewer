@@ -46,7 +46,7 @@ from .widgets.widgets import (
     PandasModel,
 )
 from . import callbacks
-from .panels.population_panel import draw_population_rfs_plot
+from .panels.population_panel import draw_population_rfs_plot, rf_vision_id_at
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
@@ -669,6 +669,10 @@ class MainWindow(QMainWindow):
 
         # --- TIER 1: IMMEDIATE UPDATES (Hot-Swap / Cached Data) ---
 
+        # 0. UMAP side panels — show where this one cell sits among the cells
+        # it was embedded with. Blit-only, so it costs nothing on the fast path.
+        self._highlight_selection_in_umap([cluster_id])
+
         # 1. Population RF Updates - Only if hot-swap is possible (fast path)
         # Full rebuild is deferred to Tier 2 to avoid first-click freeze
         if self.population_view_enabled:
@@ -747,14 +751,38 @@ class MainWindow(QMainWindow):
             )
             self._draw_plots(cluster_id, None)
 
+    def _highlight_selection_in_umap(self, cluster_ids):
+        """Mirror the tree selection onto the UMAP tab's side panels.
+
+        Cheap by construction — the RF mosaic and trace overlays repaint by
+        blitting an overlay, not by redrawing — so this runs on every settled
+        selection without a visibility check. Never allowed to break selection
+        handling if the panel is mid-rebuild.
+        """
+        panel = getattr(self, "umap_panel", None)
+        if panel is None:
+            return
+        try:
+            panel.highlight_cells(cluster_ids)
+        except Exception:
+            logger.debug("UMAP side-panel highlight failed", exc_info=True)
+
     def _process_folder_selection(self):
         """Draw the selected population folder after folder navigation settles."""
         item = self._pending_folder_item
-        if item is None or not self.population_view_enabled:
+        if item is None:
             return
 
         group_ids = self._get_group_cluster_ids(item)
         if not group_ids:
+            return
+
+        # Highlight the folder on the UMAP tab before the population-view gate
+        # below: those panels live in the analysis tab, not the population pane,
+        # so they should track the tree whether or not the split view is open.
+        self._highlight_selection_in_umap(group_ids)
+
+        if not self.population_view_enabled:
             return
 
         # Skip if Qt fired a duplicate selectionChanged for the same folder
@@ -1228,6 +1256,32 @@ class MainWindow(QMainWindow):
 
         self.pop_mosaic_canvas.mpl_connect("scroll_event", on_mosaic_scroll)
 
+        # Click an RF outline to bring that cell up. The pan tool owns the left
+        # button here, so the click is resolved on release and only when the
+        # mouse has not travelled — otherwise every pan would end in a
+        # selection jump.
+        self._mosaic_press_xy = None
+
+        def on_mosaic_press(event):
+            self._mosaic_press_xy = (
+                (event.x, event.y) if event.button == 1 else None
+            )
+
+        def on_mosaic_release(event):
+            press = self._mosaic_press_xy
+            self._mosaic_press_xy = None
+            if press is None or event.button != 1 or event.inaxes is None:
+                return
+            if abs(event.x - press[0]) > 3 or abs(event.y - press[1]) > 3:
+                return  # that was a pan, not a click
+            self._on_mosaic_rf_clicked(event)
+
+        self.pop_mosaic_canvas.mpl_connect("button_press_event", on_mosaic_press)
+        self.pop_mosaic_canvas.mpl_connect("button_release_event", on_mosaic_release)
+        self.pop_mosaic_canvas.setToolTip(
+            "Click an RF outline to select that cell"
+        )
+
         # 2. Timecourse Panel
         self.pop_timecourse_widget = QWidget()
         tc_layout = QVBoxLayout(self.pop_timecourse_widget)
@@ -1509,6 +1563,106 @@ class MainWindow(QMainWindow):
                 selected_cell_id=selected,
                 canvas=self.pop_mosaic_canvas,
             )
+
+    def _on_mosaic_rf_clicked(self, event):
+        """Resolve a click on the population mosaic to a cell and select it."""
+        if self.data_manager is None:
+            return
+        vision_id = rf_vision_id_at(event.inaxes, event.xdata, event.ydata)
+        if vision_id is None:
+            return
+
+        cluster_id = self.data_manager.get_cluster_id_for_vision(vision_id)
+        if self.focus_cluster(cluster_id):
+            self.status_bar.showMessage(
+                f"Selected cell {cluster_id} (Vision {vision_id}) from the RF mosaic.",
+                4000,
+            )
+        else:
+            self.status_bar.showMessage(
+                f"Vision {vision_id} has an RF here but is not in the cell list.",
+                4000,
+            )
+
+    def focus_cluster(self, cluster_id):
+        """Select *cluster_id* as if the user had clicked it in the sidebar.
+
+        The entry point for plots that can identify a cell but do not own the
+        selection — clicking an RF outline in a mosaic, for one. It drives
+        whichever view is currently active, because the selection handler reads
+        the active view; that same handler then mirrors the choice into the
+        other view and refreshes every detail panel through its normal path.
+
+        Returns True if the cell was found.
+        """
+        if cluster_id is None:
+            return False
+        cluster_id = int(cluster_id)
+
+        if self.view_stack.currentIndex() == 1:
+            return self._select_cluster_in_table(cluster_id)
+        return self._select_cluster_in_tree(cluster_id)
+
+    def _select_cluster_in_tree(self, cluster_id) -> bool:
+        if self.tree_model is None:
+            return False
+        matches = self.tree_model.match(
+            self.tree_model.index(0, 0),
+            Qt.ItemDataRole.UserRole,
+            cluster_id,
+            1,
+            Qt.MatchExactly | Qt.MatchRecursive,
+        )
+        if not matches:
+            logger.debug("focus_cluster: cluster %s not in the tree", cluster_id)
+            return False
+
+        index = matches[0]
+        self.tree_view.setCurrentIndex(index)
+        self.tree_view.selectionModel().select(
+            index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+        )
+        self.tree_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        return True
+
+    def _select_cluster_in_table(self, cluster_id) -> bool:
+        view_model = self.table_view.model()
+        if view_model is None:
+            return False
+        # The view holds the sort/filter proxy; the frame lives on the source.
+        source = (
+            view_model.sourceModel()
+            if hasattr(view_model, "sourceModel")
+            else view_model
+        )
+        if source is None or not hasattr(source, "_data"):
+            return False
+
+        df = source._data
+        if "cluster_id" not in df or cluster_id not in df["cluster_id"].values:
+            return False
+
+        row_labels = df.index[df["cluster_id"] == cluster_id].tolist()
+        if not row_labels:
+            return False
+        source_index = source.index(df.index.get_loc(row_labels[0]), 0)
+        view_index = (
+            view_model.mapFromSource(source_index)
+            if view_model is not source
+            else source_index
+        )
+        if not view_index.isValid():
+            # Filtered out of the table right now — fall back to the tree.
+            return self._select_cluster_in_tree(cluster_id)
+
+        self.table_view.setCurrentIndex(view_index)
+        self.table_view.selectionModel().select(
+            view_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+        )
+        self.table_view.scrollTo(
+            view_index, QAbstractItemView.ScrollHint.PositionAtCenter
+        )
+        return True
 
     def _switch_left_view(self, index):
         """Switches between the tree (0) and table (1) views in the left pane."""
@@ -1807,6 +1961,26 @@ class MainWindow(QMainWindow):
 
         return proxy
 
+    def _apply_chirp_qi_context(self, model, header_labels):
+        """Label and flag the chirp QI column according to its repeat count.
+
+        Both table-building paths call this, so the warning cannot end up on
+        one and not the other. When the run has too few repeats the header
+        carries the count and the model renders the column in the warning
+        colour — see HighlightStatusPandasModel.set_chirp_qi_context.
+        """
+        dm = self.data_manager
+        n_repeats = getattr(dm, "chirp_n_repeats", None) if dm is not None else None
+        trustworthy = True
+        if dm is not None and hasattr(dm, "chirp_qi_is_trustworthy"):
+            trustworthy = dm.chirp_qi_is_trustworthy()
+
+        header_labels["chirp_qi"] = (
+            "Chirp QI" if trustworthy else f"Chirp QI (n={n_repeats or '?'})"
+        )
+        if hasattr(model, "set_chirp_qi_context"):
+            model.set_chirp_qi_context(n_repeats, trustworthy)
+
     def setup_table_model(self, model):
         """Sets up the table view model, wrapping it in a search proxy."""
         if hasattr(model, "update_colors"):
@@ -1833,6 +2007,7 @@ class MainWindow(QMainWindow):
             "y_um": "Y (µm)",
             "set": "Set",
         }
+        self._apply_chirp_qi_context(model, HEADER_LABELS)
 
         df_cols = list(model._dataframe.columns)
         col_index = {name: idx for idx, name in enumerate(df_cols)}
@@ -1877,6 +2052,7 @@ class MainWindow(QMainWindow):
             "KSLabel",
             "isi_violations_pct",
             "contam_pct",
+            "chirp_qi",  # sits with the other per-unit quality metrics
             "amp_median",
             "firing_rate_hz",
             "template_amp",
@@ -1970,6 +2146,7 @@ class MainWindow(QMainWindow):
             "y_um": "Y (µm)",
             "set": "Set",
         }
+        self._apply_chirp_qi_context(model, HEADER_LABELS)
         model._header_overrides = {}
         _orig = model.headerData
 

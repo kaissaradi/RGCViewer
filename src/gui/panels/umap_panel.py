@@ -30,6 +30,7 @@ import logging
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
 from .rf_map_widget import RFMapWidget
+from .trace_stack_widget import TraceStackWidget
 from ...analysis.constants import (
     DEFAULT_MIN_STA_STD,
     DEFAULT_MAX_RF_AREA,
@@ -50,9 +51,17 @@ class UMAPPanel(QWidget):
         self.embedding = None
         self.cluster_ids = None
         self.metadata_df = None
+        self.raw_blocks = None
+        self._active_stacks = set()
+        self._pending_highlight = None
         self.cbar = None
         self.is_3d = False
         self.selector = None
+        # Feature config of the run currently on screen — not the live widget
+        # state, which the user may have changed since. The side panels must
+        # describe the embedding that exists, not the one the controls would
+        # produce if run again.
+        self._run_feature_config = {}
 
         self.layout = QVBoxLayout(self)
 
@@ -72,13 +81,44 @@ class UMAPPanel(QWidget):
         # RF mosaic beside the embedding: lassoing a blob is only half the
         # question — whether those cells tile the array is the other half.
         self.rf_map = RFMapWidget(colors=self._rf_map_colors(colors), title="RF Mosaic")
+        self.rf_map.cell_clicked.connect(self._on_rf_cell_clicked)
+
+        # Under it, one overlay per feature block the embedding was built from.
+        # The mosaic says whether a selection is a plausible single type; these
+        # say whether its members share the response that put them together.
+        # Keyed by the raw_blocks key so populating them is a plain loop.
+        self.trace_stacks = {
+            "temporal": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Temporal STA (frames)"
+            ),
+            "acg": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Autocorrelogram (ms lag)"
+            ),
+            "chirp": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Chirp PSTH (s)"
+            ),
+        }
+        # Which feature keys drive which stack, for gating against the config
+        # the run actually used.
+        self._stack_feature_keys = {
+            "temporal": "use_temporal",
+            "acg": "use_acg",
+            "chirp": "use_chirp",
+        }
+
+        self.side_splitter = QSplitter(Qt.Vertical)
+        self.side_splitter.addWidget(self.rf_map)
+        for key in ("temporal", "acg", "chirp"):
+            self.side_splitter.addWidget(self.trace_stacks[key])
+            self.trace_stacks[key].hide()
+        self.side_splitter.setSizes([300, 130, 130, 130])
 
         self.plot_splitter = QSplitter(Qt.Horizontal)
         self.plot_splitter.addWidget(self.canvas)
-        self.plot_splitter.addWidget(self.rf_map)
+        self.plot_splitter.addWidget(self.side_splitter)
         self.plot_splitter.setStretchFactor(0, 3)
         self.plot_splitter.setStretchFactor(1, 1)
-        self.plot_splitter.setSizes([900, 300])
+        self.plot_splitter.setSizes([900, 340])
         self.layout.addWidget(self.plot_splitter)
 
         # Initialize default 2D axes
@@ -106,6 +146,8 @@ class UMAPPanel(QWidget):
             "border": colors.get("border_subtle", "#2a2d3e"),
             "text_primary": colors.get("text_primary", "#e8eaf0"),
             "text_muted": colors.get("text_secondary", "#6b7280"),
+            # Blue is the resting state of the mosaic; orange means selected.
+            "accent": colors.get("plot_scatter", "#4f8ef7"),
             "highlight": "#f97316",
         }
 
@@ -421,6 +463,11 @@ class UMAPPanel(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self._refresh_layout)
         QTimer.singleShot(50, self._refresh_layout)
+        # Catch up on any tree selection that landed while this tab was hidden
+        # (see highlight_cells). Deferred past the layout pass so the blit
+        # background is snapshotted at the final geometry.
+        if self._pending_highlight is not None and self.embedding is not None:
+            QTimer.singleShot(60, lambda: self._highlight(self._pending_highlight))
 
     def _refresh_layout(self):
         self.controls_widget.adjustSize()
@@ -494,6 +541,9 @@ class UMAPPanel(QWidget):
         # Explicitly clear the Matplotlib figure
         if hasattr(self, "fig"):
             self.fig.clf()
+
+        for stack in getattr(self, "trace_stacks", {}).values():
+            stack.fig.clf()
 
         # Delete the canvas
         if hasattr(self, "canvas"):
@@ -620,6 +670,7 @@ class UMAPPanel(QWidget):
             )
             return
 
+        self._run_feature_config = dict(feature_config)
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
             self.main_window.data_manager,
@@ -685,6 +736,7 @@ class UMAPPanel(QWidget):
             )
             return
 
+        self._run_feature_config = dict(feature_config)
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
             self.main_window.data_manager,
@@ -768,13 +820,14 @@ class UMAPPanel(QWidget):
         self.cluster_worker = None
 
     def on_processing_finished(
-        self, embedding, matrix, valid_ids, discarded_ids, metadata
+        self, embedding, matrix, valid_ids, discarded_ids, metadata, raw_blocks=None
     ):
         self.embedding = np.asarray(embedding)
         self.feature_matrix = np.asarray(matrix)
         self.cluster_ids = np.array(valid_ids)
         self.metadata_df = metadata
         self.discarded_ids = np.array(discarded_ids)
+        self.raw_blocks = raw_blocks
 
         # Determine if result is 3D
         self.is_3d = self.embedding.shape[1] == 3
@@ -796,6 +849,7 @@ class UMAPPanel(QWidget):
         # Rebuild the RF mosaic for exactly the cells that made it into this
         # embedding, so the two panels always describe the same population.
         self.rf_map.set_cells(self.main_window.data_manager, list(self.cluster_ids))
+        self._populate_trace_stacks()
 
         self.update_plot()
 
@@ -815,6 +869,146 @@ class UMAPPanel(QWidget):
         self.main_window.status_bar.showMessage(
             f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells (discarded {len(self.discarded_ids)}). Features: {weights_summary}"
         )
+
+    # ── side-panel trace overlays ────────────────────────────────────────────
+
+    def _populate_trace_stacks(self):
+        """Fill the per-feature trace overlays for the run just finished.
+
+        A stack is only shown when its feature was actually enabled for this
+        run and the block holds real data. Showing the chirp overlay after a
+        run that excluded chirp would invite reading structure into the
+        embedding that never contributed to it — and chirp in particular is
+        often unavailable, since it is precomputed offline.
+        """
+        blocks = self.raw_blocks or {}
+        ids = list(self.cluster_ids) if self.cluster_ids is not None else []
+        # Tracked explicitly rather than via isVisible(): a widget inside a
+        # non-current QTabWidget page reports isVisible() False even though it
+        # is populated and will be shown, which would silently skip its
+        # highlight whenever the user is looking at another tab.
+        self._active_stacks = set()
+
+        for key, stack in self.trace_stacks.items():
+            used = bool(self._run_feature_config.get(self._stack_feature_keys[key]))
+            block = blocks.get(key)
+            block = np.asarray(block) if block is not None else None
+            has_data = block is not None and block.ndim == 2 and block.shape[1] >= 2
+
+            if not (used and has_data):
+                stack.hide()
+                stack.set_traces(None, [])
+                continue
+
+            if key == "chirp":
+                # Match the Chirp dashboard's 25 ms Gaussian. Unsmoothed, 400
+                # normalised 25 s PSTHs overlay into solid hash in a 130 px
+                # strip and nothing is legible.
+                bin_ms = self._chirp_bin_ms()
+                stack.set_smoothing((25.0 / bin_ms) if bin_ms else 0.0)
+            stack.set_traces(block, ids, x=self._trace_x_axis(key, block.shape[1]))
+            stack.show()
+            self._active_stacks.add(key)
+
+        self._apply_chirp_regions()
+
+    def _trace_x_axis(self, key, n_cols):
+        """Real units for a block's x axis where they are recoverable."""
+        if key == "acg":
+            # get_standard_plot_data builds the ACG symmetric about zero in
+            # 1 ms bins, so the half-width follows from the column count and
+            # stays correct if MAX_LAG ever changes.
+            return np.arange(n_cols, dtype=float) - (n_cols - 1) / 2.0
+        if key == "chirp":
+            bin_ms = self._chirp_bin_ms()
+            if bin_ms:
+                return np.arange(n_cols, dtype=float) * bin_ms / 1000.0
+        return np.arange(n_cols, dtype=float)
+
+    def _chirp_bin_ms(self):
+        dm = getattr(self.main_window, "data_manager", None)
+        data = getattr(dm, "chirp_data", None) if dm is not None else None
+        if not isinstance(data, dict):
+            return None
+        try:
+            return float(data["bin_size_ms"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    # Same phases the Chirp dashboard shades, so the two panels read alike.
+    _CHIRP_PHASE_TINTS = {
+        "phase_step_on": (0.47, 0.47, 0.47, 0.16),
+        "phase_step_off": (0.47, 0.47, 0.47, 0.16),
+        "phase_freq_sweep": (0.31, 0.55, 0.86, 0.14),
+        "phase_contrast": (0.86, 0.55, 0.31, 0.14),
+    }
+
+    def _apply_chirp_regions(self):
+        """Shade the chirp overlay by stimulus phase.
+
+        Without this the overlay is 25 s of unlabelled wiggle; with it you can
+        see *which* phase a candidate group agrees or disagrees in, which is
+        the whole reason to look at the chirp rather than its PCA scores.
+        """
+        if "chirp" not in self._active_stacks:
+            return
+        stack = self.trace_stacks["chirp"]
+        dm = getattr(self.main_window, "data_manager", None)
+        data = getattr(dm, "chirp_data", None) if dm is not None else None
+        bin_ms = self._chirp_bin_ms()
+        if not isinstance(data, dict) or not bin_ms:
+            return
+
+        regions = []
+        for phase, tint in self._CHIRP_PHASE_TINTS.items():
+            bounds = data.get(phase)
+            if bounds is None or len(bounds) != 2:
+                continue
+            start, end = float(bounds[0]), float(bounds[1])
+            if end > start:
+                regions.append(
+                    (start * bin_ms / 1000.0, end * bin_ms / 1000.0, tint)
+                )
+        if regions:
+            stack.set_regions(regions)
+
+    def _highlight(self, cluster_ids):
+        """Single entry point for "these cells are the current selection".
+
+        Every side panel repaints from here, so the mosaic and the trace
+        overlays can never end up describing different selections — which is
+        exactly what would happen if each call site painted the panels it
+        happened to know about.
+        """
+        ids = [int(c) for c in (cluster_ids or [])]
+        # Remembered whatever the source was — a lasso, a right-click pick or the
+        # tree — so showEvent's catch-up can never resurrect an older selection
+        # over a newer one made in this panel.
+        self._pending_highlight = ids
+        self.rf_map.highlight(ids)
+        for key in self._active_stacks:
+            self.trace_stacks[key].highlight(ids)
+
+    def highlight_cells(self, cluster_ids):
+        """Highlight *cluster_ids* from outside the panel (e.g. a tree group).
+
+        Deferred while the tab is hidden. This is called from the Tier 1
+        selection path, where it must stay cheap: painting the mosaic and three
+        overlays costs ~12 ms for one cell and ~56 ms for a 35-cell folder at
+        700 cells, which is real lag on held arrow keys and entirely wasted
+        when the UMAP tab is not the one on screen. The pending selection is
+        applied in showEvent instead, so the panel is correct the moment it
+        becomes visible.
+
+        Silently does nothing before a run: there is no population to highlight
+        within yet.
+        """
+        if self.embedding is None or self.cluster_ids is None:
+            return
+        if self.isVisible():
+            self._highlight(cluster_ids)
+        else:
+            self._pending_highlight = [int(c) for c in (cluster_ids or [])]
 
     def on_cluster_finished(self, labels, method_name):
         self.metadata_df[method_name] = labels
@@ -898,6 +1092,12 @@ class UMAPPanel(QWidget):
 
         if getattr(self, "rf_map", None) is not None:
             self.rf_map.restyle(self._rf_map_colors(colors))
+
+        for stack in getattr(self, "trace_stacks", {}).values():
+            stack.restyle(self._rf_map_colors(colors))
+        # restyle rebuilds each background from scratch, which drops the phase
+        # shading with it.
+        self._apply_chirp_regions()
 
         self.update_plot()
 
@@ -1138,11 +1338,14 @@ class UMAPPanel(QWidget):
             mask = path.contains_points(self.embedding)
             selected_ids = self.cluster_ids[mask]
 
-        # Paint the RF mosaic before prompting: the whole point is to see
-        # whether the selection tiles the array *while* deciding whether it is
-        # a real group. QMessageBox below is modal, so this must happen first.
-        self.rf_map.highlight(list(selected_ids))
+        # Paint the side panels before prompting: the whole point is to see
+        # whether the selection tiles the array and shares a response *while*
+        # deciding whether it is a real group. QMessageBox below is modal, so
+        # this must happen first.
+        self._highlight(list(selected_ids))
         self.rf_map.repaint()
+        for key in self._active_stacks:
+            self.trace_stacks[key].repaint()
 
         if len(selected_ids) > 0:
             reply = QMessageBox.question(
@@ -1212,7 +1415,7 @@ class UMAPPanel(QWidget):
         # canvas would light up whichever cluster happened to be least far away.
         span = max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1]))
         if span > 0 and np.sqrt(d2[idx]) > 0.05 * span:
-            self.rf_map.clear_highlight()
+            self._highlight([])
             self.main_window.status_bar.showMessage(
                 "No cell near that point — highlight cleared.", 3000
             )
@@ -1224,7 +1427,7 @@ class UMAPPanel(QWidget):
             if label >= 0:  # -1 is noise, which is not a cluster
                 members = np.where(labels == label)[0]
                 ids = list(np.asarray(self.cluster_ids)[members])
-                self.rf_map.highlight(ids)
+                self._highlight(ids)
                 self.main_window.status_bar.showMessage(
                     f"Highlighted {len(ids)} cells in "
                     f"{self.color_combo.currentText()} cluster {label}.",
@@ -1233,11 +1436,21 @@ class UMAPPanel(QWidget):
                 return
 
         single = [int(np.asarray(self.cluster_ids)[idx])]
-        self.rf_map.highlight(single)
+        self._highlight(single)
         self.main_window.status_bar.showMessage(
             f"Highlighted cell {single[0]} (run clustering to pick whole clusters).",
             5000,
         )
+
+    def _on_rf_cell_clicked(self, cluster_id):
+        """Clicking an RF outline in the mosaic brings that cell up in the app."""
+        cluster_id = int(cluster_id)
+        self._highlight([cluster_id])
+        focus = getattr(self.main_window, "focus_cluster", None)
+        if callable(focus) and focus(cluster_id):
+            self.main_window.status_bar.showMessage(
+                f"Selected cell {cluster_id} from the RF mosaic.", 4000
+            )
 
     def create_group(self, ids):
         from qtpy.QtWidgets import QInputDialog
