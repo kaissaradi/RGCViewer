@@ -55,6 +55,41 @@ CHIRP_MIN_QI = 0.0
 # clean criterion. Baden et al. (2016) used 0.45 on chirp with many repeats.
 CHIRP_MIN_REPEATS_FOR_QI = 8
 
+# Bin width the reported chirp QI is computed at, after rebinning.
+#
+# The QI is a variance ratio over binned spike counts, so it is a property of
+# (cell, bin width, trial count) rather than of the cell alone. On one run of
+# 20260715A the number of cells clearing 0.45 runs 4 -> 54 -> 111 -> 167 -> 206
+# as the bins widen 5 -> 10 -> 20 -> 40 -> 100 ms, from identical spikes. Chirp
+# files on this drive ship at both 5 ms and 20 ms, so raw QIs from two files
+# cannot be compared until they are put on a common footing.
+#
+# 20 ms is chosen because it is what the existing files mostly use, so the
+# column keeps the values curators are already calibrated to: rebinning the
+# 5 ms 20260715A file to 20 ms reproduces the older 20 ms file's result for the
+# same run (111/887 cells over 0.45 vs 109/707). Finer than this and Poisson
+# noise in the per-bin counts swamps the signal (~0.03 spikes/bin at 5 ms).
+CHIRP_QI_BIN_MS = 20.0
+
+# Spikes per trial below which the chirp QI is not reported at all.
+#
+# This is hygiene, NOT a fix for QI inflation. The intuition that a scale-free
+# variance ratio lets a near-silent cell fake a high QI does not survive
+# contact with the data: measured on 20260715A (887 cells, 20 ms bins), QI
+# correlates +0.75 with spikes per trial, and the top-decile-QI cells fire a
+# median 546 spikes/trial against 51 for everyone else. High QI goes with high
+# rate, not low. Gating at 10 spikes/trial removes 25.7% of cells but costs
+# only 3 of the 154 that clear QI 0.45; pushing it to 200 to catch more would
+# start deleting genuinely active cells (38 lost).
+#
+# What it is for: 10 spikes over a 25 s chirp is 0.4 Hz. Below that there is
+# not enough data to estimate either variance in the ratio, and the honest
+# display is a blank cell meaning "not measured" rather than a number that
+# invites ranking. The rate-dependence of the QI itself is intrinsic and no
+# threshold fixes it — the cross-validated stimulus-filter R^2 is the measure
+# that is nearly rate-independent (+0.11), at the cost of being noisier.
+CHIRP_MIN_SPIKES_PER_TRIAL = 10.0
+
 
 # STA peak-to-RMS above which a cell is taken to have a real receptive field.
 #

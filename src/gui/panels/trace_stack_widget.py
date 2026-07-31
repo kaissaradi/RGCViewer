@@ -29,7 +29,10 @@ import scipy.ndimage as ndimage
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from .live_selectors import PopulationSelectionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ DEFAULT_COLORS = {
 _MAX_POINTS = 500
 
 
-class TraceStackWidget(QWidget):
+class TraceStackWidget(PopulationSelectionMixin, QWidget):
     """Overlaid per-cell traces with a blit-updated highlight.
 
     Usage::
@@ -61,7 +64,14 @@ class TraceStackWidget(QWidget):
         stack = TraceStackWidget(colors=..., title="Temporal STA")
         stack.set_traces(matrix, cluster_ids, x=lags_ms)   # once, per run
         stack.highlight([12, 44, 91])                      # cheap, per selection
+        stack.set_selection_mode("rect")                   # brush through it
+        stack.selection_changed.connect(...)               # what it caught
     """
+
+    #: Emitted with the cluster_ids whose trace a lasso/rectangle caught.
+    selection_changed = Signal(object)
+    #: Emitted on right-click, for the owning window to raise its menu.
+    context_menu_requested = Signal()
 
     def __init__(
         self,
@@ -88,9 +98,13 @@ class TraceStackWidget(QWidget):
         self._segments: list = []
         self._n_requested = 0             # cells asked for, incl. sentinel rows
         self._overlay = None
+        self._base = None
         self._blit_bg = None
         self._ax = None
+        # cluster_id -> RGBA for the resting trace, set by a clustering run.
+        self._group_colors: dict = {}
 
+        self._init_selection()
         self._build_ui()
 
     # ── construction ─────────────────────────────────────────────────────────
@@ -119,6 +133,7 @@ class TraceStackWidget(QWidget):
         # Re-snapshot the blit background on every full draw (resize, theme
         # change) — otherwise the next highlight would restore a stale one.
         self.canvas.mpl_connect("draw_event", self._on_draw)
+        self.canvas.mpl_connect("button_press_event", self._maybe_request_context_menu)
 
     def _style_axes(self):
         ax = self._ax
@@ -195,11 +210,49 @@ class TraceStackWidget(QWidget):
         self._regions = list(regions or [])
         self._redraw_background()
 
+    def set_group_colors(self, colors_by_cluster_id):
+        """Colour each resting trace by the group it belongs to.
+
+        Passing ``None`` returns the stack to a single accent colour. After a
+        clustering run this makes the overlay readable as a whole — you can see
+        that two types separate in the temporal STA rather than only being able
+        to inspect one highlighted group at a time.
+        """
+        self._group_colors = {
+            int(k): v for k, v in (colors_by_cluster_id or {}).items()
+        }
+        self._apply_base_colors()
+
+    def _base_colors(self):
+        """Per-trace resting colours, or the flat accent when ungrouped."""
+        accent = self._colors.get("accent", DEFAULT_COLORS["accent"])
+        if not self._group_colors or not self._cluster_ids:
+            return accent
+        fallback = _to_rgba(self._colors.get("text_muted", "#6b7280"))
+        return np.array(
+            [
+                _to_rgba(self._group_colors[cid])
+                if cid in self._group_colors
+                else fallback
+                for cid in self._cluster_ids
+            ]
+        )
+
+    def _apply_base_colors(self):
+        if self._base is None:
+            return
+        self._base.set_colors(self._base_colors())
+        self._base.set_alpha(0.30 if self._group_colors else 0.13)
+        self.canvas.draw_idle()
+
     def _redraw_background(self):
         ax = self._ax
+        # Selectors outlive ax.clear() and would keep firing for stale data.
+        self._discard_selection_shapes()
         ax.clear()
         self._style_axes()
         self._overlay = None
+        self._base = None
         self._blit_bg = None
 
         if not self._segments:
@@ -225,16 +278,16 @@ class TraceStackWidget(QWidget):
         n = len(self._segments)
         # Deliberately very faint. Several hundred overlaid traces are a
         # hairball at any alpha; the background's job is to give the highlight
-        # something to stand against, not to be read on its own.
-        ax.add_collection(
-            LineCollection(
-                self._segments,
-                colors=self._colors.get("accent", DEFAULT_COLORS["accent"]),
-                linewidths=0.4,
-                alpha=0.13,
-                zorder=1,
-            )
+        # something to stand against, not to be read on its own. Group colours
+        # get a little more alpha — they are meant to be read.
+        self._base = LineCollection(
+            self._segments,
+            colors=self._base_colors(),
+            linewidths=0.4,
+            alpha=0.30 if self._group_colors else 0.13,
+            zorder=1,
         )
+        ax.add_collection(self._base)
 
         # One overlay holding every trace; the highlight is a per-element colour
         # change on this artist, so no artist is created or removed while
@@ -260,7 +313,26 @@ class TraceStackWidget(QWidget):
         ax.axhline(0.0, color=self._colors["border"], lw=0.6, zorder=0)
 
         self._update_caption(0)
+        self._ensure_selectors()
         self.canvas.draw()
+
+    # ── brushing ─────────────────────────────────────────────────────────────
+
+    def _ids_within_path(self, path):
+        """Cells whose trace passes through *path*.
+
+        A trace is caught if any of its drawn vertices falls inside, which is
+        what "drag a box over that early transient" is asking for. Note that
+        the vertices are the decimated, peak-preserving ones actually on
+        screen, so the hit test agrees with what you can see.
+        """
+        if not self._segments:
+            return []
+        out = []
+        for cid, seg in zip(self._cluster_ids, self._segments):
+            if path.contains_points(seg).any():
+                out.append(cid)
+        return out
 
     # ── highlight ────────────────────────────────────────────────────────────
 
@@ -302,21 +374,25 @@ class TraceStackWidget(QWidget):
             self.canvas.draw()
             return
         self.canvas.restore_region(self._blit_bg)
-        self._ax.draw_artist(self._overlay)
+        if self._overlay is not None:
+            self._ax.draw_artist(self._overlay)
+        self._draw_selection_layers()
         self.canvas.blit(self.fig.bbox)
 
     def _on_draw(self, _event):
-        """Cache the freshly drawn background and stamp the highlight back on.
+        """Cache the freshly drawn background and stamp the live layers back on.
 
-        The overlay is animated, so the draw that just finished holds only the
-        background — exactly what should be cached. Restamping means a full
-        redraw never silently drops the current selection.
+        The overlay and the selection shapes are animated, so the draw that
+        just finished holds only the background — exactly what should be
+        cached. Restamping means a full redraw never silently drops the
+        current selection.
         """
         if self._overlay is None:
             self._blit_bg = None
             return
         self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
         self._ax.draw_artist(self._overlay)
+        self._draw_selection_layers()
         self.canvas.blit(self.fig.bbox)
 
     # ── chrome ───────────────────────────────────────────────────────────────

@@ -30,7 +30,6 @@ from qtpy.QtCore import (
     QItemSelectionModel,
     QThread,
     QTimer,
-    QSortFilterProxyModel,
     Signal,
 )
 from qtpy.QtGui import QFont, QStandardItemModel, QKeySequence
@@ -40,6 +39,7 @@ from typing import Optional
 # Custom GUI Modules
 from .widgets.widgets import (
     MplCanvas,
+    HiddenIdFilterProxyModel,
     HighlightStatusPandasModel,
     CustomTableView,
     ClusterTreeDelegate,
@@ -51,12 +51,14 @@ from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
 from .panels.chirp_panel import ChirpPanel
+from .panels.contrast_panel import ContrastPanel
 from .panels.grating_panel import GratingPanel
 from .panels.ei_panel import EIPanel
 from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
+from . import recent_paths
 from PyQt5.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
@@ -152,8 +154,27 @@ class MainWindow(QMainWindow):
         self.folder_selection_timer.timeout.connect(self._process_folder_selection)
         self._pending_folder_item = None
 
-        # Auto-load if default paths are provided
+        # The table's group column follows the tree. Driven off the model's own
+        # signals rather than from each of the ~10 places that mutate the tree,
+        # so a new grouping path cannot forget to refresh it.
+        self.group_column_timer = QTimer(self)
+        self.group_column_timer.setSingleShot(True)
+        self.group_column_timer.setInterval(150)
+        self.group_column_timer.timeout.connect(self._refresh_group_column)
+        self.tree_model.rowsInserted.connect(self._schedule_group_column_refresh)
+        self.tree_model.rowsRemoved.connect(self._schedule_group_column_refresh)
+        self.tree_model.itemChanged.connect(self._schedule_group_column_refresh)
+
+        # Reopen where you left off. An explicit path (CLI/testing) wins;
+        # otherwise fall back to the dataset that last loaded successfully, so
+        # a normal launch lands in the data instead of an empty window.
+        if not (default_kilosort_dir and os.path.isdir(default_kilosort_dir)):
+            remembered_dir, remembered_dat = recent_paths.last_dataset()
+            if remembered_dir:
+                default_kilosort_dir = remembered_dir
+                default_dat_file = default_dat_file or remembered_dat
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
+            self._reopening_remembered = True
             self.load_directory(default_kilosort_dir, default_dat_file)
 
         # key forwarder
@@ -751,6 +772,66 @@ class MainWindow(QMainWindow):
             )
             self._draw_plots(cluster_id, None)
 
+    def _schedule_group_column_refresh(self, *_args):
+        """Debounce tree edits into one group-column update.
+
+        Grouping a lasso selection fires a row-inserted signal per cell, so the
+        column is rebuilt once after the burst settles rather than hundreds of
+        times during it.
+        """
+        timer = getattr(self, "group_column_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _refresh_group_column(self):
+        """Write each cell's innermost folder into the table's group column.
+
+        Kept in sync from the tree rather than stored on the cell, because the
+        tree is the authority on grouping — the same cluster_df is reused across
+        regroupings, and anything cached would go stale the moment a cell moved.
+        """
+        dm = self.data_manager
+        if dm is None or dm.cluster_df is None or dm.cluster_df.empty:
+            return
+        if "cluster_id" not in dm.cluster_df.columns:
+            return
+
+        mapping = callbacks.build_cluster_group_map(self)
+        values = [mapping.get(int(c), "") for c in dm.cluster_df["cluster_id"]]
+        col = callbacks.GROUP_COLUMN
+        is_new = col not in dm.cluster_df.columns
+
+        if is_new:
+            # Sits immediately before KS Label, which is where the eye lands
+            # when scanning a row for what a cell is.
+            dm.cluster_df[col] = values
+            cols = list(dm.cluster_df.columns)
+            cols.remove(col)
+            anchor = cols.index("KSLabel") if "KSLabel" in cols else len(cols)
+            cols.insert(anchor, col)
+            dm.cluster_df = dm.cluster_df[cols]
+            self.refresh_table_model()
+            return
+
+        dm.cluster_df[col] = values
+
+        # Update the live model in place. refresh_table_model rebuilds the
+        # whole table and reinstalls the proxy, which is far too heavy to run
+        # on every tree edit.
+        model = self.table_view.model()
+        source = model.sourceModel() if hasattr(model, "sourceModel") else model
+        frame = getattr(source, "_dataframe", None)
+        if frame is None or col not in frame.columns:
+            self.refresh_table_model()
+            return
+        frame[col] = values
+        if hasattr(source, "refresh_view"):
+            source.refresh_view()
+        else:
+            top = source.index(0, 0)
+            bottom = source.index(source.rowCount() - 1, source.columnCount() - 1)
+            source.dataChanged.emit(top, bottom)
+
     def _highlight_selection_in_umap(self, cluster_ids):
         """Mirror the tree selection onto the UMAP tab's side panels.
 
@@ -781,6 +862,16 @@ class MainWindow(QMainWindow):
         # below: those panels live in the analysis tab, not the population pane,
         # so they should track the tree whether or not the split view is open.
         self._highlight_selection_in_umap(group_ids)
+
+        # Group contrast-response curves follow the tree folder too. Cheap
+        # enough only because the panel recomputes lazily when it is the
+        # visible tab; see ContrastPanel.update_group.
+        panel = getattr(self, "contrast_panel", None)
+        if panel is not None:
+            try:
+                panel.update_group(group_ids)
+            except Exception:
+                logger.debug("Contrast group update failed", exc_info=True)
 
         if not self.population_view_enabled:
             return
@@ -832,14 +923,26 @@ class MainWindow(QMainWindow):
         """
         Safely cleanup a QThread and its worker with timeout.
         Prevents memory leaks and application hangs.
+
+        Workers that tidy up after themselves call ``deleteLater()`` on their
+        thread, which destroys the C++ object while this Python attribute still
+        references its wrapper. Touching it then raises RuntimeError — and
+        because this runs in a loop from closeEvent, one dead wrapper aborted
+        the cleanup of every thread after it, which is what produced Qt's
+        "QThread: Destroyed while thread is still running" on exit. A dead
+        wrapper means the thread is already gone, so it is simply cleared.
         """
         thread = getattr(self, thread_attr, None)
-        if thread and thread.isRunning():
-            thread.quit()
-            if not thread.wait(timeout_ms):  # Timeout prevents infinite waits
-                logger.warning(f"Thread {thread_attr} didn't exit cleanly, terminating")
-                thread.terminate()
-                thread.wait(1000)
+        try:
+            if thread and thread.isRunning():
+                thread.quit()
+                if not thread.wait(timeout_ms):  # Timeout prevents infinite waits
+                    logger.warning(
+                        f"Thread {thread_attr} didn't exit cleanly, terminating")
+                    thread.terminate()
+                    thread.wait(1000)
+        except RuntimeError:
+            logger.debug("%s was already deleted; nothing to stop", thread_attr)
         setattr(self, thread_attr, None)
 
     def on_tab_changed(self, index):
@@ -867,6 +970,9 @@ class MainWindow(QMainWindow):
 
         elif current_panel == self.chirp_panel:
             self.chirp_panel.update_all(cluster_id)
+
+        elif current_panel == self.contrast_panel:
+            self.contrast_panel.update_all(cluster_id)
 
         elif current_panel == self.grating_panel:
             self.grating_panel.update_all(cluster_id)
@@ -935,6 +1041,9 @@ class MainWindow(QMainWindow):
 
         elif current_tab == self.chirp_panel:
             self.chirp_panel.update_all(cluster_id)
+
+        elif current_tab == self.contrast_panel:
+            self.contrast_panel.update_all(cluster_id)
 
         elif current_tab == self.grating_panel:
             self.grating_panel.update_all(cluster_id)
@@ -1345,6 +1454,7 @@ class MainWindow(QMainWindow):
         # --- Panels ---
         self.standard_plots_panel = StandardPlotsPanel(self)
         self.chirp_panel = ChirpPanel(self)
+        self.contrast_panel = ContrastPanel(self)
         self.grating_panel = GratingPanel(self)
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
@@ -1355,6 +1465,7 @@ class MainWindow(QMainWindow):
         # --- Tab Order (Short Labels) ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
         self.analysis_tabs.addTab(self.chirp_panel, "Chirp")
+        self.analysis_tabs.addTab(self.contrast_panel, "Contrast")
         self.analysis_tabs.addTab(self.grating_panel, "Grating")
         self.analysis_tabs.addTab(self.ei_panel, "EI")
         self.analysis_tabs.addTab(self.sta_panel, "STA")
@@ -1817,7 +1928,92 @@ class MainWindow(QMainWindow):
             return
         callbacks.move_cluster_ids_to_trash(self, cluster_ids)
 
+    def _clicked_table_column_name(self, position):
+        """Name of the dataframe column under *position*, or None."""
+        index = self.table_view.indexAt(position)
+        if not index.isValid():
+            return None
+        model = self.table_view.model()
+        src = model.mapToSource(index) if hasattr(model, "mapToSource") else index
+        source = model.sourceModel() if hasattr(model, "sourceModel") else model
+        df = getattr(source, "_dataframe", None)
+        if df is None or src.column() >= len(df.columns):
+            return None
+        return str(df.columns[src.column()])
+
+    def show_chirp_qi_details(self, cluster_id):
+        """Explain one cell's chirp QI: how many trials, and at which levels.
+
+        The single number in the column hides two things that decide whether it
+        can be read at all — the repeat count behind it, and the fact that a
+        concatenated sort's chirp file spans several runs at different light
+        levels, which are scored separately here.
+        """
+        dm = self.data_manager
+        details = dm.chirp_qi_details(cluster_id) if dm is not None else None
+        if not details:
+            QMessageBox.information(
+                self, "Chirp QI",
+                f"Cell {cluster_id} has no chirp response in the loaded file.")
+            return
+
+        n = details["n_trials_per_run"]
+        ok = details["trustworthy"]
+        lines = [
+            f"<b>Cell {cluster_id} — chirp quality index</b>",
+            "",
+            f"Trials behind each QI: <b>{n}</b> "
+            f"({'enough' if ok else 'TOO FEW'}; "
+            f"{details['min_repeats']} needed)",
+        ]
+        if details["n_trials_total"] and details["n_trials_total"] != n:
+            lines.append(
+                f"The file holds {details['n_trials_total']} trials in total, but they "
+                f"span {len(details['source_runs'])} runs at different light levels, "
+                f"so each run is scored on its own {n}.")
+        lines.append(
+            f"Computed at {details['qi_bin_ms']:.0f} ms bins"
+            + (f" (file is binned at {details['file_bin_ms']:.0f} ms)"
+               if details["file_bin_ms"] and details["file_bin_ms"] != details["qi_bin_ms"]
+               else "")
+            + ". The QI moves with bin width, so it is rebinned to a fixed "
+              "width to stay comparable between files.")
+        if not ok:
+            lines.append(
+                "<span style='color:#F08080'>With this few repeats the index is a "
+                "ratio of two variances estimated from almost nothing — it stops "
+                "tracking anything real and should not be used as a "
+                "criterion.</span>")
+
+        lines += ["", "<b>Per light level</b> (QI, and rho = mean pairwise trial "
+                      "correlation, which is 0 for noise at any repeat count):"]
+        for r in details["per_run"]:
+            mark = " &nbsp;&larr; reported" if r["run"] == details["best_run"] else ""
+            level = r["light_level"] or "light level unknown"
+            if r.get("gated"):
+                lines.append(
+                    f"&nbsp;&nbsp;{r['run']} ({level}): "
+                    f"<span style='color:#F0C060'>not measured</span> — "
+                    f"{r['spikes_per_trial']:.1f} spikes/trial, under the "
+                    f"{details['min_spikes_per_trial']:.0f} needed")
+            else:
+                lines.append(f"&nbsp;&nbsp;{r['run']} ({level}): QI "
+                             f"<b>{r['qi']:.3f}</b>, rho {r['rho']:+.3f}, "
+                             f"{r['spikes_per_trial']:.0f} spikes/trial{mark}")
+        if len(details["per_run"]) > 1:
+            lines.append("")
+            lines.append("The column reports the best level, so a cell that is "
+                         "reliable at one light level and silent at another is "
+                         "not hidden by averaging.")
+
+        box = QMessageBox(self)
+        box.setWindowTitle(f"Chirp QI — cell {cluster_id}")
+        box.setTextFormat(Qt.RichText)
+        box.setText("<br>".join(lines))
+        box.exec_()
+
     def open_table_context_menu(self, position):
+        clicked_column = self._clicked_table_column_name(position)
         cluster_ids = self._get_selected_table_cluster_ids()
         if not cluster_ids:
             index = self.table_view.indexAt(position)
@@ -1846,11 +2042,20 @@ class MainWindow(QMainWindow):
         group_action = menu.addAction(f"Group {noun} into new group…")
         feature_action = menu.addAction("Feature Extraction")
 
+        # Offered on the QI cell itself, where the question "how many trials is
+        # this actually based on?" comes up.
+        qi_action = None
+        if clicked_column == "chirp_qi":
+            menu.addSeparator()
+            qi_action = menu.addAction("Chirp QI details…")
+
         action = menu.exec(self.table_view.viewport().mapToGlobal(position))
         if action is None:
             return
 
-        if action in move_actions:
+        if qi_action is not None and action == qi_action:
+            self.show_chirp_qi_details(cluster_ids[0])
+        elif action in move_actions:
             callbacks.move_cluster_ids_to_group(
                 self, cluster_ids, move_actions[action]
             )
@@ -1932,8 +2137,14 @@ class MainWindow(QMainWindow):
         refresh_table_model both go through here — they used to configure a
         proxy each, which is how refresh_table_model ended up without the sort
         role and silently reverted "# Spikes" to string ordering.
+
+        The proxy also drops anything sitting in Trash, so discarded units stop
+        appearing in the view curation is done in while staying recoverable
+        from the tree.
         """
-        proxy = QSortFilterProxyModel(self)
+        proxy = HiddenIdFilterProxyModel(
+            lambda: callbacks.get_trashed_cluster_ids(self), self
+        )
         proxy.setSourceModel(model)
         proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         proxy.setFilterKeyColumn(-1)  # search all columns
@@ -1941,6 +2152,7 @@ class MainWindow(QMainWindow):
         # sorts lexicographically and 1000 lands before 999. Filtering stays on
         # DisplayRole so the search bar still matches what is on screen.
         proxy.setSortRole(PandasModel.SORT_ROLE)
+        proxy.refresh_hidden()
 
         self.table_view.setModel(proxy)
         self.table_view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
@@ -1976,10 +2188,13 @@ class MainWindow(QMainWindow):
             trustworthy = dm.chirp_qi_is_trustworthy()
 
         header_labels["chirp_qi"] = (
-            "Chirp QI" if trustworthy else f"Chirp QI (n={n_repeats or '?'})"
+            f"Chirp QI (n={n_repeats})" if trustworthy and n_repeats
+            else "Chirp QI" if trustworthy else f"Chirp QI (n={n_repeats or '?'})"
         )
         if hasattr(model, "set_chirp_qi_context"):
-            model.set_chirp_qi_context(n_repeats, trustworthy)
+            from ..analysis.constants import CHIRP_MIN_REPEATS_FOR_QI
+            model.set_chirp_qi_context(
+                n_repeats, trustworthy, CHIRP_MIN_REPEATS_FOR_QI)
 
     def setup_table_model(self, model):
         """Sets up the table view model, wrapping it in a search proxy."""
@@ -1993,6 +2208,8 @@ class MainWindow(QMainWindow):
             "cluster_id": "ID",
             "n_spikes": "# Spikes",
             "best_chan": "Ch",
+            "group": "Folder",
+            "chirp_onoff": "ON/OFF",
             "KSLabel": "KS Label",
             "isi_violations_pct": "ISI Viol%",
             "contam_pct": "Contam%",
@@ -2049,10 +2266,12 @@ class MainWindow(QMainWindow):
             "cluster_id",  # shown as "ID" — thin
             "n_spikes",
             "best_chan",
+            "group",  # innermost folder, immediately before the KS label
             "KSLabel",
             "isi_violations_pct",
             "contam_pct",
             "chirp_qi",  # sits with the other per-unit quality metrics
+            "chirp_onoff",  # polarity, beside the quality index it pairs with
             "amp_median",
             "firing_rate_hz",
             "template_amp",
@@ -2132,6 +2351,8 @@ class MainWindow(QMainWindow):
             "cluster_id": "ID",
             "n_spikes": "# Spikes",
             "best_chan": "Ch",
+            "group": "Folder",
+            "chirp_onoff": "ON/OFF",
             "KSLabel": "KS Label",
             "isi_violations_pct": "ISI Viol%",
             "contam_pct": "Contam%",
@@ -2211,6 +2432,41 @@ class MainWindow(QMainWindow):
         self.tree_view.selectionModel().selectionChanged.connect(
             self.on_view_selection_changed
         )
+        self._watch_tree_for_trash_changes(model)
+
+    def _watch_tree_for_trash_changes(self, model):
+        """Keep the table's Trash filter in step with the tree.
+
+        Hooked to the model's structural signals rather than to the individual
+        move helpers: cells reach Trash by drag-and-drop, by the Delete key, by
+        either context menu and by loading a saved tree, and a filter that
+        misses one of those routes leaves discarded cells visible with no way to
+        tell why.
+        """
+        for signal in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            try:
+                signal.disconnect(self._schedule_trash_filter_refresh)
+            except (TypeError, RuntimeError):
+                pass
+            signal.connect(self._schedule_trash_filter_refresh)
+
+    def _schedule_trash_filter_refresh(self, *_args):
+        """Coalesce a burst of tree edits into one filter refresh.
+
+        Moving a 40-cell folder emits a signal per row, and each refresh walks
+        the whole Trash subtree; collapsing them onto the next event-loop turn
+        makes the cost independent of how many cells moved.
+        """
+        if getattr(self, "_trash_refresh_pending", False):
+            return
+        self._trash_refresh_pending = True
+        QTimer.singleShot(0, self._refresh_trash_filter)
+
+    def _refresh_trash_filter(self):
+        self._trash_refresh_pending = False
+        proxy = self.table_view.model()
+        if isinstance(proxy, HiddenIdFilterProxyModel):
+            proxy.refresh_hidden()
 
     # ── Sidebar Search ────────────────────────────────────────────────────────
 
@@ -2711,6 +2967,32 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+        # Persist the derived caches before tearing anything down. Without
+        # this they were only ever written once, at the moment the physics
+        # warm-up completed: quitting before that finished threw the whole
+        # session's work away, and anything computed afterwards was lost too.
+        # Blocking on purpose — the background saver is a daemon thread and
+        # would be killed mid-write by interpreter shutdown.
+        if self.data_manager is not None:
+            try:
+                self.data_manager.save_standard_plot_cache(blocking=True)
+            except Exception:
+                logger.warning("Could not persist caches on exit", exc_info=True)
+
+        # The grating batch pass walks every cluster sequentially and so is
+        # usually the thread still running when the window closes early. It was
+        # absent from the cleanup list below, which is what produced
+        # "QThread: Destroyed while thread is still running" on exit — and an
+        # unclean teardown is why the cache save above could be lost. Ask it to
+        # stop cooperatively before quitting its thread; quit() alone cannot
+        # interrupt a worker sitting in a long compute loop.
+        batch_worker = getattr(self, "_grating_batch_worker", None)
+        if batch_worker is not None and hasattr(batch_worker, "stop"):
+            try:
+                batch_worker.stop()
+            except RuntimeError:
+                pass  # already deleted by its own finished handler
+
         # Stop background workers first
         callbacks.stop_worker(self)
 
@@ -2722,17 +3004,26 @@ class MainWindow(QMainWindow):
             "ks_load_thread",
             "vision_load_thread",
             "refine_thread",
+            "_grating_batch_thread",
         ]:
             self._cleanup_thread(thread_attr, timeout_ms=1000)
 
-        # Also cleanup vision_load_worker if it exists
+        # Also cleanup vision_load_worker if it exists. Same deleted-wrapper
+        # hazard as the threads above: its own finished handler may already
+        # have destroyed it.
         if hasattr(self, "vision_load_worker") and self.vision_load_worker:
-            self.vision_load_worker.deleteLater()
+            try:
+                self.vision_load_worker.deleteLater()
+            except RuntimeError:
+                pass
             self.vision_load_worker = None
 
         # Stop any running raw trace worker
         if hasattr(self, "raw_panel"):
-            self.raw_panel._stop_worker()
+            try:
+                self.raw_panel._stop_worker()
+            except (RuntimeError, AttributeError):
+                logger.debug("raw panel worker already gone", exc_info=True)
 
         # Close any open PyBinFileReader file handles to avoid leaking OS-level
         # file descriptors.  _close_raw_reader() is a no-op when raw_reader is

@@ -1,6 +1,8 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import threading
+import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import numpy as np
 import pandas as pd
@@ -14,6 +16,8 @@ from .constants import (
     EI_CORR_THRESHOLD,
     LS_CELL_TYPE_LABELS,
     CHIRP_MIN_REPEATS_FOR_QI,
+    CHIRP_QI_BIN_MS,
+    CHIRP_MIN_SPIKES_PER_TRIAL,
     STA_SNR_GOOD,
 )
 import pickle
@@ -31,6 +35,15 @@ try:
 except ImportError:
     _BIN2PY_AVAILABLE = False
 logger = logging.getLogger(__name__)
+
+# Most points of the firing-rate trace kept in standard_plot_cache.pkl.
+#
+# Module level because the writer and the loader's staleness check must use the
+# SAME number: they were two separate literals, and a stride that overshot the
+# cap made the loader discard its own writer's output on every start, silently
+# rebuilding the entire cache every session. The plot canvas is ~800 px wide,
+# so 300 points after smoothing costs nothing visually.
+FR_CACHE_MAX_BINS = 300
 
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
@@ -299,11 +312,28 @@ class DataManager(QObject):
         # space as cluster_df['cluster_id']) — no ID translation needed.
         self.chirp_data = None  # raw loaded dict (mdic) or None
         self.chirp_id_to_row = None  # dict[int cluster_id -> int row index]
-        self.chirp_n_repeats = None  # stimulus repeats behind quality_index
+        self.chirp_n_repeats = None  # repeats behind ONE run's quality_index
         self.chirp_qi_is_baden = False  # True when chirp_qi was recomputed
+        self.chirp_source_runs = []  # source_files behind the loaded chirp file
+        self.chirp_qi_per_run = {}  # run -> per-cell QI at canonical binning
+        self.chirp_qi_bin_ms = None  # binning the reported QI was computed at
+        self.chirp_qi_best_run = None  # per-cell run index the QI came from
         self.sta_ids_consistent = True   # .sta matches this sort?
         self.sta_consistency_message = ""
         self.chirp_available = False
+
+        # --- Contrast-response data ---
+        # ContrastResponseGrating trials, same schema as the raw grating file.
+        # A concatenated sort holds several runs' trials end to end, so
+        # contrast_run_ranges maps each source run to its slice of them.
+        self.contrast_data = None
+        self.contrast_id_to_key = None  # cluster_id -> key in spike_times_by_trial
+        self.contrast_run_ranges = None  # run -> (start, stop) trial indices
+        self.contrast_available = False
+        self.contrast_status = "missing"
+        self.contrast_source_runs = []
+        self._contrast_cache = {}  # (cluster_id, run) -> contrast_response dict
+        self.stimulus_manifest = None  # StimulusManifest, for light-level labels
 
         # --- Grating (DSOS / SF) Data ---
         # Unlike chirp, this is NOT always precomputed offline. A raw file
@@ -1604,10 +1634,34 @@ class DataManager(QObject):
         with self._standard_plot_lock:
             return self.standard_plot_cache.get(cluster_id)
 
-    def save_standard_plot_cache(self):
-        """Persist the full standard-plot and feature caches to disk in a background thread."""
+    def save_standard_plot_cache(self, blocking=False):
+        """Persist the standard-plot and feature caches to disk.
+
+        Runs on a background thread unless *blocking* — the exit path needs it
+        synchronous, since a daemon thread is killed when the process ends and
+        the write would be lost or truncated.
+        """
         if not self.kilosort_dir:
             return
+
+        with self._save_lock:
+            busy = self._save_in_progress
+        if busy:
+            if not blocking:
+                return
+            # On the exit path, skipping because a background save is already
+            # running would throw away the newest work — the very thing this
+            # call exists to preserve. Wait for the in-flight write to finish
+            # (two concurrent writers to one path would corrupt it), then take
+            # our own snapshot.
+            for _ in range(100):
+                time.sleep(0.05)
+                with self._save_lock:
+                    if not self._save_in_progress:
+                        break
+            else:
+                logger.warning("Cache save still busy after 5 s; skipping exit save")
+                return
 
         with self._save_lock:
             if self._save_in_progress:
@@ -1638,6 +1692,9 @@ class DataManager(QObject):
                 with self._save_lock:
                     self._save_in_progress = False
 
+        if blocking:
+            _save()
+            return
         t = threading.Thread(target=_save, daemon=True)
         t.start()
 
@@ -1702,7 +1759,7 @@ class DataManager(QObject):
                 if (
                     fr_centers is not None
                     and hasattr(fr_centers, "__len__")
-                    and len(fr_centers) > 300
+                    and len(fr_centers) > FR_CACHE_MAX_BINS
                 ):
                     logger.warning(
                         "standard_plot_cache.pkl has fat FR arrays (%d bins) — "
@@ -2681,9 +2738,14 @@ class DataManager(QObject):
             # across a 500-cluster dataset for zero visual benefit.
             # Downsampling with a uniform stride after smoothing keeps the curve
             # shape exact and reduces per-cluster FR cache size ~12×.
-            FR_CACHE_MAX_BINS = 300
             if len(bin_centers) > FR_CACHE_MAX_BINS:
-                step = max(1, len(bin_centers) // FR_CACHE_MAX_BINS)
+                # Ceiling division. Flooring it undershoots the stride and so
+                # OVERSHOOTS the output length — a 4775 s recording gave
+                # 4775//300 = 15, storing 319 points against a 300 cap. The
+                # loader then rejected its own writer's output on every start,
+                # so the cache was rebuilt from scratch every session and never
+                # once survived. ceil guarantees len(x[::step]) <= the cap.
+                step = max(1, -(-len(bin_centers) // FR_CACHE_MAX_BINS))
                 cache_centers = bin_centers[::step]
                 cache_rate = rate[::step]
             else:
@@ -3576,6 +3638,27 @@ class DataManager(QObject):
         self.vision_sim_cache[cache_key] = result_df
         return result_df.copy()
 
+    def find_analysis_files(self, pattern):
+        """Offline analysis .npy files matching *pattern*, newest layout first.
+
+        These sit next to the sorted output, but *where* next to it varies: the
+        per-run and older concatenated folders keep them at the top level, while
+        the newer concatenated sorts write them into ``ksfiles/`` alongside the
+        Kilosort arrays. Globbing only the top level silently finds nothing on
+        the latter, which reads as "this run has no chirp data" rather than as a
+        path problem.
+        """
+        if self.kilosort_dir is None:
+            return []
+        found = []
+        for base in (self.kilosort_dir, self.kilosort_dir / "ksfiles"):
+            try:
+                if base.is_dir():
+                    found.extend(sorted(base.glob(pattern)))
+            except OSError:
+                continue
+        return found
+
     def load_chirp_data(self, chirp_path=None):
         """
         Load a chirp_analysis.py output .npy from kilosort_dir.
@@ -3593,7 +3676,7 @@ class DataManager(QObject):
         """
         try:
             if chirp_path is None:
-                candidates = sorted(self.kilosort_dir.glob("*Chirp*.npy"))
+                candidates = self.find_analysis_files("*Chirp*.npy")
                 if not candidates:
                     self.chirp_available = False
                     self.chirp_data = None
@@ -3624,11 +3707,26 @@ class DataManager(QObject):
             # array the count is unknown, which is treated as untrustworthy
             # rather than assumed fine.
             binned = mdic.get("spikes_binned")
-            self.chirp_n_repeats = (
+            n_trials_total = (
                 int(binned.shape[1])
                 if binned is not None and np.asarray(binned).ndim == 3
                 else None
             )
+            # A concatenated sort's chirp file holds every run's trials stacked
+            # together — 20260715A ships 30, being 3 runs x 10, spanning two
+            # light levels. The repeat count that backs a MEANINGFUL quality
+            # index is one run's, not the total: pooling levels drives the
+            # measured reliability down by ~3x (median rho +0.016 per run vs
+            # +0.004 pooled) because the between-level difference lands in the
+            # within-trial variance term. Taking the total here would also let
+            # a 3x5-trial file pass an 8-repeat check it should fail.
+            self.chirp_source_runs = [str(r) for r in (mdic.get("source_files") or [])]
+            n_runs = len(self.chirp_source_runs)
+            if n_trials_total and n_runs > 1 and n_trials_total % n_runs == 0:
+                self.chirp_n_repeats = n_trials_total // n_runs
+            else:
+                self.chirp_n_repeats = n_trials_total
+            self.chirp_n_trials_total = n_trials_total
             self.chirp_id_to_row = {}
             for i, cid in enumerate(mdic["cluster_id"]):
                 # Translate incoming Vision IDs (1-indexed) to Kilosort IDs (0-indexed)
@@ -3648,6 +3746,174 @@ class DataManager(QObject):
             self.chirp_id_to_row = None
             self.chirp_n_repeats = None
             return False, str(e)
+
+    def attach_chirp_onoff_column(self) -> bool:
+        """Write the chirp ON/OFF index into ``cluster_df`` as ``chirp_onoff``.
+
+        +1 is purely increment-driven, -1 purely decrement-driven. Pools the
+        stimulus's two increments (light on at 0 s, dark step *off* at 7 s)
+        against its two decrements (light off at 3 s, dark on at 4 s) — a cell
+        driven by the 7 s dark-step offset is ON, and an index taken from the
+        bright step alone would call it unresponsive.
+
+        NaN where there is no chirp row, or where the cell does not respond to
+        any transition, which the table renders blank rather than as a
+        misleading 0 (0 means balanced ON-OFF, not silent).
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        from . import chirp_calc
+        try:
+            timing = self.chirp_timing()
+        except Exception:
+            logger.debug("chirp timing unavailable", exc_info=True)
+            return False
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            entry = self.get_chirp_data_for_cluster(int(cid))
+            if entry is None:
+                continue
+            try:
+                values[i] = chirp_calc.on_off_index(
+                    np.asarray(entry["psth_mean"], dtype=float), timing,
+                    float(entry["bin_size_ms"]))[0]
+            except Exception:
+                logger.debug("ON/OFF index failed for cell %s", cid, exc_info=True)
+
+        self.cluster_df["chirp_onoff"] = values
+        logger.debug("Attached chirp_onoff to cluster_df: %d/%d cells",
+                     int(np.isfinite(values).sum()), len(values))
+        return True
+
+    def load_contrast_data(self, contrast_path=None):
+        """Load a ``*contrastResponse*.npy`` from the sort directory.
+
+        Same schema as the raw grating file — ``spike_times_by_trial`` keyed by
+        Vision ID with per-trial spike times in ms, plus ``trial_parameters`` —
+        so IDs are translated the same way ``load_grating_data`` does it.
+
+        A concatenated sort's file holds every contrast run's trials end to end
+        with no per-trial provenance; ``contrast_run_ranges`` carries the
+        inferred split (see contrast_calc.split_trials_by_run) and is None when
+        it cannot be inferred, in which case callers must treat the file as a
+        single unlabelled run rather than inventing light levels.
+
+        Never raises. Returns ``(success, message)``.
+        """
+        try:
+            if contrast_path is None:
+                candidates = self.find_analysis_files("*ontrast*.npy")
+                if not candidates:
+                    self.contrast_available = False
+                    self.contrast_status = "missing"
+                    logger.info("No contrast file found in %s", self.kilosort_dir)
+                    return False, "No contrast-response file found."
+                # Prefer the file naming the most source runs — in a
+                # concatenated folder both the chunk-wide file and a leftover
+                # single-run one can be present.
+                contrast_path = max(candidates, key=lambda p: p.stat().st_size)
+
+            mdic = np.load(contrast_path, allow_pickle=True).item()
+            required = ("spike_times_by_trial", "trial_parameters")
+            missing = [k for k in required if k not in mdic]
+            if missing:
+                self.contrast_available = False
+                self.contrast_status = "missing"
+                logger.warning("Contrast file %s missing keys: %s",
+                               contrast_path.name, missing)
+                return False, f"Contrast file missing required keys: {missing}"
+
+            raw = mdic["spike_times_by_trial"]
+            id_map = {}
+            for k in raw:
+                ks_id = int(k) if getattr(self, "is_vision_only", False) else int(k) - 1
+                id_map[ks_id] = k
+
+            from .contrast_calc import split_trials_by_run
+
+            trial_params = list(mdic["trial_parameters"])
+            source_files = [str(r) for r in (mdic.get("source_files") or [])]
+            self.contrast_data = mdic
+            self.contrast_id_to_key = id_map
+            self.contrast_source_runs = source_files
+            self.contrast_run_ranges = split_trials_by_run(len(trial_params), source_files)
+            self.contrast_available = True
+            self.contrast_status = "ok"
+            self._contrast_cache = {}
+
+            if self.stimulus_manifest is None:
+                self.load_stimulus_manifest()
+
+            n_runs = len(self.contrast_run_ranges or {}) or 1
+            logger.debug(
+                "Loaded contrast data from %s (%d cells, %d trials, %d runs)",
+                contrast_path.name, len(id_map), len(trial_params), n_runs)
+            return True, (f"Loaded contrast data from {contrast_path.name} "
+                          f"({len(id_map)} cells, {n_runs} run(s))")
+
+        except Exception as e:
+            logger.warning("Could not load contrast data: %s", e, exc_info=True)
+            self.contrast_available = False
+            self.contrast_status = "missing"
+            self.contrast_data = None
+            self.contrast_run_ranges = None
+            return False, str(e)
+
+    def contrast_light_levels(self):
+        """``[(run, label), ...]`` in acquisition order for the loaded file.
+
+        The label is the epoch-group text from the manifest, which is the only
+        record of light level; it falls back to the run name when no manifest
+        is present.
+        """
+        runs = list((self.contrast_run_ranges or {}).keys())
+        if not runs:
+            return []
+        return [(r, self.light_level_for_run(r) or r) for r in runs]
+
+    def get_contrast_data_for_cluster(self, cluster_id, run=None):
+        """Contrast-response curves for one cell, per light level.
+
+        Returns ``{run: contrast_calc.contrast_response(...)}`` (a single entry
+        keyed by *run* when one is named), or None when the cell is absent from
+        the file. Cheap enough to call per selection — it is an FFT per trial
+        over at most a few hundred trials, with no shuffle test.
+        """
+        if not self.contrast_available or self.contrast_data is None:
+            return None
+        key = (self.contrast_id_to_key or {}).get(int(cluster_id))
+        if key is None:
+            return None
+
+        from .contrast_calc import contrast_response
+
+        trials = self.contrast_data["spike_times_by_trial"][key]
+        params = self.contrast_data["trial_parameters"]
+        ranges = self.contrast_run_ranges or {"all": (0, len(params))}
+        if run is not None:
+            ranges = {run: ranges[run]} if run in ranges else {}
+
+        # Cached per (cell, run): a group view asks for every member at every
+        # light level, which is ~6 ms of FFTs each and would otherwise be
+        # recomputed on every repaint and every folder click.
+        cache = self._contrast_cache
+        out = {}
+        for name, rng in ranges.items():
+            ck = (int(cluster_id), name)
+            entry = cache.get(ck)
+            if entry is None:
+                entry = contrast_response(trials, params, trial_range=rng)
+                if entry is not None:
+                    entry["run"] = name
+                    entry["light_level"] = self.light_level_for_run(name) or name
+                cache[ck] = entry
+            if entry is not None:
+                out[name] = entry
+        return out or None
 
     def chirp_qi_is_trustworthy(self) -> bool:
         """Whether the loaded chirp run has enough repeats for its QI to mean
@@ -3670,6 +3936,172 @@ class DataManager(QObject):
         with np.errstate(divide="ignore", invalid="ignore"):
             qi = np.where(within > 0, across / within, 0.0)
         return np.nan_to_num(qi, nan=0.0, posinf=0.0)
+
+    @staticmethod
+    def rebin_counts(x, factor):
+        """Sum adjacent bins along the last axis. Drops a ragged tail."""
+        factor = int(factor)
+        if factor <= 1:
+            return np.asarray(x, dtype=float)
+        x = np.asarray(x, dtype=float)
+        n = x.shape[-1] // factor * factor
+        if n == 0:
+            return x
+        return x[..., :n].reshape(*x.shape[:-1], n // factor, factor).sum(axis=-1)
+
+    @staticmethod
+    def qi_to_rho(qi, n_trials):
+        """Mean pairwise trial correlation behind a quality index.
+
+        The QI is algebraically ``(1 + (n-1)*rho) / n`` for n trials, so it can
+        never fall below ``1/n`` — 0.10 at ten repeats, 0.20 at five. That floor
+        is why a 5-repeat run appears to have a "reasonable" median QI while
+        predicting nothing. rho undoes the rescaling: 0 means noise at any
+        repeat count, and the usual 0.45 chirp cut maps to rho 0.39. Ranking is
+        unchanged — this buys interpretability, not discrimination.
+        """
+        qi = np.asarray(qi, dtype=float)
+        if not n_trials or n_trials < 2:
+            return np.full_like(qi, np.nan)
+        return (n_trials * qi - 1.0) / (n_trials - 1.0)
+
+    def _chirp_qi_per_run(self, binned):
+        """Per-cell quality index, computed per source run at a fixed bin width.
+
+        Two corrections to computing it straight off ``spikes_binned``:
+
+        *Per run.* A concatenated file stacks several runs' trials, and on
+        20260715A those span two light levels. Pooling them is not merely
+        noisier, it is measuring the wrong thing — the light-level difference
+        enters the within-trial variance term, dropping median rho from +0.016
+        to +0.004 and hiding 5 cells that one run alone flags as reliable. Each
+        run is scored separately and the best is reported, so a cell that
+        responds reliably at any light level is visible.
+
+        *At a canonical bin width.* The QI is a variance ratio over binned spike
+        counts, so it moves with the binning: on one run of this data the count
+        clearing 0.45 goes 4 -> 54 -> 111 -> 167 -> 206 as bins widen from 5 to
+        100 ms, same cells, same spikes. Files on this drive ship 5 ms and 20 ms
+        binning, so raw QIs from two files are not comparable at all. Rebinning
+        to CHIRP_QI_BIN_MS first makes them so, and reproduces the older 20 ms
+        file's numbers from the newer 5 ms one (111/887 vs 109/707).
+        """
+        x = np.asarray(binned, dtype=float)
+        bin_ms = float(self.chirp_data.get("bin_size_ms") or 0.0)
+        factor = 1
+        if bin_ms > 0 and CHIRP_QI_BIN_MS > bin_ms:
+            factor = max(1, int(round(CHIRP_QI_BIN_MS / bin_ms)))
+        x = self.rebin_counts(x, factor)
+        self.chirp_qi_bin_ms = bin_ms * factor if bin_ms > 0 else None
+
+        runs = list(self.chirp_source_runs)
+        n_trials = x.shape[1]
+        if len(runs) > 1 and n_trials % len(runs) == 0:
+            per = n_trials // len(runs)
+            blocks = {r: x[:, i * per:(i + 1) * per, :] for i, r in enumerate(runs)}
+        else:
+            blocks = {(runs[0] if runs else "all"): x}
+
+        # Spike-count gate. The QI is scale-free, so a near-silent cell whose
+        # few spikes happen to land in the same bin scores as high as a
+        # strongly driven one — and those cells are the main way it misleads
+        # (see CHIRP_MIN_SPIKES_PER_TRIAL). Gate per run, because a cell can be
+        # silent at one light level and active at another; NaN, not 0, so the
+        # table shows it as "not measured" rather than "measured and bad".
+        self.chirp_spikes_per_trial = {
+            r: b.sum(axis=2).mean(axis=1) for r, b in blocks.items()
+        }
+        self.chirp_qi_per_run = {}
+        for r, b in blocks.items():
+            qi = self._baden_quality_index(b)
+            too_few = self.chirp_spikes_per_trial[r] < CHIRP_MIN_SPIKES_PER_TRIAL
+            qi = np.where(too_few, np.nan, qi)
+            self.chirp_qi_per_run[r] = qi
+
+        stacked = np.vstack([self.chirp_qi_per_run[r] for r in blocks])
+        all_nan = np.all(np.isnan(stacked), axis=0)
+        with warnings.catch_warnings():
+            # An all-NaN column is the expected "silent at every light level"
+            # case, not a problem worth a console warning per cell.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            best_idx = np.nanargmax(np.where(all_nan, -np.inf, stacked), axis=0)
+            best = np.nanmax(stacked, axis=0)
+        self.chirp_qi_best_run = [
+            None if all_nan[i] else list(blocks)[best_idx[i]]
+            for i in range(len(best_idx))
+        ]
+        n_gated = int(all_nan.sum())
+        if n_gated:
+            logger.info(
+                "Chirp QI: %d/%d cells gated out for firing under %.0f spikes/trial",
+                n_gated, len(best), CHIRP_MIN_SPIKES_PER_TRIAL)
+        return np.where(all_nan, np.nan, best)
+
+    def chirp_qi_details(self, cluster_id):
+        """Everything behind one cell's ``chirp_qi``, for the table's popup.
+
+        Returns None when the cell has no chirp row. The per-run breakdown is
+        the point: a single number cannot say that a cell was reliable at one
+        light level and silent at another.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return None
+        row = (self.chirp_id_to_row or {}).get(int(cluster_id))
+        if row is None:
+            return None
+        n = self.chirp_n_repeats
+        per_run = []
+        spikes = getattr(self, "chirp_spikes_per_trial", {}) or {}
+        for run, qi in (self.chirp_qi_per_run or {}).items():
+            if row < len(qi):
+                value = float(qi[row])
+                rate = spikes.get(run)
+                rate = float(rate[row]) if rate is not None and row < len(rate) else float("nan")
+                per_run.append({
+                    "run": run,
+                    "qi": value,
+                    "rho": float(self.qi_to_rho(value, n)) if n else float("nan"),
+                    "light_level": self.light_level_for_run(run),
+                    "n_trials": n,
+                    "spikes_per_trial": rate,
+                    "gated": bool(np.isnan(value)),
+                })
+        best = self.chirp_qi_best_run[row] if self.chirp_qi_best_run else None
+        return {
+            "cluster_id": int(cluster_id),
+            "n_trials_per_run": n,
+            "n_trials_total": getattr(self, "chirp_n_trials_total", None),
+            "source_runs": list(self.chirp_source_runs),
+            "qi_bin_ms": self.chirp_qi_bin_ms,
+            "file_bin_ms": float(self.chirp_data.get("bin_size_ms") or 0.0),
+            "trustworthy": self.chirp_qi_is_trustworthy(),
+            "min_repeats": CHIRP_MIN_REPEATS_FOR_QI,
+            "recomputed": self.chirp_qi_is_baden,
+            "best_run": best,
+            "per_run": per_run,
+            "min_spikes_per_trial": CHIRP_MIN_SPIKES_PER_TRIAL,
+        }
+
+    def light_level_for_run(self, run):
+        """The experimenter's epoch-group label for *run* (e.g. "NDF3wheel").
+
+        Free text and the only record of light level anywhere in the data — see
+        stimulus_manifest. Returns None when no manifest is loaded.
+        """
+        manifest = self.stimulus_manifest
+        if manifest is None:
+            return None
+        return manifest.group_label(run)
+
+    def load_stimulus_manifest(self):
+        """Read ``<prep>/kilosort25/stimuli/<prep>.json`` if it is there."""
+        from .stimulus_manifest import StimulusManifest
+        try:
+            self.stimulus_manifest = StimulusManifest.for_kilosort_dir(self.kilosort_dir)
+        except Exception as e:
+            logger.warning("Could not load stimulus manifest: %s", e)
+            self.stimulus_manifest = None
+        return bool(self.stimulus_manifest)
 
     def attach_chirp_qi_column(self) -> bool:
         """Write the chirp quality index into ``cluster_df`` as ``chirp_qi``.
@@ -3700,7 +4132,7 @@ class DataManager(QObject):
 
         binned = self.chirp_data.get("spikes_binned")
         if binned is not None and np.asarray(binned).ndim == 3:
-            qi_all = self._baden_quality_index(binned)
+            qi_all = self._chirp_qi_per_run(binned)
             self.chirp_qi_is_baden = True
         else:
             qi_all = np.asarray(self.chirp_data["quality_index"], dtype=float)
@@ -3880,6 +4312,62 @@ class DataManager(QObject):
             "freq_min_hz": float(d["freq_min_hz"]),
             "freq_max_hz": float(d["freq_max_hz"]),
         }
+
+    def get_chirp_trials_for_cluster(self, cluster_id):
+        """Per-trial binned spikes for one cell, labelled by source run.
+
+        Returns ``{'counts': (n_trials, n_bins), 'bin_size_ms': float,
+        'runs': [...], 'blocks': [(run, light_level, start, stop), ...]}`` or
+        None. ``blocks`` is what lets a raster separate the light levels: a
+        concatenated file stacks each run's trials in ``source_files`` order,
+        and nothing in the trials themselves says where one run ends.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return None
+        row = (self.chirp_id_to_row or {}).get(int(cluster_id))
+        if row is None:
+            return None
+        binned = self.chirp_data.get("spikes_binned")
+        if binned is None or np.asarray(binned).ndim != 3:
+            return None
+
+        counts = np.asarray(binned[row], dtype=float)  # (n_trials, n_bins)
+        n_trials = counts.shape[0]
+        runs = list(self.chirp_source_runs)
+        blocks = []
+        if len(runs) > 1 and n_trials % len(runs) == 0:
+            per = n_trials // len(runs)
+            for i, run in enumerate(runs):
+                blocks.append((run, self.light_level_for_run(run) or run,
+                               i * per, (i + 1) * per))
+        else:
+            run = runs[0] if runs else None
+            blocks.append((run, (self.light_level_for_run(run) if run else None)
+                           or "all trials", 0, n_trials))
+        return {
+            "counts": counts,
+            "bin_size_ms": float(self.chirp_data.get("bin_size_ms") or 0.0),
+            "runs": runs,
+            "blocks": blocks,
+        }
+
+    def chirp_timing(self):
+        """``chirp_calc.ChirpTiming`` for the loaded chirp run.
+
+        Built from the Symphony manifest where available — it is the only
+        source for the contrast ramp's depth and carrier — falling back to the
+        durations the analysis file records.
+        """
+        from .chirp_calc import timing_from
+        params = None
+        manifest = self.stimulus_manifest
+        if manifest is not None:
+            for run in (self.chirp_source_runs or []):
+                info = manifest.get(run)
+                if info is not None and info.parameters:
+                    params = info.parameters
+                    break
+        return timing_from(params, self.chirp_data)
 
     def _classify_grating_npy(self, mdic):
         """Returns 'analyzed', 'raw', or 'unknown'. Schema-based, since

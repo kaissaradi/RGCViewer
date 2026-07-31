@@ -1,7 +1,15 @@
 import numpy as np
 import pandas as pd
 from PyQt5.QtGui import QColor, QPainter, QPen
-from qtpy.QtCore import QAbstractTableModel, Qt, QModelIndex, Signal, QRect, QEvent
+from qtpy.QtCore import (
+    QAbstractTableModel,
+    Qt,
+    QModelIndex,
+    QSortFilterProxyModel,
+    Signal,
+    QRect,
+    QEvent,
+)
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import (
@@ -70,6 +78,21 @@ class PandasModel(QAbstractTableModel):
             return str(value)
         return None
 
+    def cluster_id_at_row(self, row: int):
+        """The cluster_id in *row*, or None when the frame has no such column.
+
+        Lets a proxy filter rows by identity without knowing which column index
+        cluster_id currently occupies — the table's columns are user-reorderable
+        and are rebuilt whenever a background pass adds one.
+        """
+        df = self._dataframe
+        if "cluster_id" not in df.columns or not (0 <= row < len(df)):
+            return None
+        try:
+            return int(df["cluster_id"].iloc[row])
+        except (TypeError, ValueError):
+            return None
+
     def headerData(self, section, orientation, role):
         if role == Qt.ItemDataRole.DisplayRole:
             if orientation == Qt.Orientation.Horizontal:
@@ -88,6 +111,50 @@ class PandasModel(QAbstractTableModel):
         if hasattr(self, "refresh_view"):
             self.refresh_view()
         self.layoutChanged.emit()
+
+
+class HiddenIdFilterProxyModel(QSortFilterProxyModel):
+    """The table's search/sort proxy, with certain cluster IDs filtered out.
+
+    Cells the user has thrown away live on in the tree's Trash folder — that is
+    what makes the decision reversible — but they should be gone from the table,
+    which is where curation actually happens. Scrolling past discarded units, or
+    worse re-selecting one, is the whole reason to trash them.
+
+    ``hidden_ids_fn`` is re-consulted on ``refresh_hidden()`` rather than cached
+    at construction: rows move in and out of Trash constantly, and the proxy has
+    no way to observe that on its own.
+    """
+
+    def __init__(self, hidden_ids_fn, parent=None):
+        super().__init__(parent)
+        self._hidden_ids_fn = hidden_ids_fn
+        self._hidden = frozenset()
+
+    def refresh_hidden(self):
+        """Re-read the hidden set; re-filter only if it actually changed."""
+        try:
+            hidden = frozenset(int(c) for c in (self._hidden_ids_fn() or ()))
+        except Exception:
+            logger.debug("hidden-id lookup failed", exc_info=True)
+            return
+        if hidden != self._hidden:
+            self._hidden = hidden
+            self.invalidateFilter()
+
+    @property
+    def hidden_count(self) -> int:
+        return len(self._hidden)
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        if self._hidden:
+            model = self.sourceModel()
+            getter = getattr(model, "cluster_id_at_row", None)
+            if callable(getter):
+                cid = getter(source_row)
+                if cid is not None and cid in self._hidden:
+                    return False
+        return super().filterAcceptsRow(source_row, source_parent)
 
 
 class MplCanvas(FigureCanvas):
@@ -139,6 +206,7 @@ class HighlightStatusPandasModel(PandasModel):
         # Set by MainWindow once the chirp file's repeat count is known.
         self._chirp_qi_trustworthy = True
         self._chirp_n_repeats = None
+        self._chirp_min_repeats = None
 
     def update_colors(self, colors):
         """Updates status colors based on the current theme."""
@@ -156,15 +224,18 @@ class HighlightStatusPandasModel(PandasModel):
         }
         self.refresh_view()
 
-    def set_chirp_qi_context(self, n_repeats, trustworthy):
+    def set_chirp_qi_context(self, n_repeats, trustworthy, min_repeats=None):
         """Tell the model how many stimulus repeats back the chirp QI column.
 
-        Below the repeat threshold the QI stops tracking anything real, so the
-        column is rendered in the warning colour and demoted in sort order
-        rather than being shown as an ordinary number.
+        Above the threshold the column is drawn green, below it red, demoted in
+        sort order and tooltipped with the count — the QI's floor is
+        ``1/n_repeats``, so a low-repeat run yields respectable-looking numbers
+        that predict nothing, and the colour is the standing reminder.
         """
         self._chirp_n_repeats = n_repeats
         self._chirp_qi_trustworthy = bool(trustworthy)
+        if min_repeats is not None:
+            self._chirp_min_repeats = min_repeats
         self.refresh_view()
 
     def refresh_view(self, row_indices=None):
@@ -238,6 +309,20 @@ class HighlightStatusPandasModel(PandasModel):
             # --- chirp QI: flag and demote when too few repeats back it ---
             # Handled before the status lookup because it applies whether or
             # not a status column exists.
+            if col_name == "chirp_qi" and self._chirp_qi_trustworthy:
+                # Green says the repeat count behind this number is enough for
+                # it to mean anything — not that the cell is good. Paired with
+                # the red below, the column reads at a glance as "can I trust
+                # this column at all", which is the question that actually
+                # bites: the QI's floor is 1/n_trials, so a low-repeat run
+                # produces respectable-looking values that predict nothing.
+                if role == Qt.ForegroundRole and value is not None:
+                    return QColor(self.STATUS_COLORS.get("Good", "#6EE7B7"))
+                if role == Qt.ToolTipRole:
+                    return (f"Chirp QI from {self._chirp_n_repeats} repeats per run "
+                            f"(>= {self._chirp_min_repeats} needed).\n"
+                            f"Right-click for the per-light-level breakdown.")
+
             if col_name == "chirp_qi" and not self._chirp_qi_trustworthy:
                 if role == Qt.ForegroundRole:
                     return QColor(self.STATUS_COLORS.get("Noise", "#F08080"))

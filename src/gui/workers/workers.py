@@ -113,6 +113,11 @@ class KilosortLoadWorker(QObject):
             # no path configuration is needed. Missing file is not an error —
             # load_chirp_data() handles that internally and just leaves
             # chirp_available False.
+            # The manifest is what turns a source run into a light level, so
+            # it has to be read before anything that labels runs.
+            self.progress.emit("Reading stimulus manifest...")
+            self.dm.load_stimulus_manifest()
+
             self.progress.emit("Checking for chirp analysis data...")
             chirp_success, chirp_msg = self.dm.load_chirp_data()
             if chirp_success:
@@ -120,6 +125,15 @@ class KilosortLoadWorker(QObject):
                 # Surface the quality index as a sortable table column. Runs
                 # off cluster_df, which is already built by this point.
                 self.dm.attach_chirp_qi_column()
+                # Polarity as a sortable number, next to the other per-unit
+                # metrics. Cheap: one pass over the trial-averaged PSTHs.
+                self.dm.attach_chirp_onoff_column()
+
+            # --- CONTRAST-RESPONSE DATA (optional) ---
+            self.progress.emit("Checking for contrast-response data...")
+            contrast_success, contrast_msg = self.dm.load_contrast_data()
+            if contrast_success:
+                logger.debug(contrast_msg)
 
             # --- GRATING DATA (optional) ---
             # Same colocated-with-kilosort_dir convention as chirp. Unlike

@@ -20,11 +20,18 @@ from qtpy.QtCore import QSettings
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["last_dir", "remember_dir", "suggested_path"]
+__all__ = [
+    "last_dir", "remember_dir", "suggested_path",
+    "remember_dataset", "last_dataset", "forget_dataset",
+]
 
 _ORG = "RGCViewer"
 _APP = "RGCViewer"
 _GLOBAL_KEY = "paths/_last"
+# The dataset itself, not just a dialog's starting folder — this is what lets
+# the app reopen where you left off instead of asking every launch.
+_DATASET_KEY = "dataset/last_kilosort_dir"
+_DATASET_DAT_KEY = "dataset/last_dat_file"
 
 
 def _settings() -> QSettings:
@@ -102,6 +109,62 @@ def last_dir(main_window=None, key: str = None) -> str:
             return str(resolved)
 
     return str(Path.home())
+
+
+def remember_dataset(kilosort_dir, dat_file=None) -> None:
+    """Record the dataset that just loaded, so the next launch can reopen it.
+
+    Distinct from :func:`remember_dir`, which only steers file dialogs. Only
+    called after a load actually succeeds — remembering a directory that failed
+    to open would make the app fail the same way on every subsequent start.
+    """
+    resolved = _as_existing_dir(kilosort_dir)
+    if resolved is None:
+        return
+    try:
+        settings = _settings()
+        settings.setValue(_DATASET_KEY, str(resolved))
+        # dat_file is optional and is a file, not a directory, so it cannot go
+        # through _as_existing_dir.
+        if dat_file and Path(str(dat_file)).is_file():
+            settings.setValue(_DATASET_DAT_KEY, str(dat_file))
+        else:
+            settings.remove(_DATASET_DAT_KEY)
+    except Exception:
+        logger.debug("remember_dataset: could not persist", exc_info=True)
+
+
+def last_dataset():
+    """``(kilosort_dir, dat_file)`` from the last successful load.
+
+    Both are ``None`` when nothing is remembered or the remembered location is
+    gone — an unplugged drive or a renamed folder must not stop the app
+    starting.
+    """
+    try:
+        settings = _settings()
+        ks = _as_existing_dir(settings.value(_DATASET_KEY))
+        dat = settings.value(_DATASET_DAT_KEY)
+    except Exception:
+        logger.debug("last_dataset: could not read settings", exc_info=True)
+        return None, None
+    if ks is None:
+        return None, None
+    try:
+        dat = str(dat) if dat and Path(str(dat)).is_file() else None
+    except (TypeError, ValueError, OSError):
+        dat = None
+    return str(ks), dat
+
+
+def forget_dataset() -> None:
+    """Drop the remembered dataset (used when reopening it fails)."""
+    try:
+        settings = _settings()
+        settings.remove(_DATASET_KEY)
+        settings.remove(_DATASET_DAT_KEY)
+    except Exception:
+        logger.debug("forget_dataset: could not clear settings", exc_info=True)
 
 
 def suggested_path(main_window, key: str, filename: str, preferred_dir=None) -> str:

@@ -76,6 +76,8 @@ def update_cache_progress(main_window):
     main_window.cache_progress.setValue(min(val, 100))
 
     if ready and not getattr(main_window, "_cache_save_triggered", False):
+        # Marks the warm-up milestone only. closeEvent saves again on exit, so
+        # work done after this point is no longer lost.
         main_window._cache_save_triggered = True
         stop_cache_progress_polling(main_window)
         main_window.cache_progress.hide()
@@ -83,6 +85,71 @@ def update_cache_progress(main_window):
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000
         )
         dm.save_standard_plot_cache()
+
+
+def _retire_inflight_load(main_window):
+    """Detach a running dataset load so a new one can start safely.
+
+    The Kilosort worker's ``run()`` is one long blocking call, so it cannot be
+    interrupted and waiting for it would freeze the UI for the length of a
+    load. Instead its signals are disconnected — its results would otherwise
+    land on the DataManager the new load is about to replace — and both the
+    thread and the worker are parked until it finishes on its own.
+
+    **Both** references matter, and this is the actual crash. ``moveToThread``
+    does not give the thread a Python reference to its worker, so
+    ``main_window.ks_load_worker`` is the only one. The old code reassigned
+    that attribute for the new load, which garbage-collected a worker whose
+    ``run()`` was still executing on another thread — a segfault, not an
+    exception, which is why the app vanished with no traceback.
+    """
+    retired = getattr(main_window, "_retired_load_threads", None)
+    if retired is None:
+        retired = main_window._retired_load_threads = []
+
+    for thread_attr, worker_attr in (("ks_load_thread", "ks_load_worker"),
+                                     ("vision_load_thread", "vision_load_worker")):
+        thread = getattr(main_window, thread_attr, None)
+        worker = getattr(main_window, worker_attr, None)
+        try:
+            running = thread is not None and thread.isRunning()
+        except RuntimeError:
+            running = False  # wrapper already deleted; nothing to retire
+        if not running:
+            continue
+
+        logger.info("Retiring an in-flight load before starting a new one (%s)",
+                    thread_attr)
+        if worker is not None:
+            for signal_name in ("finished", "progress", "error"):
+                signal = getattr(worker, signal_name, None)
+                if signal is None:
+                    continue
+                try:
+                    signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass  # nothing connected, or already gone
+
+        # Park the pair together and only release it once the thread reports
+        # it has actually finished.
+        entry = (thread, worker)
+        retired.append(entry)
+
+        def _drop(e=entry):
+            if e in retired:
+                retired.remove(e)
+            try:
+                e[0].deleteLater()
+            except RuntimeError:
+                pass
+
+        try:
+            thread.finished.connect(_drop)
+            thread.quit()  # takes effect once run() returns
+        except RuntimeError:
+            pass
+        setattr(main_window, thread_attr, None)
+        setattr(main_window, worker_attr, None)
 
 
 def load_directory(main_window, kilosort_dir=None, dat_file=None):
@@ -103,6 +170,15 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     # so reopening the dialog inside the run you just picked would show only
     # its contents. The parent is where the next run actually lives.
     recent_paths.remember_dir(Path(ks_dir_name).parent, "kilosort")
+
+    # A load already in flight has to be retired before its attributes are
+    # overwritten below. Reassigning ks_load_thread while the old one is still
+    # running drops the last reference to a live QThread, so Qt destroys it
+    # mid-run — "QThread: Destroyed while thread is still running", followed by
+    # the process aborting. This was always latent; it only became reachable
+    # when the app started auto-loading the remembered dataset at startup,
+    # because until then a session only ever performed one load.
+    _retire_inflight_load(main_window)
 
     # 1. Lock UI and Prep DataManager
     main_window.central_widget.setEnabled(False)
@@ -142,10 +218,28 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.ks_load_thread = None
 
     if not success:
-        QMessageBox.critical(main_window, "Loading Error", message)
+        # A remembered dataset that no longer loads must not be reoffered on
+        # every launch — that would leave the app unable to start cleanly until
+        # the user found the setting.
+        if getattr(main_window, "_reopening_remembered", False):
+            recent_paths.forget_dataset()
+            main_window._reopening_remembered = False
         main_window.status_bar.showMessage("Loading failed.", 5000)
         main_window.central_widget.setEnabled(True)
+        # Deferred, NOT called here. This function runs inside the worker's
+        # finished-signal emission, and a modal dialog spins a nested event
+        # loop that processes the worker's and thread's pending deleteLater
+        # while that emission is still on the stack — an access violation, so
+        # the app vanishes with no traceback. Handing the dialog to the event
+        # loop lets the signal unwind first.
+        QTimer.singleShot(
+            0, lambda: QMessageBox.critical(main_window, "Loading Error", message)
+        )
         return
+
+    # Only a load that actually worked is worth reopening next launch.
+    main_window._reopening_remembered = False
+    recent_paths.remember_dataset(ks_dir_name, dat_file)
 
     # --- GUI UPDATES (Safe because we are back on the main thread) ---
 
@@ -200,13 +294,16 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     ):
         main_window.similarity_panel.on_vision_loaded()
 
-    # Re-gate the UMAP feature checkboxes now that a DataManager exists. The
-    # panel was constructed back in MainWindow.__init__ when data_manager was
-    # still None, so its chirp row came up disabled regardless of the dataset.
-    # load_chirp_data() runs inside KilosortLoadWorker.run(), so chirp_available
-    # is final by the time this slot fires.
+    # Drop everything the UMAP panel derived from the *previous* preparation
+    # and re-gate its feature checkboxes against this one. Both matter here:
+    # runs are sorted independently, so a stale embedding and mosaic describe
+    # cells that no longer exist under those IDs, and the panel was constructed
+    # back in MainWindow.__init__ when data_manager was still None, so its
+    # chirp row came up disabled regardless of the dataset. load_chirp_data()
+    # runs inside KilosortLoadWorker.run(), so chirp_available is final by the
+    # time this slot fires.
     if hasattr(main_window, "umap_panel"):
-        main_window.umap_panel.refresh_feature_availability()
+        main_window.umap_panel.reset_for_new_dataset()
 
     # 5. Array Transform check
     transform_path = (
@@ -1238,6 +1335,43 @@ def is_group_item(item) -> bool:
     no children but is still a folder.
     """
     return item is not None and item.data(Qt.ItemDataRole.UserRole) is None
+
+
+#: Name of the cluster_df column carrying each cell's innermost folder.
+GROUP_COLUMN = "group"
+
+
+def build_cluster_group_map(main_window) -> dict:
+    """``{cluster_id: innermost folder title}`` for every cell in the tree.
+
+    The *innermost* folder is the one that actually names a cell — a cell in
+    ``All/ON/OnParasol`` is an OnParasol, and reporting the whole path or the
+    outermost folder would say nothing useful in a table column. Cells sitting
+    at the top level, outside any folder, are absent from the map.
+    """
+    model = getattr(main_window, "tree_model", None)
+    if model is None:
+        return {}
+
+    out: dict = {}
+
+    def walk(item, folder_title):
+        for i in range(item.rowCount()):
+            child = item.child(i)
+            if child is None:
+                continue
+            if is_group_item(child):
+                # Folders carry None in UserRole, so this is the reliable test;
+                # an empty folder still has to be recursed into for correctness
+                # even though it contributes nothing.
+                walk(child, child.text())
+            elif folder_title is not None:
+                cid = child.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    out[int(cid)] = folder_title
+
+    walk(model.invisibleRootItem(), None)
+    return out
 
 
 def iter_cluster_ids(item) -> list:
