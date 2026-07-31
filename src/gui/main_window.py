@@ -2210,6 +2210,7 @@ class MainWindow(QMainWindow):
             "best_chan": "Ch",
             "group": "Folder",
             "chirp_onoff": "ON/OFF",
+            "sta_snr": "STA SNR",
             "KSLabel": "KS Label",
             "isi_violations_pct": "ISI Viol%",
             "contam_pct": "Contam%",
@@ -2272,6 +2273,7 @@ class MainWindow(QMainWindow):
             "contam_pct",
             "chirp_qi",  # sits with the other per-unit quality metrics
             "chirp_onoff",  # polarity, beside the quality index it pairs with
+            "sta_snr",      # the other per-unit quality metric
             "amp_median",
             "firing_rate_hz",
             "template_amp",
@@ -2353,6 +2355,7 @@ class MainWindow(QMainWindow):
             "best_chan": "Ch",
             "group": "Folder",
             "chirp_onoff": "ON/OFF",
+            "sta_snr": "STA SNR",
             "KSLabel": "KS Label",
             "isi_violations_pct": "ISI Viol%",
             "contam_pct": "Contam%",

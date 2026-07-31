@@ -542,8 +542,9 @@ class UMAPWorker(QObject):
     # embedding was actually built from (temporal STA, ACG, chirp PSTH) without
     # re-deriving them on the GUI thread.
     finished = Signal(
-        object, object, object, object, object, object
-    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df, raw_blocks
+        object, object, object, object, object, object, object
+    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df, raw_blocks,
+       # col_labels
     error = Signal(str)
     progress = Signal(str)
 
@@ -661,12 +662,30 @@ class UMAPWorker(QObject):
                 meta_df["Grating Peak Rate (Hz)"] = raw_blocks["scalars"][
                     "grating_peak_rate_hz"
                 ].values
+            # Per-unit quality indices. These live on cluster_df rather than in
+            # raw_blocks['scalars'] — they are attached at load time from the
+            # chirp file and the .sta — so they are looked up by cluster_id
+            # rather than sliced by row. Colouring the embedding by them answers
+            # the question the scatter cannot: whether a blob is a cell type or
+            # a pile of units whose features are mostly noise.
+            cdf = getattr(self.dm, "cluster_df", None)
+            if cdf is not None and not cdf.empty and "cluster_id" in cdf.columns:
+                for col, label in (("sta_snr", "STA SNR"), ("chirp_qi", "Chirp QI"),
+                                   ("chirp_onoff", "Chirp ON/OFF")):
+                    if col not in cdf.columns:
+                        continue
+                    lookup = dict(zip(cdf["cluster_id"], cdf[col]))
+                    meta_df[label] = [
+                        float(lookup.get(cid, np.nan)) for cid in valid_ids
+                    ]
+
             # Color Opponency
             meta_df["Color Opponency"] = 0.0
 
             self.progress.emit(f"UMAP complete for {len(valid_ids)} cells")
             self.finished.emit(
-                embedding, matrix, valid_ids, discarded_ids, meta_df, raw_blocks
+                embedding, matrix, valid_ids, discarded_ids, meta_df, raw_blocks,
+                col_labels,
             )
 
         except Exception as e:

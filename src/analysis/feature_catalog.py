@@ -37,15 +37,37 @@ __all__ = ["FeatureEntry", "build_catalog", "resolve_panels", "DEFAULT_PANELS"]
 
 N_PCS = 3
 
-# What the six panels show before the user picks anything. Keeps the original
-# layout's meaning while naming the axes in the new vocabulary.
+# What the six panels show before the user picks anything.
+#
+# Chosen empirically rather than by intuition. Every pair of the 32 catalogue
+# features (495 of them) was clustered at realistic type size and its groups
+# scored by how many cells overlap their nearest same-group neighbour — the
+# mosaic test — against a null that keeps each cell's own receptive field and
+# randomises only where it sits. These are the pairs that produced the most
+# groups with a tiling receptive-field layout.
+#
+# **The margins are small.** The best pair beat chance by ~3 clean groups, and
+# 463 of the 495 pairs were at or below chance, on one rd10 + Grm6-waChR
+# preparation where the ON/OFF axis has partly collapsed. Treat these as a
+# better-than-arbitrary starting view, not as the axes that define cell types.
 DEFAULT_PANELS = [
-    ("Temporal STA PC1", "Temporal STA PC2"),
-    ("RF diameter (long)", "Temporal STA PC1"),
-    ("RF diameter (long)", "Time to peak"),
-    ("ACG PC1", "ACG PC2"),
-    ("RF diameter (long)", "ACG PC1"),
-    ("Temporal STA PC1", "ACG PC1"),
+    ("ACG PC1", "RF area"),                     # +3.0 clean groups over chance
+    ("ACG PC2", "RF diameter (short)"),         # +2.6
+    ("Time to peak", "Chirp preferred freq"),   # +2.6
+    ("Temporal STA PC3", "ACG PC2"),            # +2.3
+    ("Temporal STA PC3", "Time to peak"),       # +2.2
+    ("Temporal STA PC3", "Chirp ON/OFF index"), # +2.1
+]
+
+# Substitutes for any default naming a feature this dataset lacks. Chirp is
+# precomputed offline and often simply absent, and two of the defaults depend
+# on it, so these are the next-best pairs from the same ranking that use no
+# chirp feature at all. Consumed in order, and only as needed.
+FALLBACK_PANELS = [
+    ("Time to peak", "RF ellipticity"),         # +1.8
+    ("ACG PC2", "ACG PC3"),                     # +1.2
+    ("ACG PC2", "RF area"),                     # +1.2
+    ("Time to peak", "RF diameter (long)"),     # +1.0
 ]
 
 
@@ -92,32 +114,53 @@ def reindex_catalog(catalog, from_ids, to_ids):
 def resolve_panels(catalog, panels=None):
     """Fit *panels* to whatever the catalogue actually holds.
 
-    The defaults name temporal-STA and ACG components, and those are simply
-    absent when a dataset has no STAs, no spike times, or a single degenerate
-    block — which is common enough (a vision-only load, a run with no noise
-    stimulus) that falling back has to be automatic rather than leaving six
-    empty axes. Missing names are replaced with the first features that do
-    exist, keeping the requested pairing where possible.
+    A default can name a feature this dataset lacks — two of them use chirp,
+    which is precomputed offline and often absent, and the whole set is empty
+    on a vision-only load with no spike times. A pair is replaced *whole*
+    rather than by patching one axis: half of a ranked pair is not the pair,
+    and swapping one side silently produces a plot nothing justified.
+
+    Substitutes come from FALLBACK_PANELS first (the next-best chirp-free pairs
+    from the same ranking), then from whatever features exist, so the grid is
+    always populated with the best-supported choice available.
     """
     names = list(catalog.keys())
     if not names:
         return []
+
+    def usable(pair):
+        return pair[0] in catalog and pair[1] in catalog and pair[0] != pair[1]
+
     wanted = list(panels or DEFAULT_PANELS)
-    fallback = (names * 2)[: 2 * len(wanted)]
-    out, cursor = [], 0
-    for x, y in wanted:
-        if x not in catalog:
-            x = fallback[cursor % len(fallback)]
-            cursor += 1
-        if y not in catalog:
-            y = fallback[cursor % len(fallback)]
-            cursor += 1
-        out.append((x, y))
+    spares = [p for p in FALLBACK_PANELS if usable(p)]
+    # Last resort: pair up whatever the catalogue holds, so a dataset with an
+    # unusual feature set still gets six populated axes.
+    generic = [(names[i], names[j])
+               for i in range(len(names)) for j in range(i + 1, len(names))]
+
+    out, used = [], set()
+    for pair in wanted:
+        if usable(pair):
+            out.append(pair)
+            used.add(tuple(sorted(pair)))
+            continue
+        replacement = None
+        for source in (spares, generic):
+            for cand in source:
+                if usable(cand) and tuple(sorted(cand)) not in used:
+                    replacement = cand
+                    break
+            if replacement:
+                break
+        if replacement is None:
+            replacement = (names[0], names[min(1, len(names) - 1)])
+        out.append(replacement)
+        used.add(tuple(sorted(replacement)))
     return out
 
 
 def _pca_columns(matrix, n_pcs=N_PCS):
-    """First *n_pcs* principal components of *matrix*, or None if not usable."""
+    """``(scores, explained_variance_ratio, components)`` or None if unusable."""
     matrix = np.asarray(matrix, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] < 2 or matrix.shape[1] < 2:
         return None
@@ -134,23 +177,82 @@ def _pca_columns(matrix, n_pcs=N_PCS):
     if n < 1:
         return None
     try:
-        return PCA(n_components=n).fit_transform(matrix)
+        pca = PCA(n_components=n)
+        scores = pca.fit_transform(matrix)
+        return scores, pca.explained_variance_ratio_, pca.components_
     except Exception:
         logger.debug("PCA failed for a feature block", exc_info=True)
         return None
 
 
-def _add_block_pcs(catalog, label, group, block, n_pcs=N_PCS):
-    scores = _pca_columns(block, n_pcs)
-    if scores is None:
+#: Where each block's columns sit, so a loading can be described in the units
+#: the recording actually has rather than as a column index.
+def _segments_for(key, n_cols, timing=None):
+    """``[(name, start_col, stop_col), ...]`` spanning the block."""
+    if key == "acg":
+        # Symmetric about zero lag, 1 ms bins.
+        half = (n_cols - 1) / 2.0
+        return [("short lags (<10 ms)",
+                 int(half - 10), int(half + 11)),
+                ("mid lags (10-40 ms)", int(half + 11), int(half + 41)),
+                ("long lags (>40 ms)", int(half + 41), n_cols)]
+    if key == "chirp" and timing is not None:
+        out = []
+        total = timing.total
+        for name, (a, b) in timing.phases().items():
+            lo = int(round(n_cols * a / total))
+            hi = int(round(n_cols * b / total))
+            if hi > lo:
+                out.append((name, lo, hi))
+        return out
+    if key == "temporal":
+        third = max(n_cols // 3, 1)
+        return [("early frames", 0, third),
+                ("middle frames", third, 2 * third),
+                ("late frames (near the spike)", 2 * third, n_cols)]
+    if key == "grating":
+        half = max(n_cols // 2, 1)
+        return [("first half of the direction sweep", 0, half),
+                ("second half of the direction sweep", half, n_cols)]
+    return []
+
+
+def _describe_loading(loading, segments):
+    """Which part of the block this component actually weights."""
+    if not segments:
+        return ""
+    power = np.abs(np.asarray(loading, dtype=float)) ** 2
+    total = power.sum()
+    if total <= 0:
+        return ""
+    shares = [(power[a:b].sum() / total, name) for name, a, b in segments if b > a]
+    shares.sort(reverse=True)
+    top = shares[0]
+    if top[0] >= 0.55:
+        return f"weights mostly the {top[1]} ({top[0] * 100:.0f}% of its weight)"
+    if len(shares) > 1:
+        return (f"weights the {top[1]} ({top[0] * 100:.0f}%) "
+                f"and the {shares[1][1]} ({shares[1][0] * 100:.0f}%)")
+    return f"weights the {top[1]} ({top[0] * 100:.0f}%)"
+
+
+def _add_block_pcs(catalog, label, group, block, key=None, timing=None,
+                   n_pcs=N_PCS):
+    result = _pca_columns(block, n_pcs)
+    if result is None:
         return
+    scores, var_ratio, components = result
     n_zero = int(np.all(np.isclose(np.asarray(block, dtype=float), 0.0), axis=1).sum())
-    note = (f" — {n_zero} cells have no data and share one point"
+    note = (f". {n_zero} cells have no data here and share one point"
             if n_zero else "")
+    segments = _segments_for(key or "", np.asarray(block).shape[1], timing)
     for i in range(scores.shape[1]):
+        where = _describe_loading(components[i], segments)
+        desc = (f"PC{i + 1} of the {label} block — "
+                f"{var_ratio[i] * 100:.0f}% of the variance in that block"
+                + (f"; {where}" if where else "") + note)
         catalog[f"{label} PC{i + 1}"] = FeatureEntry(
-            f"{label} PC{i + 1}", group, scores[:, i],
-            f"Principal component {i + 1} of the {label} block{note}")
+            f"{label} PC{i + 1}", group, scores[:, i], desc)
 
 
 def _column(df, name):
@@ -186,6 +288,14 @@ def build_catalog(dm, cluster_ids, filter_config=None, include_contrast=False,
     catalog: OrderedDict = OrderedDict()
 
     report("Reducing blocks...", 30)
+    # Chirp loadings are described by stimulus phase, which needs the timing.
+    chirp_timing = None
+    try:
+        if getattr(dm, "chirp_available", False):
+            chirp_timing = dm.chirp_timing()
+    except Exception:
+        logger.debug("chirp timing unavailable for PC descriptions", exc_info=True)
+
     for key, label, group in (
         ("temporal", "Temporal STA", "Shape (PCA)"),
         ("acg", "ACG", "Shape (PCA)"),
@@ -194,7 +304,8 @@ def build_catalog(dm, cluster_ids, filter_config=None, include_contrast=False,
     ):
         block = raw_blocks.get(key)
         if block is not None and np.asarray(block).size:
-            _add_block_pcs(catalog, label, group, block)
+            _add_block_pcs(catalog, label, group, block, key=key,
+                           timing=chirp_timing)
 
     report("Collecting scalars...", 45)
     scalars = raw_blocks.get("scalars")

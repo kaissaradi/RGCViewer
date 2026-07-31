@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QComboBox,
     QCheckBox,
+    QApplication,
 )
 from qtpy.QtGui import QCursor, QColor, QPalette
 from qtpy.QtCore import QThread, Signal, Qt
@@ -478,7 +479,16 @@ class FeatureExtractionWindow(QDialog):
     def _build_window(self):
         self.setWindowTitle("Feature Extraction")
         self.setMinimumSize(900, 640)
-        self.resize(1200, 820)
+        # Six scatters plus the mosaic and trace column need room: at the old
+        # 1200x820 the panel titles ran into each other. Take most of the
+        # screen but never exceed it, so this still behaves on a laptop.
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            self.resize(min(1700, int(avail.width() * 0.92)),
+                        min(1050, int(avail.height() * 0.90)))
+        else:
+            self.resize(1400, 900)
         self.setStyleSheet(DIALOG_STYLESHEET)
 
         pal = self.palette()
@@ -522,6 +532,9 @@ class FeatureExtractionWindow(QDialog):
         row.addWidget(self._btn_manual)
         row.addWidget(self._btn_shuffle)
         row.addStretch()
+        # Kept so _build_axis_picker can drop the contrast toggle here: it
+        # applies to both modes, so it cannot live on the manual-only bar.
+        self._toolbar_row = row
 
         hint = QLabel(
             "Drag on any plot — or on the mosaic and traces — to select · "
@@ -606,13 +619,13 @@ class FeatureExtractionWindow(QDialog):
 
         self._build_shuffle_bar()
 
-        self.contrast_chk = QCheckBox("Contrast features")
+        self.contrast_chk = QCheckBox("Contrast features")  # placed on the toolbar
         self.contrast_chk.setToolTip(
             "Adds per-light-level contrast gain and c50 to the feature list.\n"
             "Off by default: it costs an FFT per trial per level, roughly\n"
             "30 s for a whole dataset on the first pass (cached afterwards).")
         self.contrast_chk.toggled.connect(self._on_contrast_toggled)
-        row.addWidget(self.contrast_chk)
+        self._toolbar_row.addWidget(self.contrast_chk)
         row.addStretch()
         self.main_layout.addWidget(self.axis_bar2)
         self.axis_bar.setEnabled(False)
@@ -782,9 +795,20 @@ class FeatureExtractionWindow(QDialog):
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
                 combo.blockSignals(False)
+                self._sync_combo_tooltip(combo)
         self.axis_bar.setEnabled(True)
         self.axis_bar2.setEnabled(True)
         self._building_combos = False
+
+    def _sync_combo_tooltip(self, combo):
+        """Explain the selected feature on hover, not just in the dropdown.
+
+        The per-item tooltips only appear once the list is open, so a closed
+        combo showing "Chirp PSTH PC2" said nothing about what that component
+        actually weights.
+        """
+        entry = self.catalog.get(combo.currentText())
+        combo.setToolTip(entry.description if entry else "")
 
     def _on_axis_changed(self, *_):
         if getattr(self, "_building_combos", False) or not self.catalog:
@@ -795,6 +819,9 @@ class FeatureExtractionWindow(QDialog):
             if x not in self.catalog or y not in self.catalog:
                 return  # a group header, not a feature
             panels.append((x, y))
+        for cx, cy in self.axis_combos:
+            self._sync_combo_tooltip(cx)
+            self._sync_combo_tooltip(cy)
         self._panels = panels
         self.draw_plots()
 
@@ -1173,7 +1200,10 @@ class FeatureExtractionWindow(QDialog):
         if self.catalog and self._panels:
             data_pairs = [(self.catalog[x].values, self.catalog[y].values)
                           for x, y in self._panels]
-            plot_meta = [(f"{y} vs {x}", x, y) for x, y in self._panels]
+            # No title: it would repeat the two axis labels verbatim, and with
+            # names like "Temporal STA PC3" the titles collided with each
+            # other across the grid. The axes already say what is plotted.
+            plot_meta = [("", x, y) for x, y in self._panels]
         else:
             # No catalogue (a dataset with no usable feature blocks, or the
             # build failed) — the original fixed panels still work.

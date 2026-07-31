@@ -58,6 +58,7 @@ class UMAPPanel(QWidget):
         self.cluster_ids = None
         self.metadata_df = None
         self.raw_blocks = None
+        self._col_labels = []
         self._active_stacks = set()
         self._pending_highlight = None
         self.cbar = None
@@ -187,6 +188,8 @@ class UMAPPanel(QWidget):
 
         # Right-click picks a point (and its cluster) for the RF mosaic.
         self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        # Hovering an axis explains what shaped that dimension.
+        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
         # A full redraw invalidates the cached background; snapshotting from
         # draw_event means the selection survives every repaint Qt asks for.
         self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
@@ -272,6 +275,9 @@ class UMAPPanel(QWidget):
                 "ISI Violations",
                 "Time to Peak",
                 "RF Area",
+                "STA SNR",
+                "Chirp QI",
+                "Chirp ON/OFF",
                 "Color Opponency",
             ]
         )
@@ -987,8 +993,93 @@ class UMAPPanel(QWidget):
             self.cluster_worker_thread = None
         self.cluster_worker = None
 
+    # Pretty names for the column labels build_feature_matrix emits.
+    _BLOCK_NAMES = {
+        "tc_pc": "Temporal STA",
+        "acg_pc": "ACG",
+        "grating_pc": "Grating tuning",
+        "chirp_pc": "Chirp PSTH",
+    }
+
+    def _dimension_report(self, dim):
+        """What shaped UMAP dimension *dim* (0-based), as tooltip text.
+
+        **UMAP has no loadings.** It is a nonlinear manifold embedding, so a
+        dimension is not a weighted sum of the inputs the way a principal
+        component is, and there is no honest way to decompose one. Two things
+        can be said truthfully, and this reports both:
+
+        1. What went in — each block's weight, its column count, and the share
+           of squared Euclidean distance it therefore commands. That share is
+           ``n_columns x weight^2``, which is why a block can dominate the
+           embedding without its slider looking large.
+        2. What tracks the axis afterwards — the rank correlation between each
+           input column and the resulting coordinate, measured on this
+           embedding. Correlations, not causes.
+        """
+        if self.embedding is None or self.feature_matrix is None:
+            return ""
+        labels = list(self._col_labels or [])
+        matrix = np.asarray(self.feature_matrix)
+        if matrix.ndim != 2 or matrix.shape[1] != len(labels) or not labels:
+            return ""
+        if dim >= self.embedding.shape[1]:
+            return ""
+
+        # --- contribution by construction ---
+        blocks = {}
+        for i, lab in enumerate(labels):
+            prefix = next((p for p in self._BLOCK_NAMES if lab.startswith(p)), None)
+            name = self._BLOCK_NAMES.get(prefix, "scalars") if prefix else lab
+            blocks.setdefault(name, []).append(i)
+
+        energy = {}
+        for name, cols in blocks.items():
+            # Column variance already carries the weight, so summing it is the
+            # block's real share of distance without re-deriving the sliders.
+            energy[name] = float(np.nansum(matrix[:, cols].var(axis=0)))
+        total_energy = sum(energy.values()) or 1.0
+
+        # --- what actually tracks this axis ---
+        from scipy.stats import spearmanr
+        coord = np.asarray(self.embedding)[:, dim]
+        corrs = []
+        for i, lab in enumerate(labels):
+            col = matrix[:, i]
+            if np.allclose(col, col[0]):
+                continue
+            try:
+                rho = spearmanr(col, coord).statistic
+            except Exception:
+                continue
+            if np.isfinite(rho):
+                corrs.append((abs(rho), rho, lab))
+        corrs.sort(reverse=True)
+
+        lines = [f"<b>UMAP Dimension {dim + 1}</b>", "",
+                 "<i>UMAP is nonlinear — a dimension has no loadings. "
+                 "Below is what entered the embedding, and what correlates "
+                 "with this axis after the fact.</i>", "",
+                 "<b>Share of the feature space</b> (columns x weight²):"]
+        for name, e in sorted(energy.items(), key=lambda kv: -kv[1]):
+            lines.append(f"&nbsp;&nbsp;{name}: {100 * e / total_energy:.0f}% "
+                         f"({len(blocks[name])} column"
+                         f"{'s' if len(blocks[name]) != 1 else ''})")
+        if corrs:
+            lines += ["", "<b>Tracks this axis</b> (Spearman):"]
+            for _, rho, lab in corrs[:6]:
+                lines.append(f"&nbsp;&nbsp;{self._pretty_label(lab)}: {rho:+.2f}")
+        return "<br>".join(lines)
+
+    def _pretty_label(self, lab):
+        for prefix, name in self._BLOCK_NAMES.items():
+            if lab.startswith(prefix):
+                return f"{name} PC{int(lab[len(prefix):]) + 1}"
+        return lab
+
     def on_processing_finished(
-        self, embedding, matrix, valid_ids, discarded_ids, metadata, raw_blocks=None
+        self, embedding, matrix, valid_ids, discarded_ids, metadata, raw_blocks=None,
+        col_labels=None,
     ):
         self.embedding = np.asarray(embedding)
         self.feature_matrix = np.asarray(matrix)
@@ -996,6 +1087,8 @@ class UMAPPanel(QWidget):
         self.metadata_df = metadata
         self.discarded_ids = np.array(discarded_ids)
         self.raw_blocks = raw_blocks
+        self._col_labels = list(col_labels or [])
+        self._dim_tooltip_cache = {}
 
         # Determine if result is 3D
         self.is_3d = self.embedding.shape[1] == 3
@@ -1393,6 +1486,7 @@ class UMAPPanel(QWidget):
         c = colors["plot_highlight"]
         cmap = None
         is_discrete = False
+        colour_limits = None
 
         if mode == "KSLabel":
             if "KSLabel" in self.metadata_df:
@@ -1426,6 +1520,28 @@ class UMAPPanel(QWidget):
             if "RF Area" in self.metadata_df:
                 c = self.metadata_df["RF Area"].values
                 cmap = "viridis"
+        elif mode == "STA SNR":
+            # Sequential: how far a cell's STA peak stands above its own noise,
+            # so a blob that lights up dark here has no receptive field and its
+            # temporal PCs are the zero sentinel, not a response.
+            if "STA SNR" in self.metadata_df:
+                c = self.metadata_df["STA SNR"].values
+                cmap = "cividis"
+        elif mode == "Chirp QI":
+            if "Chirp QI" in self.metadata_df:
+                c = self.metadata_df["Chirp QI"].values
+                cmap = "magma"
+        elif mode == "Chirp ON/OFF":
+            # Diverging and symmetric about zero: the sign is the whole point.
+            if "Chirp ON/OFF" in self.metadata_df:
+                c = self.metadata_df["Chirp ON/OFF"].values
+                cmap = "coolwarm"
+                # Fixed to the index's own range so the midpoint is 0. Letting
+                # matplotlib autoscale would put the colour break at whatever
+                # the population mean happens to be, and in these preparations
+                # that is well positive — every cell would read as "OFF-ish"
+                # relative to its neighbours.
+                colour_limits = (-1.0, 1.0)
         elif mode == "Color Opponency":
             if "Color Opponency" in self.metadata_df:
                 c = self.metadata_df["Color Opponency"].values
@@ -1457,6 +1573,8 @@ class UMAPPanel(QWidget):
                 s=20,
                 alpha=0.8,
                 edgecolors="none",
+                vmin=colour_limits[0] if colour_limits else None,
+                vmax=colour_limits[1] if colour_limits else None,
             )
             self.ax.set_xlabel("Dim 1", color=colors["text_secondary"])
             self.ax.set_ylabel("Dim 2", color=colors["text_secondary"])
@@ -1474,6 +1592,8 @@ class UMAPPanel(QWidget):
                 s=15,
                 alpha=0.8,
                 edgecolors="none",
+                vmin=colour_limits[0] if colour_limits else None,
+                vmax=colour_limits[1] if colour_limits else None,
             )
             # --- 2D axis polish ---
             self.ax.set_xlabel(
@@ -1996,6 +2116,37 @@ class UMAPPanel(QWidget):
             "(run clustering to pick whole clusters).",
             5000,
         )
+
+    def _on_canvas_motion(self, event):
+        """Explain a dimension when the cursor is over its axis.
+
+        The axis labels are the natural place to ask "what is this dimension?",
+        so the tooltip is attached to the margin around them rather than to the
+        scatter itself, where it would fight with the selection tools.
+        """
+        if self.embedding is None or event.inaxes is not None:
+            self.canvas.setToolTip("")
+            return
+        try:
+            bbox = self.ax.get_window_extent()
+        except Exception:
+            return
+        x, y = event.x, event.y
+        if x is None or y is None:
+            return
+        dim = None
+        if bbox.x0 <= x <= bbox.x1 and y < bbox.y0:
+            dim = 0                      # under the plot: the x axis
+        elif bbox.y0 <= y <= bbox.y1 and x < bbox.x0:
+            dim = 1                      # left of the plot: the y axis
+        if dim is None:
+            self.canvas.setToolTip("")
+            return
+        cached = getattr(self, "_dim_tooltip_cache", {})
+        if dim not in cached:
+            cached[dim] = self._dimension_report(dim)
+            self._dim_tooltip_cache = cached
+        self.canvas.setToolTip(cached[dim])
 
     def _on_rf_cell_clicked(self, cluster_id):
         """Clicking an RF outline in the mosaic brings that cell up in the app."""
