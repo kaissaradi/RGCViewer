@@ -266,6 +266,10 @@ class DataManager(QObject):
         # on a timeout. It is called inside load_kilosort_data() instead,
         # which runs on a background QThread.
 
+        # Set by close() so teardown is safe to repeat, and so a caller can
+        # tell a released DataManager from a live one.
+        self._closed = False
+
         self.ei_cache = {}
         self.heavyweight_cache = {}
         self.feature_cache = {}  # Cache for feature extraction panel (PCA, ACG, etc.)
@@ -3334,6 +3338,99 @@ class DataManager(QObject):
                 logger.warning("Error closing PyBinFileReader", exc_info=True)
             finally:
                 self.raw_reader = None
+
+    def close(self):
+        """Release the memory and the file handles of this dataset.
+
+        Call this when the application moves to another run. Assigning a new
+        DataManager over ``main_window.data_manager`` does not free the old
+        one: the panels, the tree and the background workers all keep their
+        own references to it, so both datasets stay resident. The Vision EI
+        table alone is more than 500 MB, which is what makes a long curation
+        session run out of memory.
+
+        Stop the background workers before you call this. A worker that is
+        still running holds this object from another thread.
+
+        Each attribute is set to its empty value instead of being deleted, so
+        a late access finds ``None`` and takes the usual "no data" path. Every
+        step is guarded: teardown must not raise, or the new dataset is left
+        half-loaded. The method is safe to call more than once.
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+
+        try:
+            self.ei_updates_ready.disconnect()
+        except (TypeError, RuntimeError):
+            pass  # nothing connected, or the C++ object is already gone
+
+        try:
+            self._close_raw_reader()
+        except Exception:
+            logger.warning("Error closing the raw reader", exc_info=True)
+
+        # Rebind rather than clear in place. Rebinding is atomic under the GIL,
+        # so a background save that is part way through iterating one of these
+        # caches keeps its own reference and finishes on the old object.
+        for name in (
+            # spike arrays and their derived index
+            "spike_times",
+            "spike_clusters",
+            "spike_amplitudes",
+            "_spk_sorted_cls",
+            "_spk_sorted_t",
+            "_spk_unique_cls",
+            "_spk_unique_counts",
+            "cluster_spike_indices",
+            # Kilosort templates, geometry and similarity
+            "templates",
+            "templates_ind",
+            "similar_templates",
+            "channel_positions",
+            "channel_map",
+            "sorted_channels",
+            "raw_data_memmap",
+            # Vision data — vision_eis is the largest single object
+            "vision_eis",
+            "vision_stas",
+            "vision_params",
+            "vision_channel_positions",
+            "ei_corr_dict",
+            "reference_bridge",
+            # precomputed stimulus analyses
+            "chirp_data",
+            "grating_data",
+            "grating_raw_data",
+            "contrast_data",
+        ):
+            try:
+                setattr(self, name, None)
+            except Exception:
+                pass
+
+        for name in (
+            "ei_cache",
+            "heavyweight_cache",
+            "feature_cache",
+            "standard_plot_cache",
+            "isi_cache",
+            "mea_sim_cache",
+            "vision_sim_cache",
+            "grating_computed_cache",
+            "_contrast_cache",
+            "_physics_cell_locks",
+            "match_caveats",
+        ):
+            try:
+                setattr(self, name, {})
+            except Exception:
+                pass
+
+        # Drop the back-reference to the window last: it is what keeps this
+        # object reachable from the Qt side once the panels let go.
+        self.main_window = None
 
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True
