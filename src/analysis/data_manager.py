@@ -27,6 +27,7 @@ import tempfile
 import logging
 import ast
 import zlib
+from fnmatch import fnmatch
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler
 
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 # rebuilding the entire cache every session. The plot canvas is ~800 px wide,
 # so 300 points after smoothing costs nothing visually.
 FR_CACHE_MAX_BINS = 300
+
+# Peak-to-RMS of every STA movie. Recomputed only when the .sta file or the
+# cluster id list changes. The first pass is the slow part of Vision load.
+STA_SNR_CACHE_NAME = "sta_snr_cache.pkl"
 
 
 def _load_array(path, mmap_mode):
@@ -393,6 +398,11 @@ class DataManager(QObject):
             {}
         )  # dict[cluster_id -> per-condition dict], on-demand results
         self._grating_cache_lock = threading.Lock()
+        # Glob results from the instant presence check. The Kilosort worker
+        # fills this; StimulusAnalysisLoadWorker loads the files after the
+        # UI is already up.
+        self._analysis_candidates = {"chirp": [], "contrast": [], "grating": []}
+        self._analysis_listing = None
 
     def set_refractory_period(self, new_period_ms):
         """
@@ -4131,25 +4141,109 @@ class DataManager(QObject):
         self.vision_sim_cache[cache_key] = result_df
         return result_df.copy()
 
-    def find_analysis_files(self, pattern):
-        """Offline analysis .npy files matching *pattern*, newest layout first.
+    # Stim .npy files are identified by filename only. One listing of the
+    # search roots is enough for every kind.
+    _ANALYSIS_GLOBS = {
+        "chirp": ("*Chirp*.npy",),
+        "contrast": ("*ontrast*.npy",),
+        "grating": ("*Grating*.npy", "*DSOS*.npy"),
+    }
 
-        These sit next to the sorted output, but *where* next to it varies: the
-        per-run and older concatenated folders keep them at the top level, while
-        the newer concatenated sorts write them into ``ksfiles/`` alongside the
-        Kilosort arrays. Globbing only the top level silently finds nothing on
-        the latter, which reads as "this run has no chirp data" rather than as a
-        path problem.
+    def _analysis_search_roots(self):
+        """Selected sort dir, its ``ksfiles/``, and the directory above.
+
+        Kilosort arrays stay in the folder the user picked. Chirp / contrast /
+        grating ``.npy`` files — and sometimes Vision files — sit in that
+        folder, in ``ksfiles/``, or one level up. Sibling run folders are
+        not walked.
         """
-        if self.kilosort_dir is None:
+        root = self._optional_attr("kilosort_dir")
+        if not root:
             return []
-        found = []
-        for base in (self.kilosort_dir, self.kilosort_dir / "ksfiles"):
+        root = Path(root)
+        parent = root.parent
+        roots = [root, root / "ksfiles"]
+        if parent != root:
+            roots.extend((parent, parent / "ksfiles"))
+        seen = set()
+        out = []
+        for base in roots:
+            key = str(base)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(base)
+        return out
+
+    def _analysis_search_names(self, refresh=False):
+        """``[(path, name, root_rank), ...]`` from one ``scandir`` per root.
+
+        Names only — no ``stat`` of the huge ``.npy`` / ``.ei`` files.
+        """
+        cached = self._optional_attr("_analysis_listing")
+        if cached is not None and not refresh:
+            return cached
+        out = []
+        for rank, base in enumerate(self._analysis_search_roots()):
             try:
-                if base.is_dir():
-                    found.extend(sorted(base.glob(pattern)))
+                with os.scandir(base) as it:
+                    batch = [(Path(base) / e.name, e.name, rank) for e in it]
             except OSError:
                 continue
+            batch.sort(key=lambda t: t[1])
+            out.extend(batch)
+        self._analysis_listing = out
+        return out
+
+    def find_analysis_files(self, pattern):
+        """Offline analysis .npy files matching *pattern*.
+
+        Search order: the selected sort dir, its ``ksfiles/``, the directory
+        above, and that parent's ``ksfiles/``. One cached directory listing
+        backs every pattern, so repeated calls are free.
+        """
+        return [
+            path
+            for path, name, _rank in self._analysis_search_names()
+            if fnmatch(name, pattern)
+        ]
+
+    def find_grating_candidates(self):
+        """Grating .npy paths. Glob only."""
+        found = self.find_analysis_files("*Grating*.npy") + self.find_analysis_files(
+            "*DSOS*.npy"
+        )
+        seen = set()
+        out = []
+        for p in found:
+            key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+        return out
+
+    def probe_stimulus_analyses(self):
+        """Does a chirp / contrast / grating file exist? Names only.
+
+        One ``scandir`` per search root. Does not ``np.load``. The chosen
+        file is loaded later by ``StimulusAnalysisLoadWorker``.
+        """
+        listing = self._analysis_search_names(refresh=True)
+        run = ""
+        root = self._optional_attr("kilosort_dir")
+        if root:
+            run = Path(root).name.lower()
+        found = {kind: [] for kind in self._ANALYSIS_GLOBS}
+        for path, name, rank in listing:
+            for kind, patterns in self._ANALYSIS_GLOBS.items():
+                if any(fnmatch(name, pat) for pat in patterns):
+                    found[kind].append((rank, 0 if run and run in name.lower() else 1, name, path))
+                    break
+        for kind, rows in found.items():
+            rows.sort()
+            found[kind] = [path for _rank, _hit, _name, path in rows]
+        self._analysis_candidates = found
         return found
 
     def load_chirp_data(self, chirp_path=None):
@@ -4277,7 +4371,9 @@ class DataManager(QObject):
             except Exception:
                 logger.debug("ON/OFF index failed for cell %s", cid, exc_info=True)
 
-        self.cluster_df["chirp_onoff"] = values
+        if getattr(self.cluster_df, "_is_copy", None) is not None:
+            self.cluster_df = self.cluster_df.copy()
+        self.cluster_df.loc[:, "chirp_onoff"] = values
         logger.debug("Attached chirp_onoff to cluster_df: %d/%d cells",
                      int(np.isfinite(values).sum()), len(values))
         return True
@@ -4642,7 +4738,9 @@ class DataManager(QObject):
             if row is not None and 0 <= row < len(qi_all):
                 values[i] = qi_all[row]
 
-        self.cluster_df["chirp_qi"] = values
+        if getattr(self.cluster_df, "_is_copy", None) is not None:
+            self.cluster_df = self.cluster_df.copy()
+        self.cluster_df.loc[:, "chirp_qi"] = values
         logger.debug(
             "Attached chirp_qi to cluster_df: %d/%d cells, %d repeats (%s), "
             "source=%s",
@@ -4715,11 +4813,120 @@ class DataManager(QObject):
             )
         return True, ""
 
+    def _optional_attr(self, name, default=None):
+        """Read an instance attr even when QObject.__init__ was skipped.
+
+        Tests build DataManager via ``__new__``. ``getattr`` on an
+        uninitialized QObject raises RuntimeError instead of AttributeError.
+        """
+        try:
+            return object.__getattribute__(self, name)
+        except Exception:
+            return default
+
+    def _sta_snr_fingerprint(self):
+        """Identity of the .sta file plus the cluster id list.
+
+        The cache is wrong if either the movie file or the sort changed.
+        """
+        stas = self.vision_stas
+        vision_dir = getattr(stas, "vision_dir", None)
+        dataset = getattr(stas, "dataset_name", None)
+        sta_mtime = None
+        sta_size = None
+        if vision_dir is not None and dataset is not None:
+            sta_path = Path(vision_dir) / f"{dataset}.sta"
+            try:
+                st = sta_path.stat()
+                sta_mtime = int(st.st_mtime_ns)
+                sta_size = int(st.st_size)
+            except OSError:
+                pass
+        ids = tuple(int(c) for c in self.cluster_df["cluster_id"].to_numpy())
+        return {
+            "sta_mtime": sta_mtime,
+            "sta_size": sta_size,
+            "cluster_ids": ids,
+            "is_vision_only": bool(getattr(self, "is_vision_only", False)),
+        }
+
+    def _load_sta_snr_cache(self, fingerprint):
+        kilosort_dir = self._optional_attr("kilosort_dir")
+        if not kilosort_dir or fingerprint.get("sta_mtime") is None:
+            return None
+        path = Path(kilosort_dir) / STA_SNR_CACHE_NAME
+        if not path.is_file():
+            return None
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+        except Exception:
+            logger.debug("Could not read %s", path, exc_info=True)
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("fingerprint") != fingerprint:
+            return None
+        values = payload.get("values")
+        try:
+            values = np.asarray(values, dtype=float)
+        except Exception:
+            return None
+        if values.shape != (len(self.cluster_df),):
+            return None
+        return values
+
+    def _save_sta_snr_cache(self, fingerprint, values):
+        kilosort_dir = self._optional_attr("kilosort_dir")
+        if not kilosort_dir or fingerprint.get("sta_mtime") is None:
+            return
+        path = Path(kilosort_dir) / STA_SNR_CACHE_NAME
+        save = self._optional_attr("_save_pickle_with_fallback")
+        if save is None:
+            return
+        try:
+            save(
+                {"fingerprint": fingerprint, "values": np.asarray(values, dtype=float)},
+                str(path),
+            )
+        except Exception:
+            logger.debug("Could not write %s", path, exc_info=True)
+
+    def _sta_snr_for_vision_id(self, vid):
+        """Peak-to-RMS for one Vision id without unpacking the full movie.
+
+        ``LazySTADict.sta_peak_to_rms`` reads only the green channel. Fake
+        mappings used in tests fall back to ``__getitem__`` plus the volume
+        helper.
+        """
+        stas = self.vision_stas
+        snr_fn = getattr(stas, "sta_peak_to_rms", None)
+        if callable(snr_fn):
+            try:
+                return float(snr_fn(vid))
+            except Exception:
+                logger.debug("STA SNR helper failed for cell %s", vid, exc_info=True)
+                return float("nan")
+        sta = stas[vid]
+        if sta is None:
+            return float("nan")
+        vol = getattr(sta, "green", None)
+        if vol is None:
+            vol = getattr(sta, "red", None)
+        if vol is None:
+            return float("nan")
+        return self.sta_peak_to_rms(vol)
+
     def prepare_sta_quality_column(self) -> bool:
         """Read STAs and stash ``sta_snr`` values. Safe on a worker thread.
 
         Does **not** write ``cluster_df`` — that stays main-thread-owned.
         ``attach_sta_quality_column`` applies the stashed column.
+
+        Reuses ``sta_snr_cache.pkl`` when the .sta file and cluster list
+        have not changed. Otherwise scores each cell from the green
+        channel only — it does not unpack the other five STA planes or
+        spawn a timeout thread per cell.
         """
         if not self.vision_stas:
             return False
@@ -4732,6 +4939,18 @@ class DataManager(QObject):
         if not ok:
             logger.warning("STA provenance: %s", msg)
 
+        fingerprint = self._sta_snr_fingerprint()
+        cached = self._load_sta_snr_cache(fingerprint)
+        if cached is not None:
+            self._sta_snr_values = cached
+            logger.info(
+                "STA quality restored from cache (%d/%d cells); provenance %s",
+                int(np.isfinite(cached).sum()),
+                len(cached),
+                "OK" if ok else "SUSPECT",
+            )
+            return True
+
         n_rows = len(self.cluster_df)
         values = np.full(n_rows, np.nan, dtype=float)
         n_probed = 0
@@ -4740,19 +4959,10 @@ class DataManager(QObject):
             if vid not in self.vision_stas:
                 continue
             n_probed += 1
-            sta = self.vision_stas[vid]
-            if sta is None:
-                continue
-            # Green carries the luminance signal for the achromatic noise used
-            # here; fall back if a file stores only one channel.
-            vol = getattr(sta, "green", None)
-            if vol is None:
-                vol = getattr(sta, "red", None)
-            if vol is None:
-                continue
-            values[i] = self.sta_peak_to_rms(vol)
+            values[i] = self._sta_snr_for_vision_id(vid)
 
         self._sta_snr_values = values
+        self._save_sta_snr_cache(fingerprint, values)
         n = int(np.isfinite(values).sum())
         logger.info(
             "STA present for %d/%d cells (%d readable); provenance %s",
@@ -4901,6 +5111,27 @@ class DataManager(QObject):
             for k, v in first.items()
         )
 
+    @staticmethod
+    def _grating_candidate_priority(path):
+        """Try combined/analyzed files first so we load at most one .npy."""
+        name = Path(path).name.lower()
+        if "_combined" in name or "analyzed" in name:
+            return 0
+        if "raw" in name:
+            return 2
+        return 1
+
+    @staticmethod
+    def _load_npy_dict(path):
+        try:
+            obj = np.load(path, allow_pickle=True)
+        except Exception:
+            return None
+        try:
+            return obj.item()
+        except Exception:
+            return None
+
     def load_grating_data(self, grating_path=None):
         """
         Load grating (DSOS/SF) data from kilosort_dir.
@@ -4912,40 +5143,45 @@ class DataManager(QObject):
 
         Never raises. Always leaves grating_available/grating_status in a
         well-defined state.
+
+        Loads the chosen file once. Combined/analyzed names are tried
+        first so a folder with leftovers does not unpickle every .npy.
         """
         try:
-            candidates = grating_path
-            if candidates is None:
-                candidates = sorted(self.kilosort_dir.glob("*Grating*.npy")) + sorted(
-                    self.kilosort_dir.glob("*DSOS*.npy")
-                )
-                candidates = sorted(set(candidates))
-                if not candidates:
-                    self.grating_available = False
-                    self.grating_status = "missing"
-                    logger.info(
-                        "No grating analysis file found in %s", self.kilosort_dir
-                    )
-                    return False, "No grating file found."
+            if grating_path is None:
+                candidates = self.find_grating_candidates()
+            elif isinstance(grating_path, (list, tuple)):
+                candidates = [Path(p) for p in grating_path]
             else:
-                candidates = [candidates]
+                candidates = [Path(grating_path)]
 
-            analyzed_path = None
-            raw_path = None
+            if not candidates:
+                self.grating_available = False
+                self.grating_status = "missing"
+                logger.info(
+                    "No grating analysis file found in %s", self.kilosort_dir
+                )
+                return False, "No grating file found."
+
+            candidates = sorted(
+                candidates, key=lambda p: (self._grating_candidate_priority(p), p.name)
+            )
+
+            analyzed = None
+            raw = None
             for p in candidates:
-                try:
-                    mdic = np.load(p, allow_pickle=True).item()
-                except Exception:
+                mdic = self._load_npy_dict(p)
+                if not isinstance(mdic, dict):
                     continue
                 kind = self._classify_grating_npy(mdic)
                 if kind == "analyzed":
-                    if analyzed_path is None or "_combined" in p.name:
-                        analyzed_path = p
-                elif kind == "raw" and raw_path is None:
-                    raw_path = p
+                    analyzed = (p, mdic)
+                    break
+                if kind == "raw" and raw is None:
+                    raw = (p, mdic)
 
-            if analyzed_path is not None:
-                mdic = np.load(analyzed_path, allow_pickle=True).item()
+            if analyzed is not None:
+                analyzed_path, mdic = analyzed
                 self.grating_data = {}
                 for k, v in mdic.items():
                     if isinstance(k, (int, np.integer)):
@@ -4964,8 +5200,8 @@ class DataManager(QObject):
                 )
                 return True, f"Loaded analyzed grating data from {analyzed_path.name}"
 
-            if raw_path is not None:
-                mdic = np.load(raw_path, allow_pickle=True).item()
+            if raw is not None:
+                raw_path, mdic = raw
                 raw_spikes = mdic["spike_times_by_trial"]
 
                 # Re-key the raw trial dictionary to use Kilosort IDs

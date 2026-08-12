@@ -705,6 +705,29 @@ class STAReader:
         self.sta_fp.seek(self.cell_id_to_byte_offset[cell_id], 0)
         return self._unpack_single_sta_from_buffer(self.sta_fp.read(self.n_bytes_per_sta))
 
+    def green_peak_to_rms(self, cell_id: int) -> float:
+        """Peak-to-RMS of the green plane only.
+
+        The quality column only needs this scalar. Unpacking the other five
+        STA planes (red/blue plus three error maps) is wasted work during
+        the all-cell sweep.
+        """
+        assert cell_id in self.cell_id_to_byte_offset, \
+            "Cell id {0} does not have STA".format(cell_id)
+        self.sta_fp.seek(self.cell_id_to_byte_offset[cell_id], 0)
+        raw = self.sta_fp.read(self.n_bytes_per_sta)
+        frames = np.frombuffer(
+            raw, dtype=self._frame_dtype, count=self.depth, offset=12
+        )
+        gv = np.asarray(frames["px"][..., 2], dtype=np.float32)
+        if gv.size == 0:
+            return float("nan")
+        gv = gv - gv.mean()
+        rms = float(np.sqrt((gv * gv).mean()))
+        if rms <= 0 or not np.isfinite(rms):
+            return float("nan")
+        return float(np.abs(gv).max() / rms)
+
     def get_all_stas_by_cell_id(self) -> Dict[int, STAContainer]:
         return {cid: self.get_sta_for_cell_id(cid) for cid in self.cell_id_to_byte_offset}
 

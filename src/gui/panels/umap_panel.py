@@ -513,12 +513,11 @@ class UMAPPanel(QWidget):
         so the row is only live when a chirp file was actually loaded.
 
         Called once at construction — when main_window.data_manager is still
-        None, so chirp starts disabled — and again from
-        callbacks._on_kilosort_loaded() once loading is done and
-        chirp_available is final (load_chirp_data runs inside
-        KilosortLoadWorker.run, so the flag is settled by the time that slot
-        fires). Without the second call the checkbox stays dead on every
-        dataset, chirp or not.
+        None, so chirp starts disabled — again from
+        callbacks._on_kilosort_loaded() after the cluster table is up, and
+        once more when StimulusAnalysisLoadWorker finishes (that is when
+        chirp_available becomes final). Without the later calls the
+        checkbox stays dead on every dataset, chirp or not.
 
         Bidirectional on purpose: panels are built once and persist, while
         data_manager is replaced on every load, so a chirp-less dataset

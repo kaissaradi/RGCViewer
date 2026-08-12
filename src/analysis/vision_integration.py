@@ -76,6 +76,51 @@ class LazySTADict:
             return self[key]  # This safely triggers __getitem__ and the RAM cache
         return default
         
+    def _thread_local_reader(self):
+        """One STAReader per thread so workers do not share a file handle."""
+        local = getattr(self, '_local', None)
+        if local is None:
+            self._local = threading.local()
+            local = self._local
+
+        local_reader = getattr(local, 'reader', None)
+        if local_reader is not None:
+            return local_reader
+
+        creator_thread = getattr(self, '_creator_thread', None)
+        if creator_thread is not None and threading.current_thread() is creator_thread:
+            local_reader = self.reader
+        else:
+            vision_dir = getattr(self, 'vision_dir', None)
+            dataset_name = getattr(self, 'dataset_name', None)
+            if vision_dir is not None and dataset_name is not None and VISION_LOADER_AVAILABLE:
+                local_reader = vl.STAReader(str(vision_dir), dataset_name)
+                readers_lock = getattr(self, '_readers_lock', None)
+                if readers_lock is not None:
+                    with readers_lock:
+                        self._all_readers.append(local_reader)
+            else:
+                local_reader = self.reader
+        local.reader = local_reader
+        return local_reader
+
+    def sta_peak_to_rms(self, key):
+        """Green-channel peak-to-RMS. Does not unpack or cache the movie."""
+        try:
+            key = int(key)
+        except (TypeError, ValueError):
+            return float("nan")
+        if key not in self:
+            return float("nan")
+        reader = self._thread_local_reader()
+        if reader is None or not hasattr(reader, "green_peak_to_rms"):
+            return float("nan")
+        try:
+            return float(reader.green_peak_to_rms(key))
+        except Exception as e:
+            logger.warning("green_peak_to_rms failed for cell %s: %s", key, e)
+            return float("nan")
+
     def __getitem__(self, key):
         try:
             key = int(key)
@@ -92,30 +137,7 @@ class LazySTADict:
                 return self._cache[key]
 
         # 2. Get thread-local reader, or create one for this thread
-        local = getattr(self, '_local', None)
-        if local is None:
-            self._local = threading.local()
-            local = self._local
-            
-        local_reader = getattr(local, 'reader', None)
-        if local_reader is None:
-            creator_thread = getattr(self, '_creator_thread', None)
-            if creator_thread is not None and threading.current_thread() is creator_thread:
-                local_reader = self.reader
-            else:
-                vision_dir = getattr(self, 'vision_dir', None)
-                dataset_name = getattr(self, 'dataset_name', None)
-                if vision_dir is not None and dataset_name is not None and VISION_LOADER_AVAILABLE:
-                    # Open a new reader for this worker thread to avoid file handle races
-                    local_reader = vl.STAReader(str(vision_dir), dataset_name)
-                    readers_lock = getattr(self, '_readers_lock', None)
-                    if readers_lock is not None:
-                        with readers_lock:
-                            self._all_readers.append(local_reader)
-                else:
-                    # Fallback to shared reader for tests or missing info
-                    local_reader = self.reader
-            local.reader = local_reader
+        local_reader = self._thread_local_reader()
 
         # 3. Read is outside cache lock, and thread-safe because each thread has its own reader.
         # Guard against BOTH exceptions (corrupt data) AND hangs (blocked seek on a bad

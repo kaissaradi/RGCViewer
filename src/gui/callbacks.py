@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread, Qt, QTimer
+from qtpy.QtCore import QThread, Qt, QTimer, QEventLoop
 from qtpy.QtGui import QStandardItem, QColor
 
 from ..analysis.data_manager import DataManager
@@ -13,6 +13,7 @@ from .workers.workers import (
     StandardPlotsWorker,
     KilosortLoadWorker,
     VisionLoadWorker,
+    StimulusAnalysisLoadWorker,
 )
 from .widgets.widgets import HighlightStatusPandasModel
 from .panels.population_panel import (
@@ -27,6 +28,14 @@ import logging
 logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
+
+
+def _show_load_progress(main_window, msg):
+    """Paint a load status line now. Safe to call from a worker via BlockingQueuedConnection."""
+    bar = getattr(main_window, "status_bar", None)
+    if bar is not None:
+        bar.showMessage(msg)
+    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
 
 def _ensure_cache_progress_timer(main_window):
@@ -121,6 +130,7 @@ def _retire_inflight_load(main_window):
     for thread_attr, worker_attr in (
         ("ks_load_thread", "ks_load_worker"),
         ("vision_load_thread", "vision_load_worker"),
+        ("analysis_load_thread", "analysis_load_worker"),
         ("_grating_batch_thread", "_grating_batch_worker"),
         ("feature_worker_thread", "feature_worker"),
     ):
@@ -274,8 +284,12 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
 
     # 3. Connect Signals
     main_window.ks_load_thread.started.connect(main_window.ks_load_worker.run)
+    # Blocking so each "Checking for…" actually paints before the worker
+    # continues. Queued progress arrives in a burst after the scan, which
+    # is why those messages never flashed.
     main_window.ks_load_worker.progress.connect(
-        lambda msg: main_window.status_bar.showMessage(msg)
+        lambda msg: _show_load_progress(main_window, msg),
+        Qt.BlockingQueuedConnection,
     )
 
     # Connect the finished signal to our new UI-thread cleanup function
@@ -319,6 +333,15 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # Only a load that actually worked is worth reopening next launch.
     main_window._reopening_remembered = False
     recent_paths.remember_dataset(ks_dir_name, dat_file)
+
+    n_clusters = len(main_window.data_manager.cluster_df)
+    # Take "Checking for…" off the bar before tree / UMAP setup. That work
+    # used to leave the last check message on screen and look like the
+    # check itself was still running.
+    main_window.status_bar.showMessage(
+        f"Loaded {n_clusters} clusters. Preparing views..."
+    )
+    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
     # --- GUI UPDATES (Safe because we are back on the main thread) ---
 
@@ -381,9 +404,9 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # runs are sorted independently, so a stale embedding and mosaic describe
     # cells that no longer exist under those IDs, and the panel was constructed
     # back in MainWindow.__init__ when data_manager was still None, so its
-    # chirp row came up disabled regardless of the dataset. load_chirp_data()
-    # runs inside KilosortLoadWorker.run(), so chirp_available is final by the
-    # time this slot fires.
+    # chirp row came up disabled regardless of the dataset. Chirp/grating
+    # files are only globbed here; they load after the UI unlocks, and
+    # refresh_feature_availability runs again then.
     if hasattr(main_window, "umap_panel"):
         main_window.umap_panel.reset_for_new_dataset()
 
@@ -398,8 +421,6 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         cid = main_window._get_selected_cluster_id()
         if cid is not None:
             main_window.standard_plots_panel.update_all(cid)
-
-    n_clusters = len(main_window.data_manager.cluster_df)
 
     # Auto-start Vision loading if the KS worker found .ei files in the directory.
     # This runs as a SEPARATE VisionLoadWorker so the UI is already unlocked
@@ -422,7 +443,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
             main_window.vision_load_worker.run
         )
         main_window.vision_load_worker.progress.connect(
-            lambda msg: main_window.status_bar.showMessage(msg)
+            lambda msg: _show_load_progress(main_window, msg),
+            Qt.BlockingQueuedConnection,
         )
         main_window.vision_load_worker.finished.connect(
             lambda success, msg, is_partial: _on_vision_loaded(
@@ -434,6 +456,66 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.status_bar.showMessage(
             f"Successfully loaded {n_clusters} clusters.", 5000
         )
+
+    _start_stimulus_analysis_load(main_window)
+
+
+def _start_stimulus_analysis_load(main_window):
+    """Unpickle chirp/contrast/grating after the cluster table is already up."""
+    dm = main_window.data_manager
+    cands = getattr(dm, "_analysis_candidates", None) or {}
+    if not any(cands.get(k) for k in ("chirp", "contrast", "grating")):
+        return
+
+    main_window.analysis_load_thread = QThread()
+    main_window.analysis_load_worker = StimulusAnalysisLoadWorker(dm)
+    main_window.analysis_load_worker.moveToThread(main_window.analysis_load_thread)
+    main_window.analysis_load_thread.started.connect(
+        main_window.analysis_load_worker.run
+    )
+    main_window.analysis_load_worker.progress.connect(
+        lambda msg: _show_load_progress(main_window, msg),
+        Qt.BlockingQueuedConnection,
+    )
+    main_window.analysis_load_worker.finished.connect(
+        lambda success, msg: _on_stimulus_analyses_loaded(main_window, success, msg)
+    )
+    main_window.analysis_load_thread.start()
+
+
+def _on_stimulus_analyses_loaded(main_window, success, message):
+    """Attach chirp columns and re-gate UMAP once the .npy files are in RAM."""
+    if hasattr(main_window, "analysis_load_thread") and main_window.analysis_load_thread:
+        main_window.analysis_load_thread.quit()
+        if not main_window.analysis_load_thread.wait(2000):
+            logger.warning("Analysis load thread didn't exit cleanly, terminating")
+            main_window.analysis_load_thread.terminate()
+            main_window.analysis_load_thread.wait(500)
+        main_window.analysis_load_thread = None
+
+    if hasattr(main_window, "analysis_load_worker") and main_window.analysis_load_worker:
+        main_window.analysis_load_worker.deleteLater()
+        main_window.analysis_load_worker = None
+
+    if not success:
+        main_window.status_bar.showMessage(
+            f"Stimulus analysis load failed: {message}", 5000
+        )
+        return
+
+    dm = main_window.data_manager
+    changed = False
+    if dm.attach_chirp_qi_column():
+        changed = True
+    if dm.attach_chirp_onoff_column():
+        changed = True
+    if changed and hasattr(main_window, "refresh_table_model"):
+        main_window.refresh_table_model()
+    if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.refresh_feature_availability()
+    if main_window._get_selected_cluster_id() is not None:
+        on_cluster_selection_changed(main_window)
+    main_window.status_bar.showMessage(message, 4000)
 
 
 def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
@@ -761,7 +843,8 @@ def load_vision_directory(main_window):
 
     main_window.vision_load_thread.started.connect(main_window.vision_load_worker.run)
     main_window.vision_load_worker.progress.connect(
-        lambda msg: main_window.status_bar.showMessage(msg)
+        lambda msg: _show_load_progress(main_window, msg),
+        Qt.BlockingQueuedConnection,
     )
     main_window.vision_load_thread.start()
 

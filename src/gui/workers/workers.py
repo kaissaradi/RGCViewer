@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import sklearn.cluster
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,19 +19,52 @@ logger = logging.getLogger(__name__)
 # behavior, but a dataset missing .ei (a perfectly normal, supported case —
 # see vision_integration.load_ei_data's FileNotFoundError handling) must
 # still resolve via .sta/.params/.neurons instead of silently giving up.
-_DATASET_NAME_GLOB_PRIORITY = ("*.ei", "*.sta", "*.params", "*.neurons")
+_VISION_SUFFIXES = (".ei", ".sta", ".params", ".neurons")
 
 
-def _resolve_vision_dataset_name(vision_dir: Path):
+def _vision_stems_in(vision_dir: Path):
+    """Stems that have at least one Vision file. One scandir, names only."""
+    by_suffix = {suf: [] for suf in _VISION_SUFFIXES}
+    try:
+        with os.scandir(vision_dir) as it:
+            for entry in it:
+                lower = entry.name.lower()
+                for suf in _VISION_SUFFIXES:
+                    if lower.endswith(suf):
+                        by_suffix[suf].append(Path(entry.name).stem)
+                        break
+    except OSError:
+        return []
+    ordered = []
+    seen = set()
+    for suf in _VISION_SUFFIXES:
+        for stem in by_suffix[suf]:
+            if stem in seen:
+                continue
+            seen.add(stem)
+            ordered.append(stem)
+    return ordered
+
+
+def _resolve_vision_dataset_name(vision_dir: Path, preferred_stem=None):
     """
     Finds the Vision dataset name (file stem shared by .ei/.sta/.params/
     .neurons) in `vision_dir`. Returns None if no Vision files are found at
     all. Does NOT require an .ei file — that was the bug.
+
+    When several datasets share a folder, prefer the stem that matches the
+    sort directory name (``data006`` next to ``data006.sta``).
     """
-    for pattern in _DATASET_NAME_GLOB_PRIORITY:
-        for f in vision_dir.glob(pattern):
-            return f.stem
-    return None
+    stems = _vision_stems_in(vision_dir)
+    if not stems:
+        return None
+    if preferred_stem:
+        if preferred_stem in stems:
+            return preferred_stem
+        for stem in stems:
+            if stem.startswith(preferred_stem) or preferred_stem.startswith(stem):
+                return stem
+    return stems[0]
 
 
 def _locate_vision_dataset(ks_dir: Path):
@@ -38,13 +72,15 @@ def _locate_vision_dataset(ks_dir: Path):
     Finds the directory holding the Vision files for a Kilosort output at
     `ks_dir`, returning (vision_dir, dataset_name) or (None, None).
 
-    Vision files sit either alongside the sorter output or one level up, in
-    the experiment directory that contains the per-sort subdirectories. The
-    colocated case is checked first so an experiment that has both keeps its
-    old behavior.
+    Vision files sit in the folder the user picked or one level up. The
+    colocated case is checked first so an experiment that has both keeps
+    the files that belong to this sort.
     """
+    preferred = ks_dir.name
     for candidate in (ks_dir, ks_dir.parent):
-        dataset_name = _resolve_vision_dataset_name(candidate)
+        dataset_name = _resolve_vision_dataset_name(
+            candidate, preferred_stem=preferred
+        )
         if dataset_name:
             return candidate, dataset_name
     return None, None
@@ -100,49 +136,39 @@ class KilosortLoadWorker(QObject):
 
             # Load cell type file. It travels with the Vision files, but a
             # classification written back into the sort directory wins.
+            # Always also look one level up — same rule as stim / Vision.
             txt_search_dirs = [ks_dir]
-            if vision_dir is not None and vision_dir != ks_dir:
+            parent = ks_dir.parent
+            if parent != ks_dir:
+                txt_search_dirs.append(parent)
+            if vision_dir is not None and vision_dir not in txt_search_dirs:
                 txt_search_dirs.append(vision_dir)
             txt_file = next(
                 (f for d in txt_search_dirs for f in sorted(d.glob("*.txt"))), None
             )
             self.dm.load_cell_type_file(txt_file)
 
-            # --- CHIRP DATA (optional) ---
-            # chirp_analysis.py writes directly into this same directory, so
-            # no path configuration is needed. Missing file is not an error —
-            # load_chirp_data() handles that internally and just leaves
-            # chirp_available False.
             # The manifest is what turns a source run into a light level, so
             # it has to be read before anything that labels runs.
             self.progress.emit("Reading stimulus manifest...")
             self.dm.load_stimulus_manifest()
 
+            # Presence only. One scandir per search root (this folder, its
+            # ksfiles/, the parent, the parent's ksfiles/). Contrast and
+            # grating then filter that listing in memory so they flash.
             self.progress.emit("Checking for chirp analysis data...")
-            chirp_success, chirp_msg = self.dm.load_chirp_data()
-            if chirp_success:
-                logger.debug(chirp_msg)
-                # Surface the quality index as a sortable table column. Runs
-                # off cluster_df, which is already built by this point.
-                self.dm.attach_chirp_qi_column()
-                # Polarity as a sortable number, next to the other per-unit
-                # metrics. Cheap: one pass over the trial-averaged PSTHs.
-                self.dm.attach_chirp_onoff_column()
-
-            # --- CONTRAST-RESPONSE DATA (optional) ---
+            found = self.dm.probe_stimulus_analyses()
             self.progress.emit("Checking for contrast-response data...")
-            contrast_success, contrast_msg = self.dm.load_contrast_data()
-            if contrast_success:
-                logger.debug(contrast_msg)
-
-            # --- GRATING DATA (optional) ---
-            # Same colocated-with-kilosort_dir convention as chirp. Unlike
-            # chirp, this may only find a RAW file — DSI/OSI then get
-            # computed later, on demand, per cluster (see GratingComputeWorker).
             self.progress.emit("Checking for grating analysis data...")
-            grating_success, grating_msg = self.dm.load_grating_data()
-            if grating_success:
-                logger.debug(grating_msg)
+            present = [name for name, paths in found.items() if paths]
+            if present:
+                self.progress.emit(
+                    "Found " + ", ".join(present) + " analysis file(s)."
+                )
+            logger.info(
+                "Analysis files: %s",
+                {name: len(paths) for name, paths in found.items()},
+            )
 
             self.finished.emit(True, "Kilosort and Vision data loaded successfully.")
         except Exception as e:
@@ -194,6 +220,74 @@ class VisionLoadWorker(QObject):
         except Exception as e:
             logger.exception("Error in VisionLoadWorker")
             self.finished.emit(False, str(e), False)
+
+
+class StimulusAnalysisLoadWorker(QObject):
+    """Load chirp / contrast / grating .npy after the cluster table is up.
+
+    The Kilosort worker only globs. This worker unpickles the chosen file
+    for each stimulus. Chirp table columns are attached on the main thread
+    when ``finished`` fires — ``cluster_df`` is main-thread-owned by then.
+    """
+
+    finished = Signal(bool, str)
+    progress = Signal(str)
+
+    def __init__(self, data_manager):
+        super().__init__()
+        self.dm = data_manager
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            cands = getattr(self.dm, "_analysis_candidates", None)
+            if not cands:
+                cands = self.dm.probe_stimulus_analyses()
+
+            if self._stop:
+                self.finished.emit(False, "Analysis load cancelled.")
+                return
+
+            if cands.get("chirp"):
+                self.progress.emit("Loading chirp analysis...")
+                ok, msg = self.dm.load_chirp_data(cands["chirp"][0])
+                if ok:
+                    logger.debug(msg)
+                elif msg:
+                    logger.info(msg)
+
+            if self._stop:
+                self.finished.emit(False, "Analysis load cancelled.")
+                return
+
+            if cands.get("contrast"):
+                self.progress.emit("Loading contrast-response data...")
+                contrast_path = max(cands["contrast"], key=lambda p: p.stat().st_size)
+                ok, msg = self.dm.load_contrast_data(contrast_path)
+                if ok:
+                    logger.debug(msg)
+                elif msg:
+                    logger.info(msg)
+
+            if self._stop:
+                self.finished.emit(False, "Analysis load cancelled.")
+                return
+
+            if cands.get("grating"):
+                self.progress.emit("Loading grating analysis...")
+                ok, msg = self.dm.load_grating_data(cands["grating"])
+                if ok:
+                    logger.debug(msg)
+                elif msg:
+                    logger.info(msg)
+
+            self.finished.emit(True, "Stimulus analyses ready.")
+        except Exception as e:
+            logger.exception("Error in StimulusAnalysisLoadWorker")
+            self.finished.emit(False, str(e))
 
 
 class SpatialWorker(QObject):
