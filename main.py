@@ -24,6 +24,10 @@ def setup_logging(debug_mode):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RGC Viewer - Retinal Ganglion Cell Analysis Tool")
     parser.add_argument('--debug', action='store_true', help="Enable debug logging to console")
+    parser.add_argument('--kilosort-dir', default=None,
+                        help="Open this Kilosort directory instead of the last one used")
+    parser.add_argument('--dat-file', default=None,
+                        help="Raw .bin/.dat file to enable the Raw trace tab")
     args = parser.parse_args()
 
     setup_logging(args.debug)
@@ -43,15 +47,12 @@ if __name__ == "__main__":
     fmt.setProfile(QSurfaceFormat.NoProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-    # Set your default paths here for testing
-    # DEFAULT_KILOSORT_DIR = "/Volumes/Vyom MEA/analysis/20250306C/data026/kilosort2.5"
-    # DEFAULT_KILOSORT_DIR = "/Volumes/Vyom MEA/analysis/20250306C/chunk4/kilosort2.5"
-    # DEFAULT_KILOSORT_DIR = "/Users/riekelabbackup/Desktop/Vyom/data/analysis/20250306C/data026/kilosort2.5"
-    DEFAULT_KILOSORT_DIR = "/Volumes/Vyom MEA/analysis/20250917C/data007/kilosort2.5"
-
-    # DEFAULT_DAT_FILE = "/Volumes/Vyom MEA/data/raw/20250306C/data026.bin"
-    DEFAULT_DAT_FILE = None
+    # No hardcoded dataset: MainWindow reopens whichever one last loaded
+    # successfully (remembered in QSettings by recent_paths). The path that
+    # used to live here was a macOS /Volumes mount, so on any other machine
+    # the isdir() check silently failed and the app opened empty every time.
+    # --kilosort-dir overrides, for testing a specific dataset.
     app = QApplication(sys.argv)
-    window = MainWindow(DEFAULT_KILOSORT_DIR, DEFAULT_DAT_FILE)
+    window = MainWindow(args.kilosort_dir, args.dat_file)
     window.show()
     sys.exit(app.exec())

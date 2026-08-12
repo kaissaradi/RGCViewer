@@ -113,10 +113,27 @@ class KilosortLoadWorker(QObject):
             # no path configuration is needed. Missing file is not an error —
             # load_chirp_data() handles that internally and just leaves
             # chirp_available False.
+            # The manifest is what turns a source run into a light level, so
+            # it has to be read before anything that labels runs.
+            self.progress.emit("Reading stimulus manifest...")
+            self.dm.load_stimulus_manifest()
+
             self.progress.emit("Checking for chirp analysis data...")
             chirp_success, chirp_msg = self.dm.load_chirp_data()
             if chirp_success:
                 logger.debug(chirp_msg)
+                # Surface the quality index as a sortable table column. Runs
+                # off cluster_df, which is already built by this point.
+                self.dm.attach_chirp_qi_column()
+                # Polarity as a sortable number, next to the other per-unit
+                # metrics. Cheap: one pass over the trial-averaged PSTHs.
+                self.dm.attach_chirp_onoff_column()
+
+            # --- CONTRAST-RESPONSE DATA (optional) ---
+            self.progress.emit("Checking for contrast-response data...")
+            contrast_success, contrast_msg = self.dm.load_contrast_data()
+            if contrast_success:
+                logger.debug(contrast_msg)
 
             # --- GRATING DATA (optional) ---
             # Same colocated-with-kilosort_dir convention as chirp. Unlike
@@ -521,9 +538,13 @@ class StandaloneVisionWorker(QObject):
 class UMAPWorker(QObject):
     """Background worker to compute features and run UMAP."""
 
+    # raw_blocks rides along so the panel can overlay the feature traces the
+    # embedding was actually built from (temporal STA, ACG, chirp PSTH) without
+    # re-deriving them on the GUI thread.
     finished = Signal(
-        object, object, object, object, object
-    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df
+        object, object, object, object, object, object, object
+    )  # embedding, matrix, valid_ids, discarded_ids, metadata_df, raw_blocks,
+       # col_labels
     error = Signal(str)
     progress = Signal(str)
 
@@ -641,11 +662,31 @@ class UMAPWorker(QObject):
                 meta_df["Grating Peak Rate (Hz)"] = raw_blocks["scalars"][
                     "grating_peak_rate_hz"
                 ].values
+            # Per-unit quality indices. These live on cluster_df rather than in
+            # raw_blocks['scalars'] — they are attached at load time from the
+            # chirp file and the .sta — so they are looked up by cluster_id
+            # rather than sliced by row. Colouring the embedding by them answers
+            # the question the scatter cannot: whether a blob is a cell type or
+            # a pile of units whose features are mostly noise.
+            cdf = getattr(self.dm, "cluster_df", None)
+            if cdf is not None and not cdf.empty and "cluster_id" in cdf.columns:
+                for col, label in (("sta_snr", "STA SNR"), ("chirp_qi", "Chirp QI"),
+                                   ("chirp_onoff", "Chirp ON/OFF")):
+                    if col not in cdf.columns:
+                        continue
+                    lookup = dict(zip(cdf["cluster_id"], cdf[col]))
+                    meta_df[label] = [
+                        float(lookup.get(cid, np.nan)) for cid in valid_ids
+                    ]
+
             # Color Opponency
             meta_df["Color Opponency"] = 0.0
 
             self.progress.emit(f"UMAP complete for {len(valid_ids)} cells")
-            self.finished.emit(embedding, matrix, valid_ids, discarded_ids, meta_df)
+            self.finished.emit(
+                embedding, matrix, valid_ids, discarded_ids, meta_df, raw_blocks,
+                col_labels,
+            )
 
         except Exception as e:
             logger.exception("UMAP Worker failed")

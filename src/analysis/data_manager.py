@@ -1,6 +1,8 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 import threading
+import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import numpy as np
 import pandas as pd
@@ -8,13 +10,23 @@ from pathlib import Path
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
+from . import cache_persistence
 from . import vision_integration
-from .constants import ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, LS_CELL_TYPE_LABELS
+from .constants import (
+    ISI_REFRACTORY_PERIOD_MS,
+    EI_CORR_THRESHOLD,
+    LS_CELL_TYPE_LABELS,
+    CHIRP_MIN_REPEATS_FOR_QI,
+    CHIRP_QI_BIN_MS,
+    CHIRP_MIN_SPIKES_PER_TRIAL,
+    STA_SNR_GOOD,
+)
 import pickle
 import os
 import tempfile
 import logging
 import ast
+import zlib
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler
 
@@ -25,6 +37,48 @@ try:
 except ImportError:
     _BIN2PY_AVAILABLE = False
 logger = logging.getLogger(__name__)
+
+# Most points of the firing-rate trace kept in standard_plot_cache.pkl.
+#
+# Module level because the writer and the loader's staleness check must use the
+# SAME number: they were two separate literals, and a stride that overshot the
+# cap made the loader discard its own writer's output on every start, silently
+# rebuilding the entire cache every session. The plot canvas is ~800 px wide,
+# so 300 points after smoothing costs nothing visually.
+FR_CACHE_MAX_BINS = 300
+
+
+def _load_array(path, mmap_mode):
+    """Load a Kilosort .npy as a flat array, memory-mapped where possible.
+
+    Mapping keeps the spike arrays out of anonymous RAM — together they are
+    200-800 MB for a 1-hour recording — because the faulted pages stay
+    file-backed and so remain evictable under memory pressure.
+
+    ``mmap_mode`` is ``"r"`` for an array nothing writes to, and ``"c"``
+    (copy-on-write) for one the application modifies in place. Under ``"c"``
+    a changed page becomes private to this process, so the Kilosort output on
+    disk is never altered.
+
+    Mapping can fail — a network mount that does not support it, or a file
+    saved in a format numpy cannot map. Loading the array is more important
+    than saving the memory, so fall back to a normal read. The fallback is
+    made read-only under mode ``"r"`` as well, so a caller that writes where
+    it should not fails the same way on both paths instead of only on some
+    machines.
+    """
+    try:
+        return np.load(path, mmap_mode=mmap_mode).ravel()
+    except (ValueError, OSError):
+        logger.warning(
+            "Could not memory-map %s; reading it into RAM instead.",
+            path,
+            exc_info=True,
+        )
+        arr = np.load(path).ravel()
+        if mmap_mode == "r":
+            arr.flags.writeable = False
+        return arr
 
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
@@ -213,6 +267,12 @@ class DataManager(QObject):
         # on a timeout. It is called inside load_kilosort_data() instead,
         # which runs on a background QThread.
 
+        # Set by close() so teardown is safe to repeat, and so a caller can
+        # tell a released DataManager from a live one.
+        self._closed = False
+        # Set by load_kilosort_data when the ISI percentages come from disk.
+        self._cached_isi_pct = None
+
         self.ei_cache = {}
         self.heavyweight_cache = {}
         self.feature_cache = {}  # Cache for feature extraction panel (PCA, ACG, etc.)
@@ -293,7 +353,28 @@ class DataManager(QObject):
         # space as cluster_df['cluster_id']) — no ID translation needed.
         self.chirp_data = None  # raw loaded dict (mdic) or None
         self.chirp_id_to_row = None  # dict[int cluster_id -> int row index]
+        self.chirp_n_repeats = None  # repeats behind ONE run's quality_index
+        self.chirp_qi_is_baden = False  # True when chirp_qi was recomputed
+        self.chirp_source_runs = []  # source_files behind the loaded chirp file
+        self.chirp_qi_per_run = {}  # run -> per-cell QI at canonical binning
+        self.chirp_qi_bin_ms = None  # binning the reported QI was computed at
+        self.chirp_qi_best_run = None  # per-cell run index the QI came from
+        self.sta_ids_consistent = True   # .sta matches this sort?
+        self.sta_consistency_message = ""
         self.chirp_available = False
+
+        # --- Contrast-response data ---
+        # ContrastResponseGrating trials, same schema as the raw grating file.
+        # A concatenated sort holds several runs' trials end to end, so
+        # contrast_run_ranges maps each source run to its slice of them.
+        self.contrast_data = None
+        self.contrast_id_to_key = None  # cluster_id -> key in spike_times_by_trial
+        self.contrast_run_ranges = None  # run -> (start, stop) trial indices
+        self.contrast_available = False
+        self.contrast_status = "missing"
+        self.contrast_source_runs = []
+        self._contrast_cache = {}  # (cluster_id, run) -> contrast_response dict
+        self.stimulus_manifest = None  # StimulusManifest, for light-level labels
 
         # --- Grating (DSOS / SF) Data ---
         # Unlike chirp, this is NOT always precomputed offline. A raw file
@@ -539,13 +620,19 @@ class DataManager(QObject):
                     "Missing spike_times.npy or spike_clusters.npy in kilosort dir.",
                 )
 
-            # mmap_mode="r" avoids loading the full arrays into RAM upfront
-            # (~200–800 MB for a 1-hour recording). Per-cluster access via
-            # cluster_spike_indices does a single fancy-index copy of only that
-            # cluster's spikes, so UI scrolling is unaffected; the OS page
-            # cache keeps hot pages warm across accesses.
-            self.spike_times = np.load(st_path).ravel()
-            self.spike_clusters = np.load(sc_path).ravel()
+            # Memory-mapping keeps these arrays out of anonymous RAM
+            # (~200–800 MB for a 1-hour recording). The pages the OS faults in
+            # stay file-backed, so they are evictable under pressure, and
+            # per-cluster access through cluster_spike_indices copies only that
+            # cluster's spikes — UI scrolling is unaffected.
+            #
+            # spike_times stays read-only for the whole session, so mode "r" is
+            # enough. update_after_refinement() writes new cluster IDs into
+            # spike_clusters, so that one maps copy-on-write ("c"): the pages it
+            # changes become private to this process and the Kilosort file on
+            # disk is never modified. Mode "r" would raise on that write.
+            self.spike_times = _load_array(st_path, "r")
+            self.spike_clusters = _load_array(sc_path, "c")
 
             # --- channel positions / map -----------------------------------------
             chan_pos_path = ks / "channel_positions.npy"
@@ -588,9 +675,10 @@ class DataManager(QObject):
             )
 
             # --- spike amplitudes (optional) ------------------------------------
+            # Read-only for the whole session — see the spike-array note above.
             amplitudes_path = ks / "amplitudes.npy"
             self.spike_amplitudes = (
-                np.load(amplitudes_path).ravel() if amplitudes_path.exists() else None
+                _load_array(amplitudes_path, "r") if amplitudes_path.exists() else None
             )
 
             # --- cluster info / fallback ----------------------------------------
@@ -702,7 +790,13 @@ class DataManager(QObject):
             logger.debug("Building cluster index mapping...")
             order = np.argsort(self.spike_clusters, kind="mergesort")
             sorted_cls = self.spike_clusters[order]
-            sorted_t = self.spike_times[order]
+
+            # The ISI percentages are the only consumer of spike times in
+            # cluster order, so when they come from the cache the gather below
+            # is 160 MB of copying for nothing. The argsort itself still has to
+            # happen — cluster_spike_indices needs it.
+            self._cached_isi_pct = self._load_isi_cache()
+            sorted_t = None if self._cached_isi_pct is not None else self.spike_times[order]
 
             self._spk_sorted_cls = sorted_cls
             self._spk_sorted_t = sorted_t
@@ -1091,6 +1185,157 @@ class DataManager(QObject):
         t = threading.Thread(target=_run, daemon=True, name="EICorrelationWorker")
         t.start()
 
+    ISI_CACHE_NAME = "isi_violations_cache.pkl"
+
+    def _spike_content_key(self):
+        """Fingerprint the exact spike data the ISI percentages come from.
+
+        A file mtime will not do here. Refinement writes to ``spike_clusters``
+        **in memory** — the array is mapped copy-on-write precisely so the
+        Kilosort output on disk is never touched — so the file is byte-identical
+        before and after a split. A cache keyed on the file would keep serving
+        the pre-split percentages, and an ISI violation rate is a number people
+        curate on, so being wrong there is worse than being slow.
+
+        Hashing the array contents sees the split. CRC32 over both spike arrays
+        costs about 25 ms against the ~3 s it saves, and the lengths, the
+        sampling rate and the refractory window go into the key as well, since
+        the percentages depend on all of them.
+
+        Returns None if anything is missing, which reads as "do not cache".
+        """
+        sc = getattr(self, "spike_clusters", None)
+        st = getattr(self, "spike_times", None)
+        if sc is None or st is None:
+            return None
+
+        try:
+            return "|".join(
+                str(part)
+                for part in (
+                    1,  # key format version
+                    sc.size,
+                    zlib.crc32(np.ascontiguousarray(sc)),
+                    st.size,
+                    zlib.crc32(np.ascontiguousarray(st)),
+                    float(self.sampling_rate),
+                    float(ISI_REFRACTORY_PERIOD_MS),
+                )
+            )
+        except Exception:
+            logger.warning("Could not fingerprint the spike arrays", exc_info=True)
+            return None
+
+    def _load_isi_cache(self):
+        """Return the cached ISI percentages for this exact spike data, or None."""
+        if not self.kilosort_dir:
+            return None
+
+        path = Path(self.kilosort_dir) / self.ISI_CACHE_NAME
+        if not path.exists():
+            return None
+
+        key = self._spike_content_key()
+        if key is None:
+            return None
+
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+        except Exception:
+            logger.warning("Could not read %s; recomputing", path, exc_info=True)
+            return None
+
+        if not isinstance(payload, dict) or payload.get("key") != key:
+            logger.debug("ISI cache does not match this spike data; recomputing")
+            return None
+
+        pct = payload.get("isi_pct")
+        if not isinstance(pct, dict) or not pct:
+            return None
+
+        logger.debug("Restored ISI violations for %d clusters", len(pct))
+        return {int(k): float(v) for k, v in pct.items()}
+
+    def _save_isi_cache(self, isi_pct_map):
+        """Persist the ISI percentages under the current spike fingerprint."""
+        if not self.kilosort_dir or not isi_pct_map:
+            return
+
+        key = self._spike_content_key()
+        if key is None:
+            return
+
+        path = str(Path(self.kilosort_dir) / self.ISI_CACHE_NAME)
+        try:
+            self._save_pickle_with_fallback(
+                {"key": key, "isi_pct": dict(isi_pct_map)}, path
+            )
+        except Exception:
+            logger.warning("Could not write %s", path, exc_info=True)
+
+    def _load_cached_ei_corr(self, path):
+        """Read ``ei_corr_dict.pkl``, returning ``(matrices, row_ids)``.
+
+        Three outcomes, and the caller branches on all three:
+
+        - ``(None, None)`` — nothing usable on disk; compute from scratch.
+        - ``(dict, ids)`` — fully warm. ``ids`` is the cell id of each matrix
+          row, so the caller needs no EI array at all.
+        - ``(dict, None)`` — a pickle written before row ids were stored. The
+          matrices are fine but their row order has to be re-derived from the
+          EIs, which is the slow path this whole method exists to avoid.
+
+        Storing the ids is what makes the warm path free, and it also closes a
+        silent-corruption hole: the row order used to be recovered by walking
+        the *current* EI dict, so a regenerated .ei file with a different cell
+        set was read against yesterday's matrix and produced plausible,
+        wrong duplicate flags rather than an error.
+        """
+        if not os.path.exists(path):
+            return None, None
+
+        try:
+            with open(path, "rb") as f:
+                cached = pickle.load(f)
+        except Exception:
+            logger.warning(
+                "Failed to load EI correlation pickle %s; recomputing",
+                path,
+                exc_info=True,
+            )
+            return None, None
+
+        if not isinstance(cached, dict):
+            logger.warning("%s did not contain a dict; recomputing", path)
+            return None, None
+
+        matrices = [cached.get(k) for k in ("full", "space", "power")]
+        if any(not isinstance(m, np.ndarray) or m.ndim != 2 for m in matrices):
+            logger.warning("%s is missing a correlation matrix; recomputing", path)
+            return None, None
+
+        n_rows = matrices[0].shape[0]
+        if any(m.shape[0] != n_rows for m in matrices):
+            logger.warning("%s has mismatched matrix shapes; recomputing", path)
+            return None, None
+
+        ids = cached.get("ids")
+        if ids is None:
+            return cached, None  # legacy file; caller re-derives the order
+
+        if len(ids) != n_rows:
+            logger.warning(
+                "%s row ids (%d) do not match the matrices (%d rows); recomputing",
+                path,
+                len(ids),
+                n_rows,
+            )
+            return None, None
+
+        logger.debug("Loaded EI correlations for %d cells from %s", n_rows, path)
+        return cached, [int(c) for c in ids]
+
     def _compute_ei_correlations_if_needed(self):
         """
         Lazily compute EI correlation matrices and duplicate flags.
@@ -1121,77 +1366,83 @@ class DataManager(QObject):
 
         str_corr_pkl = os.path.join(self.kilosort_dir, "ei_corr_dict.pkl")
 
-        # Sanitize loaded EIs before any numeric operations
-        sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
+        # Read the cached matrices FIRST. Sanitizing ahead of this check used to
+        # walk every EI on a warm run, only to throw the result away when the
+        # pickle turned out to be there — several hundred MB of arrays touched
+        # for nothing on every single load.
+        cached, ordered_ids = self._load_cached_ei_corr(str_corr_pkl)
 
-        if len(sanitized_eis) < 2:
-            logger.warning(
-                "Not enough Vision EIs to compute correlations; skipping duplicate detection"
-            )
-            # Thread-safe fallback: emit empty dicts so the main thread applies defaults
-            if hasattr(self, "ei_updates_ready"):
-                self.ei_updates_ready.emit({}, {})
-            return
-
-        # Try to load existing correlations from disk
-        if os.path.exists(str_corr_pkl):
-            try:
-                logger.debug(
-                    "Loading precomputed EI correlations from %s", str_corr_pkl
-                )
-                with open(str_corr_pkl, "rb") as f:
-                    self.ei_corr_dict = pickle.load(f)
-                logger.debug("Loaded EI correlations successfully")
-                full_corr = self.ei_corr_dict.get("full")
-                space_corr = self.ei_corr_dict.get("space")
-                power_corr = self.ei_corr_dict.get("power")
-            except Exception as e:
-                logger.warning(
-                    "Failed to load EI correlation pickle: %s; recomputing", e
-                )
-                full_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
-                )
-                space_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
-                )
-                power_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
-                )
-                self.ei_corr_dict = {
-                    "full": full_corr,
-                    "space": space_corr,
-                    "power": power_corr,
-                }
-                saved_path = self._save_pickle_with_fallback(
-                    self.ei_corr_dict, str_corr_pkl
-                )
-                logger.debug("EI correlations recomputed and saved to %s", saved_path)
+        if cached is not None and ordered_ids is not None:
+            # Fully warm: the pickle carries its own row order, so no EI array
+            # is needed at all.
+            self.ei_corr_dict = cached
         else:
-            # Compute from scratch
-            logger.debug("Computing EI correlations")
-            full_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
-            )
-            space_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
-            )
-            power_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
-            )
-            self.ei_corr_dict = {
-                "full": full_corr,
-                "space": space_corr,
-                "power": power_corr,
-            }
+            # Sanitize only on a path that actually reads the EIs.
+            sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
+
+            if len(sanitized_eis) < 2:
+                logger.warning(
+                    "Not enough Vision EIs to compute correlations; skipping duplicate detection"
+                )
+                # Thread-safe fallback: emit empty dicts so the main thread applies defaults
+                if hasattr(self, "ei_updates_ready"):
+                    self.ei_updates_ready.emit({}, {})
+                return
+
+            ordered_ids = list(sanitized_eis.keys())
+
+            if cached is not None and len(ordered_ids) != cached["full"].shape[0]:
+                # A legacy pickle whose matrices no longer describe this EI set —
+                # the .ei file was regenerated with a different cell population
+                # after it was written. Adopting it would index row i with the
+                # wrong cell and mark the wrong units as duplicates.
+                logger.warning(
+                    "Legacy EI correlation cache covers %d cells but this dataset "
+                    "has %d; recomputing.",
+                    cached["full"].shape[0],
+                    len(ordered_ids),
+                )
+                cached = None
+
+            if cached is not None:
+                # A pre-"ids" pickle. The matrices are still good, and the row
+                # order is the one ei_corr would produce from this same dict, so
+                # adopt it and stamp the ids in on the way past — the next load
+                # then takes the warm path above.
+                logger.debug("Upgrading legacy EI correlation cache with row ids")
+                self.ei_corr_dict = cached
+            else:
+                logger.debug("Computing EI correlations")
+                self.ei_corr_dict = {
+                    "full": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="full",
+                        n_removed_channels=1,
+                    ),
+                    "space": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="space",
+                        n_removed_channels=1,
+                    ),
+                    "power": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="power",
+                        n_removed_channels=1,
+                    ),
+                }
+
+            self.ei_corr_dict["ids"] = [int(c) for c in ordered_ids]
             saved_path = self._save_pickle_with_fallback(
                 self.ei_corr_dict, str_corr_pkl
             )
-            logger.debug("EI correlations computed and saved to %s", saved_path)
+            logger.debug("EI correlations saved to %s", saved_path)
 
         # With correlation matrices available, update cluster_df duplicate-related columns
         if not self.cluster_df.empty:
-            cluster_ids = list(sanitized_eis.keys())
+            cluster_ids = list(ordered_ids)
             # Convert to 0-based ONLY if Kilosort is the boss
             if not getattr(self, "is_vision_only", False):
                 cluster_ids = np.array(cluster_ids) - 1
@@ -1425,41 +1676,65 @@ class DataManager(QObject):
 
         refractory_samples = (ISI_REFRACTORY_PERIOD_MS / 1000.0) * self.sampling_rate
 
-        # Reuse the sort order already computed in load_kilosort_data.
-        # This avoids two more full scans + fancy-index reads of spike arrays.
-        if hasattr(self, "_spk_sorted_cls") and self._spk_sorted_cls is not None:
-            sorted_cls = self._spk_sorted_cls
-            sorted_t = self._spk_sorted_t
+        cached_isi = getattr(self, "_cached_isi_pct", None)
+        if cached_isi is not None:
+            # These are the same spikes as last time, proven by content hash
+            # rather than by file mtime — see _spike_content_key.
+            isi_pct_map = cached_isi
+            logger.debug(
+                "Reused cached ISI violations for %d clusters", len(isi_pct_map)
+            )
         else:
-            _order = np.argsort(self.spike_clusters, kind="stable")
-            sorted_cls = self.spike_clusters[_order]
-            sorted_t = self.spike_times[_order]
+            # Reuse the sort order already computed in load_kilosort_data.
+            # This avoids two more full scans + fancy-index reads of spike arrays.
+            if (
+                getattr(self, "_spk_sorted_cls", None) is not None
+                and getattr(self, "_spk_sorted_t", None) is not None
+            ):
+                sorted_cls = self._spk_sorted_cls
+                sorted_t = self._spk_sorted_t
+            else:
+                _order = np.argsort(self.spike_clusters, kind="stable")
+                sorted_cls = self.spike_clusters[_order]
+                sorted_t = self.spike_times[_order]
 
-        isis = np.diff(sorted_t.astype(np.int64))
-        same_cls = sorted_cls[:-1] == sorted_cls[1:]  # mask out cluster boundaries
-        violations = (isis < refractory_samples) & same_cls
-        spike_count = same_cls  # denominator: pairs within same cluster
+            # copy=False: spike_times is normally already int64, and astype
+            # copies 160 MB by default even when the dtype already matches.
+            isis = np.diff(sorted_t.astype(np.int64, copy=False))
+            same_cls = sorted_cls[:-1] == sorted_cls[1:]  # mask cluster boundaries
+            violations = (isis < refractory_samples) & same_cls
+            spike_count = same_cls  # denominator: pairs within same cluster
 
-        # Count violations and total pairs per cluster
-        unique_ids, first_idx = np.unique(sorted_cls, return_index=True)
-        # split_indices mark where each cluster starts in the sorted arrays
-        viol_counts = np.array(
-            [
-                violations[i:j].sum()
-                for i, j in zip(first_idx, np.append(first_idx[1:], len(violations)))
-            ]
-        )
-        pair_counts = np.array(
-            [
-                spike_count[i:j].sum()
-                for i, j in zip(first_idx, np.append(first_idx[1:], len(spike_count)))
-            ]
-        )
+            # Count violations and total pairs per cluster
+            unique_ids, first_idx = np.unique(sorted_cls, return_index=True)
+            # split_indices mark where each cluster starts in the sorted arrays
+            viol_counts = np.array(
+                [
+                    violations[i:j].sum()
+                    for i, j in zip(
+                        first_idx, np.append(first_idx[1:], len(violations))
+                    )
+                ]
+            )
+            pair_counts = np.array(
+                [
+                    spike_count[i:j].sum()
+                    for i, j in zip(
+                        first_idx, np.append(first_idx[1:], len(spike_count))
+                    )
+                ]
+            )
 
-        isi_pct_map = {}
-        for cid, viol, pairs in zip(unique_ids, viol_counts, pair_counts):
-            val = float(viol / pairs * 100) if pairs > 0 else 0.0
-            isi_pct_map[int(cid)] = val
+            isi_pct_map = {}
+            for cid, viol, pairs in zip(unique_ids, viol_counts, pair_counts):
+                val = float(viol / pairs * 100) if pairs > 0 else 0.0
+                isi_pct_map[int(cid)] = val
+
+            self._save_isi_cache(isi_pct_map)
+
+            del sorted_cls, sorted_t, isis, same_cls, violations, spike_count
+
+        for cid, val in isi_pct_map.items():
             self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = val
 
         self.cluster_df["isi_violations_pct"] = (
@@ -1468,6 +1743,16 @@ class DataManager(QObject):
             .fillna(0.0)
             .infer_objects(copy=False)
         )
+
+        # --- Release the sort scratch (this pass is its only consumer) ---
+        # load_kilosort_data() built _spk_sorted_cls/_spk_sorted_t for this ISI
+        # pass alone, and the pass itself made four more full-length temporaries.
+        # Together they are several times the size of the spike files, and
+        # nothing reads them after this point, so keeping them resident for the
+        # rest of the session is pure cost. The branch above recomputes the
+        # sorted copies if a later caller ever needs them again.
+        self._spk_sorted_cls = None
+        self._spk_sorted_t = None
 
         # --- Load status & compute remaining metrics ---
         self.load_status()
@@ -1594,10 +1879,34 @@ class DataManager(QObject):
         with self._standard_plot_lock:
             return self.standard_plot_cache.get(cluster_id)
 
-    def save_standard_plot_cache(self):
-        """Persist the full standard-plot and feature caches to disk in a background thread."""
+    def save_standard_plot_cache(self, blocking=False):
+        """Persist the standard-plot and feature caches to disk.
+
+        Runs on a background thread unless *blocking* — the exit path needs it
+        synchronous, since a daemon thread is killed when the process ends and
+        the write would be lost or truncated.
+        """
         if not self.kilosort_dir:
             return
+
+        with self._save_lock:
+            busy = self._save_in_progress
+        if busy:
+            if not blocking:
+                return
+            # On the exit path, skipping because a background save is already
+            # running would throw away the newest work — the very thing this
+            # call exists to preserve. Wait for the in-flight write to finish
+            # (two concurrent writers to one path would corrupt it), then take
+            # our own snapshot.
+            for _ in range(100):
+                time.sleep(0.05)
+                with self._save_lock:
+                    if not self._save_in_progress:
+                        break
+            else:
+                logger.warning("Cache save still busy after 5 s; skipping exit save")
+                return
 
         with self._save_lock:
             if self._save_in_progress:
@@ -1606,21 +1915,48 @@ class DataManager(QObject):
 
         save_path = str(self.kilosort_dir / "standard_plot_cache.pkl")
         feature_save_path = str(self.kilosort_dir / "feature_cache.pkl")
+        grating_save_path = str(self.kilosort_dir / "grating_computed_cache.pkl")
 
         with self._standard_plot_lock:
             snapshot = dict(self.standard_plot_cache)
 
+        # Only fully-computed rows may reach disk. Partial ACG-only rows would
+        # be deleted by the load-time pruner in build_cluster_dataframe, which
+        # is what used to make the persisted cache worthless every session.
         with self._feature_lock:
-            feature_snapshot = dict(getattr(self, "feature_cache", {}))
+            feature_snapshot = cache_persistence.filter_computed_entries(
+                getattr(self, "feature_cache", {})
+            )
+
+        with self._grating_cache_lock:
+            grating_snapshot = {
+                k: v
+                for k, v in getattr(self, "grating_computed_cache", {}).items()
+                if v is not None
+            }
 
         def _save():
             try:
                 self._save_pickle_with_fallback(snapshot, save_path)
-                self._save_pickle_with_fallback(feature_snapshot, feature_save_path)
+
+                # Never overwrite a good cache with an empty one. A KS-only or
+                # aborted session has nothing computed to persist; writing that
+                # would destroy the warm cache a previous session built.
+                if feature_snapshot or not os.path.exists(feature_save_path):
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(feature_snapshot),
+                        feature_save_path,
+                    )
+                if grating_snapshot or not os.path.exists(grating_save_path):
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(grating_snapshot),
+                        grating_save_path,
+                    )
                 logger.debug(
-                    "Saved caches (%d std, %d feat) to disk",
+                    "Saved caches (%d std, %d feat, %d grating) to disk",
                     len(snapshot),
                     len(feature_snapshot),
+                    len(grating_snapshot),
                 )
             except Exception:
                 logger.exception("Failed to persist standard_plot_cache")
@@ -1628,6 +1964,9 @@ class DataManager(QObject):
                 with self._save_lock:
                     self._save_in_progress = False
 
+        if blocking:
+            _save()
+            return
         t = threading.Thread(target=_save, daemon=True)
         t.start()
 
@@ -1692,7 +2031,7 @@ class DataManager(QObject):
                 if (
                     fr_centers is not None
                     and hasattr(fr_centers, "__len__")
-                    and len(fr_centers) > 300
+                    and len(fr_centers) > FR_CACHE_MAX_BINS
                 ):
                     logger.warning(
                         "standard_plot_cache.pkl has fat FR arrays (%d bins) — "
@@ -1726,7 +2065,13 @@ class DataManager(QObject):
             if feat_pkl.exists() and not self.feature_cache:
                 try:
                     with open(feat_pkl, "rb") as f:
-                        self.feature_cache = pickle.load(f)
+                        payload = pickle.load(f)
+                    # Legacy (unversioned) and stale-version files are dropped:
+                    # they predate the _computed filter and are full of the
+                    # partial rows the pruner would delete anyway.
+                    self.feature_cache = cache_persistence.load_versioned_entries(
+                        payload
+                    )
                     self._physics_done_count = sum(
                         1 for v in self.feature_cache.values() if v.get("_computed")
                     )
@@ -1743,6 +2088,93 @@ class DataManager(QObject):
                 self._physics_done_count = sum(
                     1 for v in self.feature_cache.values() if v.get("_computed")
                 )
+
+    def _load_grating_cache_from_disk(self):
+        """Restore the on-demand grating DS/OS results, or ``{}`` if unusable.
+
+        Each entry costs an FFT plus a 1000-shuffle permutation test per
+        condition, so re-running the sweep over ~900 cells is the heavy second
+        pass users see at every launch. Keys are Kilosort cluster ids; stale
+        ones are pruned against cluster_df by build_cluster_dataframe's caller
+        path in the same way the other caches are.
+        """
+        if not self.kilosort_dir:
+            return {}
+
+        pkl = self.kilosort_dir / "grating_computed_cache.pkl"
+        if not pkl.exists():
+            return {}
+
+        try:
+            with open(pkl, "rb") as f:
+                payload = pickle.load(f)
+            cache = cache_persistence.load_versioned_entries(payload)
+        except Exception:
+            logger.warning("Could not load grating_computed_cache.pkl", exc_info=True)
+            return {}
+
+        valid_ids = None
+        cluster_df = getattr(self, "cluster_df", None)
+        if cluster_df is not None and "cluster_id" in getattr(cluster_df, "columns", []):
+            valid_ids = set(cluster_df["cluster_id"].astype(int).tolist())
+
+        restored = {}
+        for k, v in cache.items():
+            if v is None:
+                continue
+            try:
+                key = int(k)
+            except (TypeError, ValueError):
+                continue
+            if valid_ids is not None and key not in valid_ids:
+                continue
+            restored[key] = v
+
+        if restored:
+            logger.debug("Restored grating_computed_cache (%d cells)", len(restored))
+        return restored
+
+    def rebuild_caches(self):
+        """Drop every persisted physics cache, in RAM and on disk.
+
+        The user-facing "Rebuild Physics Cache" safety valve: after this the
+        warm-up sees a cold dataset and recomputes from source, and the save at
+        the end of that pass overwrites the pkls. Clearing disk as well as RAM
+        is what makes it a *rebuild* rather than a session-local reset — a
+        stale or corrupt file cannot survive it.
+
+        Cheap and non-blocking (dict clears plus three unlinks), so it is safe
+        to call from the GUI thread; the recompute itself happens on the normal
+        background warm-up path.
+        """
+        with self._standard_plot_lock:
+            self.standard_plot_cache.clear()
+
+        with self._feature_lock:
+            self.feature_cache.clear()
+            self._physics_done_count = 0
+
+        with self._grating_cache_lock:
+            self.grating_computed_cache.clear()
+
+        removed = []
+        if self.kilosort_dir:
+            for name in (
+                "standard_plot_cache.pkl",
+                "feature_cache.pkl",
+                "grating_computed_cache.pkl",
+                self.ISI_CACHE_NAME,
+            ):
+                path = self.kilosort_dir / name
+                try:
+                    if path.exists():
+                        path.unlink()
+                        removed.append(name)
+                except OSError:
+                    logger.warning("Could not delete %s", path, exc_info=True)
+
+        logger.info("Physics caches cleared (deleted: %s)", removed or "none")
+        return removed
 
     def get_cell_physics(self, cluster_id):
         """
@@ -2671,9 +3103,14 @@ class DataManager(QObject):
             # across a 500-cluster dataset for zero visual benefit.
             # Downsampling with a uniform stride after smoothing keeps the curve
             # shape exact and reduces per-cluster FR cache size ~12×.
-            FR_CACHE_MAX_BINS = 300
             if len(bin_centers) > FR_CACHE_MAX_BINS:
-                step = max(1, len(bin_centers) // FR_CACHE_MAX_BINS)
+                # Ceiling division. Flooring it undershoots the stride and so
+                # OVERSHOOTS the output length — a 4775 s recording gave
+                # 4775//300 = 15, storing 319 points against a 300 cap. The
+                # loader then rejected its own writer's output on every start,
+                # so the cache was rebuilt from scratch every session and never
+                # once survived. ceil guarantees len(x[::step]) <= the cap.
+                step = max(1, -(-len(bin_centers) // FR_CACHE_MAX_BINS))
                 cache_centers = bin_centers[::step]
                 cache_rate = rate[::step]
             else:
@@ -3091,6 +3528,114 @@ class DataManager(QObject):
                 logger.warning("Error closing PyBinFileReader", exc_info=True)
             finally:
                 self.raw_reader = None
+
+    def close(self):
+        """Release the memory and the file handles of this dataset.
+
+        Call this when the application moves to another run. Assigning a new
+        DataManager over ``main_window.data_manager`` does not free the old
+        one: the panels, the tree and the background workers all keep their
+        own references to it, so both datasets stay resident. The Vision EI
+        table alone is more than 500 MB, which is what makes a long curation
+        session run out of memory.
+
+        Stop the background workers before you call this. A worker that is
+        still running holds this object from another thread.
+
+        Each attribute is set to its empty value instead of being deleted, so
+        a late access finds ``None`` and takes the usual "no data" path. Every
+        step is guarded: teardown must not raise, or the new dataset is left
+        half-loaded. The method is safe to call more than once.
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+
+        try:
+            self.ei_updates_ready.disconnect()
+        except (TypeError, RuntimeError):
+            pass  # nothing connected, or the C++ object is already gone
+
+        try:
+            self._close_raw_reader()
+        except Exception:
+            logger.warning("Error closing the raw reader", exc_info=True)
+
+        # The lazy Vision readers hold open file handles for the life of the
+        # dataset. Dropping the reference below is not enough — CPython would
+        # collect them eventually, but "eventually" leaks a descriptor per run
+        # switch, and on Windows it also keeps the file locked.
+        for name in ("vision_eis", "vision_stas"):
+            reader = getattr(self, name, None)
+            close = getattr(reader, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning("Error closing %s", name, exc_info=True)
+
+        # Rebind rather than clear in place. Rebinding is atomic under the GIL,
+        # so a background save that is part way through iterating one of these
+        # caches keeps its own reference and finishes on the old object.
+        for name in (
+            # spike arrays and their derived index
+            "spike_times",
+            "spike_clusters",
+            "spike_amplitudes",
+            "_spk_sorted_cls",
+            "_spk_sorted_t",
+            "_spk_unique_cls",
+            "_spk_unique_counts",
+            "_cached_isi_pct",
+            "cluster_spike_indices",
+            # Kilosort templates, geometry and similarity
+            "templates",
+            "templates_ind",
+            "similar_templates",
+            "channel_positions",
+            "channel_map",
+            "sorted_channels",
+            "raw_data_memmap",
+            # Vision data — vision_eis is the largest single object
+            "vision_eis",
+            "vision_stas",
+            "vision_params",
+            "vision_channel_positions",
+            "ei_corr_dict",
+            "reference_bridge",
+            # precomputed stimulus analyses
+            "chirp_data",
+            "grating_data",
+            "grating_raw_data",
+            "contrast_data",
+        ):
+            try:
+                setattr(self, name, None)
+            except Exception:
+                pass
+
+        for name in (
+            "ei_cache",
+            "heavyweight_cache",
+            "feature_cache",
+            "standard_plot_cache",
+            "isi_cache",
+            "mea_sim_cache",
+            "vision_sim_cache",
+            "grating_computed_cache",
+            "_contrast_cache",
+            "_physics_cell_locks",
+            "match_caveats",
+        ):
+            try:
+                setattr(self, name, {})
+            except Exception:
+                pass
+
+        # Drop the back-reference to the window last: it is what keeps this
+        # object reachable from the Qt side once the panels let go.
+        self.main_window = None
 
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True
@@ -3566,6 +4111,27 @@ class DataManager(QObject):
         self.vision_sim_cache[cache_key] = result_df
         return result_df.copy()
 
+    def find_analysis_files(self, pattern):
+        """Offline analysis .npy files matching *pattern*, newest layout first.
+
+        These sit next to the sorted output, but *where* next to it varies: the
+        per-run and older concatenated folders keep them at the top level, while
+        the newer concatenated sorts write them into ``ksfiles/`` alongside the
+        Kilosort arrays. Globbing only the top level silently finds nothing on
+        the latter, which reads as "this run has no chirp data" rather than as a
+        path problem.
+        """
+        if self.kilosort_dir is None:
+            return []
+        found = []
+        for base in (self.kilosort_dir, self.kilosort_dir / "ksfiles"):
+            try:
+                if base.is_dir():
+                    found.extend(sorted(base.glob(pattern)))
+            except OSError:
+                continue
+        return found
+
     def load_chirp_data(self, chirp_path=None):
         """
         Load a chirp_analysis.py output .npy from kilosort_dir.
@@ -3583,11 +4149,12 @@ class DataManager(QObject):
         """
         try:
             if chirp_path is None:
-                candidates = sorted(self.kilosort_dir.glob("*Chirp*.npy"))
+                candidates = self.find_analysis_files("*Chirp*.npy")
                 if not candidates:
                     self.chirp_available = False
                     self.chirp_data = None
                     self.chirp_id_to_row = None
+                    self.chirp_n_repeats = None
                     logger.info("No chirp analysis file found in %s", self.kilosort_dir)
                     return False, "No chirp analysis file found."
                 chirp_path = candidates[0]
@@ -3600,12 +4167,39 @@ class DataManager(QObject):
                 self.chirp_available = False
                 self.chirp_data = None
                 self.chirp_id_to_row = None
+                self.chirp_n_repeats = None
                 logger.warning(
                     "Chirp file %s missing required keys: %s", chirp_path.name, missing
                 )
                 return False, f"Chirp file missing required keys: {missing}"
 
             self.chirp_data = mdic
+            # Repeat count backs the trustworthiness of quality_index. It is
+            # not stored as a scalar in the file, but spikes_binned is
+            # (n_cells, n_trials, n_bins), so read it off there. Absent that
+            # array the count is unknown, which is treated as untrustworthy
+            # rather than assumed fine.
+            binned = mdic.get("spikes_binned")
+            n_trials_total = (
+                int(binned.shape[1])
+                if binned is not None and np.asarray(binned).ndim == 3
+                else None
+            )
+            # A concatenated sort's chirp file holds every run's trials stacked
+            # together — 20260715A ships 30, being 3 runs x 10, spanning two
+            # light levels. The repeat count that backs a MEANINGFUL quality
+            # index is one run's, not the total: pooling levels drives the
+            # measured reliability down by ~3x (median rho +0.016 per run vs
+            # +0.004 pooled) because the between-level difference lands in the
+            # within-trial variance term. Taking the total here would also let
+            # a 3x5-trial file pass an 8-repeat check it should fail.
+            self.chirp_source_runs = [str(r) for r in (mdic.get("source_files") or [])]
+            n_runs = len(self.chirp_source_runs)
+            if n_trials_total and n_runs > 1 and n_trials_total % n_runs == 0:
+                self.chirp_n_repeats = n_trials_total // n_runs
+            else:
+                self.chirp_n_repeats = n_trials_total
+            self.chirp_n_trials_total = n_trials_total
             self.chirp_id_to_row = {}
             for i, cid in enumerate(mdic["cluster_id"]):
                 # Translate incoming Vision IDs (1-indexed) to Kilosort IDs (0-indexed)
@@ -3623,7 +4217,529 @@ class DataManager(QObject):
             self.chirp_available = False
             self.chirp_data = None
             self.chirp_id_to_row = None
+            self.chirp_n_repeats = None
             return False, str(e)
+
+    def attach_chirp_onoff_column(self) -> bool:
+        """Write the chirp ON/OFF index into ``cluster_df`` as ``chirp_onoff``.
+
+        +1 is purely increment-driven, -1 purely decrement-driven. Pools the
+        stimulus's two increments (light on at 0 s, dark step *off* at 7 s)
+        against its two decrements (light off at 3 s, dark on at 4 s) — a cell
+        driven by the 7 s dark-step offset is ON, and an index taken from the
+        bright step alone would call it unresponsive.
+
+        NaN where there is no chirp row, or where the cell does not respond to
+        any transition, which the table renders blank rather than as a
+        misleading 0 (0 means balanced ON-OFF, not silent).
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        from . import chirp_calc
+        try:
+            timing = self.chirp_timing()
+        except Exception:
+            logger.debug("chirp timing unavailable", exc_info=True)
+            return False
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            entry = self.get_chirp_data_for_cluster(int(cid))
+            if entry is None:
+                continue
+            try:
+                values[i] = chirp_calc.on_off_index(
+                    np.asarray(entry["psth_mean"], dtype=float), timing,
+                    float(entry["bin_size_ms"]))[0]
+            except Exception:
+                logger.debug("ON/OFF index failed for cell %s", cid, exc_info=True)
+
+        self.cluster_df["chirp_onoff"] = values
+        logger.debug("Attached chirp_onoff to cluster_df: %d/%d cells",
+                     int(np.isfinite(values).sum()), len(values))
+        return True
+
+    def load_contrast_data(self, contrast_path=None):
+        """Load a ``*contrastResponse*.npy`` from the sort directory.
+
+        Same schema as the raw grating file — ``spike_times_by_trial`` keyed by
+        Vision ID with per-trial spike times in ms, plus ``trial_parameters`` —
+        so IDs are translated the same way ``load_grating_data`` does it.
+
+        A concatenated sort's file holds every contrast run's trials end to end
+        with no per-trial provenance; ``contrast_run_ranges`` carries the
+        inferred split (see contrast_calc.split_trials_by_run) and is None when
+        it cannot be inferred, in which case callers must treat the file as a
+        single unlabelled run rather than inventing light levels.
+
+        Never raises. Returns ``(success, message)``.
+        """
+        try:
+            if contrast_path is None:
+                candidates = self.find_analysis_files("*ontrast*.npy")
+                if not candidates:
+                    self.contrast_available = False
+                    self.contrast_status = "missing"
+                    logger.info("No contrast file found in %s", self.kilosort_dir)
+                    return False, "No contrast-response file found."
+                # Prefer the file naming the most source runs — in a
+                # concatenated folder both the chunk-wide file and a leftover
+                # single-run one can be present.
+                contrast_path = max(candidates, key=lambda p: p.stat().st_size)
+
+            mdic = np.load(contrast_path, allow_pickle=True).item()
+            required = ("spike_times_by_trial", "trial_parameters")
+            missing = [k for k in required if k not in mdic]
+            if missing:
+                self.contrast_available = False
+                self.contrast_status = "missing"
+                logger.warning("Contrast file %s missing keys: %s",
+                               contrast_path.name, missing)
+                return False, f"Contrast file missing required keys: {missing}"
+
+            raw = mdic["spike_times_by_trial"]
+            id_map = {}
+            for k in raw:
+                ks_id = int(k) if getattr(self, "is_vision_only", False) else int(k) - 1
+                id_map[ks_id] = k
+
+            from .contrast_calc import split_trials_by_run
+
+            trial_params = list(mdic["trial_parameters"])
+            source_files = [str(r) for r in (mdic.get("source_files") or [])]
+            self.contrast_data = mdic
+            self.contrast_id_to_key = id_map
+            self.contrast_source_runs = source_files
+            self.contrast_run_ranges = split_trials_by_run(len(trial_params), source_files)
+            self.contrast_available = True
+            self.contrast_status = "ok"
+            self._contrast_cache = {}
+
+            if self.stimulus_manifest is None:
+                self.load_stimulus_manifest()
+
+            n_runs = len(self.contrast_run_ranges or {}) or 1
+            logger.debug(
+                "Loaded contrast data from %s (%d cells, %d trials, %d runs)",
+                contrast_path.name, len(id_map), len(trial_params), n_runs)
+            return True, (f"Loaded contrast data from {contrast_path.name} "
+                          f"({len(id_map)} cells, {n_runs} run(s))")
+
+        except Exception as e:
+            logger.warning("Could not load contrast data: %s", e, exc_info=True)
+            self.contrast_available = False
+            self.contrast_status = "missing"
+            self.contrast_data = None
+            self.contrast_run_ranges = None
+            return False, str(e)
+
+    def contrast_light_levels(self):
+        """``[(run, label), ...]`` in acquisition order for the loaded file.
+
+        The label is the epoch-group text from the manifest, which is the only
+        record of light level; it falls back to the run name when no manifest
+        is present.
+        """
+        runs = list((self.contrast_run_ranges or {}).keys())
+        if not runs:
+            return []
+        return [(r, self.light_level_for_run(r) or r) for r in runs]
+
+    def get_contrast_data_for_cluster(self, cluster_id, run=None):
+        """Contrast-response curves for one cell, per light level.
+
+        Returns ``{run: contrast_calc.contrast_response(...)}`` (a single entry
+        keyed by *run* when one is named), or None when the cell is absent from
+        the file. Cheap enough to call per selection — it is an FFT per trial
+        over at most a few hundred trials, with no shuffle test.
+        """
+        if not self.contrast_available or self.contrast_data is None:
+            return None
+        key = (self.contrast_id_to_key or {}).get(int(cluster_id))
+        if key is None:
+            return None
+
+        from .contrast_calc import contrast_response
+
+        trials = self.contrast_data["spike_times_by_trial"][key]
+        params = self.contrast_data["trial_parameters"]
+        ranges = self.contrast_run_ranges or {"all": (0, len(params))}
+        if run is not None:
+            ranges = {run: ranges[run]} if run in ranges else {}
+
+        # Cached per (cell, run): a group view asks for every member at every
+        # light level, which is ~6 ms of FFTs each and would otherwise be
+        # recomputed on every repaint and every folder click.
+        cache = self._contrast_cache
+        out = {}
+        for name, rng in ranges.items():
+            ck = (int(cluster_id), name)
+            entry = cache.get(ck)
+            if entry is None:
+                entry = contrast_response(trials, params, trial_range=rng)
+                if entry is not None:
+                    entry["run"] = name
+                    entry["light_level"] = self.light_level_for_run(name) or name
+                cache[ck] = entry
+            if entry is not None:
+                out[name] = entry
+        return out or None
+
+    def chirp_qi_is_trustworthy(self) -> bool:
+        """Whether the loaded chirp run has enough repeats for its QI to mean
+        anything. Unknown repeat count counts as untrustworthy."""
+        return (
+            self.chirp_n_repeats is not None
+            and self.chirp_n_repeats >= CHIRP_MIN_REPEATS_FOR_QI
+        )
+
+    @staticmethod
+    def _baden_quality_index(spikes_binned) -> np.ndarray:
+        """Baden et al. (2016) response quality: Var_t(<C>_r) / <Var_t(C)>_r.
+
+        ``spikes_binned`` is (n_cells, n_trials, n_bins). 1 means a perfectly
+        reproducible response across repeats, 0 means noise.
+        """
+        x = np.asarray(spikes_binned, dtype=float)
+        across = x.mean(axis=1).var(axis=1)     # variance of the trial-average
+        within = x.var(axis=1).mean(axis=1)     # mean within-bin variance
+        with np.errstate(divide="ignore", invalid="ignore"):
+            qi = np.where(within > 0, across / within, 0.0)
+        return np.nan_to_num(qi, nan=0.0, posinf=0.0)
+
+    @staticmethod
+    def rebin_counts(x, factor):
+        """Sum adjacent bins along the last axis. Drops a ragged tail."""
+        factor = int(factor)
+        if factor <= 1:
+            return np.asarray(x, dtype=float)
+        x = np.asarray(x, dtype=float)
+        n = x.shape[-1] // factor * factor
+        if n == 0:
+            return x
+        return x[..., :n].reshape(*x.shape[:-1], n // factor, factor).sum(axis=-1)
+
+    @staticmethod
+    def qi_to_rho(qi, n_trials):
+        """Mean pairwise trial correlation behind a quality index.
+
+        The QI is algebraically ``(1 + (n-1)*rho) / n`` for n trials, so it can
+        never fall below ``1/n`` — 0.10 at ten repeats, 0.20 at five. That floor
+        is why a 5-repeat run appears to have a "reasonable" median QI while
+        predicting nothing. rho undoes the rescaling: 0 means noise at any
+        repeat count, and the usual 0.45 chirp cut maps to rho 0.39. Ranking is
+        unchanged — this buys interpretability, not discrimination.
+        """
+        qi = np.asarray(qi, dtype=float)
+        if not n_trials or n_trials < 2:
+            return np.full_like(qi, np.nan)
+        return (n_trials * qi - 1.0) / (n_trials - 1.0)
+
+    def _chirp_qi_per_run(self, binned):
+        """Per-cell quality index, computed per source run at a fixed bin width.
+
+        Two corrections to computing it straight off ``spikes_binned``:
+
+        *Per run.* A concatenated file stacks several runs' trials, and on
+        20260715A those span two light levels. Pooling them is not merely
+        noisier, it is measuring the wrong thing — the light-level difference
+        enters the within-trial variance term, dropping median rho from +0.016
+        to +0.004 and hiding 5 cells that one run alone flags as reliable. Each
+        run is scored separately and the best is reported, so a cell that
+        responds reliably at any light level is visible.
+
+        *At a canonical bin width.* The QI is a variance ratio over binned spike
+        counts, so it moves with the binning: on one run of this data the count
+        clearing 0.45 goes 4 -> 54 -> 111 -> 167 -> 206 as bins widen from 5 to
+        100 ms, same cells, same spikes. Files on this drive ship 5 ms and 20 ms
+        binning, so raw QIs from two files are not comparable at all. Rebinning
+        to CHIRP_QI_BIN_MS first makes them so, and reproduces the older 20 ms
+        file's numbers from the newer 5 ms one (111/887 vs 109/707).
+        """
+        x = np.asarray(binned, dtype=float)
+        bin_ms = float(self.chirp_data.get("bin_size_ms") or 0.0)
+        factor = 1
+        if bin_ms > 0 and CHIRP_QI_BIN_MS > bin_ms:
+            factor = max(1, int(round(CHIRP_QI_BIN_MS / bin_ms)))
+        x = self.rebin_counts(x, factor)
+        self.chirp_qi_bin_ms = bin_ms * factor if bin_ms > 0 else None
+
+        runs = list(self.chirp_source_runs)
+        n_trials = x.shape[1]
+        if len(runs) > 1 and n_trials % len(runs) == 0:
+            per = n_trials // len(runs)
+            blocks = {r: x[:, i * per:(i + 1) * per, :] for i, r in enumerate(runs)}
+        else:
+            blocks = {(runs[0] if runs else "all"): x}
+
+        # Spike-count gate. The QI is scale-free, so a near-silent cell whose
+        # few spikes happen to land in the same bin scores as high as a
+        # strongly driven one — and those cells are the main way it misleads
+        # (see CHIRP_MIN_SPIKES_PER_TRIAL). Gate per run, because a cell can be
+        # silent at one light level and active at another; NaN, not 0, so the
+        # table shows it as "not measured" rather than "measured and bad".
+        self.chirp_spikes_per_trial = {
+            r: b.sum(axis=2).mean(axis=1) for r, b in blocks.items()
+        }
+        self.chirp_qi_per_run = {}
+        for r, b in blocks.items():
+            qi = self._baden_quality_index(b)
+            too_few = self.chirp_spikes_per_trial[r] < CHIRP_MIN_SPIKES_PER_TRIAL
+            qi = np.where(too_few, np.nan, qi)
+            self.chirp_qi_per_run[r] = qi
+
+        stacked = np.vstack([self.chirp_qi_per_run[r] for r in blocks])
+        all_nan = np.all(np.isnan(stacked), axis=0)
+        with warnings.catch_warnings():
+            # An all-NaN column is the expected "silent at every light level"
+            # case, not a problem worth a console warning per cell.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            best_idx = np.nanargmax(np.where(all_nan, -np.inf, stacked), axis=0)
+            best = np.nanmax(stacked, axis=0)
+        self.chirp_qi_best_run = [
+            None if all_nan[i] else list(blocks)[best_idx[i]]
+            for i in range(len(best_idx))
+        ]
+        n_gated = int(all_nan.sum())
+        if n_gated:
+            logger.info(
+                "Chirp QI: %d/%d cells gated out for firing under %.0f spikes/trial",
+                n_gated, len(best), CHIRP_MIN_SPIKES_PER_TRIAL)
+        return np.where(all_nan, np.nan, best)
+
+    def chirp_qi_details(self, cluster_id):
+        """Everything behind one cell's ``chirp_qi``, for the table's popup.
+
+        Returns None when the cell has no chirp row. The per-run breakdown is
+        the point: a single number cannot say that a cell was reliable at one
+        light level and silent at another.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return None
+        row = (self.chirp_id_to_row or {}).get(int(cluster_id))
+        if row is None:
+            return None
+        n = self.chirp_n_repeats
+        per_run = []
+        spikes = getattr(self, "chirp_spikes_per_trial", {}) or {}
+        for run, qi in (self.chirp_qi_per_run or {}).items():
+            if row < len(qi):
+                value = float(qi[row])
+                rate = spikes.get(run)
+                rate = float(rate[row]) if rate is not None and row < len(rate) else float("nan")
+                per_run.append({
+                    "run": run,
+                    "qi": value,
+                    "rho": float(self.qi_to_rho(value, n)) if n else float("nan"),
+                    "light_level": self.light_level_for_run(run),
+                    "n_trials": n,
+                    "spikes_per_trial": rate,
+                    "gated": bool(np.isnan(value)),
+                })
+        best = self.chirp_qi_best_run[row] if self.chirp_qi_best_run else None
+        return {
+            "cluster_id": int(cluster_id),
+            "n_trials_per_run": n,
+            "n_trials_total": getattr(self, "chirp_n_trials_total", None),
+            "source_runs": list(self.chirp_source_runs),
+            "qi_bin_ms": self.chirp_qi_bin_ms,
+            "file_bin_ms": float(self.chirp_data.get("bin_size_ms") or 0.0),
+            "trustworthy": self.chirp_qi_is_trustworthy(),
+            "min_repeats": CHIRP_MIN_REPEATS_FOR_QI,
+            "recomputed": self.chirp_qi_is_baden,
+            "best_run": best,
+            "per_run": per_run,
+            "min_spikes_per_trial": CHIRP_MIN_SPIKES_PER_TRIAL,
+        }
+
+    def light_level_for_run(self, run):
+        """The experimenter's epoch-group label for *run* (e.g. "NDF3wheel").
+
+        Free text and the only record of light level anywhere in the data — see
+        stimulus_manifest. Returns None when no manifest is loaded.
+        """
+        manifest = self.stimulus_manifest
+        if manifest is None:
+            return None
+        return manifest.group_label(run)
+
+    def load_stimulus_manifest(self):
+        """Read ``<prep>/kilosort25/stimuli/<prep>.json`` if it is there."""
+        from .stimulus_manifest import StimulusManifest
+        try:
+            self.stimulus_manifest = StimulusManifest.for_kilosort_dir(self.kilosort_dir)
+        except Exception as e:
+            logger.warning("Could not load stimulus manifest: %s", e)
+            self.stimulus_manifest = None
+        return bool(self.stimulus_manifest)
+
+    def attach_chirp_qi_column(self) -> bool:
+        """Write the chirp quality index into ``cluster_df`` as ``chirp_qi``.
+
+        The QI already existed in the loaded file and was used to gate the
+        UMAP chirp block, but it never reached the table, so it could not be
+        sorted on or eyeballed against the other per-unit quality metrics.
+
+        **The value here is recomputed, not the file's ``quality_index``.**
+        That stored field is on an unknown scale — across the chirp files on
+        this drive it ranges roughly 200-2000 with a minimum near 217, and no
+        linear transform maps it onto Baden's index (best fit R^2 ~0.87). It
+        ranks almost identically (Spearman +0.999), so it is fine for
+        ordering, but its absolute values cannot be compared against the
+        literature, where the usual chirp cut is 0.45. Since ``spikes_binned``
+        (n_cells, n_trials, n_bins) is present in every chirp file checked,
+        the index is recomputed from it so the column means what its name
+        says. Files lacking that array fall back to the stored value.
+
+        Cells absent from the chirp file get NaN, which the table renders
+        blank and sorts into its own group. Returns False (leaving cluster_df
+        untouched) when there is no chirp data to attach.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        binned = self.chirp_data.get("spikes_binned")
+        if binned is not None and np.asarray(binned).ndim == 3:
+            qi_all = self._chirp_qi_per_run(binned)
+            self.chirp_qi_is_baden = True
+        else:
+            qi_all = np.asarray(self.chirp_data["quality_index"], dtype=float)
+            self.chirp_qi_is_baden = False
+            logger.warning(
+                "Chirp file has no spikes_binned; falling back to its stored "
+                "quality_index, which is on an unknown scale — rank order is "
+                "usable but absolute thresholds are not."
+            )
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            row = self.chirp_id_to_row.get(int(cid))
+            if row is not None and 0 <= row < len(qi_all):
+                values[i] = qi_all[row]
+
+        self.cluster_df["chirp_qi"] = values
+        logger.debug(
+            "Attached chirp_qi to cluster_df: %d/%d cells, %d repeats (%s), "
+            "source=%s",
+            int(np.isfinite(values).sum()),
+            len(values),
+            self.chirp_n_repeats or -1,
+            "trustworthy" if self.chirp_qi_is_trustworthy() else "TOO FEW REPEATS",
+            "recomputed Baden" if self.chirp_qi_is_baden else "stored (unknown scale)",
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # STA quality
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def sta_peak_to_rms(vol) -> float:
+        """Peak-to-RMS ratio of an STA volume — how far the strongest stixel
+        stands above the volume's own noise.
+
+        A real receptive field is a compact blob in one or two frames and
+        near-zero everywhere else, so its peak towers over the RMS. A noise
+        STA has comparable energy in every stixel of every frame, so the two
+        are close. On 20260715A/data010 the measure is sharply bimodal:
+        noise cells sit near 4.5, cells with a receptive field near 35, with
+        an empty valley between roughly 10 and 25.
+
+        Scale-free, so Vision's peak-normalisation of the stored volumes does
+        not affect it.
+        """
+        v = np.asarray(vol, dtype=np.float64)
+        if v.size == 0:
+            return float("nan")
+        v = v - v.mean()
+        rms = float(np.sqrt((v * v).mean()))
+        if rms <= 0 or not np.isfinite(rms):
+            return float("nan")
+        return float(np.abs(v).max() / rms)
+
+    def check_sta_consistency(self):
+        """Does the .sta describe the cells in this sort?
+
+        Returns ``(ok, message)``. The decisive check is the id sets: an STA
+        for a cell the sort does not contain can only mean the STA file was
+        written against an earlier version of that sort. This is not
+        hypothetical — 20260715A/data007-010 ships an .sta holding 53 cells
+        absent from its own .neurons, and its receptive fields are attached
+        to the wrong units as a result.
+        """
+        if not self.vision_stas or self.cluster_df is None:
+            return True, ""
+        try:
+            sta_ids = {int(i) for i in self.vision_stas.keys()}
+        except Exception:
+            return True, ""
+        if not sta_ids:
+            return True, ""
+
+        vision_ids = {
+            self.get_vision_id_for_cluster(int(c))
+            for c in self.cluster_df["cluster_id"].to_numpy()
+        }
+        orphan = sta_ids - vision_ids
+        if orphan:
+            return False, (
+                f"{len(orphan)} of {len(sta_ids)} cells in the .sta do not exist "
+                f"in this sort. The STA file predates the spike sort, so "
+                f"receptive fields are attached to the wrong units. Read STAs "
+                f"from the noise run's own folder instead."
+            )
+        return True, ""
+
+    def attach_sta_quality_column(self) -> bool:
+        """Write ``sta_snr`` into ``cluster_df`` and check the .sta's provenance.
+
+        Separates cells with a real receptive field from cells whose STA is
+        noise — the two are indistinguishable from the KSLabel, which only
+        reports spike-sorting quality and knows nothing about visual response.
+        """
+        if not self.vision_stas:
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+
+        ok, msg = self.check_sta_consistency()
+        self.sta_ids_consistent = ok
+        self.sta_consistency_message = msg
+        if not ok:
+            logger.warning("STA provenance: %s", msg)
+
+        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            vid = self.get_vision_id_for_cluster(int(cid))
+            try:
+                sta = self.vision_stas[vid]
+            except (KeyError, TypeError):
+                continue
+            if sta is None:
+                continue
+            # Green carries the luminance signal for the achromatic noise used
+            # here; fall back if a file stores only one channel.
+            vol = getattr(sta, "green", None)
+            if vol is None:
+                vol = getattr(sta, "red", None)
+            if vol is None:
+                continue
+            values[i] = self.sta_peak_to_rms(vol)
+
+        self.cluster_df["sta_snr"] = values
+        n = int(np.isfinite(values).sum())
+        logger.debug(
+            "Attached sta_snr to cluster_df: %d/%d cells, %d above %.0f, "
+            "provenance %s",
+            n, len(values), int(np.nansum(values >= STA_SNR_GOOD)),
+            STA_SNR_GOOD, "OK" if ok else "SUSPECT",
+        )
+        return True
 
     def get_chirp_data_for_cluster(self, cluster_id):
         """
@@ -3669,6 +4785,62 @@ class DataManager(QObject):
             "freq_min_hz": float(d["freq_min_hz"]),
             "freq_max_hz": float(d["freq_max_hz"]),
         }
+
+    def get_chirp_trials_for_cluster(self, cluster_id):
+        """Per-trial binned spikes for one cell, labelled by source run.
+
+        Returns ``{'counts': (n_trials, n_bins), 'bin_size_ms': float,
+        'runs': [...], 'blocks': [(run, light_level, start, stop), ...]}`` or
+        None. ``blocks`` is what lets a raster separate the light levels: a
+        concatenated file stacks each run's trials in ``source_files`` order,
+        and nothing in the trials themselves says where one run ends.
+        """
+        if not self.chirp_available or self.chirp_data is None:
+            return None
+        row = (self.chirp_id_to_row or {}).get(int(cluster_id))
+        if row is None:
+            return None
+        binned = self.chirp_data.get("spikes_binned")
+        if binned is None or np.asarray(binned).ndim != 3:
+            return None
+
+        counts = np.asarray(binned[row], dtype=float)  # (n_trials, n_bins)
+        n_trials = counts.shape[0]
+        runs = list(self.chirp_source_runs)
+        blocks = []
+        if len(runs) > 1 and n_trials % len(runs) == 0:
+            per = n_trials // len(runs)
+            for i, run in enumerate(runs):
+                blocks.append((run, self.light_level_for_run(run) or run,
+                               i * per, (i + 1) * per))
+        else:
+            run = runs[0] if runs else None
+            blocks.append((run, (self.light_level_for_run(run) if run else None)
+                           or "all trials", 0, n_trials))
+        return {
+            "counts": counts,
+            "bin_size_ms": float(self.chirp_data.get("bin_size_ms") or 0.0),
+            "runs": runs,
+            "blocks": blocks,
+        }
+
+    def chirp_timing(self):
+        """``chirp_calc.ChirpTiming`` for the loaded chirp run.
+
+        Built from the Symphony manifest where available — it is the only
+        source for the contrast ramp's depth and carrier — falling back to the
+        durations the analysis file records.
+        """
+        from .chirp_calc import timing_from
+        params = None
+        manifest = self.stimulus_manifest
+        if manifest is not None:
+            for run in (self.chirp_source_runs or []):
+                info = manifest.get(run)
+                if info is not None and info.parameters:
+                    params = info.parameters
+                    break
+        return timing_from(params, self.chirp_data)
 
     def _classify_grating_npy(self, mdic):
         """Returns 'analyzed', 'raw', or 'unknown'. Schema-based, since
@@ -3772,7 +4944,11 @@ class DataManager(QObject):
                 self.grating_data = None
                 self.grating_available = True
                 self.grating_status = "raw_only"
-                self.grating_computed_cache = {}
+                # Restore rather than reset: recomputing the whole DS/OS sweep
+                # every launch is the second heavy pass behind the "double
+                # load". Entries are keyed by cluster id and pruned against
+                # cluster_df alongside the other caches.
+                self.grating_computed_cache = self._load_grating_cache_from_disk()
                 self.grating_conditions = sorted(
                     set(
                         (t["barWidth"], t["temporalFrequency"])
@@ -3866,6 +5042,18 @@ class DataManager(QObject):
         if getattr(self, "is_vision_only", False):
             return int(cluster_id)
         return int(cluster_id) + 1
+
+    def get_cluster_id_for_vision(self, vision_id: int) -> int:
+        """Translate Vision file key → UI cluster_id.
+
+        The exact inverse of get_vision_id_for_cluster. Anything reading an id
+        back out of Vision data (a picked RF, a parsed classification file)
+        must come through here rather than subtracting one by hand — the offset
+        does not apply in vision-only mode and getting it wrong is silent.
+        """
+        if getattr(self, "is_vision_only", False):
+            return int(vision_id)
+        return int(vision_id) - 1
 
     # ------------------------------------------------------------------
     # Cross-run reference bridge install / availability

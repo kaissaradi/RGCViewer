@@ -1,80 +1,230 @@
-# RGCViewer UX / UI Redesign Plan
+# PLAN.md — RGCViewer Master Development Plan
 
-*Last updated: 2025-08-12 — incorporates lab meeting feedback*
-
-This document is the single specification for the visual and interaction
-redesign of RGCViewer. It covers design language, color system, layout
-changes, keyboard workflows, file browsing, auto-save, and plot theming.
-No core analysis code changes — only `src/gui/`, `src/gui/panels/`,
-`src/gui/theme.py`, `src/gui/shortcuts.py`, and new assets.
+> Read AGENTS.md before this document.
+> This is a **snapshot of the current codebase state**, not a roadmap narrative.
+> Update this file every time a spec completes or a new untested behavior is discovered.
+> Last updated: 2026-08-12 | Branch: claude/plan-ux-ui-design-62g5jl (merged from claude/physics-cache-loading-98b5op)
 
 ---
 
-## Table of Contents
+## 1. Fragile Zones
 
-1. [Design Philosophy](#1-design-philosophy)
-2. [Color System & Theming](#2-color-system--theming)
-3. [Typography & Spacing](#3-typography--spacing)
-4. [Layout Overhaul](#4-layout-overhaul)
-5. [Experiment Browser](#5-experiment-browser)
-6. [Keyboard Shortcuts & Quick Actions](#6-keyboard-shortcuts--quick-actions)
-7. [Auto-Save & Session Persistence](#7-auto-save--session-persistence)
-8. [Plot Theming](#8-plot-theming)
-9. [Tree & Table Refinements](#9-tree--table-refinements)
-10. [Tab Navigation](#10-tab-navigation)
-11. [Status Bar & Notifications](#11-status-bar--notifications)
-12. [Accessibility](#12-accessibility)
-13. [Panel-Specific Fixes (Lab Feedback)](#13-panel-specific-fixes-lab-feedback)
-14. [Export & Save Improvements](#14-export--save-improvements)
-15. [Implementation Phases](#15-implementation-phases)
+These files and functions will silently break something if modified carelessly.
+Read the "failure mechanism" column before touching anything in the "what" column.
+
+| What | Failure mechanism | Required action before modifying |
+|---|---|---|
+| `data_manager.py` (whole file) | Every panel and cache depends on it. Concurrent write bugs are timing-dependent and hard to reproduce. | `git fetch && git rebase origin/main` before every push. Run full test suite after. |
+| `get_cell_physics()` | Vision ID offset lives here. `vision_id = cluster_id + 1` in hybrid mode. Accessing wrong key returns wrong cell's STA silently. | Run `test_get_cell_physics_vision_id_offset` — both parametrize branches — after any change. |
+| `build_cluster_dataframe()` | Runs a single `np.unique` scan that produces `_spk_unique_cls`, `_counts`. Three downstream functions consume these. A second scan breaks count assumptions and doubles load time. | Never add a second `np.unique` or `np.argsort` on the full spike arrays inside this function. |
+| `update_cluster_views()` / `_process_selection()` | The Tier 1 / Tier 2 boundary. Any heavy operation added to Tier 1 freezes the UI during keypress scrolling. | Classify every new operation as Tier 1 or Tier 2 explicitly before writing code. See AGENTS.md §1 Law 2. |
+| `LazySTADict` in `vision_integration.py` | Thread-local STAReader instances are spawned for background threads to ensure thread-safe, lock-free parallel reads from the SSD. Worker readers are tracked in `_all_readers` and closed in `__del__` to prevent handle leaks. | Run `test_lazy_sta_dict_reads_are_concurrent` and `test_lazy_sta_dict_cache_is_thread_safe` after any refactoring. |
+| `_save_pickle_with_fallback()` | Uses `tempfile + os.replace()` for atomicity. Replacing with a direct `pickle.dump(open(path))` would leave a corrupt truncated file if the process crashes mid-write. | Never simplify this function. The verbosity is intentional. |
+| `_compute_ei_correlations_if_needed()` | The `is_vision_only` guard prevents building a 512×512 correlation matrix that exhausts RAM on large Vision-native datasets. | The guard must never be removed or conditioned on anything else. |
+| `get_cluster_spike_indices()` | Returns pre-built index arrays from `_cluster_spike_indices` dict. Callers assume O(1). Replacing with `np.where(spike_clusters == id)` inside any loop causes O(N × n_clusters) runtime. | Never bypass this method. Never call `np.where` on the full spike arrays in a hot path. |
+| `theme.py` | All panels and the QSS stylesheet depend on the semantic token dictionary. Renaming a key or removing a color breaks the stylesheet and every `restyle_plots` call. | After any token change, toggle theme in-app and verify every tab in both modes. |
+| `_setup_style(colors)` in `main_window.py` | Generates the ~300-line QSS stylesheet from the theme dictionary. Hard-coded colors in any panel bypass it and break on theme toggle. | Grep for hex literals in `panels/` after any style work. All colors must come from the `colors` dict. |
 
 ---
 
-## 1. Design Philosophy
+## 2. Test Coverage Map
 
-### Bauhaus Principles Applied to Scientific Software
+### Tested — do not regress
 
-The redesign follows three Bauhaus tenets:
+| Behavior | Test function | File |
+|---|---|---|
+| ACG uses full recording, not first 2 min | `test_acg_includes_late_spike_trains` | `tests/unit/test_autocorrelation.py` |
+| Too-few-spike clusters return `None` ACG | `test_acg_not_computed_for_too_few_spikes` | `tests/unit/test_autocorrelation.py` |
+| Same cluster computed exactly once under concurrency | `test_standard_plot_cache_computes_same_cluster_once` | `tests/unit/test_data_manager_cache.py` |
+| Different clusters can compute in parallel (no cross-lock) | `test_standard_plot_cache_allows_different_clusters_to_compute_concurrently` | `tests/unit/test_data_manager_cache.py` |
+| Disk `.pkl` cache bypasses `_compute_standard_plots()` | `test_disk_cache_bypasses_computation` | `tests/unit/test_data_manager_cache.py` |
+| Cell without Vision STA marked `_computed` with safe defaults | `test_cell_physics_marks_cluster_computed_without_vision_sta` | `tests/unit/test_data_manager_cache.py` |
+| Raw trace snippet skips Litke TTL row | `test_raw_trace_snippet_skips_litke_ttl_row` | `tests/unit/test_data_manager_cache.py` |
+| HDBSCAN runs as default, K-means as fallback (7 tests) | `tests/unit/test_hdbscan_clustering.py` | `tests/unit/test_hdbscan_clustering.py` |
+| LazySTADict concurrent reads do not corrupt cache | `test_lazy_sta_dict_cache_is_thread_safe` | `tests/unit/test_physics_cache_unified.py` |
+| LazySTADict SSD reads are concurrent (not serialised) | `test_lazy_sta_dict_reads_are_concurrent` | `tests/unit/test_physics_cache_unified.py` |
+| Light/dark theme dictionaries have identical keys | `test_theme_keys_match` | `tests/unit/test_theme.py` |
+| Sidebar search filters tree and table | `TestSidebarSearch` (7 tests) | `tests/unit/test_gui_polish.py` |
+| UMAP layout no overlap on first visit | `TestUmapLayoutFix` (2 tests) | `tests/unit/test_gui_polish.py` |
+| Tree branch CSS contains SVG triangles | `TestTreeBranchStyling` (2 tests) | `tests/unit/test_gui_polish.py` |
 
-- **Form follows function.** Every visual element earns its space by serving
-  the classification workflow. Decorative chrome is removed; whitespace and
-  alignment do the organizing. Borders become thinner or disappear — panels
-  are separated by spacing, not lines.
+### Untested — add these before touching the corresponding code paths
 
-- **Reduction to essentials.** Controls that are used once per session (Load,
-  Save, Export) live in the menu bar or a command palette — not as permanent
-  toolbar buttons. The primary viewport maximizes the data. Secondary panels
-  (similarity, population) slide in on demand rather than claiming permanent
-  real estate.
+| Behavior | Where to add | Priority | Notes |
+|---|---|---|---|
+| Vision ID offset — hybrid branch (`cluster_id + 1`) | `tests/unit/test_data_manager_cache.py` | **HIGH** | Parametrize over `is_vision_only=True/False` |
+| Vision ID offset — vision-only branch (`cluster_id`) | `tests/unit/test_data_manager_cache.py` | **HIGH** | Same test, both branches |
+| `on_features_ready()` discards result when cluster changed | `tests/integration/test_main_window.py` | **HIGH** | Use `qtbot` + `threading.Event` |
+| Stale `standard_plot_cache` entries pruned after cluster refinement | `tests/unit/test_data_manager_cache.py` | **HIGH** | Inject stale key, call rebuild, assert key gone |
+| Atomic pkl write: failure leaves original file intact | `tests/unit/test_data_manager_cache.py` | **HIGH** | `patch('os.replace', side_effect=OSError)` |
+| `ei_corr()` with zero-std EI returns zeros, not `NaN` | `tests/unit/test_data_manager_cache.py` | MEDIUM | `np.ones((512, 201))` input |
+| `_apply_ei_updates()` is called via signal, never directly | `tests/integration/test_data_manager_signals.py` | MEDIUM | Emit signal, assert `cluster_df` updated on main thread |
+| Population mosaic `Show IDs` toggle invalidates hot-swap cache | `tests/integration/test_population_panel.py` | LOW | |
+| Auto-save writes sidecar, never overwrites user file | `tests/unit/test_autosave.py` | MEDIUM | Mock `QTimer`, assert `.autosave` path |
+| Theme toggle updates all plot backgrounds | `tests/integration/test_theme_toggle.py` | MEDIUM | Toggle, assert every `PlotWidget` bg matches `colors['bg_panel']` |
+| Keyboard shortcut registry is complete | `tests/unit/test_shortcuts.py` | LOW | Assert every command-palette entry has a working callable |
 
-- **Unity of design.** Every surface — plots, tree nodes, table rows, tab
-  headers, dialogs — draws from one token palette. A switch from dark to light
-  mode changes the tokens, not the structure. Plots, widgets, and chrome feel
-  like they belong to the same application.
+---
 
-### Design Goals
+## 3. Completed Fix Registry
 
-| Goal | Measure |
+Every completed fix is listed here with the exact test that would catch a regression.
+Before modifying any file in the "changed files" column, run the corresponding test first.
+
+| Fix | Changed files | Regression test | Regression risk |
+|---|---|---|---|
+| ACG uses full recording (not first 2 min) | `data_manager.py::_compute_standard_plots()` | `test_acg_includes_late_spike_trains` | HIGH — any change to `_compute_standard_plots` |
+| Physics cache double-load on init | `data_manager.py::__init__`, `_load_standard_plot_cache_from_disk()` | `test_standard_plot_cache_computes_same_cluster_once` | MEDIUM |
+| Vision-only subset-of-cells UMAP bug | `data_manager.py::load_vision_native_data()` | `real_data_manager` fixture — assert all cells in `cluster_df` | HIGH — any change to vision loading |
+| `vision_channel_positions` unguarded assignment (full + partial load paths) | `data_manager.py::load_vision_data()`, `_partial_vision_reload()` | Add: assert `vision_channel_positions` is None when `electrode_map` contains NaN or values >100 000 µm | MEDIUM |
+| `vision_channel_positions` never set in vision-only path | `data_manager.py::load_vision_native_data()` | Add: assert `vision_channel_positions is not None` after a vision-only load with valid `.globals` | MEDIUM |
+| `plot_ei_waveforms` added to `analysis_core.py` | `analysis_core.py` | Smoke test: call with synthetic (519, 60) EI + positions, assert 519 artists returned | LOW |
+| Cell Tracer EI waveform overlay on single-click | `cell_tracer_dialog.py` | Manual AC: open tracer, draw lasso, single-click row → waveforms appear on canvas; alpha slider → waveforms persist; Clear lasso → waveforms removed | MEDIUM |
+| UMAP toolbar overlap on first render | `panels/umap_panel.py` | Visual AC — navigate directly to UMAP tab on cold launch | LOW |
+| UMAP lasso/rect selector conflict | `panels/umap_panel.py` | Manual — activate both selectors in sequence | LOW |
+| HDBSCAN as default clustering | `panels/umap_panel.py`, `workers/workers.py` | `tests/unit/test_hdbscan_clustering.py` (7 tests) | LOW |
+| Population mosaic gridlines, zoom/pan, Show IDs cache | `main_window.py`, `panels/population_panel.py` | Integration tests on real dataset | MEDIUM |
+| Light mode theme system | `src/gui/theme.py`, `main_window.py::_setup_style()` | Visual AC — toggle theme, check all panels | LOW |
+| Sidebar live search (`Ctrl+F`) | `main_window.py` | Manual | LOW |
+| Physics cache warm-up freeze on large datasets | `src/analysis/vision_integration.py` | `test_lazy_sta_dict_cache_is_thread_safe`, `test_lazy_sta_dict_reads_are_concurrent` | HIGH — any changes to LazySTADict concurrency, dict caching, or contains checking |
+| Chirp PSTH PCA added as a UMAP feature block | `constants.py`, `analysis_core.py::build_feature_matrix`, `data_manager.py::get_raw_feature_blocks`, `panels/umap_panel.py` | `TestBuildFeatureMatrixChirp` (5, `test_dynamic_clustering.py`), `TestGetRawFeatureBlocksChirp` (5, `test_raw_feature_blocks.py`) | MEDIUM — spec `docs/specs/chirp_umap_feature_spec.md`. Block is additive/self-guarding (width-0 → skipped when no chirp file). |
+
+---
+
+## 4. Active Work
+
+### Priority 0 — Cross-Run Stimulus Bridge (map any run → physics / RF mosaic / UMAP)
+- **Spec:** `docs/specs/cross_run_stimulus_bridge.md`
+- **Branch:** `feat/cross-run-stimulus-bridge`
+- **Status:** Stages 1–4 implemented (unit tests green). Manual lab AC + optional panel borrow still open.
+- **Goal:** EI-map any other run; load STA/RF + chirp + grating from reference when present; fill-gap into physics/UMAP; dashed borrowed RF mosaic; per-UI-id `match_caveats`.
+- **What landed:**
+  - `ReferenceBridge`: chirp/grating load, `CellMatchCaveat`, `build_ui_caveats`, stimulus inventory
+  - `DataManager.install_reference_bridge` / `invalidate_physics_for_reference_bridge` / `effective_chirp_available` / `effective_grating_available`
+  - `get_cell_physics` borrows with **ref_id** for params timecourse; provenance + match fields
+  - `get_raw_feature_blocks` chirp/grating fill-gap
+  - Population mosaic draws dashed borrowed ellipses; map Accept re-gates UMAP
+  - Tests: `tests/unit/test_reference_bridge.py`, `tests/unit/test_cross_run_stimulus_bridge.py`
+- **What remains:**
+  - Manual AC on lab data (sibling runs with mixed stimuli)
+  - Optional: ChirpPanel/GratingPanel show borrowed curves; second file dialog if npy not in Vision dir
+- **Fragile zone overlap:** Touches `data_manager.py`. Rebase before every push.
+
+### Priority 1 — Standalone Vision Integration
+- **Spec:** `docs/specs/vision_standalone.md`
+- **Branch:** `feat/vision-standalone`
+- **Status:** In progress
+- **What is done:** Basic `load_vision_native_data()` path exists. `is_vision_only` flag set correctly.
+- **What remains:**
+  - Subset-of-cells UMAP bug — not all Vision cells appearing. Root cause not yet confirmed.
+  - EI waveform templates from `.ei` + `.globals` not yet integrated into Standard Plots panel.
+  - Graceful fallback when `.sta` is missing — `STAPanel` currently crashes.
+  - Graceful fallback when `.ei` is missing — `EIPanel` currently crashes.
+- **Open architectural question:** When Vision-only, `cluster_id` is used directly as `vision_id`. The `cluster_df` index must be built from `neurons_data['spikes_by_id'].keys()` — confirm this is happening in `build_cluster_dataframe()` before adding any panel code.
+- **Fragile zone overlap:** Touches `data_manager.py`. Rebase from main before every push.
+
+---
+
+### Priority 2 — EI Panel Waveform View Mode
+- **Status:** Planned — not started
+- **What it is:** A third view option in the EI panel (`View: Heatmap | Photo | Waveform`) that replaces the heatmap `ImageItem` with a matplotlib canvas rendering `plot_ei_waveforms` co-registered to electrode positions. Triggered via the existing `View:` toggle pattern. Photo underlay optional (toggle). Scrolling to a new cluster re-renders via the existing `_update_ei` path.
+- **What remains (all of it):**
+  - Add `"Waveform"` to the `View:` button group in `ei_panel.py`
+  - Add a `FigureCanvas` widget that is shown/hidden based on mode (hides the `pyqtgraph ImageItem`, shows the mpl canvas)
+  - Wire cluster selection → `_draw_ei_waveform_mode()` which calls `plot_ei_waveforms` onto the panel's axes
+  - Implement artist cleanup between cluster changes (same `_ei_waveform_artists` list pattern as `CellTracerDialog`)
+  - Optional: expose `Photo α` slider in the panel when waveform mode is active, using `ei_panel._overlay_image_rgba` if available
+- **Key constraint:** Must not touch the existing heatmap render path — mode switch is purely additive. `_load_vision_ei()` and `_load_ks_ei()` stay unchanged.
+- **Uses:** `plot_ei_waveforms` from `analysis_core.py` and `_resolve_channel_positions()` already in `ei_panel.py`.
+- **Fragile zone overlap:** Touches `ei_panel.py` render path. Classify any new operation as Tier 1 or Tier 2 before writing (LAW 2).
+
+---
+
+### Priority 3 — Known issues found 2026-07-08, not yet fixed
+
+- **Stale `feature_cache.pkl` is permanently sticky.** `get_cell_physics()` returns any cached entry flagged `_computed: True` without recomputation. If the cache was written while the Vision STA load was incomplete, entries land with `timecourse=None` and `rf_area=0` and are never repaired — the Population Dynamics panel then reports "No valid timecourses" for most cells. Observed on `20260623A-1`: 593 of 894 entries were poisoned this way. Workaround today is deleting the pickle. Fix would be to refuse to mark an entry `_computed` when the Vision block was skipped, or to version the cache.
+- **DS/OS threshold slider does not affect the grating panel.** The slider writes `main_window.dsos_threshold`, which is only read by `population_panel.py:910` for the population RF markers. `grating_panel.py:367` calls `select_best_dsos_condition(data)` with no threshold argument, so that panel's `[not significant]` label always uses the hardcoded `DSI_THRESHOLD = 0.3`. Additionally the `pvalue < ALPHA (0.05)` gate runs before any DSI comparison, so lowering the slider could not rescue a borderline cell even if it were wired through. Either thread the threshold into `select_best_dsos_condition` or relabel the slider "Population DS/OS threshold".
+- **`get_cell_physics()` reads the full STA cube it does not need.** It indexes `self.vision_stas[vid]`, forcing a full-movie disk read behind the 8 s `LazySTADict` timeout, even though the timecourse it ultimately uses comes from `vision_params['RedTimeCourse']`. Reading the cube should be a fallback, not the default path. This is the dominant cost when scrolling cells with a cold physics cache.
+- **`_draw_plots()` redraws the population panels on every selection.** `main_window.py:886` calls `callbacks.redraw_population_panels(...)` whenever `population_view_enabled`, regardless of which tab is visible, invoking `get_cell_physics()` for every cell in the group. Combined with the cube read above, this makes chirp-view scrolling slow until the cache warms.
+- **~19 pre-existing test failures on `tsting`, unrelated to any current feature work.** They fall into: a stale `HDBSCAN_AVAILABLE` import, calls to a `get_physics_feature_matrix` method that no longer exists, a precondition fixture yielding 0 valid cells, an `N=1` PCA edge case, and RF-mosaic/layout/debounce GUI tests whose functionality may no longer be wanted. These need triage into "update" vs "delete" before the suite can be trusted as a gate. Per AGENTS.md Rule 5 they have not been silenced.
+
+---
+
+### Priority 4 — UX / UI Redesign (Bauhaus Design Pass)
+
+- **Spec:** `docs/specs/ux_ui_redesign.md`
+- **Status:** Spec written. No code changes yet.
+- **Goal:** Unified Bauhaus-informed visual and interaction redesign. Every plot, widget, and panel draws from one token palette. Both themes feel native. Classification workflow drops to ≤3 interactions per cell.
+- **Scope:** `src/gui/` only — no analysis code changes.
+
+**What the spec covers (8 phases):**
+
+1. **Theme foundations** — extend `DARK_COLORS`/`LIGHT_COLORS` with new tokens (`accent_pressed`, `border_focus`, `bg_overlay`, shadows, tooltips), 12-color CVD-safe categorical palette for cell populations, spacing scale (4px grid), type scale.
+2. **Layout** — three-column layout (sidebar / tabs / collapsible context panel), responsive minimum width for laptop screens (down to 1100px), invisible splitter handles, minimal panel headers. Mosaic drag-to-select (merge Anushka's prototype).
+3. **Plot theming** — unified `apply_plot_theme()` for both pyqtgraph and matplotlib. Per-element token mapping for every plot. STA fixed symmetric color scale (gray = zero). Grating polar plot: axis units, SD error bars, per-direction rasters (Maria's request).
+4. **Tree & table** — theme-aware colors (remove hard-coded `#3C3C3C`), geometric icons, cell count badges, status dot column, DSI/OSI columns restored, dimming inline search.
+5. **Experiment browser** — sidebar panel scanning a user-configurable home directory, protocol detection from `<prep>.json`, filter field, recent paths, drag-to-load.
+6. **Command palette & shortcuts** — `Ctrl+K` command palette, `Ctrl+1`–`Ctrl+8` tab switching, `Ctrl+S` save, `Ctrl+G` group, `Ctrl+M` quick move-to-group picker, `F2` rename, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, status marking bar.
+7. **Auto-save & session persistence** — configurable interval (off/2/5/10 min), sidecar `.autosave` file, session state save/restore, save indicator in title bar, loading indicator fix.
+8. **Accessibility & polish** — focus rings, contrast audit, tooltip sweep, toast notifications, theme transition animation.
+
+**Lab meeting feedback incorporated:**
+- GUI width not reducible for laptop screens → responsive minimum width spec
+- STA rescales to input range, gray drifts → symmetric fixed scale centered at zero
+- Grating polar plot missing units and error bars → units label + SD whiskers
+- Per-direction rasters requested (Maria) → raster subplots around polar plot
+- DSI/OSI removed from table → restore as toggleable columns
+- Mosaic drag-to-select not in main (Anushka has it) → merge into context panel
+- Loading indicator buggy on reload → progress bar reset on every load path
+- Export CSV in progress → completion spec with column list
+- Save figure only on mosaic → extend to all tabs (PNG/SVG/PDF, publication white bg option)
+
+**Files this priority will create:**
+
+| Path | Purpose |
 |---|---|
-| Classify a cell in ≤ 3 interactions | Select cell → read plots → drag to group |
-| Switch between analysis views without losing context | Tab hotkeys, persistent selection |
-| Distinguish 8+ cell populations on any plot | Categorical palette with ≥ 4:1 contrast in both themes |
-| Onboard a new lab member in one sitting | Self-documenting UI: labels, tooltips, consistent icons |
+| `src/gui/panels/experiment_browser.py` | Experiment browser sidebar panel |
+| `src/gui/command_palette.py` | Command palette dialog and action registry |
+| `src/gui/undo.py` | Undo/redo stack for tree operations |
+| `src/gui/toast.py` | Toast notification widget |
+
+**Files this priority will modify heavily:**
+
+| Path | What changes |
+|---|---|
+| `src/gui/theme.py` | New tokens, categorical palette, `apply_plot_theme()`, spacing/type constants |
+| `src/gui/shortcuts.py` | Full shortcut registry replacing `KeyForwarder` |
+| `src/gui/main_window.py` | Layout restructure, session persistence, status bar, auto-save |
+| `src/gui/callbacks.py` | Auto-save, experiment browser integration, export completion |
+| `src/gui/widgets/widgets.py` | Tree delegate update (geometric icons, count badges), table styling |
+| `src/gui/panels/*.py` | Each panel: replace hard-coded colors with theme calls via `apply_plot_theme()` |
+
+**Fragile zone overlap:** Touches `main_window.py`, `theme.py`, `_setup_style()`. Must not break existing `restyle_plots` calls. Run theme toggle verification on every tab after any change.
+
+**Key constraint:** No analysis code changes. No `data_manager.py` changes. All work is in `src/gui/`.
 
 ---
 
-## 2. Color System & Theming
+## 5. UX / UI Design Specification
 
-### Current State
+> Full spec: `docs/specs/ux_ui_redesign.md`
+>
+> This section summarizes the design decisions and acts as a quick reference.
+> The spec has the implementation details. Read the spec before writing code.
 
-`theme.py` defines `DARK_COLORS` and `LIGHT_COLORS` with 40+ semantic keys.
-The system is already well-structured. The redesign extends it, not replaces it.
+### 5.1 Design Philosophy — Bauhaus Principles
 
-### Changes
+Three tenets:
 
-#### 2.1 Token Hierarchy
+- **Form follows function.** Every visual element earns its space by serving the classification workflow. Decorative chrome is removed; whitespace and alignment do the organizing.
+- **Reduction to essentials.** Controls used once per session (Load, Save, Export) live in the menu bar or command palette — not as permanent toolbar buttons. Secondary panels slide in on demand.
+- **Unity of design.** Every surface draws from one token palette. A switch from dark to light mode changes the tokens, not the structure.
 
-Organize tokens into three tiers to make the palette systematic:
+Design target: classify a cell in ≤3 interactions (select → read plots → drag to group).
+
+### 5.2 Color System
+
+#### Token Hierarchy
 
 ```
 Tier 1 — Surface        bg_base, bg_panel, bg_surface, bg_elevated
@@ -84,43 +234,23 @@ Tier 3 — Interactive    accent, accent_hover, accent_pressed, accent_muted
                          status_good_*, status_mua_*, status_noise_*, status_unsort_*
 ```
 
-New tokens to add:
+#### New Tokens
 
 | Token | Dark | Light | Purpose |
 |---|---|---|---|
-| `accent_pressed` | `#1E4FA0` | `#3D7DE8` | Active-state feedback on buttons |
-| `accent_muted` | `rgba(46,109,212,0.10)` | `rgba(46,109,212,0.08)` | Hover highlight on sidebar rows |
+| `accent_pressed` | `#1E4FA0` | `#3D7DE8` | Active-state feedback |
+| `accent_muted` | `rgba(46,109,212,0.10)` | `rgba(46,109,212,0.08)` | Hover highlight |
 | `border_focus` | `#4A8BEF` | `#2E6DD4` | Keyboard-focus ring (2px) |
-| `bg_overlay` | `rgba(0,0,0,0.50)` | `rgba(0,0,0,0.25)` | Modal / dialog scrim |
+| `bg_overlay` | `rgba(0,0,0,0.50)` | `rgba(0,0,0,0.25)` | Modal scrim |
 | `bg_tooltip` | `#282A30` | `#FFFFFF` | Tooltip background |
 | `text_tooltip` | `#F0F0F2` | `#111214` | Tooltip text |
-| `shadow_sm` | `0 1px 2px rgba(0,0,0,0.3)` | `0 1px 2px rgba(0,0,0,0.08)` | Elevated panels |
-| `shadow_md` | `0 4px 12px rgba(0,0,0,0.4)` | `0 4px 12px rgba(0,0,0,0.12)` | Dialogs, dropdowns |
 
-#### 2.2 Dark Mode Palette Refinement
+#### Palette Adjustments
 
-The current dark palette is good. Adjustments:
+- Dark: `bg_panel` shifts `#18191C` → `#1A1B1F` (warmer, +2% contrast).
+- Light: `bg_base` shifts `#F0F2F5` → `#F5F6F8` (softer). Plot backgrounds use `bg_surface`.
 
-- `bg_base` stays `#111214` — true near-black, comfortable for long sessions.
-- `bg_panel` shifts from `#18191C` → `#1A1B1F` — slightly warmer, 2% more
-  contrast against `bg_base`.
-- All plot backgrounds use `bg_panel` (not transparent) so they sit on the
-  same plane as their containing panel.
-
-#### 2.3 Light Mode Palette Refinement
-
-- `bg_base` shifts from `#F0F2F5` → `#F5F6F8` — softer, less blue-grey.
-- `bg_panel` stays `#FFFFFF`.
-- Plot backgrounds use `bg_surface` (`#F8F9FA`) to set them apart from the
-  white panel without introducing a border.
-- All status badges get slightly more saturated backgrounds for readability
-  against white.
-
-#### 2.4 Plot Categorical Palette
-
-A fixed 12-color categorical palette for cell populations, tuned for both
-themes and for deuteranopia/protanopia. Each color is defined as a
-`(dark_variant, light_variant)` pair:
+#### Categorical Palette (12 colors, CVD-safe)
 
 ```python
 PLOT_CATEGORICAL = [
@@ -139,76 +269,9 @@ PLOT_CATEGORICAL = [
 ]
 ```
 
-Validation criteria:
-- Every pair must pass WCAG AA (4.5:1) against its theme's `bg_panel`.
-- No two adjacent colors should be confusable under simulated CVD
-  (check with `colorspacious` or Coblis).
+Validation: every pair must pass WCAG AA (4.5:1) against its theme's `bg_panel`. No two adjacent colors confusable under deuteranopia/protanopia.
 
-#### 2.5 Theme Toggle
-
-- Current: View → Toggle Light/Dark Mode.
-- Add: A small sun/moon icon button in the top-right corner of the menu bar
-  area or status bar for quick toggling.
-- Shortcut: `Ctrl+Shift+T`.
-- Transition: 150ms fade on `bg_base` and `bg_panel` using `QPropertyAnimation`
-  on a custom property, applied via a thin overlay widget. No jarring flash.
-
----
-
-## 3. Typography & Spacing
-
-### Current State
-
-Font is set ad-hoc per widget. `PANEL_PADDING = 8`, `CTRL_SPACING = 6`,
-`ROW_HEIGHT = 28`.
-
-### Changes
-
-#### 3.1 Type Scale
-
-Define a four-step scale using the system monospace stack:
-
-| Role | Size | Weight | Use |
-|---|---|---|---|
-| `type_heading` | 13px | 600 (DemiBold) | Panel titles, group names |
-| `type_body` | 12px | 400 (Normal) | Labels, controls, table cells |
-| `type_caption` | 11px | 400 | Status text, axis labels, tooltips |
-| `type_mono` | 11px | 400, monospace | Cluster IDs, numeric readouts |
-
-Font family: `"Inter", "SF Pro Text", "Segoe UI", system-ui, sans-serif` for
-UI chrome. Plots keep their current font but inherit `type_caption` size.
-
-#### 3.2 Spacing Scale
-
-Replace magic numbers with a 4px base grid:
-
-| Token | Value | Use |
-|---|---|---|
-| `sp_1` | 4px | Inline padding (icon to label) |
-| `sp_2` | 8px | Intra-component padding (= current `PANEL_PADDING`) |
-| `sp_3` | 12px | Between controls in a group |
-| `sp_4` | 16px | Between sections |
-| `sp_5` | 24px | Panel margins, major separations |
-
-#### 3.3 Border Radius
-
-Uniform `radius_sm = 4px` for buttons, inputs, tags. `radius_md = 6px` for
-panels, cards, dialogs. No rounded-rectangle overuse — sharp corners on
-tab headers and tree items to maintain Bauhaus geometry.
-
----
-
-## 4. Layout Overhaul
-
-### Current State
-
-Horizontal `QSplitter` → left sidebar (220px) + right pane.
-Right pane: `QTabWidget` (8 tabs) + population context panel.
-Sidebar: filter, tree/table toggle, search, stacked tree/table, similarity.
-
-### Changes
-
-#### 4.1 Three-Column Layout
+### 5.3 Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -235,826 +298,24 @@ Sidebar: filter, tree/table toggle, search, stacked tree/table, similarity.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Key changes:
-- **Context panel** (RF mosaic + population plots) becomes a dedicated
-  right-side column rather than a toggle-in overlay. It collapses with a
-  single click or `Ctrl+\` and remembers its state.
-- **RF mosaic drag-to-select**: The mosaic canvas supports lasso / rectangle
-  drag to select cells by their RF position. Selecting RFs in the mosaic
-  highlights the corresponding cells in the tree/table and vice versa.
-  (Anushka's branch has a prototype — merge and adapt to the new layout.)
-- **Sidebar** width increases from 220 → 240px to fit longer group paths.
-- **Experiment browser** (section 5) replaces the top of the sidebar when
-  active.
-
-#### 4.2 Responsive Minimum Width
-
-**Lab feedback:** The window cannot shrink narrow enough for some laptop
-screens (e.g. 13″ at native resolution).
-
-- Set `MainWindow.setMinimumSize(1100, 650)` — down from the current
-  implicit ~1400px minimum imposed by hard-coded panel widths.
-- The sidebar compresses to its collapsed width (22px) when the window is
-  narrower than 1300px, freeing horizontal space for the analysis tabs.
-- Context panel auto-collapses below 1400px window width if it is open.
-- Tab content panels use `QScrollArea` wrappers so plot grids reflow rather
-  than clip when the tab area is narrow.
-- Test on 1280×800, 1366×768, and 1440×900 — the three most common laptop
-  resolutions in the lab.
-
-#### 4.3 Splitter Styling
-
-- Remove visible splitter handles. Replace with a 1px `border_subtle` line
-  and a 4px invisible drag zone on hover.
-- Cursor changes to resize on hover over the drag zone.
-- Double-click a splitter edge to reset to default proportions.
-
-#### 4.4 Panel Headers
-
-Each panel (sidebar sections, context panel sections) gets a minimal header:
-
-```
-  RF Mosaic                                    [⊟]
-  ─────────────────────────────────────────────────
-```
-
-- 13px `type_heading` in `text_primary`.
-- Collapse toggle `[⊟]`/`[⊞]` aligned right, `text_tertiary`, no border.
-- 1px `border_subtle` separator below.
-- No background fill — the header is part of the panel surface.
-
----
-
-## 5. Experiment Browser
-
-### Current State
-
-File → Load Kilosort Directory opens a `QFileDialog`. `recent_paths.py`
-remembers the last-used directory per category. No way to quickly switch
-between preparations without going through the system file dialog.
-
-### Changes
-
-#### 5.1 Home Directory
-
-A user-configurable **home directory** for experiments, persisted via
-`QSettings` under key `experiment/home_dir`. Set it once through:
-- File → Set Experiment Home…
-- Or by right-clicking a loaded directory → "Set as Home"
-
-Example: `/data/retina/` or `/Volumes/Array/preps/`
-
-#### 5.2 Experiment Browser Panel
-
-A new collapsible panel at the top of the sidebar, above the tree/table:
-
-```
-┌─ Experiments ─────────────────── [⌂] [↻] ─┐
-│ 🔍 Filter...                               │
-│                                             │
-│ ▸ 20260721A                                 │
-│   ▸ kilosort25/                             │
-│     data006  SpatialNoise    ✓ loaded       │
-│     data007  ChirpStimulus                  │
-│     data008  GratingDSOS_ks                 │
-│     data010-013  (concat)                   │
-│                                             │
-│ ▸ 20260715B                                 │
-│ ▸ 20260710A                                 │
-│                                             │
-│ ── Recent ──────────────────────────────── │
-│   /data/retina/20260701C/kilosort25/data003│
-│   /data/retina/20260628A/kilosort25/data011│
-└─────────────────────────────────────────────┘
-```
-
-Behavior:
-- On launch, scans `home_dir` for subdirectories matching the `<prep>/kilosort25/`
-  pattern.
-- Each prep expands to show its sorted runs. Run protocol names are read from
-  `<prep>.json` if it exists in the `stimuli/` subfolder.
-- **Single-click** a run to load it (replaces current data). If unsaved
-  changes exist, prompt to save first (or auto-save if enabled).
-- **Double-click** a prep to load its concatenated sort if one exists.
-- `[⌂]` button opens a dialog to change the home directory.
-- `[↻]` button rescans the home directory.
-- A `Filter...` text field filters preps and runs by name, protocol, or date.
-- The `Recent` section shows the last 8 loaded paths (from `QSettings`),
-  regardless of whether they're inside the home directory.
-- The browser is collapsible to one line (`Experiments ▸`) and remembers
-  its expanded/collapsed state.
-
-#### 5.3 Drag-to-Load
-
-Dragging a folder from the OS file manager onto the main window loads it as
-a kilosort directory (same as File → Load Kilosort Directory). Implemented
-via `dragEnterEvent` / `dropEvent` on `MainWindow`.
-
-#### 5.4 Quick-Switch Shortcut
-
-`Ctrl+O` opens the experiment browser's filter field in focus, ready for
-typing. If the browser panel is collapsed, it expands first.
-
----
-
-## 6. Keyboard Shortcuts & Quick Actions
-
-### Current State
-
-`KeyForwarder` handles: Space (similarity), Left/Right (EI frames),
-Up/Down (selection), Delete (trash), Ctrl+F (search), Ctrl+{D,C,E,W,S,X,A}
-(status marking).
-
-### Changes
-
-#### 6.1 Command Palette
-
-`Ctrl+K` (or `Ctrl+Shift+P`) opens a floating command palette — a
-search-as-you-type dialog listing every available action:
-
-```
-┌──────────────────────────────────────────────┐
-│ 🔍 Type a command...                         │
-│                                              │
-│   Load Kilosort Directory       Ctrl+O       │
-│   Load Classification           Ctrl+Shift+L │
-│   Save Classification           Ctrl+S       │
-│   Save Classification As...     Ctrl+Shift+S │
-│   Export Results                              │
-│   ──────────────────────────────────────────  │
-│   Group Selected Cells          Ctrl+G       │
-│   Move to Group...              Ctrl+M       │
-│   Rename Group                  F2           │
-│   Flatten Group                              │
-│   ──────────────────────────────────────────  │
-│   Toggle Theme                  Ctrl+Shift+T │
-│   Toggle Population Panel       Ctrl+\       │
-│   Feature Extraction...                      │
-│   Map Reference Run...                       │
-└──────────────────────────────────────────────┘
-```
-
-Implementation:
-- `QDialog` with `Qt.FramelessWindowHint | Qt.Popup`, anchored top-center.
-- `QLineEdit` at top, `QListWidget` below, filtered on every keystroke.
-- Enter activates the selected action, Escape closes.
-- Actions are registered as `(name, shortcut, callable)` tuples; the palette
-  is generated from the registry, so it is always complete and consistent.
-
-#### 6.2 New Shortcuts
-
-| Shortcut | Action | Context |
-|---|---|---|
-| `Ctrl+S` | Save classification (to current file, or Save As if none) | Global |
-| `Ctrl+Shift+S` | Save classification as… | Global |
-| `Ctrl+O` | Focus experiment browser filter | Global |
-| `Ctrl+Shift+L` | Load classification file | Global |
-| `Ctrl+G` | Group selected cells into a new named group | Tree view |
-| `Ctrl+M` | Move selected cells to group (opens quick picker) | Tree/Table |
-| `F2` | Rename selected group | Tree view |
-| `Ctrl+Z` | Undo last tree operation | Global |
-| `Ctrl+Shift+Z` | Redo | Global |
-| `Ctrl+\` | Toggle context/population panel | Global |
-| `Ctrl+Shift+T` | Toggle light/dark theme | Global |
-| `Ctrl+K` | Open command palette | Global |
-| `Ctrl+1`…`Ctrl+8` | Switch to tab 1–8 (Standard…Raw) | Global |
-| `Ctrl+Tab` | Next tab | Global |
-| `Ctrl+Shift+Tab` | Previous tab | Global |
-| `Ctrl+L` | Toggle tree/table view | Sidebar |
-| `Escape` | Clear selection / close palette / collapse browser | Context-dependent |
-
-#### 6.3 Quick Group Picker
-
-When the user presses `Ctrl+M` with cells selected, a small popup appears
-at the cursor position:
-
-```
-┌─ Move to ────────────────────────┐
-│ 🔍 Filter groups...              │
-│                                  │
-│   All/OnP/                       │
-│   All/OffP/                      │
-│   All/SBC/                       │
-│   All/DSGCs/OnOff/               │
-│   ── New Group ──                │
-│   + Create "..."                 │
-└──────────────────────────────────┘
-```
-
-- Lists all existing tree groups, filterable by typing.
-- "New Group" option at the bottom creates a new group and moves in one step.
-- Enter to confirm, Escape to cancel.
-
-#### 6.4 Status Marking Bar
-
-When cells are selected, a thin horizontal bar appears below the tab widget
-showing the available status marks as clickable chips:
-
-```
-  Mark as:  [Clean] [Duplicate] [Edge] [Unsure] [Noisy] [Contaminated] [Off Array]
-```
-
-Each chip shows its `Ctrl+` shortcut as a subscript. Clicking a chip or
-pressing the shortcut applies the status immediately. The bar fades in/out
-with selection changes (100ms transition).
-
-#### 6.5 Multi-Select Drag
-
-Selecting multiple cells (Shift+Click range, Ctrl+Click toggle) and
-dragging them in the tree view moves them as a batch. Currently only
-single-item drag-and-drop is fluid; this extends it to multi-select.
-
-#### 6.6 Undo / Redo Stack
-
-Tree operations (move, group, rename, delete, flatten, status change) push
-onto an undo stack. `Ctrl+Z` / `Ctrl+Shift+Z` navigate it. Stack depth: 50
-operations. Implementation: store `(operation_type, before_state, after_state)`
-tuples. The before/after state is a lightweight snapshot of the affected items'
-parent paths and properties, not a full model clone.
-
----
-
-## 7. Auto-Save & Session Persistence
-
-### Current State
-
-Save is manual: File → Save Classification. No auto-save, no session
-restoration.
-
-### Changes
-
-#### 7.1 Auto-Save Classification
-
-A new setting in File → Preferences (or a menu toggle):
-
-- **Auto-save interval**: Off / 2 min / 5 min / 10 min (default: 5 min).
-- Auto-save writes to `<current_classification_path>.autosave` — a sidecar
-  file, never overwriting the user's explicit save.
-- On load, if a `.autosave` file is newer than the `.classification_MC.txt`,
-  prompt: *"An auto-saved version exists from [timestamp]. Restore it?"*
-- Auto-save status shown in the status bar: `Auto-saved 2m ago ✓` or
-  `Auto-save: off`.
-
-#### 7.2 Session State Persistence
-
-On quit, persist to `QSettings`:
-- Current classification file path.
-- Active tab index.
-- Sidebar collapsed/expanded state.
-- Context panel collapsed/expanded state.
-- Splitter positions.
-- Theme (already done, verify).
-- Experiment browser expanded/collapsed state and last filter.
-- Selected cluster IDs.
-
-On launch with no arguments, offer to restore the last session:
-*"Restore previous session? [20260721A/kilosort25/data006]"* — a non-modal
-banner at the top of the window for 10 seconds, dismissible.
-
-#### 7.3 Save Indicator
-
-The window title reflects save state:
-
-```
-RGC Viewer — 20260721A / data006          # saved
-RGC Viewer — 20260721A / data006 ●        # unsaved changes
-```
-
-The `●` is `text_secondary` when auto-save is on (changes are safe) and
-`status_noise_text` (red/orange) when auto-save is off.
-
----
-
-## 8. Plot Theming
-
-### Current State
-
-`configure_pyqtgraph_theme` sets global `bg` and `fg`. Individual panels
-call `restyle_plots(colors)` on theme toggle. Matplotlib canvases
-(`MplCanvas`) set their own colors independently.
-
-### Changes
-
-#### 8.1 Unified Plot Style Function
-
-A single function in `theme.py` that configures any matplotlib `Figure`
-or pyqtgraph `PlotWidget` to match the current theme:
-
-```python
-def apply_plot_theme(widget, colors: dict) -> None:
-    """Style a PlotWidget or MplCanvas to match the current palette."""
-    ...
-```
-
-Called on creation and on theme toggle.
-
-#### 8.2 Pyqtgraph Plot Style
-
-All `pg.PlotWidget` instances:
-
-| Element | Token |
-|---|---|
-| Background | `bg_panel` |
-| Axis lines | `border_default` |
-| Axis labels, tick labels | `text_secondary`, `type_caption` size |
-| Title | `text_primary`, `type_body` size |
-| Grid (if shown) | `border_subtle`, 0.3 opacity |
-| Data line (single) | `plot_line` |
-| Data scatter | `plot_scatter` |
-| Crosshair / hover | `plot_highlight` |
-
-No outer border on plot widgets — they sit flush against their panel
-background.
-
-#### 8.3 Matplotlib Plot Style
-
-All `MplCanvas` instances (EI, STA, population plots, UMAP):
-
-| Element | Token |
-|---|---|
-| `figure.facecolor` | `bg_panel` |
-| `axes.facecolor` | `bg_surface` (subtle differentiation) |
-| `axes.edgecolor` | `border_subtle` |
-| `axes.labelcolor` | `text_secondary` |
-| `xtick.color`, `ytick.color` | `text_tertiary` |
-| `text.color` | `text_primary` |
-| `legend.facecolor` | `bg_elevated` |
-| `legend.edgecolor` | `border_subtle` |
-| Colormap (sequential) | Custom: `bg_panel` → `accent` (dark) or `bg_surface` → `accent` (light) |
-
-Axes spines: only left and bottom, weight 0.5px, color `border_subtle`.
-Remove top and right spines globally.
-
-#### 8.4 UMAP Scatter Theme
-
-The UMAP scatter plot is the most visually prominent. Special treatment:
-
-- Cluster colors use `PLOT_CATEGORICAL` (section 2.4).
-- Unassigned cells: `text_disabled` at 30% opacity.
-- Selected cells: full opacity + `plot_highlight` outline ring (2px).
-- Background: `bg_surface`.
-- Point size: 6px default, 8px on hover, 10px when selected.
-- Lasso selection: `accent` outline, `accent_muted` fill.
-
-#### 8.5 EI Electrode Map Theme
-
-- Electrode dots: `text_disabled` (inactive), scaled by amplitude.
-- Active electrodes: use a sequential colormap from `accent_muted` → `accent`.
-- Retina photo overlay: 40% opacity over `bg_surface`.
-- Mountain plot: line color `plot_line`, fill `accent_muted`.
-
-#### 8.6 STA RF Image Theme
-
-- Colormap: `RdBu_r` for ON/OFF — but verify it works on both bg colors.
-  If not, build a custom diverging map anchored to `bg_surface` at center.
-- RF ellipse overlay: `plot_highlight`, 1.5px, dashed.
-- Temporal filter plot: `plot_line` for the filter, `plot_shadow` for
-  confidence interval fill.
-
-**Lab feedback — fixed color scale:** The current STA display rescales to
-the input range of each cell's STA, so gray drifts depending on the data.
-Fix this so gray is always zero:
-
-- Use a **symmetric fixed scale** centered at zero: `clim = (-absmax, +absmax)`
-  where `absmax = max(abs(sta))`. This is analogous to MATLAB's `imagesc`
-  with a symmetric colormap — the midpoint of `RdBu_r` always maps to zero,
-  so baseline gray stays gray across cells.
-- Add a toggle in the STA panel toolbar: `[Symmetric] / [Full range]`.
-  Default to symmetric. Full-range mode preserves the current auto-scale
-  behavior for edge cases.
-- Display the color bar with tick labels at `−absmax`, `0`, `+absmax`.
-
----
-
-## 9. Tree & Table Refinements
-
-### Current State
-
-Tree: `QStandardItemModel` with bold folder items (hard-coded `#3C3C3C` bg)
-and leaf items. Table: `HighlightStatusPandasModel` with per-status row
-colors.
-
-### Changes
-
-#### 9.1 Tree Visual Cleanup
-
-- **Remove hard-coded folder background.** Use `bg_elevated` from the theme
-  palette instead of `#3C3C3C`.
-- **Indentation**: 16px per level (down from Qt default 20px) to save space.
-- **Icons**: Replace folder/file icons with minimal geometric shapes:
-  - Group: small filled circle in `accent`, 6px diameter.
-  - Cell: hollow circle in `text_tertiary`, 5px diameter.
-  - Trash: small `×` in `status_noise_text`.
-- **Drag indicator**: A 2px `accent` line between items during drag, instead
-  of the default highlight rectangle.
-- **Cell count badge**: Each group node shows a small count `(n)` in
-  `text_tertiary` after its name: `OnP (12)`.
-
-#### 9.2 Table Visual Cleanup
-
-- **Row height**: Reduce from 28px → 24px to show more cells.
-- **Header**: Sticky, `bg_elevated`, `type_caption`, uppercase, `text_tertiary`.
-  1px `border_subtle` below.
-- **Alternating rows**: `bg_panel` / `bg_surface` — subtle alternation, not
-  striping.
-- **Status column**: Replace text with a small colored dot (6px circle) using
-  the status color tokens. Tooltip shows the full status name.
-- **Sortable columns**: Click header to sort; small ▲/▼ indicator in
-  `text_tertiary`. Current sort column header text in `text_primary`.
-- **Restore DSI/OSI columns**: DSI (direction selectivity index) and OSI
-  (orientation selectivity index) were previously in the table but appear to
-  have been removed. Re-add them as optional columns (hidden by default,
-  toggled via right-click on the table header). Source: `DataManager` physics
-  cache, computed from grating responses.
-
-#### 9.3 Inline Search
-
-`Ctrl+F` search field behavior:
-- As the user types, matching cells/groups are highlighted in-place (both
-  tree and table).
-- Non-matching items dim to `text_disabled` rather than being hidden — context
-  is preserved.
-- Enter jumps to the next match, Shift+Enter to the previous.
-- Escape clears the search and restores full opacity.
-
----
-
-## 10. Tab Navigation
-
-### Current State
-
-8 tabs (Standard, Chirp, Grating, EI, STA, UMAP, Waveforms, Raw) in a
-`QTabWidget`. No keyboard shortcuts for switching.
-
-### Changes
-
-#### 10.1 Tab Bar Styling
-
-- Tab shape: rectangular, no rounded corners — Bauhaus geometry.
-- Active tab: `text_primary` label, 2px `accent` underline at the bottom edge.
-  No fill change — the tab content area already has `bg_panel` background.
-- Inactive tabs: `text_secondary` label, no underline.
-- Hover: `text_primary` label, 1px `border_subtle` underline.
-- Tab height: 32px. Padding: `sp_2` horizontal, `sp_1` vertical.
-- No tab close buttons — tabs are fixed.
-
-#### 10.2 Tab Shortcuts
-
-`Ctrl+1` through `Ctrl+8` switch to tabs 1–8:
-
-| Shortcut | Tab |
-|---|---|
-| `Ctrl+1` | Standard |
-| `Ctrl+2` | Chirp |
-| `Ctrl+3` | Grating |
-| `Ctrl+4` | EI |
-| `Ctrl+5` | STA |
-| `Ctrl+6` | UMAP |
-| `Ctrl+7` | Waveforms |
-| `Ctrl+8` | Raw |
-
-`Ctrl+Tab` / `Ctrl+Shift+Tab` cycle forward/backward.
-
-#### 10.3 Tab Memory
-
-Each tab remembers its scroll position and zoom level. Switching away and
-back restores the exact view state. Implementation: each panel stores its
-view state in instance variables; the `QTabWidget.currentChanged` signal
-triggers save/restore.
-
----
-
-## 11. Status Bar & Notifications
-
-### Current State
-
-`QStatusBar` with a permanent `QProgressBar` for cache progress.
-
-### Changes
-
-**Lab feedback — loading indicator bugs:** The progress bar behaves
-incorrectly when reloading a dataset (does not reset, or stalls at partial
-completion). Fix: reset `QProgressBar` to 0 at the start of every load
-operation, and ensure the completion signal (`physics_warm_done`, worker
-`finished`) always sets it to 100% or hides it — no stuck partial state.
-
-#### 11.1 Status Bar Layout
-
-```
-│ Ready                 │ ████░░░░ 47%  │ Auto-saved 2m ago ✓  │ Cells: 342 │ Dark │
-│                       │ [progress]    │ [auto-save status]   │ [count]    │[theme]│
-```
-
-Sections:
-1. **Message area** (left, stretches): Transient messages ("Loaded data006",
-   "Classification saved"). Messages auto-clear after 5 seconds.
-2. **Progress bar**: Only visible during long operations. Width: 120px.
-   Color: `accent`. Track color: `bg_elevated`.
-3. **Auto-save indicator**: Persistent. Shows time since last auto-save and
-   a checkmark. Clickable to force an immediate save.
-4. **Cell count**: Shows total loaded cells and selected count:
-   `342 cells (5 selected)`.
-5. **Theme toggle**: Small sun/moon icon, clickable.
-
-#### 11.2 Toast Notifications
-
-For important but non-blocking messages (e.g., "Auto-save failed",
-"Reference mapping complete"), show a toast notification:
-
-- Appears in the bottom-right corner, above the status bar.
-- 300px wide, `bg_elevated`, `shadow_md`, `radius_md`.
-- Auto-dismisses after 4 seconds. Click to dismiss immediately.
-- Stacks vertically if multiple toasts appear.
-- Types: info (`accent`), success (`status_good_text`), warning
-  (`status_mua_text`), error (`status_noise_text`) — a 3px left border.
-
----
-
-## 12. Accessibility
-
-#### 12.1 Focus Indicators
-
-Every interactive element gets a visible focus ring on keyboard navigation:
-- 2px `border_focus` ring, 2px offset from the element.
-- Applied via `:focus` pseudo-state in QSS.
-- Tree/table rows, buttons, tabs, inputs, sliders — all covered.
-
-#### 12.2 Minimum Contrast
-
-All text meets WCAG AA contrast ratio:
-- `text_primary` on `bg_panel`: ≥ 7:1 (AAA).
-- `text_secondary` on `bg_panel`: ≥ 4.5:1 (AA).
-- `text_tertiary` on `bg_panel`: ≥ 3:1 (AA for large text / non-text).
-
-#### 12.3 Keyboard Navigability
-
-Every action reachable by mouse is also reachable by keyboard:
-- Menu bar: `Alt+F`, `Alt+A`, `Alt+V`.
-- Tabs: `Ctrl+1`–`Ctrl+8`.
-- Command palette: `Ctrl+K`.
-- Tree/table: Arrow keys, Enter to expand, Delete to trash.
-- Dialogs: Tab between fields, Enter to confirm, Escape to cancel.
-
-#### 12.4 Tooltips
-
-Every icon-only button gets a tooltip describing its action and shortcut:
-- Format: `"Toggle theme (Ctrl+Shift+T)"`.
-- Delay: 400ms. Duration: 4 seconds.
-- Styled with `bg_tooltip` / `text_tooltip`, `radius_sm`, `shadow_sm`.
-
----
-
-## 13. Panel-Specific Fixes (Lab Feedback)
-
-Issues raised in lab meeting that affect specific analysis panels. These are
-scoped tightly — each is a fix to an existing panel, not a redesign.
-
-#### 13.1 Grating Polar Plot — Units & Error Bars
-
-**Current state:** The polar direction-tuning plot in `grating_panel.py` shows
-response magnitude on the radial axis but has no unit label. No error bars.
-
-**Fix:**
-- Add a radial axis label: `"spikes/s"` (or `"F1 amplitude"` depending on
-  which response measure is plotted). Use `text_tertiary`, `type_caption`.
-- Show **error bars** (SD across trials) on each direction's response as
-  thin radial whiskers, color `text_disabled` at 60% opacity, capped with
-  a small perpendicular tick.
-- Source the trial-by-trial data from the precomputed `*_GratingDSOS.npy`.
-  If trial-level data is unavailable (only means stored), note this in the
-  tooltip: `"Error bars unavailable — precomputed data has means only"`.
-
-#### 13.2 Grating Panel — Per-Direction Rasters
-
-**Requested by:** Maria.
-
-**Rationale:** Raster plots framing the polar plot directions let you instantly
-see the repeat count per direction and the trial-to-trial variance — both
-important for judging whether a DSI/OSI value is meaningful or just noise from
-low trial counts.
-
-**Spec:**
-- Add a ring of small raster subplots around or beside the polar plot, one
-  per grating direction (typically 8 or 12).
-- Each subplot shows spike times across trials as horizontal tick marks,
-  one row per trial.
-- Subplot size: ~60×40px. Arranged in a circle matching the polar plot
-  directions, or as a grid beside it if circular layout is too tight.
-- Spike ticks: `plot_line`, 1px. Background: `bg_surface`. Trial separators:
-  `border_subtle`, 0.5px.
-- Connect each subplot to its polar-plot direction with a subtle radial
-  guide line (`border_subtle`, dashed, 0.5px) — only on hover to avoid
-  clutter.
-- Toggle visibility: a `[Rasters]` checkbox in the grating panel toolbar.
-  Default: on.
-
-#### 13.3 Loading Indicator Reset
-
-**Current state:** The progress bar in the status bar is slightly buggy when
-reloading a dataset — it may not reset or may stall at a partial value.
-
-**Fix:** (Also noted in section 11.) At the start of every load path
-(`load_directory`, `load_vision_directory`, `load_raw_data`):
-1. Set `progress_bar.setValue(0)`.
-2. Set `progress_bar.setVisible(True)`.
-3. On completion or error, set to 100% briefly (200ms) then hide.
-4. If the load is cancelled or errors out mid-way, hide immediately.
-
----
-
-## 14. Export & Save Improvements
-
-#### 14.1 Classification Save Workflow
-
-Already covered in sections 6–7 (shortcuts, auto-save). Summary of the
-full save UX:
-
-| Action | Trigger | Behavior |
-|---|---|---|
-| Quick save | `Ctrl+S` | Writes to the current `.classification_MC.txt`. If none loaded, falls through to Save As. |
-| Save as | `Ctrl+Shift+S` | `QFileDialog` for a new path. Becomes the new current file. |
-| Auto-save | Timer (configurable) | Writes to `.autosave` sidecar. Never overwrites the user's explicit file. |
-| Export results | Menu / command palette | Large CSV export (in progress — complete the existing implementation). |
-
-#### 14.2 Export Results (CSV)
-
-**Current state:** An export function exists but is incomplete.
-
-**Spec for completion:**
-- Export writes one row per cell with columns: `cluster_id`, `vision_id`,
-  `group_path`, `status`, `spikes`, `channel`, `firing_rate`, `isi_violations`,
-  `contamination_pct`, `amplitude`, `dsi`, `osi`, `sta_polarity`,
-  `rf_x`, `rf_y`, `rf_diameter_long`, `rf_diameter_short`.
-- Format: standard CSV with header row. UTF-8 encoding.
-- Filename default: `<prep>_<run>_export.csv`.
-- Shortcut: add to command palette as "Export Results to CSV".
-- Progress: show in the status bar if > 500 cells (the `.ei` read can be
-  slow).
-
-#### 14.3 Save Figure
-
-**Current state:** A save-figure button exists for the RF mosaic.
-
-**Extend to all panels:**
-- Each analysis tab gets a small save icon `[💾]` in its top-right corner
-  (or in the tab bar's corner widget area).
-- Clicking it opens a `QFileDialog` defaulting to
-  `<prep>_<run>_<tab_name>.png`.
-- Supported formats: PNG (default, 300 DPI), SVG, PDF.
-- For pyqtgraph panels, use `pg.exporters.ImageExporter`.
-- For matplotlib panels, use `figure.savefig()` with `facecolor` set to
-  white (regardless of current theme) for publication-ready output.
-  Add a checkbox: `☐ Use current theme colors` for presentations.
-
----
-
-## 15. Implementation Phases
-
-### Phase 1 — Foundations (Theme + Spacing + Shortcuts)
-
-**Files touched:** `theme.py`, `shortcuts.py`, `main_window.py`
-
-1. Add new tokens to `DARK_COLORS` / `LIGHT_COLORS`.
-2. Define `PLOT_CATEGORICAL` palette.
-3. Create spacing and typography constants.
-4. Implement `apply_plot_theme()` for both pyqtgraph and matplotlib.
-5. Register all new keyboard shortcuts (tab switching, save, command palette
-   placeholder).
-6. Update the QSS stylesheet generator to use the new tokens.
-7. Add theme toggle button to status bar / menu bar corner.
-
-Estimated scope: ~400 lines changed across 3 files.
-
-### Phase 2 — Layout + Tab Bar
-
-**Files touched:** `main_window.py`, panel modules, `rf_map_widget.py`
-
-1. Restructure to three-column layout with collapsible context panel.
-2. Restyle tab bar (underline active, remove chrome).
-3. Restyle splitters (invisible handles, 1px borders).
-4. Add panel headers with collapse toggles.
-5. Implement tab memory (save/restore view state per tab).
-6. **Mosaic drag-to-select** — merge Anushka's prototype, wire up
-   bidirectional selection between mosaic and tree/table (§4.1).
-
-Estimated scope: ~700 lines changed, mostly `main_window.py`.
-
-### Phase 3 — Plot Theming + Panel Fixes
-
-**Files touched:** all `panels/*.py`, `theme.py`, `widgets.py`
-
-1. Apply `apply_plot_theme()` to every `PlotWidget` and `MplCanvas`.
-2. Remove hard-coded colors from panel modules.
-3. Implement `PLOT_CATEGORICAL` in UMAP and population plots.
-4. Theme the EI electrode map, STA RF image, and mountain plot.
-5. Theme the chirp PSTH, grating polar plot, and ACG/ISI/FR plots.
-6. **STA fixed color scale** — symmetric `clim` centered at zero (§8.6).
-7. **Grating polar plot** — add axis units (`spikes/s`), trial SD error
-   bars, and per-direction raster subplots (§13.1, §13.2).
-8. **Loading indicator** — reset progress bar on every load (§13.3).
-
-Estimated scope: ~500 lines changed across 10 files.
-
-### Phase 4 — Tree & Table Polish
-
-**Files touched:** `main_window.py`, `widgets.py`, `callbacks.py`
-
-1. Replace hard-coded tree colors with theme tokens.
-2. Implement geometric icons (circles, ×) via `ClusterTreeDelegate`.
-3. Add cell count badges to group nodes.
-4. Restyle table headers and alternating rows.
-5. Status dot column in table.
-6. Enhanced inline search with dimming.
-7. **Restore DSI/OSI columns** as toggleable table columns (§9.2).
-
-Estimated scope: ~300 lines changed across 3 files.
-
-### Phase 5 — Experiment Browser + Responsive Layout
-
-**Files touched:** new `panels/experiment_browser.py`, `main_window.py`,
-`callbacks.py`, `recent_paths.py`
-
-1. Build `ExperimentBrowser` widget.
-2. Home directory setting (QSettings, File menu action).
-3. Directory scanning and protocol detection.
-4. Filter field.
-5. Recent paths section.
-6. Integration into sidebar.
-7. Drag-to-load on `MainWindow`.
-8. **Responsive minimum width** — sidebar/context auto-collapse, `QScrollArea`
-   wrappers for plot grids (§4.2).
-
-Estimated scope: ~550 lines new, ~150 lines changed.
-
-### Phase 6 — Quick Actions & Command Palette
-
-**Files touched:** new `gui/command_palette.py`, `shortcuts.py`,
-`main_window.py`, `callbacks.py`
-
-1. Build action registry.
-2. Build `CommandPalette` dialog.
-3. Build quick group picker (`Ctrl+M`).
-4. Build status marking bar.
-5. Multi-select drag in tree.
-6. Undo/redo stack for tree operations.
-
-Estimated scope: ~600 lines new, ~200 lines changed.
-
-### Phase 7 — Auto-Save, Session Persistence & Export
-
-**Files touched:** `callbacks.py`, `main_window.py`, `recent_paths.py`,
-all panel modules
-
-1. Auto-save timer and sidecar file logic.
-2. Auto-save settings UI.
-3. Session state save on quit.
-4. Session restore prompt on launch.
-5. Save indicator in window title.
-6. Status bar auto-save display.
-7. **Complete CSV export** — finish the existing implementation (§14.2).
-8. **Save-figure button** on every analysis tab (§14.3).
-
-Estimated scope: ~450 lines new, ~150 lines changed.
-
-### Phase 8 — Accessibility & Polish
-
-**Files touched:** `theme.py`, `main_window.py`, all panels
-
-1. Focus ring styles in QSS.
-2. Contrast audit — adjust any failing tokens.
-3. Tooltip sweep — every icon-only button.
-4. Toast notification widget.
-5. Final QSS pass — remove any remaining hard-coded values.
-6. Theme transition animation.
-
-Estimated scope: ~200 lines new, ~150 lines changed.
-
----
-
-## Appendix A: File Map
-
-New files created by this plan:
-
-| Path | Purpose |
-|---|---|
-| `src/gui/panels/experiment_browser.py` | Experiment browser sidebar panel |
-| `src/gui/command_palette.py` | Command palette dialog and action registry |
-| `src/gui/undo.py` | Undo/redo stack for tree operations |
-| `src/gui/toast.py` | Toast notification widget |
-| `docs/PLAN.md` | This document |
-
-Files with major changes:
-
-| Path | What changes |
-|---|---|
-| `src/gui/theme.py` | New tokens, categorical palette, `apply_plot_theme()` |
-| `src/gui/shortcuts.py` | Full shortcut registry, new bindings |
-| `src/gui/main_window.py` | Layout restructure, session persistence, status bar |
-| `src/gui/callbacks.py` | Auto-save, experiment browser integration |
-| `src/gui/widgets/widgets.py` | Tree delegate update, table styling |
-| `src/gui/panels/*.py` | Each panel: replace hard-coded colors with theme calls |
-
-## Appendix B: Shortcut Reference Card
+- **Responsive:** `MainWindow.setMinimumSize(1100, 650)`. Sidebar auto-collapses below 1300px. Context panel auto-collapses below 1400px. Tab content uses `QScrollArea` wrappers.
+- **Test on:** 1280×800, 1366×768, 1440×900.
+- **Splitters:** invisible handles, 1px `border_subtle`, 4px drag zone.
+- **Context panel:** dedicated right column, collapsible via `Ctrl+\`. RF mosaic supports drag-to-select (merge from `anushka_dev`).
+
+### 5.4 Typography & Spacing
+
+| Role | Size | Weight | Use |
+|---|---|---|---|
+| `type_heading` | 13px | 600 | Panel titles, group names |
+| `type_body` | 12px | 400 | Labels, controls, table cells |
+| `type_caption` | 11px | 400 | Status text, axis labels, tooltips |
+| `type_mono` | 11px | mono | Cluster IDs, numeric readouts |
+
+Spacing: 4px grid (`sp_1`=4, `sp_2`=8, `sp_3`=12, `sp_4`=16, `sp_5`=24).
+Radius: `radius_sm`=4px (buttons, inputs), `radius_md`=6px (panels, dialogs).
+
+### 5.5 Keyboard Shortcuts
 
 | Category | Shortcut | Action |
 |---|---|---|
@@ -1062,34 +323,105 @@ Files with major changes:
 | | `Ctrl+S` | Save classification |
 | | `Ctrl+Shift+S` | Save classification as… |
 | | `Ctrl+Shift+L` | Load classification file |
-| **Navigation** | `Ctrl+1`–`Ctrl+8` | Switch to tab 1–8 |
-| | `Ctrl+Tab` | Next tab |
-| | `Ctrl+Shift+Tab` | Previous tab |
+| **Navigation** | `Ctrl+1`–`Ctrl+8` | Switch to tab 1–8 (Standard…Raw) |
+| | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle tabs |
 | | `Ctrl+F` | Focus search / filter |
 | | `Ctrl+L` | Toggle tree / table view |
 | | `Ctrl+\` | Toggle context panel |
-| | `↑` / `↓` | Move selection in tree / table |
+| | `↑` / `↓` | Move selection |
 | | `←` / `→` | EI frame navigation |
 | **Editing** | `Ctrl+G` | Group selected cells |
 | | `Ctrl+M` | Move to group (quick picker) |
 | | `F2` | Rename selected group |
 | | `Delete` | Move to Trash |
-| | `Ctrl+Z` | Undo |
-| | `Ctrl+Shift+Z` | Redo |
+| | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | **Status** | `Ctrl+D` | Mark Duplicate |
 | | `Ctrl+C` | Mark Clean |
 | | `Ctrl+E` | Mark Edge |
 | | `Ctrl+W` | Mark Unsure |
-| | `Ctrl+Shift+S` | Mark Noisy |
+| | `Ctrl+Shift+N` | Mark Noisy (moved from `Ctrl+S`) |
 | | `Ctrl+X` | Mark Contaminated |
 | | `Ctrl+A` | Mark Off Array |
-| **View** | `Ctrl+Shift+T` | Toggle light / dark theme |
+| **View** | `Ctrl+Shift+T` | Toggle theme |
 | | `Ctrl+K` | Command palette |
 | | `Space` | Similarity panel action |
 
-> **Note on shortcut conflicts:** `Ctrl+S` is reassigned from "Mark Noisy" to
-> "Save" (the universally expected binding). "Mark Noisy" moves to
-> `Ctrl+Shift+N`. `Ctrl+A` for "Mark Off Array" conflicts with Select All —
-> since Select All is less critical in this app (multi-select is via
-> Shift/Ctrl+Click), the status binding takes priority, but revisit if users
-> report friction.
+### 5.6 Experiment Browser
+
+Collapsible sidebar panel above the tree/table. Scans a user-configured home directory (`QSettings: experiment/home_dir`) for `<prep>/kilosort25/` patterns. Shows run protocols from `<prep>.json`. Single-click loads a run. Filter field, recent paths section, drag-to-load on `MainWindow`.
+
+### 5.7 Plot Theming
+
+Unified `apply_plot_theme(widget, colors)` in `theme.py`. Applied on creation and on theme toggle.
+
+**Pyqtgraph:** bg=`bg_panel`, axes=`border_default`, labels=`text_secondary`, grid=`border_subtle` 0.3α. No outer border.
+
+**Matplotlib:** `figure.facecolor`=`bg_panel`, `axes.facecolor`=`bg_surface`, spines: left+bottom only, 0.5px, `border_subtle`. Legend: `bg_elevated`/`border_subtle`.
+
+**STA:** Symmetric `clim` centered at zero (`(-absmax, +absmax)`) so gray = zero. Toggle: `[Symmetric] / [Full range]`.
+
+**Grating polar:** Radial axis label (`spikes/s`). SD error bars as radial whiskers. Per-direction raster subplots (toggle).
+
+**UMAP scatter:** `PLOT_CATEGORICAL` colors. Unassigned=`text_disabled` 30%α. Selected=full α + `plot_highlight` ring. Lasso=`accent` outline + `accent_muted` fill.
+
+### 5.8 Tree & Table
+
+- Remove hard-coded `#3C3C3C` folder bg → `bg_elevated`.
+- Geometric icons: filled circle (group, `accent`), hollow circle (cell, `text_tertiary`), × (trash).
+- Cell count badge: `OnP (12)` in `text_tertiary`.
+- Table: row height 24px, alternating `bg_panel`/`bg_surface`, status dot (6px circle), restore DSI/OSI as toggleable columns.
+- Search: dimming (non-matches → `text_disabled`) instead of hiding.
+
+### 5.9 Auto-Save & Session
+
+- **Auto-save:** configurable interval (off/2/5/10 min, default 5). Writes to `.autosave` sidecar. On load, prompts to restore if sidecar is newer.
+- **Session persistence:** save splitter positions, active tab, theme, sidebar state, selected IDs on quit. Restore on launch.
+- **Title bar:** `RGC Viewer — 20260721A / data006 ●` (● when unsaved).
+- **Loading indicator fix:** reset progress bar to 0 at start of every load. Set to 100% or hide on completion/error.
+
+### 5.10 Export & Save
+
+- **CSV export:** one row per cell. Columns: `cluster_id`, `vision_id`, `group_path`, `status`, `spikes`, `channel`, `firing_rate`, `isi_violations`, `contamination_pct`, `amplitude`, `dsi`, `osi`, `sta_polarity`, `rf_x`, `rf_y`, `rf_diameter_long`, `rf_diameter_short`.
+- **Save figure:** per-tab button. PNG 300 DPI (default), SVG, PDF. White-background option for publications.
+
+---
+
+### Running tests
+
+```bash
+# Full suite — always run before pushing
+conda run -n rgcviewer python -m pytest tests/ -v
+
+# Unit tests only — fast, no real data
+conda run -n rgcviewer python -m pytest tests/unit/ -v
+
+# Single test
+conda run -n rgcviewer python -m pytest tests/unit/test_autocorrelation.py::test_acg_includes_late_spike_trains -v
+
+# Stop on first failure
+conda run -n rgcviewer python -m pytest tests/ -x -v
+```
+
+### Real data paths
+
+```
+Raw Litke:     /mnt/lab/Array-data/raw/20260506A/data009
+Sorted/Vision: /mnt/lab/Array-data/sorted/20260506A/chunk10/kilosort2.5
+```
+
+Tests using `real_data_manager` automatically skip if these paths are unmounted.
+
+### Cache invalidation rule
+
+Any test that verifies computation logic (ACG, ISI, physics, EI correlation) must use `tmp_path` or `cache_cleared_data_manager`. Using a real data path risks loading a warm `.pkl` and skipping all math. See AGENTS.md §1 Law 3.
+
+### Screenshot storage
+
+| Type | Location | Git-tracked? |
+|---|---|---|
+| Visual AC verification | `tests/screenshots/` | No — gitignored, auto-deleted |
+| Visual regression baselines | `tests/baseline_images/` | Yes — generate with `--mpl-generate-path` |
+
+Filename format: `ac{N}_{feature_name}_{dark|light}.png`
+Default capture window size: 1800 × 1000px
+Always capture both light and dark mode for any visual AC.

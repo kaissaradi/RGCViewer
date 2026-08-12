@@ -41,6 +41,71 @@ CHIRP_PCA_COMPONENTS = 4  # PCA on the L2-normalized chirp PSTH SHAPE
 # default of 0.0 gates out only NaN/silent cells; raise per data.
 CHIRP_MIN_QI = 0.0
 
+# Minimum stimulus repeats for the chirp quality index to mean anything.
+#
+# The QI is a ratio of two variances both estimated from the repeats, so with
+# few repeats it is not merely noisy — it stops tracking anything real. A
+# split-half check on this data (compute the QI on odd trials, again on even
+# trials, correlate) gives Spearman +0.86 on a 10-repeat run and -0.14 on a
+# 5-repeat run: at 5 repeats the measure does not predict itself, and half the
+# cells clearing a 0.25 threshold do so on under 25 spikes per trial.
+#
+# Runs below this are not hidden — the QI column still shows its values, but
+# flagged (see HighlightStatusPandasModel) so the number is never read as a
+# clean criterion. Baden et al. (2016) used 0.45 on chirp with many repeats.
+CHIRP_MIN_REPEATS_FOR_QI = 8
+
+# Bin width the reported chirp QI is computed at, after rebinning.
+#
+# The QI is a variance ratio over binned spike counts, so it is a property of
+# (cell, bin width, trial count) rather than of the cell alone. On one run of
+# 20260715A the number of cells clearing 0.45 runs 4 -> 54 -> 111 -> 167 -> 206
+# as the bins widen 5 -> 10 -> 20 -> 40 -> 100 ms, from identical spikes. Chirp
+# files on this drive ship at both 5 ms and 20 ms, so raw QIs from two files
+# cannot be compared until they are put on a common footing.
+#
+# 20 ms is chosen because it is what the existing files mostly use, so the
+# column keeps the values curators are already calibrated to: rebinning the
+# 5 ms 20260715A file to 20 ms reproduces the older 20 ms file's result for the
+# same run (111/887 cells over 0.45 vs 109/707). Finer than this and Poisson
+# noise in the per-bin counts swamps the signal (~0.03 spikes/bin at 5 ms).
+CHIRP_QI_BIN_MS = 20.0
+
+# Spikes per trial below which the chirp QI is not reported at all.
+#
+# This is hygiene, NOT a fix for QI inflation. The intuition that a scale-free
+# variance ratio lets a near-silent cell fake a high QI does not survive
+# contact with the data: measured on 20260715A (887 cells, 20 ms bins), QI
+# correlates +0.75 with spikes per trial, and the top-decile-QI cells fire a
+# median 546 spikes/trial against 51 for everyone else. High QI goes with high
+# rate, not low. Gating at 10 spikes/trial removes 25.7% of cells but costs
+# only 3 of the 154 that clear QI 0.45; pushing it to 200 to catch more would
+# start deleting genuinely active cells (38 lost).
+#
+# What it is for: 10 spikes over a 25 s chirp is 0.4 Hz. Below that there is
+# not enough data to estimate either variance in the ratio, and the honest
+# display is a blank cell meaning "not measured" rather than a number that
+# invites ranking. The rate-dependence of the QI itself is intrinsic and no
+# threshold fixes it — the cross-validated stimulus-filter R^2 is the measure
+# that is nearly rate-independent (+0.11), at the cost of being noisier.
+CHIRP_MIN_SPIKES_PER_TRIAL = 10.0
+
+
+# STA peak-to-RMS above which a cell is taken to have a real receptive field.
+#
+# The measure is max|STA| / RMS(STA) over the whole volume. It is bimodal on
+# real data: on 20260715A/data010 (670 cells) noise STAs pile up at ~4.5 and
+# cells with a receptive field spread from ~25 to ~50, with an almost empty
+# valley between 10 and 25. Anything in that valley is a defensible cut; 15
+# sits in the middle of it.
+#
+# Validated against the one thing that must hold if an STA belongs to its
+# cell: spike count predicts STA quality (Spearman +0.57 there), and no cell
+# with under 100 spikes clears the threshold. Where that relationship is
+# absent the .sta does not belong to the sort — see
+# DataManager.check_sta_consistency.
+STA_SNR_GOOD = 15.0
+
 # Pre-filter thresholds (The Bouncer)
 DEFAULT_MIN_STA_STD = 1e-5  # Below this std, STA is considered flat noise
 DEFAULT_MAX_RF_AREA = 300.0  # Above this, RF is artifact-scale

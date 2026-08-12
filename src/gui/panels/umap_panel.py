@@ -16,20 +16,27 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QDoubleSpinBox,
     QGridLayout,
+    QMenu,
     QSlider,
     QSplitter,
 )
 from qtpy.QtCore import QThread, QTimer, Qt
+from qtpy.QtGui import QCursor
+import matplotlib
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
-from matplotlib.widgets import LassoSelector, RectangleSelector
+from matplotlib.patches import Polygon as MplPolygon
 from matplotlib.path import Path as MplPath
 from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
 
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
+from .live_selectors import make_lasso_selector, make_rect_selector, retire
 from .rf_map_widget import RFMapWidget
+from .trace_stack_widget import TraceStackWidget
+from .view_toggles import PopulationViewToggles
 from ...analysis.constants import (
     DEFAULT_MIN_STA_STD,
     DEFAULT_MAX_RF_AREA,
@@ -50,9 +57,33 @@ class UMAPPanel(QWidget):
         self.embedding = None
         self.cluster_ids = None
         self.metadata_df = None
+        self.raw_blocks = None
+        self._col_labels = []
+        self._active_stacks = set()
+        self._pending_highlight = None
         self.cbar = None
         self.is_3d = False
         self.selector = None
+
+        # Single-compositor state, mirroring the Feature Extraction window.
+        # Every artist that paints over the embedding goes through _composite();
+        # _defer_composite suppresses it while a selector is mid-update so one
+        # mouse move produces exactly one blit. Without this the rubber band,
+        # the selection overlay and the scatter wiped each other in turn.
+        self._blit_bg = None
+        self._defer_composite = False
+        self._building = False
+        self._selection = np.empty(0, dtype=int)
+        self._selection_mode = "lasso"
+        self._rect_selector = None
+        self._lasso_selector = None
+        self._lasso_poly = None
+        self._overlay_artist = None
+        # Feature config of the run currently on screen — not the live widget
+        # state, which the user may have changed since. The side panels must
+        # describe the embedding that exists, not the one the controls would
+        # produce if run again.
+        self._run_feature_config = {}
 
         self.layout = QVBoxLayout(self)
 
@@ -72,13 +103,80 @@ class UMAPPanel(QWidget):
         # RF mosaic beside the embedding: lassoing a blob is only half the
         # question — whether those cells tile the array is the other half.
         self.rf_map = RFMapWidget(colors=self._rf_map_colors(colors), title="RF Mosaic")
+        self.rf_map.cell_clicked.connect(self._on_rf_cell_clicked)
+
+        # Under it, one overlay per feature block the embedding was built from.
+        # The mosaic says whether a selection is a plausible single type; these
+        # say whether its members share the response that put them together.
+        # Keyed by the raw_blocks key so populating them is a plain loop.
+        self.trace_stacks = {
+            "temporal": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Temporal STA (frames)"
+            ),
+            "acg": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Autocorrelogram (ms lag)"
+            ),
+            "chirp": TraceStackWidget(
+                colors=self._rf_map_colors(colors), title="Chirp PSTH (s)"
+            ),
+        }
+        # Which feature keys drive which stack, for gating against the config
+        # the run actually used.
+        self._stack_feature_keys = {
+            "temporal": "use_temporal",
+            "acg": "use_acg",
+            "chirp": "use_chirp",
+        }
+
+        #: Every view a selection can be drawn in or read off, mosaic first.
+        self._population_views = [self.rf_map] + [
+            self.trace_stacks[k] for k in ("temporal", "acg", "chirp")
+        ]
+        for view in self._population_views:
+            view.selection_changed.connect(
+                lambda ids, src=view: self._on_population_selection(src, ids)
+            )
+            view.context_menu_requested.connect(self.show_context_menu)
+
+        self.side_splitter = QSplitter(Qt.Vertical)
+        self.side_splitter.addWidget(self.rf_map)
+        for key in ("temporal", "acg", "chirp"):
+            self.side_splitter.addWidget(self.trace_stacks[key])
+        self.side_splitter.setSizes([300, 130, 130, 130])
+
+        # The ACG starts closed: it is the one block whose overlay rarely
+        # settles a curation decision, and four stacked panels in this column
+        # leaves none of them tall enough to read.
+        self.view_toggles = PopulationViewToggles(colors=self._rf_map_colors(colors))
+        self.view_toggles.add_view("rf", "RF Mosaic", self.rf_map, checked=True)
+        for key, label, checked in (
+            ("temporal", "Temporal STA", True),
+            ("acg", "ACG", False),
+            ("chirp", "Chirp", True),
+        ):
+            self.view_toggles.add_view(
+                key, label, self.trace_stacks[key], checked=checked
+            )
+        self.view_toggles.view_toggled.connect(self._on_view_toggled)
+        # Nothing is populated until a run, and an empty axes reading "No data"
+        # is worse than no panel at all.
+        for key in ("temporal", "acg", "chirp"):
+            self.view_toggles.set_available(key, False, "Run UMAP to fill this view.")
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(6)
+        side_layout.addWidget(self.view_toggles)
+        side_layout.addWidget(self.side_splitter, stretch=1)
+        side_layout.addWidget(self._build_selection_panel(colors))
 
         self.plot_splitter = QSplitter(Qt.Horizontal)
         self.plot_splitter.addWidget(self.canvas)
-        self.plot_splitter.addWidget(self.rf_map)
+        self.plot_splitter.addWidget(side)
         self.plot_splitter.setStretchFactor(0, 3)
         self.plot_splitter.setStretchFactor(1, 1)
-        self.plot_splitter.setSizes([900, 300])
+        self.plot_splitter.setSizes([900, 340])
         self.layout.addWidget(self.plot_splitter)
 
         # Initialize default 2D axes
@@ -90,12 +188,52 @@ class UMAPPanel(QWidget):
 
         # Right-click picks a point (and its cluster) for the RF mosaic.
         self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        # Hovering an axis explains what shaped that dimension.
+        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
+        # A full redraw invalidates the cached background; snapshotting from
+        # draw_event means the selection survives every repaint Qt asks for.
+        self.canvas.mpl_connect("draw_event", self._on_canvas_draw)
 
         # Worker refs
         self.worker_thread = None
         self.worker = None
         self.cluster_worker_thread = None
         self.cluster_worker = None
+
+    def _build_selection_panel(self, colors):
+        """The "make a group out of this" prompt, as a panel instead of a popup.
+
+        It used to be a modal QMessageBox fired the instant a lasso closed,
+        followed by a modal name prompt: you could not nudge the shape, look at
+        the mosaic or change your mind without dismissing it first, and every
+        stray drag interrupted you. As a panel it stays out of the way and
+        updates live while you drag — the same flow as Feature Extraction.
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+
+        self.sel_count_label = QLabel("Drag on the embedding to select cells")
+        self.sel_count_label.setWordWrap(True)
+        self.sel_count_label.setStyleSheet(
+            f"color: {colors['text_secondary']}; font-size: 11px;"
+        )
+        layout.addWidget(self.sel_count_label)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.btn_create_group = QPushButton("Create group")
+        self.btn_create_group.setEnabled(False)
+        self.btn_create_group.clicked.connect(self._create_group_from_selection)
+        self.btn_clear_selection = QPushButton("Clear")
+        self.btn_clear_selection.setEnabled(False)
+        self.btn_clear_selection.clicked.connect(self.clear_selection)
+        buttons.addWidget(self.btn_create_group, stretch=2)
+        buttons.addWidget(self.btn_clear_selection, stretch=1)
+        layout.addLayout(buttons)
+
+        return panel
 
     @staticmethod
     def _rf_map_colors(colors):
@@ -106,6 +244,8 @@ class UMAPPanel(QWidget):
             "border": colors.get("border_subtle", "#2a2d3e"),
             "text_primary": colors.get("text_primary", "#e8eaf0"),
             "text_muted": colors.get("text_secondary", "#6b7280"),
+            # Blue is the resting state of the mosaic; orange means selected.
+            "accent": colors.get("plot_scatter", "#4f8ef7"),
             "highlight": "#f97316",
         }
 
@@ -135,6 +275,9 @@ class UMAPPanel(QWidget):
                 "ISI Violations",
                 "Time to Peak",
                 "RF Area",
+                "STA SNR",
+                "Chirp QI",
+                "Chirp ON/OFF",
                 "Color Opponency",
             ]
         )
@@ -175,6 +318,11 @@ class UMAPPanel(QWidget):
 
         self.cluster_btn = QPushButton("Run Clustering")
         self.cluster_btn.clicked.connect(self.run_clustering)
+        # There is nothing to cluster until a UMAP run produces an embedding —
+        # run_clustering already refuses in that state. Disabled here too so the
+        # pre-run state and the state reset_for_new_dataset() restores are the
+        # same thing.
+        self.cluster_btn.setEnabled(False)
 
         # Auto-Group Checkbox
         self.auto_group_chk = QCheckBox("Auto-Group Tree")
@@ -203,14 +351,16 @@ class UMAPPanel(QWidget):
         cluster_layout.addWidget(self.project_3d_chk)
         cluster_layout.addStretch()
 
-        pick_hint = QLabel("Right-click a point to highlight its cluster →")
+        pick_hint = QLabel("Right-click a point to select its cluster, again to act →")
         pick_hint.setStyleSheet(
             f"color: {colors['text_secondary']}; font-size: 11px; font-style: italic;"
         )
         pick_hint.setToolTip(
-            "Right-clicking a point highlights every cell in its cluster on the "
-            "RF mosaic. Before clustering has been run, it highlights just that "
-            "cell. Left-drag still lassoes."
+            "Right-clicking a point selects every cell in its cluster and shows "
+            "them on the RF mosaic. Before clustering has been run, it selects "
+            "just that cell. Right-clicking a point that is already selected "
+            "opens a menu to group it or move it to Trash — the same menu the "
+            "mosaic and trace overlays offer. Left-drag still lassoes."
         )
         cluster_layout.addWidget(pick_hint)
 
@@ -421,6 +571,11 @@ class UMAPPanel(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self._refresh_layout)
         QTimer.singleShot(50, self._refresh_layout)
+        # Catch up on any tree selection that landed while this tab was hidden
+        # (see highlight_cells). Deferred past the layout pass so the blit
+        # background is snapshotted at the final geometry.
+        if self._pending_highlight is not None and self.embedding is not None:
+            QTimer.singleShot(60, lambda: self._highlight(self._pending_highlight))
 
     def _refresh_layout(self):
         self.controls_widget.adjustSize()
@@ -476,24 +631,105 @@ class UMAPPanel(QWidget):
                 self.cluster_worker_thread.wait(500)
             self.cluster_worker_thread = None
 
+    def reset_for_new_dataset(self):
+        """Throw away everything that describes the previous preparation.
+
+        Runs are spike-sorted independently, so a cluster ID from the old
+        dataset names a different cell in the new one — and thanks to the
+        Vision-ID offset it usually still resolves to *something*. Left alone,
+        the panel would go on showing the previous embedding, its mosaic and
+        its cluster colours, all of which look entirely plausible against the
+        newly loaded prep. Everything derived from a run is dropped here, and
+        the panel returns to its pre-run state until UMAP is run again.
+        """
+        self._reset_workers()
+
+        self.embedding = None
+        self.feature_matrix = None
+        self.cluster_ids = None
+        self.metadata_df = None
+        self.raw_blocks = None
+        self.discarded_ids = None
+        self._run_feature_config = {}
+        self._pending_highlight = None
+        self._selection = np.empty(0, dtype=int)
+        self._blit_bg = None
+        self._overlay_artist = None
+        self._lasso_poly = None
+
+        self._clear_shapes()
+        # Disconnect rather than merely hide: the axes below are about to be
+        # thrown away, and a selector left wired to the canvas goes on handling
+        # drags for an embedding that no longer exists.
+        for attr in ("current_selector", "selector", "_rect_selector", "_lasso_selector"):
+            sel = getattr(self, attr, None)
+            if sel is not None:
+                try:
+                    sel.set_active(False)
+                    sel.disconnect_events()
+                except Exception:
+                    logger.debug("selector teardown failed", exc_info=True)
+                setattr(self, attr, None)
+        for view in self._population_views:
+            view.set_selection_mode("off")
+
+        self.rf_map.set_cells(None, [])
+        for view in self._population_views:
+            view.set_group_colors(None)
+        for key, stack in self.trace_stacks.items():
+            stack.set_traces(None, [])
+            # Region shading is independent of the traces, and
+            # _apply_chirp_regions only overwrites it when the new prep's chirp
+            # file actually carries phase bounds — without this, a prep that
+            # lacks them inherits the previous prep's shading behind its own
+            # traces.
+            stack.set_regions([])
+        # Greyed out rather than unchecked, so the user's own open/closed
+        # choices survive the dataset swap and come back on the next run.
+        for key in ("rf", "temporal", "acg", "chirp"):
+            self.view_toggles.set_available(key, False, "Run UMAP to fill this view.")
+        self._active_stacks = set()
+
+        # Cluster labels lived in metadata_df, which is gone; leaving the combo
+        # on "Ward" would show an empty plot titled as a clustering.
+        self.color_combo.setCurrentText("KSLabel")
+        self.show_ids_btn.setEnabled(False)
+        self.cluster_btn.setEnabled(False)
+
+        self._building = True
+        try:
+            self.fig.clear()
+            self.ax = self.fig.add_subplot(111)
+            self.ax.set_facecolor(self._umap_colors["bg_panel"])
+            self.is_3d = False
+        finally:
+            self._building = False
+        self.canvas.draw_idle()
+
+        self._sync_selection_panel()
+        self.refresh_feature_availability()
+
     def cleanup(self):
         """Explicitly cleanup resources to prevent memory leaks."""
         self._reset_workers()
 
         # Explicitly clear and delete selector
-        if hasattr(self, "current_selector") and self.current_selector:
-            self.current_selector.set_active(False)
-            self.current_selector.disconnect_events()
-            self.current_selector = None
-
-        if hasattr(self, "selector") and self.selector:
-            self.selector.set_active(False)
-            self.selector.disconnect_events()
-            self.selector = None
+        for attr in ("current_selector", "selector", "_rect_selector", "_lasso_selector"):
+            sel = getattr(self, attr, None)
+            if sel is not None:
+                try:
+                    sel.set_active(False)
+                    sel.disconnect_events()
+                except Exception:
+                    logger.debug("selector teardown failed", exc_info=True)
+                setattr(self, attr, None)
 
         # Explicitly clear the Matplotlib figure
         if hasattr(self, "fig"):
             self.fig.clf()
+
+        for stack in getattr(self, "trace_stacks", {}).values():
+            stack.fig.clf()
 
         # Delete the canvas
         if hasattr(self, "canvas"):
@@ -620,6 +856,7 @@ class UMAPPanel(QWidget):
             )
             return
 
+        self._run_feature_config = dict(feature_config)
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
             self.main_window.data_manager,
@@ -685,6 +922,7 @@ class UMAPPanel(QWidget):
             )
             return
 
+        self._run_feature_config = dict(feature_config)
         self.worker_thread = QThread()
         self.worker = UMAPWorker(
             self.main_window.data_manager,
@@ -767,14 +1005,102 @@ class UMAPPanel(QWidget):
             self.cluster_worker_thread = None
         self.cluster_worker = None
 
+    # Pretty names for the column labels build_feature_matrix emits.
+    _BLOCK_NAMES = {
+        "tc_pc": "Temporal STA",
+        "acg_pc": "ACG",
+        "grating_pc": "Grating tuning",
+        "chirp_pc": "Chirp PSTH",
+    }
+
+    def _dimension_report(self, dim):
+        """What shaped UMAP dimension *dim* (0-based), as tooltip text.
+
+        **UMAP has no loadings.** It is a nonlinear manifold embedding, so a
+        dimension is not a weighted sum of the inputs the way a principal
+        component is, and there is no honest way to decompose one. Two things
+        can be said truthfully, and this reports both:
+
+        1. What went in — each block's weight, its column count, and the share
+           of squared Euclidean distance it therefore commands. That share is
+           ``n_columns x weight^2``, which is why a block can dominate the
+           embedding without its slider looking large.
+        2. What tracks the axis afterwards — the rank correlation between each
+           input column and the resulting coordinate, measured on this
+           embedding. Correlations, not causes.
+        """
+        if self.embedding is None or self.feature_matrix is None:
+            return ""
+        labels = list(self._col_labels or [])
+        matrix = np.asarray(self.feature_matrix)
+        if matrix.ndim != 2 or matrix.shape[1] != len(labels) or not labels:
+            return ""
+        if dim >= self.embedding.shape[1]:
+            return ""
+
+        # --- contribution by construction ---
+        blocks = {}
+        for i, lab in enumerate(labels):
+            prefix = next((p for p in self._BLOCK_NAMES if lab.startswith(p)), None)
+            name = self._BLOCK_NAMES.get(prefix, "scalars") if prefix else lab
+            blocks.setdefault(name, []).append(i)
+
+        energy = {}
+        for name, cols in blocks.items():
+            # Column variance already carries the weight, so summing it is the
+            # block's real share of distance without re-deriving the sliders.
+            energy[name] = float(np.nansum(matrix[:, cols].var(axis=0)))
+        total_energy = sum(energy.values()) or 1.0
+
+        # --- what actually tracks this axis ---
+        from scipy.stats import spearmanr
+        coord = np.asarray(self.embedding)[:, dim]
+        corrs = []
+        for i, lab in enumerate(labels):
+            col = matrix[:, i]
+            if np.allclose(col, col[0]):
+                continue
+            try:
+                rho = spearmanr(col, coord).statistic
+            except Exception:
+                continue
+            if np.isfinite(rho):
+                corrs.append((abs(rho), rho, lab))
+        corrs.sort(reverse=True)
+
+        lines = [f"<b>UMAP Dimension {dim + 1}</b>", "",
+                 "<i>UMAP is nonlinear — a dimension has no loadings. "
+                 "Below is what entered the embedding, and what correlates "
+                 "with this axis after the fact.</i>", "",
+                 "<b>Share of the feature space</b> (columns x weight²):"]
+        for name, e in sorted(energy.items(), key=lambda kv: -kv[1]):
+            lines.append(f"&nbsp;&nbsp;{name}: {100 * e / total_energy:.0f}% "
+                         f"({len(blocks[name])} column"
+                         f"{'s' if len(blocks[name]) != 1 else ''})")
+        if corrs:
+            lines += ["", "<b>Tracks this axis</b> (Spearman):"]
+            for _, rho, lab in corrs[:6]:
+                lines.append(f"&nbsp;&nbsp;{self._pretty_label(lab)}: {rho:+.2f}")
+        return "<br>".join(lines)
+
+    def _pretty_label(self, lab):
+        for prefix, name in self._BLOCK_NAMES.items():
+            if lab.startswith(prefix):
+                return f"{name} PC{int(lab[len(prefix):]) + 1}"
+        return lab
+
     def on_processing_finished(
-        self, embedding, matrix, valid_ids, discarded_ids, metadata
+        self, embedding, matrix, valid_ids, discarded_ids, metadata, raw_blocks=None,
+        col_labels=None,
     ):
         self.embedding = np.asarray(embedding)
         self.feature_matrix = np.asarray(matrix)
         self.cluster_ids = np.array(valid_ids)
         self.metadata_df = metadata
         self.discarded_ids = np.array(discarded_ids)
+        self.raw_blocks = raw_blocks
+        self._col_labels = list(col_labels or [])
+        self._dim_tooltip_cache = {}
 
         # Determine if result is 3D
         self.is_3d = self.embedding.shape[1] == 3
@@ -793,9 +1119,19 @@ class UMAPPanel(QWidget):
             self.worker_thread = None
         self.worker = None
 
+        # A fresh embedding invalidates the old selection and the old cluster
+        # colours: both are indexed by position in cluster_ids, which has just
+        # changed. Silently keeping them would paint plausible-looking nonsense.
+        self._selection = np.empty(0, dtype=int)
+        self._clear_shapes()
+        for view in self._population_views:
+            view.set_group_colors(None)
+
         # Rebuild the RF mosaic for exactly the cells that made it into this
         # embedding, so the two panels always describe the same population.
         self.rf_map.set_cells(self.main_window.data_manager, list(self.cluster_ids))
+        self.view_toggles.set_available("rf", True)
+        self._populate_trace_stacks()
 
         self.update_plot()
 
@@ -816,6 +1152,217 @@ class UMAPPanel(QWidget):
             f"{mode_str} Complete. {len(self.cluster_ids)} {selection_info} cells (discarded {len(self.discarded_ids)}). Features: {weights_summary}"
         )
 
+    # ── side-panel trace overlays ────────────────────────────────────────────
+
+    def _populate_trace_stacks(self):
+        """Fill the per-feature trace overlays for the run just finished.
+
+        A stack is only shown when its feature was actually enabled for this
+        run and the block holds real data. Showing the chirp overlay after a
+        run that excluded chirp would invite reading structure into the
+        embedding that never contributed to it — and chirp in particular is
+        often unavailable, since it is precomputed offline.
+        """
+        blocks = self.raw_blocks or {}
+        ids = list(self.cluster_ids) if self.cluster_ids is not None else []
+        # Tracked explicitly rather than via isVisible(): a widget inside a
+        # non-current QTabWidget page reports isVisible() False even though it
+        # is populated, which would silently skip its highlight whenever the
+        # user is looking at another tab. This set means "holds data for this
+        # run" — whether it is *on screen* is the toggle bar's business.
+        self._active_stacks = set()
+
+        for key, stack in self.trace_stacks.items():
+            used = bool(self._run_feature_config.get(self._stack_feature_keys[key]))
+            block = blocks.get(key)
+            block = np.asarray(block) if block is not None else None
+            has_data = block is not None and block.ndim == 2 and block.shape[1] >= 2
+
+            if not (used and has_data):
+                stack.set_traces(None, [])
+                self.view_toggles.set_available(
+                    key,
+                    False,
+                    "This feature was not enabled for the run on screen."
+                    if has_data
+                    else "This run has no data for that feature.",
+                )
+                continue
+
+            if key == "chirp":
+                # Match the Chirp dashboard's 25 ms Gaussian. Unsmoothed, 400
+                # normalised 25 s PSTHs overlay into solid hash in a 130 px
+                # strip and nothing is legible.
+                bin_ms = self._chirp_bin_ms()
+                stack.set_smoothing((25.0 / bin_ms) if bin_ms else 0.0)
+            stack.set_traces(block, ids, x=self._trace_x_axis(key, block.shape[1]))
+            self.view_toggles.set_available(key, True)
+            self._active_stacks.add(key)
+
+        self._apply_chirp_regions()
+
+    def _on_view_toggled(self, key, is_open):
+        """Bring a reopened view back up to date with the current selection.
+
+        A closed view is skipped by _highlight — repainting a mosaic and three
+        overlays costs real time on held arrow keys — so without this it would
+        come back showing whatever was selected when it was closed.
+        """
+        if not is_open:
+            return
+        view = self.view_toggles.widget_for(key)
+        if view is None:
+            return
+        view.highlight(self._pending_highlight or [])
+        view.set_selection_mode(self._selection_mode if self.embedding is not None else "off")
+
+    def _trace_x_axis(self, key, n_cols):
+        """Real units for a block's x axis where they are recoverable."""
+        if key == "acg":
+            # get_standard_plot_data builds the ACG symmetric about zero in
+            # 1 ms bins, so the half-width follows from the column count and
+            # stays correct if MAX_LAG ever changes.
+            return np.arange(n_cols, dtype=float) - (n_cols - 1) / 2.0
+        if key == "chirp":
+            bin_ms = self._chirp_bin_ms()
+            if bin_ms:
+                return np.arange(n_cols, dtype=float) * bin_ms / 1000.0
+        return np.arange(n_cols, dtype=float)
+
+    def _chirp_bin_ms(self):
+        dm = getattr(self.main_window, "data_manager", None)
+        data = getattr(dm, "chirp_data", None) if dm is not None else None
+        if not isinstance(data, dict):
+            return None
+        try:
+            return float(data["bin_size_ms"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    # Same phases the Chirp dashboard shades, so the two panels read alike.
+    _CHIRP_PHASE_TINTS = {
+        "phase_step_on": (0.47, 0.47, 0.47, 0.16),
+        "phase_step_off": (0.47, 0.47, 0.47, 0.16),
+        "phase_freq_sweep": (0.31, 0.55, 0.86, 0.14),
+        "phase_contrast": (0.86, 0.55, 0.31, 0.14),
+    }
+
+    def _apply_chirp_regions(self):
+        """Shade the chirp overlay by stimulus phase.
+
+        Without this the overlay is 25 s of unlabelled wiggle; with it you can
+        see *which* phase a candidate group agrees or disagrees in, which is
+        the whole reason to look at the chirp rather than its PCA scores.
+        """
+        if "chirp" not in self._active_stacks:
+            return
+        stack = self.trace_stacks["chirp"]
+        dm = getattr(self.main_window, "data_manager", None)
+        data = getattr(dm, "chirp_data", None) if dm is not None else None
+        bin_ms = self._chirp_bin_ms()
+        if not isinstance(data, dict) or not bin_ms:
+            return
+
+        regions = []
+        for phase, tint in self._CHIRP_PHASE_TINTS.items():
+            bounds = data.get(phase)
+            if bounds is None or len(bounds) != 2:
+                continue
+            start, end = float(bounds[0]), float(bounds[1])
+            if end > start:
+                regions.append(
+                    (start * bin_ms / 1000.0, end * bin_ms / 1000.0, tint)
+                )
+        if regions:
+            stack.set_regions(regions)
+
+    def _highlight(self, cluster_ids):
+        """Single entry point for "these cells are the current selection".
+
+        Every side panel repaints from here, so the mosaic and the trace
+        overlays can never end up describing different selections — which is
+        exactly what would happen if each call site painted the panels it
+        happened to know about.
+        """
+        ids = [int(c) for c in (cluster_ids or [])]
+        # Remembered whatever the source was — a lasso, a right-click pick or the
+        # tree — so showEvent's catch-up can never resurrect an older selection
+        # over a newer one made in this panel. It is also what a view closed at
+        # the moment of selection is caught up from when it reopens.
+        self._pending_highlight = ids
+        # Closed views are skipped rather than painted invisibly: the mosaic and
+        # three overlays cost ~56 ms for a 35-cell folder at 700 cells, which is
+        # felt on held arrow keys and entirely wasted on a hidden canvas.
+        if self.view_toggles.is_open("rf"):
+            self.rf_map.highlight(ids)
+        for key in self._active_stacks:
+            if self.view_toggles.is_open(key):
+                self.trace_stacks[key].highlight(ids)
+
+    def highlight_cells(self, cluster_ids):
+        """Highlight *cluster_ids* from outside the panel (e.g. a tree group).
+
+        Deferred while the tab is hidden. This is called from the Tier 1
+        selection path, where it must stay cheap: painting the mosaic and three
+        overlays costs ~12 ms for one cell and ~56 ms for a 35-cell folder at
+        700 cells, which is real lag on held arrow keys and entirely wasted
+        when the UMAP tab is not the one on screen. The pending selection is
+        applied in showEvent instead, so the panel is correct the moment it
+        becomes visible.
+
+        Silently does nothing before a run: there is no population to highlight
+        within yet.
+        """
+        if self.embedding is None or self.cluster_ids is None:
+            return
+        if self.isVisible():
+            self._highlight(cluster_ids)
+        else:
+            self._pending_highlight = [int(c) for c in (cluster_ids or [])]
+
+    # Discrete colormap the embedding uses for cluster labels. The population
+    # views read from the same one so a group is the same colour in both.
+    _CLUSTER_CMAP = "tab20"
+
+    def cluster_label_colors(self, labels):
+        """``cluster_id -> RGBA`` for *labels*, in the scatter's own colours.
+
+        Matplotlib maps integer labels through tab20 by normalising them over
+        the range present, so reproducing that normalisation here is what keeps
+        "cluster 3 is green" true on the mosaic as well as the embedding.
+        """
+        labels = np.asarray(labels)
+        ids = np.asarray(self.cluster_ids)
+        if labels.size == 0 or labels.size != ids.size:
+            return {}
+
+        # matplotlib.colormaps replaced cm.get_cmap, which is gone in 3.9+.
+        try:
+            cmap = matplotlib.colormaps[self._CLUSTER_CMAP]
+        except (AttributeError, KeyError):
+            cmap = matplotlib.cm.get_cmap(self._CLUSTER_CMAP)
+        lo, hi = float(np.min(labels)), float(np.max(labels))
+        span = (hi - lo) or 1.0
+
+        out = {}
+        for cid, lbl in zip(ids, labels):
+            if lbl < 0:  # -1 is noise, not a group
+                continue
+            out[int(cid)] = cmap((float(lbl) - lo) / span)
+        return out
+
+    def _apply_cluster_colors(self, labels):
+        """Paint the mosaic and trace overlays by cluster membership.
+
+        Highlighting shows one group at a time, which answers "does this group
+        tile?" but not "did the clustering carve up the array sensibly?".
+        Colouring every resting outline by its group answers the second, which
+        is the question you actually have the moment a clustering run lands.
+        """
+        colors = self.cluster_label_colors(labels)
+        for view in self._population_views:
+            view.set_group_colors(colors)
+
     def on_cluster_finished(self, labels, method_name):
         self.metadata_df[method_name] = labels
         self.cluster_btn.setEnabled(True)
@@ -827,6 +1374,7 @@ class UMAPPanel(QWidget):
         self.cluster_worker = None
 
         self.color_combo.setCurrentText(method_name)
+        self._apply_cluster_colors(labels)
         self.update_plot()
         self.main_window.status_bar.showMessage(f"{method_name} clustering complete.")
 
@@ -899,6 +1447,12 @@ class UMAPPanel(QWidget):
         if getattr(self, "rf_map", None) is not None:
             self.rf_map.restyle(self._rf_map_colors(colors))
 
+        for stack in getattr(self, "trace_stacks", {}).values():
+            stack.restyle(self._rf_map_colors(colors))
+        # restyle rebuilds each background from scratch, which drops the phase
+        # shading with it.
+        self._apply_chirp_regions()
+
         self.update_plot()
 
     def update_plot(self, _color_mode=None):
@@ -906,6 +1460,14 @@ class UMAPPanel(QWidget):
             return
 
         colors = resolve_theme_colors(self.main_window.get_current_colors())
+
+        # Suppress compositing for the duration of the rebuild: every artist is
+        # about to be recreated, so any blit against the old background would
+        # smear the previous embedding across the new one.
+        self._building = True
+        self._blit_bg = None
+        self._overlay_artist = None
+        self._lasso_poly = None
 
         # Clean up old plot
         if getattr(self, "cbar", None):
@@ -936,6 +1498,7 @@ class UMAPPanel(QWidget):
         c = colors["plot_highlight"]
         cmap = None
         is_discrete = False
+        colour_limits = None
 
         if mode == "KSLabel":
             if "KSLabel" in self.metadata_df:
@@ -969,6 +1532,28 @@ class UMAPPanel(QWidget):
             if "RF Area" in self.metadata_df:
                 c = self.metadata_df["RF Area"].values
                 cmap = "viridis"
+        elif mode == "STA SNR":
+            # Sequential: how far a cell's STA peak stands above its own noise,
+            # so a blob that lights up dark here has no receptive field and its
+            # temporal PCs are the zero sentinel, not a response.
+            if "STA SNR" in self.metadata_df:
+                c = self.metadata_df["STA SNR"].values
+                cmap = "cividis"
+        elif mode == "Chirp QI":
+            if "Chirp QI" in self.metadata_df:
+                c = self.metadata_df["Chirp QI"].values
+                cmap = "magma"
+        elif mode == "Chirp ON/OFF":
+            # Diverging and symmetric about zero: the sign is the whole point.
+            if "Chirp ON/OFF" in self.metadata_df:
+                c = self.metadata_df["Chirp ON/OFF"].values
+                cmap = "coolwarm"
+                # Fixed to the index's own range so the midpoint is 0. Letting
+                # matplotlib autoscale would put the colour break at whatever
+                # the population mean happens to be, and in these preparations
+                # that is well positive — every cell would read as "OFF-ish"
+                # relative to its neighbours.
+                colour_limits = (-1.0, 1.0)
         elif mode == "Color Opponency":
             if "Color Opponency" in self.metadata_df:
                 c = self.metadata_df["Color Opponency"].values
@@ -1000,6 +1585,8 @@ class UMAPPanel(QWidget):
                 s=20,
                 alpha=0.8,
                 edgecolors="none",
+                vmin=colour_limits[0] if colour_limits else None,
+                vmax=colour_limits[1] if colour_limits else None,
             )
             self.ax.set_xlabel("Dim 1", color=colors["text_secondary"])
             self.ax.set_ylabel("Dim 2", color=colors["text_secondary"])
@@ -1017,6 +1604,8 @@ class UMAPPanel(QWidget):
                 s=15,
                 alpha=0.8,
                 edgecolors="none",
+                vmin=colour_limits[0] if colour_limits else None,
+                vmax=colour_limits[1] if colour_limits else None,
             )
             # --- 2D axis polish ---
             self.ax.set_xlabel(
@@ -1036,6 +1625,21 @@ class UMAPPanel(QWidget):
             # Soft dotted grid for spatial reference without visual noise
             self.ax.grid(
                 True, color=colors["border_subtle"], linestyle=":", alpha=0.5, zorder=0
+            )
+
+            # Overlay scatter holding ONLY the selected points. animated=True
+            # keeps it out of the normal draw pass, so the cached background
+            # stays clean instead of baking in a stale selection.
+            self._overlay_artist = self.ax.scatter(
+                [],
+                [],
+                s=46,
+                linewidths=0.6,
+                edgecolors=colors["bg_panel"],
+                color=colors.get("plot_highlight", "#f97316"),
+                alpha=0.95,
+                zorder=6,
+                animated=True,
             )
 
         if (
@@ -1064,9 +1668,14 @@ class UMAPPanel(QWidget):
         )
         self.ax.tick_params(colors=colors["text_secondary"])
 
-        # NEW: Re-attach the active selection tool to the fresh plot
+        # Re-attach the selection tools to the fresh axes, then restore the
+        # selection onto them — a colour-mode change must not silently drop it.
         self.update_selector()
+        self._sync_overlay(self._selection)
+        self._sync_selection_panel()
 
+        self._building = False
+        # Full render once; _on_canvas_draw snapshots the clean background.
         self.canvas.draw()
 
     def show_group_ids(self):
@@ -1109,51 +1718,318 @@ class UMAPPanel(QWidget):
         l.addWidget(close_btn)
         dlg.exec_()
 
+    # ── selection ────────────────────────────────────────────────────────────
+
     def on_select(self, verts):
-        if self.embedding is None:
+        """Adopt the cells inside *verts* as the selection.
+
+        Kept as the public entry point (the 3D projection path and external
+        callers still use it), but it no longer prompts: the selection panel
+        beside the mosaic offers the group instead, so refining a shape and
+        watching the RFs re-tile is possible without dismissing a dialog first.
+        """
+        if self.embedding is None or verts is None or len(verts) < 3:
             return
 
-        path = MplPath(verts)
-        selected_ids = []
+        pts = self._selection_points()
+        if pts is None:
+            return
 
-        if self.is_3d:
-            if self.project_3d_chk.isChecked():
-                try:
-                    proj = self.ax.get_proj()
-                    xs, ys, zs = (
-                        self.embedding[:, 0],
-                        self.embedding[:, 1],
-                        self.embedding[:, 2],
-                    )
-                    x2, y2, _ = proj3d.proj_transform(xs, ys, zs, proj)
-                    points_2d = np.column_stack((x2, y2))
-                    mask = path.contains_points(points_2d)
-                    selected_ids = self.cluster_ids[mask]
-                except Exception as e:
-                    logger.warning(f"3D selection projection failed: {e}")
-                    return
-            else:
-                return
+        mask = MplPath(np.asarray(verts, dtype=float)).contains_points(pts)
+        self._set_selection(np.where(mask)[0])
+
+    def _selection_points(self):
+        """Screen-plane coordinates to hit-test against, or None.
+
+        In 3D this is the projection, which is only meaningful while "Lasso 3D
+        Proj" is on — without it there is no defensible mapping from a flat
+        shape to points in a rotated volume, so selection is simply refused.
+        """
+        if self.embedding is None:
+            return None
+        if not self.is_3d:
+            return self.embedding[:, :2]
+        if not self.project_3d_chk.isChecked():
+            self.main_window.status_bar.showMessage(
+                "Enable 'Lasso 3D Proj' to select in a 3D embedding.", 4000
+            )
+            return None
+        return self._embedding_2d()
+
+    def _set_selection(self, indices):
+        """Adopt *indices* as the selection and repaint everything showing it."""
+        indices = np.asarray(indices, dtype=int)
+        if not np.array_equal(indices, self._selection):
+            self._selection = indices
+            ids = [
+                int(self.cluster_ids[i])
+                for i in indices
+                if 0 <= i < len(self.cluster_ids)
+            ]
+            self._sync_overlay(indices)
+            self._sync_selection_panel()
+            self._highlight(ids)
+        self._composite()
+
+    def _selected_cluster_ids(self):
+        return [
+            int(self.cluster_ids[i])
+            for i in self._selection
+            if 0 <= i < len(self.cluster_ids)
+        ]
+
+    def _sync_overlay(self, indices):
+        """Move the animated overlay scatter onto the selected points.
+
+        3D has no overlay — matplotlib's 3D collections cannot be repositioned
+        cheaply, and the side panels carry the selection there instead.
+        """
+        if self._overlay_artist is None:
+            return
+        pts = self.embedding[:, :2] if self.embedding is not None else None
+        if pts is None or len(indices) == 0:
+            self._overlay_artist.set_offsets(np.empty((0, 2)))
         else:
-            mask = path.contains_points(self.embedding)
-            selected_ids = self.cluster_ids[mask]
+            self._overlay_artist.set_offsets(pts[indices])
 
-        # Paint the RF mosaic before prompting: the whole point is to see
-        # whether the selection tiles the array *while* deciding whether it is
-        # a real group. QMessageBox below is modal, so this must happen first.
-        self.rf_map.highlight(list(selected_ids))
-        self.rf_map.repaint()
+    def _sync_selection_panel(self):
+        n = len(self._selection)
+        if n:
+            plural = "s" if n != 1 else ""
+            self.sel_count_label.setText(f"{n} cell{plural} selected")
+            self.btn_create_group.setText(f"Create {self._next_group_name()}")
+        else:
+            self.sel_count_label.setText("Drag on the embedding to select cells")
+            self.btn_create_group.setText("Create group")
+        self.btn_create_group.setEnabled(n > 0)
+        self.btn_clear_selection.setEnabled(n > 0)
 
-        if len(selected_ids) > 0:
-            reply = QMessageBox.question(
-                self,
-                "Selection",
-                f"Selected {len(selected_ids)} clusters.\nCreate a new Group?",
-                QMessageBox.Yes | QMessageBox.No,
+    def _next_group_name(self):
+        dm = self.main_window.data_manager
+        if dm is None:
+            return "group"
+        return f"Nc{dm.new_class_id}"
+
+    def clear_selection(self):
+        """Drop the selection and every selection shape."""
+        self._clear_shapes()
+        self._set_selection(np.empty(0, dtype=int))
+
+    def _clear_shapes(self, keep=None):
+        for sel in (self._rect_selector, self._lasso_selector):
+            if sel is not None:
+                retire(sel)
+        if self._lasso_poly is not None:
+            self._lasso_poly.set_visible(False)
+        for view in self._population_views:
+            if view is not keep:
+                view.clear_selection_shapes()
+
+    def _create_group_from_selection(self):
+        ids = self._selected_cluster_ids()
+        if not ids:
+            return
+        dm = self.main_window.data_manager
+        if dm is None:
+            return
+        name = f"Nc{dm.new_class_id}"
+        dm.new_class_id += 1
+
+        from ..callbacks import group_clusters_in_tree
+
+        group_clusters_in_tree(self.main_window, ids, name)
+        # Shape and selection are deliberately kept: refining a boundary and
+        # regrouping is the normal workflow.
+        self.sel_count_label.setText(f"{name} created — {len(ids)} cells")
+        self.btn_create_group.setText(f"Create {self._next_group_name()}")
+        self.main_window.status_bar.showMessage(
+            f"Created {name} with {len(ids)} cells.", 4000
+        )
+
+    def show_context_menu(self):
+        """The selection panel's actions, raised at the cursor."""
+        ids = self._selected_cluster_ids()
+        if not ids:
+            return
+
+        menu = QMenu(self)
+        n = len(ids)
+        plural = "s" if n != 1 else ""
+        create_action = menu.addAction(f"Create group from {n} cluster{plural}")
+        trash_action = menu.addAction(f"Move {n} cell{plural} to Trash")
+        menu.addSeparator()
+        clear_action = menu.addAction("Clear selection")
+
+        action = menu.exec_(QCursor.pos())
+        if action == create_action:
+            self._create_group_from_selection()
+        elif action == trash_action:
+            self._trash_selection()
+        elif action == clear_action:
+            self.clear_selection()
+
+    def _trash_selection(self):
+        """Send the selected cells to the tree's Trash folder.
+
+        They stay in the embedding and the mosaic: this run's UMAP was fitted to
+        a fixed cell set, and dropping points out of it would leave the layout
+        describing a population that is no longer shown. The next run excludes
+        them — get_selected_cluster_ids already filters Trash — and they are
+        gone from the table immediately.
+        """
+        ids = self._selected_cluster_ids()
+        if not ids:
+            return
+        from ..callbacks import move_cluster_ids_to_trash
+
+        n = move_cluster_ids_to_trash(self.main_window, ids)
+        self.clear_selection()
+        if n:
+            plural = "s" if n != 1 else ""
+            self.sel_count_label.setText(f"{n} cell{plural} moved to Trash")
+            self.main_window.status_bar.showMessage(
+                f"Moved {n} cell{plural} to Trash — they leave the embedding "
+                "on the next UMAP run.",
+                5000,
+            )
+        else:
+            self.sel_count_label.setText(
+                "Nothing moved — those cells are not in the tree"
             )
 
-            if reply == QMessageBox.Yes:
-                self.create_group(selected_ids)
+    def _on_population_selection(self, source, cluster_ids):
+        """A brush landed in the RF mosaic or one of the trace overlays.
+
+        The mosaic answers "do these tile?" and the overlays answer "do these
+        share a response?" — being able to select *from* those views closes the
+        loop, so a group spotted there becomes the selection on the embedding
+        too.
+        """
+        wanted = {int(c) for c in (cluster_ids or [])}
+        ids = list(self.cluster_ids) if self.cluster_ids is not None else []
+        indices = [i for i, c in enumerate(ids) if int(c) in wanted]
+        self._clear_shapes(keep=source)
+        self._set_selection(np.asarray(indices, dtype=int))
+
+    # ── selector plumbing (owner protocol for live_selectors) ────────────────
+
+    def _begin_selection(self, sel):
+        other = self._lasso_selector if sel is self._rect_selector else self._rect_selector
+        if other is not None:
+            retire(other)
+        if self._lasso_poly is not None:
+            self._lasso_poly.set_visible(False)
+        for view in self._population_views:
+            view.clear_selection_shapes()
+
+    def _apply_rect(self, sel):
+        try:
+            xmin, xmax, ymin, ymax = sel.extents
+        except Exception:
+            logger.debug("rectangle extents unavailable", exc_info=True)
+            self._composite()
+            return
+        pts = self._selection_points()
+        if pts is None:
+            self._composite()
+            return
+        mask = (
+            (pts[:, 0] >= xmin)
+            & (pts[:, 0] <= xmax)
+            & (pts[:, 1] >= ymin)
+            & (pts[:, 1] <= ymax)
+        )
+        self._set_selection(np.where(mask)[0])
+
+    def _on_rect_live(self, sel):
+        # 3D has no cached background to blit against (the axes repaint on every
+        # rotation), so previewing per mouse-move would force a full redraw each
+        # time. There the selection lands on release instead.
+        if self.is_3d:
+            self._composite()
+            return
+        self._apply_rect(sel)
+
+    def _on_lasso_live(self, sel):
+        if self.is_3d:
+            self._composite()
+            return
+        verts = sel.verts
+        if not verts or len(verts) < 3:
+            self._composite()
+            return
+        self.on_select(verts)
+
+    def _apply_lasso_verts(self, _index, verts):
+        self.on_select(verts)
+
+    def _freeze_lasso(self, _sel, verts):
+        """Keep the drawn path on screen after release.
+
+        LassoSelector blanks its own line in _release, so without this the
+        outline disappeared exactly when you wanted to look at it.
+        """
+        if self.is_3d or self.ax is None:
+            return
+        xy = np.asarray(verts, dtype=float)
+        if self._lasso_poly is None:
+            colors = resolve_theme_colors(self.main_window.get_current_colors())
+            self._lasso_poly = MplPolygon(
+                xy,
+                closed=True,
+                facecolor=to_rgba(colors["accent"], 0.14),
+                edgecolor=to_rgba(colors["text_primary"], 0.85),
+                linewidth=1.4,
+                zorder=5,
+                animated=True,
+            )
+            self.ax.add_patch(self._lasso_poly)
+        else:
+            self._lasso_poly.set_xy(xy)
+        self._lasso_poly.set_visible(True)
+        self._composite()
+
+    def _composite(self):
+        """The single painter for this canvas.
+
+        Restore the clean background, then stamp the animated layers back on in
+        a fixed order: selected points, the frozen lasso outline, then whatever
+        the live selector is drawing. Because every repaint goes through here,
+        no layer can wipe another.
+        """
+        if self._building or self._defer_composite:
+            return
+        if self.is_3d or self._blit_bg is None:
+            # 3D repaints wholesale on every rotation, so there is no stable
+            # background to cache. draw_idle re-enters _on_canvas_draw.
+            self.canvas.draw_idle()
+            return
+
+        self.canvas.restore_region(self._blit_bg)
+        if self._overlay_artist is not None:
+            self.ax.draw_artist(self._overlay_artist)
+        if self._lasso_poly is not None and self._lasso_poly.get_visible():
+            self.ax.draw_artist(self._lasso_poly)
+        for sel in (self._rect_selector, self._lasso_selector):
+            if sel is None or not sel.active:
+                continue
+            for artist in sel.artists:
+                if artist.get_visible() and artist.axes is not None:
+                    artist.axes.draw_artist(artist)
+        self.canvas.blit(self.fig.bbox)
+
+    def _on_canvas_draw(self, _event):
+        """Cache the freshly rendered background, then repaint the live layers."""
+        if self._building or self.is_3d:
+            self._blit_bg = None
+            return
+        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+        self._composite()
+
+    def resizeEvent(self, event):
+        """Invalidate the blit cache; the following draw_event re-snapshots it."""
+        super().resizeEvent(event)
+        self._blit_bg = None
 
     # Colour modes that hold integer cluster assignments rather than a
     # continuous metric — only these support "highlight this whole cluster".
@@ -1191,7 +2067,13 @@ class UMAPPanel(QWidget):
             return None
 
     def _on_canvas_click(self, event):
-        """Right-click a point to light up its whole cluster on the RF mosaic.
+        """Right-click a point to select its whole cluster; again to act on it.
+
+        The first right-click picks — which is the fast path the panel is built
+        around — and because the pick *is* the selection, right-clicking a point
+        that is already selected can safely mean "do something with this"
+        instead. That keeps one-motion picking while making group and trash
+        reachable where you would expect them, without a modifier key.
 
         Falls back to the single nearest cell when no clustering is displayed,
         so the pick is still useful straight after a UMAP run.
@@ -1210,84 +2092,155 @@ class UMAPPanel(QWidget):
 
         # Ignore clicks in empty space: without this, a click anywhere on the
         # canvas would light up whichever cluster happened to be least far away.
+        # Checked before the menu, so a stray click far from the data clears the
+        # selection rather than offering to trash it.
         span = max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1]))
         if span > 0 and np.sqrt(d2[idx]) > 0.05 * span:
-            self.rf_map.clear_highlight()
+            self.clear_selection()
             self.main_window.status_bar.showMessage(
                 "No cell near that point — highlight cleared.", 3000
             )
             return
 
+        if len(self._selection) and idx in set(self._selection.tolist()):
+            self.show_context_menu()
+            return
+
+        # The pick becomes the selection, not just a highlight, so the panel can
+        # offer to group it the same way a lasso can.
+        self._clear_shapes()
         labels = self._current_cluster_labels()
         if labels is not None and len(labels) == len(self.cluster_ids):
             label = labels[idx]
             if label >= 0:  # -1 is noise, which is not a cluster
                 members = np.where(labels == label)[0]
-                ids = list(np.asarray(self.cluster_ids)[members])
-                self.rf_map.highlight(ids)
+                self._set_selection(members)
                 self.main_window.status_bar.showMessage(
-                    f"Highlighted {len(ids)} cells in "
+                    f"Selected {len(members)} cells in "
                     f"{self.color_combo.currentText()} cluster {label}.",
                     5000,
                 )
                 return
 
-        single = [int(np.asarray(self.cluster_ids)[idx])]
-        self.rf_map.highlight(single)
+        self._set_selection(np.array([idx], dtype=int))
         self.main_window.status_bar.showMessage(
-            f"Highlighted cell {single[0]} (run clustering to pick whole clusters).",
+            f"Selected cell {int(np.asarray(self.cluster_ids)[idx])} "
+            "(run clustering to pick whole clusters).",
             5000,
         )
 
+    def _on_canvas_motion(self, event):
+        """Explain a dimension when the cursor is over its axis.
+
+        The axis labels are the natural place to ask "what is this dimension?",
+        so the tooltip is attached to the margin around them rather than to the
+        scatter itself, where it would fight with the selection tools.
+        """
+        if self.embedding is None or event.inaxes is not None:
+            self.canvas.setToolTip("")
+            return
+        try:
+            bbox = self.ax.get_window_extent()
+        except Exception:
+            return
+        x, y = event.x, event.y
+        if x is None or y is None:
+            return
+        dim = None
+        if bbox.x0 <= x <= bbox.x1 and y < bbox.y0:
+            dim = 0                      # under the plot: the x axis
+        elif bbox.y0 <= y <= bbox.y1 and x < bbox.x0:
+            dim = 1                      # left of the plot: the y axis
+        if dim is None:
+            self.canvas.setToolTip("")
+            return
+        cached = getattr(self, "_dim_tooltip_cache", {})
+        if dim not in cached:
+            cached[dim] = self._dimension_report(dim)
+            self._dim_tooltip_cache = cached
+        self.canvas.setToolTip(cached[dim])
+
+    def _on_rf_cell_clicked(self, cluster_id):
+        """Clicking an RF outline in the mosaic brings that cell up in the app."""
+        cluster_id = int(cluster_id)
+        self._highlight([cluster_id])
+        focus = getattr(self.main_window, "focus_cluster", None)
+        if callable(focus) and focus(cluster_id):
+            self.main_window.status_bar.showMessage(
+                f"Selected cell {cluster_id} from the RF mosaic.", 4000
+            )
+
     def create_group(self, ids):
-        from qtpy.QtWidgets import QInputDialog
+        """Group *ids* under an auto-numbered name (kept for external callers)."""
+        ids = [int(c) for c in (ids or [])]
+        if not ids:
+            return
+        dm = self.main_window.data_manager
+        name = f"Nc{dm.new_class_id}" if dm is not None else "group"
+        if dm is not None:
+            dm.new_class_id += 1
+        from ..callbacks import group_clusters_in_tree
 
-        name, ok = QInputDialog.getText(
-            self, "Group Name", "Enter name for this cluster group:"
-        )
-        if ok and name:
-            from ..callbacks import group_clusters_in_tree
-
-            group_clusters_in_tree(self.main_window, ids, name)
+        group_clusters_in_tree(self.main_window, ids, name)
 
     def update_selector(self):
-        """Hot-swaps between Lasso and Rectangle selection tools."""
+        """Rebuild the live selectors on the current axes and arm the chosen one.
+
+        Called after every plot rebuild: ax.clear() leaves a selector's canvas
+        callbacks connected, so a stale one would go on handling events for an
+        embedding that no longer exists.
+        """
         if not hasattr(self, "ax"):
             return
 
-        # Clear existing selector safely
-        if hasattr(self, "current_selector") and self.current_selector is not None:
-            self.current_selector.set_active(False)
-            self.current_selector.disconnect_events()
-            self.current_selector = None
+        self._selection_mode = (
+            "lasso" if self.selector_combo.currentText() == "Lasso Tool" else "rect"
+        )
 
-        # Clean up legacy selector if it exists
-        if hasattr(self, "selector") and self.selector is not None:
-            self.selector.set_active(False)
-            self.selector.disconnect_events()
-            self.selector = None
+        for attr in ("current_selector", "selector", "_rect_selector", "_lasso_selector"):
+            sel = getattr(self, attr, None)
+            if sel is not None:
+                try:
+                    sel.set_active(False)
+                    sel.disconnect_events()
+                except Exception:
+                    logger.debug("selector teardown failed", exc_info=True)
+                setattr(self, attr, None)
+        self._lasso_poly = None
 
-        if self.selector_combo.currentText() == "Lasso Tool":
-            # button=[1] so right-click stays free for _on_canvas_click's
-            # "highlight this point's cluster" pick; LassoSelector otherwise
-            # grabs every mouse button and would swallow it.
-            self.current_selector = LassoSelector(
-                self.ax, onselect=self.on_select, button=[1]
-            )
-        else:
-            self.current_selector = RectangleSelector(
-                self.ax,
-                onselect=self.on_select_rect,
-                useblit=True,
-                button=[1],
-                minspanx=5,
-                minspany=5,
-                spancoords="pixels",
-                interactive=True,
-            )
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
+        palette = {
+            "bg": colors["bg_panel"],
+            "accent": colors["accent"],
+            "text_primary": colors["text_primary"],
+        }
+        # button=[1] so right-click stays free for _on_canvas_click's
+        # "highlight this point's cluster" pick; the selectors otherwise grab
+        # every mouse button and would swallow it.
+        self._rect_selector = make_rect_selector(
+            self.ax, self, palette, onselect=lambda *_: self._apply_rect(self._rect_selector)
+        )
+        self._lasso_selector = make_lasso_selector(self.ax, self, palette)
+
+        self._rect_selector.set_active(self._selection_mode == "rect")
+        self._lasso_selector.set_active(self._selection_mode == "lasso")
+        retire(self._rect_selector)
+        retire(self._lasso_selector)
+
+        # Same tool in the mosaic and the trace overlays, so one choice covers
+        # every view a selection can be drawn in.
+        for view in self._population_views:
+            view.set_selection_mode(self._selection_mode)
+
+        # Kept pointing at whichever tool is live for anything still reading it.
+        self.current_selector = (
+            self._lasso_selector
+            if self._selection_mode == "lasso"
+            else self._rect_selector
+        )
 
     def on_select_rect(self, eclick, erelease):
-        """Bridges RectangleSelector output into existing Lasso selection pipeline."""
+        """Bridge a bare RectangleSelector callback into the selection pipeline."""
         if (
             eclick.xdata is None
             or eclick.ydata is None
@@ -1298,9 +2251,4 @@ class UMAPPanel(QWidget):
 
         x1, y1 = eclick.xdata, eclick.ydata
         x2, y2 = erelease.xdata, erelease.ydata
-
-        # Convert bounding box coordinates to a vertex path
-        verts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
-
-        # Pass directly into your existing lasso logic
-        self.on_select(verts)
+        self.on_select([(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)])

@@ -14,6 +14,9 @@ except Exception:
 
 MAX_STA_CACHE_CELLS = 500
 
+# Far smaller than the STA budget on purpose — see LazyEIDict.__init__.
+MAX_EI_CACHE_CELLS = 32
+
 
 class LazySTADict:
     """
@@ -162,15 +165,208 @@ class LazySTADict:
     def keys(self):
         return self.keys_list
         
-    def __del__(self):
+    def close(self):
+        """Close every open reader. Safe to call more than once."""
         readers = getattr(self, '_all_readers', [])
         if not readers and hasattr(self, 'reader'):
             readers = [self.reader]
+        self._all_readers = []
         for r in readers:
             try:
                 r.close()
             except Exception:
                 pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class LazyEIDict:
+    """Read-on-demand mapping of Vision cell id → EIContainer.
+
+    The .ei file is the largest in a preparation — on the 512 array one cell is
+    ``513 electrodes x ~201 samples x 2 floats x 4 bytes``, about 825 KB, so a
+    900-cell run is roughly 740 MB. Reading all of it at load time cost that
+    much RAM and that much I/O on *every* load of the same run, including the
+    tenth. Half of it was never wanted either: ``ei_error`` is read by one
+    panel, for the one cell on screen.
+
+    ``EIReader`` already builds a complete ``cell_id_to_offset`` seek table in
+    its constructor and already exposes a per-cell random read, so this needs
+    no reader change — only the choice not to call
+    ``get_all_eis_by_cell_id()``. Construction now costs one pass of 8-byte
+    header reads instead of the whole file.
+
+    Mirrors LazySTADict, including its thread-local readers: the physics
+    warm-up and the panels read EIs from several threads, and one file pointer
+    cannot serve concurrent seeks.
+
+    Unlike LazySTADict there is no per-read timeout. That guard exists because
+    .sta byte offsets come from a stored seek table that can point anywhere in
+    a corrupt file; EI offsets are derived from a fixed stride, so a bad file
+    fails the reshape immediately rather than blocking on a wild seek.
+    """
+
+    def __init__(self, vision_dir, dataset_name):
+        self.vision_dir = vision_dir
+        self.dataset_name = dataset_name
+        self.reader = vl.EIReader(str(vision_dir), dataset_name)
+
+        # Same defence as LazySTADict: a corrupt row can yield a NaN or
+        # non-integer cell id, and Vision ids are always positive.
+        self.keys_list = []
+        _skipped = 0
+        for k in self.reader.cell_id_to_offset:
+            try:
+                int_k = int(k)
+            except (TypeError, ValueError):
+                _skipped += 1
+                continue
+            if int_k > 0:
+                self.keys_list.append(int_k)
+            else:
+                _skipped += 1
+        if _skipped:
+            logger.warning(
+                "LazyEIDict: skipped %d invalid cell IDs (NaN/non-integer) from %s",
+                _skipped, vision_dir,
+            )
+        self._keys_set = set(self.keys_list)
+
+        # Deliberately small. An EI container is ~825 KB, so the 500 cells
+        # LazySTADict keeps would be 412 MB — the very cost this class exists
+        # to remove. 32 cells is ~26 MB and still covers clicking through a
+        # group of cells without re-reading.
+        self._cache = {}
+        self._cache_keys = []
+        self._max_cache = MAX_EI_CACHE_CELLS
+        self._cache_lock = threading.Lock()
+
+        self._local = threading.local()
+        self._creator_thread = threading.current_thread()
+        self._all_readers = [self.reader]
+        self._readers_lock = threading.Lock()
+
+    # --- geometry, needed by load_ei_data and the EI panels ----------------
+
+    def get_electrode_map(self):
+        return self.reader.get_electrode_map()
+
+    # --- mapping protocol ---------------------------------------------------
+
+    def __contains__(self, key):
+        try:
+            return int(key) in self._keys_set
+        except (TypeError, ValueError):
+            return False
+
+    def __len__(self):
+        return len(self.keys_list)
+
+    def __iter__(self):
+        return iter(self.keys_list)
+
+    def keys(self):
+        return list(self.keys_list)
+
+    def values(self):
+        return (self[k] for k in self.keys_list)
+
+    def items(self):
+        """Stream every cell.
+
+        A generator, not a dict: the callers that walk all cells (Cell Tracer,
+        and the cold EI-correlation pass) would otherwise rebuild in RAM
+        exactly the eager dict this class replaces.
+        """
+        return ((k, self[k]) for k in self.keys_list)
+
+    def get(self, key, default=None):
+        if key not in self:
+            return default
+        value = self[key]
+        return default if value is None else value
+
+    def __getitem__(self, key):
+        key = int(key)
+
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+
+        reader = self._reader_for_this_thread()
+        try:
+            ei = reader.get_ei_for_cell_id(key)
+        except Exception:
+            logger.warning("Could not read the EI for cell %s", key, exc_info=True)
+            return None
+
+        with self._cache_lock:
+            if key not in self._cache:
+                self._cache[key] = ei
+                self._cache_keys.append(key)
+                if len(self._cache_keys) > self._max_cache:
+                    oldest = self._cache_keys.pop(0)
+                    self._cache.pop(oldest, None)
+
+        return ei
+
+    def _reader_for_this_thread(self):
+        """One open EIReader per calling thread; the creator reuses its own."""
+        local = getattr(self, "_local", None)
+        if local is None:
+            self._local = threading.local()
+            local = self._local
+
+        reader = getattr(local, "reader", None)
+        if reader is not None:
+            return reader
+
+        if threading.current_thread() is getattr(self, "_creator_thread", None):
+            reader = self.reader
+        else:
+            try:
+                reader = vl.EIReader(str(self.vision_dir), self.dataset_name)
+                with self._readers_lock:
+                    self._all_readers.append(reader)
+            except Exception:
+                # Out of file handles, or the file went away with the mount.
+                # The shared reader still works; concurrent seeks on it can
+                # only garble a read, and __getitem__ turns that into None.
+                logger.warning(
+                    "Could not open a per-thread EI reader for %s; "
+                    "falling back to the shared one.",
+                    self.vision_dir,
+                    exc_info=True,
+                )
+                reader = self.reader
+
+        local.reader = reader
+        return reader
+
+    # --- teardown -----------------------------------------------------------
+
+    def close(self):
+        """Close every open reader and drop the cached containers."""
+        with self._readers_lock:
+            readers, self._all_readers = self._all_readers, []
+        for r in readers:
+            try:
+                r.close()
+            except Exception:
+                pass
+        with self._cache_lock:
+            self._cache = {}
+            self._cache_keys = []
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def load_vision_data(vision_dir: Path, dataset_name: str):
@@ -233,16 +429,19 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
 
 
 def load_ei_data(vision_dir: Path, dataset_name: str):
-    """Loads Electrical Image (EI) data from a .ei file."""
+    """Opens the .ei file for on-demand reads.
+
+    Returns a LazyEIDict rather than a plain dict. The reader stays open for
+    the life of the dataset, so DataManager.close() has to close it — the file
+    handle is not released by dropping the reference alone.
+    """
     if not VISION_LOADER_AVAILABLE:
         return None
 
     try:
-        with vl.EIReader(str(vision_dir), dataset_name) as eir:
-            eis_by_cell_id = eir.get_all_eis_by_cell_id()
-            electrode_map = eir.get_electrode_map()
-            logger.info(f"Loaded EIs for {len(eis_by_cell_id)} cells")
-            return {'ei_data': eis_by_cell_id, 'electrode_map': electrode_map}
+        lazy_eis = LazyEIDict(vision_dir, dataset_name)
+        logger.info("Initialized Lazy EI Reader for %d cells", len(lazy_eis))
+        return {'ei_data': lazy_eis, 'electrode_map': lazy_eis.get_electrode_map()}
     except FileNotFoundError:
         logger.warning(f"EI file not found in {vision_dir}; skipping EI")
         return None
