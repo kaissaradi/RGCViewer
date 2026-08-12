@@ -1,6 +1,6 @@
 import pandas as pd
 import pyqtgraph as pg
-from PyQt5.QtGui import QColor, QStandardItem
+from qtpy.QtGui import QColor, QStandardItem
 from qtpy.QtCore import Qt
 
 from src.gui.main_window import MainWindow

@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, FancyArrowPatch
 from matplotlib.collections import LineCollection, EllipseCollection
-from PyQt5.QtGui import QColor
+from qtpy.QtGui import QColor
 
 from ..theme import DARK_COLORS
 from ...analysis import grating_calc

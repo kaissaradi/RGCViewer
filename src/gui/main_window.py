@@ -60,7 +60,7 @@ from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
 from . import recent_paths
-from PyQt5.QtGui import QColor
+from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
     DARK_COLORS,

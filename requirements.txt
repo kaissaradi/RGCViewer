@@ -6,7 +6,9 @@ scikit-learn
 scipy
 
 # GUI & Visualization
-PyQt5
+# qtpy is the abstraction layer; the app targets Qt6. Install a Qt6 binding
+# (PyQt6 shown here; PySide6 also works — qtpy uses whichever is present).
+PyQt6
 pyqtgraph
 QtPy
 
