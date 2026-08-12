@@ -439,3 +439,7 @@ In order:
 9. Do not reopen the last run at start.
 10. Do not commit unless the user asks.
 11. Do not skip a failing test to make a change look green.
+12. A cell with no STA (or no grating / chirp / RF fit) stays in the
+    UMAP. Do not drop it, and do not fill the missing block with zeros —
+    that stacks every incomplete cell on one point. PCA the real rows;
+    leave the rest as NaN; compare with observed Euclidean.

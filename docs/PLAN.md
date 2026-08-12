@@ -40,6 +40,7 @@ Read the failure column before you change the file.
 | `visionloader.EIReader` | Payload width comes from the `.ei` file. A globals-based stride invents cell IDs. | Run `tests/unit/test_vision_load_robustness.py`. |
 | `_apply_ei_updates()` | `cluster_df` is main-thread only. `max_dup_r` is float64. | Run `test_apply_ei_updates_keeps_max_dup_r_as_float`. |
 | `EIPanel._redraw_current_view()` | Shared handlers that call `_draw_heatmap_frame` steal the View combo. | Run `tests/unit/test_ei_panel_view.py`. |
+| `build_feature_matrix()` | Missing STA/grating/chirp/RF rows are NaN. Filling them with 0 rebuilds the fake "no STA" cluster. | Run `tests/unit/test_dynamic_clustering.py`. Do not switch UMAP to sklearn `nan_euclidean` (MCAR scale-up). |
 
 ## 2. Tests to run after a change
 
@@ -54,7 +55,7 @@ Read the failure column before you change the file.
 | Selectors / UMAP first paint | `tests/unit/test_live_selectors.py` |
 | Dataset switch / memory | `tests/unit/test_dataset_release.py` |
 | Theme tokens | `test_theme_keys_match` |
-| Feature blocks / prefilter | `tests/unit/test_raw_feature_blocks.py` |
+| Feature blocks / prefilter | `tests/unit/test_raw_feature_blocks.py` `tests/unit/test_dynamic_clustering.py` |
 
 Use `tmp_path` or `cache_cleared_data_manager` for any math test. A real
 run folder can hold a warm `.pkl` and skip the code under test (Law 3).
@@ -65,8 +66,8 @@ The full suite still has older failures. Do not mark them skipped.
 
 | Defect | Effect | Status |
 |---|---|---|
-| Mixed no-STA cells share one temporal PCA point | Fake tight UMAP cluster | Open. Needs a product call: exclude from UMAP, or change default weights. Do not start. |
-| Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Open. Scientific. Do not change defaults without the user. |
+| Mixed no-STA cells share one temporal PCA point | Fake tight UMAP cluster | Fixed 2026-08-12. PCA fits only cells that have the block; missing rows are NaN. UMAP uses observed Euclidean (shared features only, no MCAR scale-up). Cells stay in the map. |
+| Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Fixed 2026-08-12. Defaults are Temporal + ACG + RF diameter, each 10/10, grating and chirp off. Euclidean share is still `n_columns × weight²`. |
 | EI View combo stolen by heatmap redraws | Combo said Waveform; canvas showed Heatmap | Fixed 2026-08-12. Shared handlers go through `_redraw_current_view`. Wheel on a closed combo is ignored. |
 | Stale `feature_cache.pkl` with `_computed: True` and `timecourse=None` | Population panel reports no timecourses | Fixed 2026-08-12. `_physics_entry_is_fresh` recomputes once when an STA source appears (`_sta_checked`). |
 | DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12. `select_dsos_for_display` plus `update_all` on slider move. |
@@ -97,6 +98,8 @@ Do not start these unless the user asks.
 | Vision-only remaining gaps | `docs/specs/vision_standalone.md` | Missing `.sta` / `.params` no longer crash. |
 | EI panel waveform view | none | View combo exists. Further waveform work is not started. |
 | Desktop launcher / `update.sh` | none | Not started. |
+| Firing-rate / burstiness embedding feature | none | Do not dump mean rate as a scalar. Needs a construction that separates high-baseline RGCs and bursty vs tonic firing (retina and, later, brain neurons) without letting spike count dominate as QC. ACG already carries some of this. Not started. |
+| 3D UMAP view | none | The current 3D UMAP display is poor UX. A 3D embedding (or another embedding) may still be better *for clustering* than the 2D view; do not throw the extra dimension away without checking that. Not started. |
 
 ## 6. Commands
 
