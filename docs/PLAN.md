@@ -10,6 +10,10 @@ not a roadmap. The UX redesign spec is parked. See
 
 Do not push unless the user asks.
 
+User check 2026-08-12: load, UMAP defaults, no-STA cells, and EI View combo
+are good. Grating, Contrast, and the DS/OS slider were not checked — no
+suitable direction/contrast run on hand.
+
 ## 0. Standing decisions
 
 These are also Laws 4–5 and invariant 8 in `docs/AGENTS.md`.
@@ -70,7 +74,7 @@ The full suite still has older failures. Do not mark them skipped.
 | Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Fixed 2026-08-12. Defaults are Temporal + ACG + RF diameter, each 10/10, grating and chirp off. Euclidean share is still `n_columns × weight²`. |
 | EI View combo stolen by heatmap redraws | Combo said Waveform; canvas showed Heatmap | Fixed 2026-08-12. Shared handlers go through `_redraw_current_view`. Wheel on a closed combo is ignored. |
 | Stale `feature_cache.pkl` with `_computed: True` and `timecourse=None` | Population panel reports no timecourses | Fixed 2026-08-12. `_physics_entry_is_fresh` recomputes once when an STA source appears (`_sta_checked`). |
-| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12. `select_dsos_for_display` plus `update_all` on slider move. |
+| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12 in code. Not user-checked (no grating/contrast run on hand). |
 | `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Fixed 2026-08-12. Params timecourse first. Cube only on a miss. |
 | `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Fixed 2026-08-12. Skip when the group timecourse and ACG caches already hold the subset. First visit of a group still draws. |
 | Older pytest failures | Suite is not a clean gate | Open. Do not skip. `test_raw_feature_blocks` now matches the prefilter and scalar-column contracts. `test_gui_polish` still ERRORs: `qtbot` is missing because `pytest-qt` is not installed in `rgcviewer` (it is listed in `requirements-dev.txt`). |
