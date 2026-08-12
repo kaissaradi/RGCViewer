@@ -38,6 +38,20 @@ _SHADOW_ALPHA = 70  # 0-255, applied to non-best condition traces
 _BEST_ALPHA = 255
 
 
+def select_dsos_for_display(data, dsos_threshold=None):
+    """Classify one cluster with the same threshold the population slider uses.
+
+    ``None`` keeps grating_calc's module default (0.3). A float from
+    ``MainWindow.dsos_threshold`` is applied to both DSI and OSI.
+    """
+    if dsos_threshold is None:
+        return grating_calc.select_best_dsos_condition(data)
+    threshold = float(dsos_threshold)
+    return grating_calc.select_best_dsos_condition(
+        data, dsi_threshold=threshold, osi_threshold=threshold
+    )
+
+
 class GratingPanel(QWidget):
     """
     Displays direction/orientation tuning for the selected cluster: a polar
@@ -364,7 +378,11 @@ class GratingPanel(QWidget):
         # gets drawn (overlay, histogram, PSTH grid) so the person can look
         # at the real response and judge for themselves; only the stats
         # label reflects "not significant."
-        selection = grating_calc.select_best_dsos_condition(data)
+        # The population DS/OS slider writes MainWindow.dsos_threshold.
+        # Passing it here is what makes that slider change this label.
+        selection = select_dsos_for_display(
+            data, getattr(self.main_window, "dsos_threshold", None)
+        )
 
         if selection is None:
             # No dsos conditions at all — genuinely nothing to plot.
