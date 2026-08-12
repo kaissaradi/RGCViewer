@@ -2225,6 +2225,46 @@ class DataManager(QObject):
         logger.info("Physics caches cleared (deleted: %s)", removed or "none")
         return removed
 
+    def _sta_source_available(self, cluster_id):
+        """True if this run or the reference bridge can supply an STA product.
+
+        ``vid in vision_stas`` does not read the cube (LazySTADict.__contains__).
+        Params RedTimeCourse is the other current-run source. A stafit alone
+        is not enough — extraction can still leave timecourse=None, and that
+        must not look like a fillable miss on every later call.
+        """
+        vid = self.get_vision_id_for_cluster(cluster_id)
+        stas = self._optional_attr("vision_stas")
+        if stas and vid in stas:
+            return True
+        params = self._optional_attr("vision_params")
+        if params is not None:
+            try:
+                if params.get_data_for_cell(vid, "RedTimeCourse") is not None:
+                    return True
+            except Exception:
+                pass
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is not None and bridge.has_match(vid):
+            return bool(bridge.has_sta(vid) or bridge.has_rf(vid))
+        return False
+
+    def _physics_entry_is_fresh(self, cluster_id, entry):
+        """A cache hit is valid unless Vision arrived after a None-timecourse write.
+
+        Old pickles and the pre-Vision warm-up both store
+        ``{_computed: True, timecourse: None}``. Once an STA source exists,
+        recompute once. ``_sta_checked`` marks that this source was already
+        tried, so a genuine no-STA cell does not loop.
+        """
+        if not entry or not entry.get("_computed"):
+            return False
+        if entry.get("timecourse") is not None:
+            return True
+        if not self._sta_source_available(cluster_id):
+            return True
+        return bool(entry.get("_sta_checked"))
+
     def get_cell_physics(self, cluster_id):
         """
         Single Source of Truth for a cell's physical metrics.
@@ -2241,7 +2281,7 @@ class DataManager(QObject):
         # 1. Fast path: check feature cache under lock.
         with self._feature_lock:
             cached = self.feature_cache.get(cluster_id)
-            if cached is not None and cached.get("_computed"):
+            if self._physics_entry_is_fresh(cluster_id, cached):
                 return cached
 
         # 2. Per-cell in-flight lock to prevent redundant computation
@@ -2254,7 +2294,7 @@ class DataManager(QObject):
             # 3. Re-check cache now that we hold the per-cell lock (double-check idiom)
             with self._feature_lock:
                 cached = self.feature_cache.get(cluster_id)
-                if cached is not None and cached.get("_computed"):
+                if self._physics_entry_is_fresh(cluster_id, cached):
                     return cached
 
             # --- Everything below stays inside cell_lock so a second thread that
@@ -2276,62 +2316,86 @@ class DataManager(QObject):
             rf_short_diameter = 0.0
             time_to_peak = 0
 
-            vid = (
-                cluster_id if getattr(self, "is_vision_only", False) else cluster_id + 1
-            )
-            if self.vision_stas and vid in self.vision_stas:
-                sta_data = self.vision_stas[vid]
-                stafit = None
+            vid = self.get_vision_id_for_cluster(cluster_id)
+            stas = self._optional_attr("vision_stas")
+            params = self._optional_attr("vision_params")
+            stafit = None
+            tc_from_current = False
+            rf_from_current = False
 
-                # Geometry (Extracting from Vision's pre-computed Gaussian fits)
-                try:
-                    if self.vision_params:
-                        stafit = self.vision_params.get_stafit_for_cell(vid)
-                        if stafit:
-                            rf_area = np.pi * stafit.std_x * stafit.std_y
-                            if stafit.std_x > 0:
-                                ellipticity = stafit.std_y / stafit.std_x
-                            # Long/short axis diameters (not just area+ratio):
-                            # *2 matches the convention already used when
-                            # drawing RF ellipses elsewhere (population_panel.py
-                            # uses std_x*2/std_y*2 as ellipse width/height).
-                            # max/min rather than x/y directly, since the
-                            # fit's x/y axis assignment is arbitrary relative
-                            # to which axis is actually longer — without this,
-                            # "long diameter" could silently mean std_x for one
-                            # cell and std_y for another.
-                            axis_a = stafit.std_x * 2
-                            axis_b = stafit.std_y * 2
-                            rf_long_diameter = max(axis_a, axis_b)
-                            rf_short_diameter = min(axis_a, axis_b)
-                except Exception:
-                    logger.debug(
-                        "Failed to extract STA geometry for cluster %s",
-                        cluster_id,
-                        exc_info=True,
+            # Geometry comes from Vision params, not from the STA movie.
+            try:
+                if params is not None:
+                    stafit = params.get_stafit_for_cell(vid)
+                    if stafit:
+                        rf_area = np.pi * stafit.std_x * stafit.std_y
+                        if stafit.std_x > 0:
+                            ellipticity = stafit.std_y / stafit.std_x
+                        # Long/short axis diameters (not just area+ratio):
+                        # *2 matches the convention already used when
+                        # drawing RF ellipses elsewhere (population_panel.py
+                        # uses std_x*2/std_y*2 as ellipse width/height).
+                        # max/min rather than x/y directly, since the
+                        # fit's x/y axis assignment is arbitrary relative
+                        # to which axis is actually longer — without this,
+                        # "long diameter" could silently mean std_x for one
+                        # cell and std_y for another.
+                        axis_a = stafit.std_x * 2
+                        axis_b = stafit.std_y * 2
+                        rf_long_diameter = max(axis_a, axis_b)
+                        rf_short_diameter = min(axis_a, axis_b)
+                        rf_from_current = True
+            except Exception:
+                logger.debug(
+                    "Failed to extract STA geometry for cluster %s",
+                    cluster_id,
+                    exc_info=True,
+                )
+
+            # Timecourse: params first. Indexing vision_stas[vid] reads the
+            # full STA cube from disk (LazySTADict). Skip that when
+            # Red/Green/BlueTimeCourse already exist.
+            try:
+                if params is not None:
+                    _time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        None, stafit, params, vid
                     )
-
-                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
-                try:
-                    time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                        sta_data, stafit, self.vision_params, vid
-                    )
-
                     if tc_matrix is not None and tc_matrix.size > 0:
                         energies = np.sum(tc_matrix**2, axis=0)
                         dom_idx = np.argmax(energies)
                         dom_trace = tc_matrix[:, dom_idx]
-
                         abs_max = np.max(np.abs(dom_trace))
-                        if abs_max > 0:
-                            timecourse = dom_trace / abs_max
-                        else:
-                            timecourse = dom_trace
-
+                        timecourse = (
+                            dom_trace / abs_max if abs_max > 0 else dom_trace
+                        )
                         time_to_peak = int(np.argmax(np.abs(timecourse)))
+                        tc_from_current = True
+            except Exception:
+                logger.debug(
+                    "Failed to extract STA timecourse from params for cluster %s",
+                    cluster_id,
+                    exc_info=True,
+                )
+
+            if timecourse is None and stas and vid in stas:
+                try:
+                    sta_data = stas[vid]
+                    _time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        sta_data, stafit, params, vid
+                    )
+                    if tc_matrix is not None and tc_matrix.size > 0:
+                        energies = np.sum(tc_matrix**2, axis=0)
+                        dom_idx = np.argmax(energies)
+                        dom_trace = tc_matrix[:, dom_idx]
+                        abs_max = np.max(np.abs(dom_trace))
+                        timecourse = (
+                            dom_trace / abs_max if abs_max > 0 else dom_trace
+                        )
+                        time_to_peak = int(np.argmax(np.abs(timecourse)))
+                        tc_from_current = True
                 except Exception:
                     logger.debug(
-                        "Failed to extract STA timecourse for cluster %s",
+                        "Failed to extract STA timecourse from cube for cluster %s",
                         cluster_id,
                         exc_info=True,
                     )
@@ -2339,7 +2403,14 @@ class DataManager(QObject):
             # --- Fallback: borrow STA/RF from reference bridge ---
             # Mapping keys are Vision IDs. Params timecourse lookup MUST use
             # the reference Vision ID (not current vid) — Law 1 on ref table.
-            elif self.reference_bridge and self.reference_bridge.has_match(vid):
+            # Only when this run has no STA for the cell (same as the old
+            # elif vision_stas branch).
+            if (
+                timecourse is None
+                and not (stas and vid in stas)
+                and self._optional_attr("reference_bridge")
+                and self.reference_bridge.has_match(vid)
+            ):
                 bridge = self.reference_bridge
                 ref_id = bridge.get_reference_id(vid)
                 sta_data = bridge.get_sta(vid) if bridge.has_sta(vid) else None
@@ -2387,9 +2458,6 @@ class DataManager(QObject):
                         )
 
             # Provenance: which source supplied each STA-derived field
-            used_current_sta = bool(
-                self.vision_stas and vid in self.vision_stas
-            )
             provenance = {
                 "timecourse": None,
                 "rf_geometry": None,
@@ -2397,30 +2465,30 @@ class DataManager(QObject):
                 "grating": None,
             }
             if timecourse is not None:
-                provenance["timecourse"] = "current" if used_current_sta else "reference"
+                provenance["timecourse"] = "current" if tc_from_current else "reference"
             if rf_area and float(rf_area) > 0:
-                provenance["rf_geometry"] = (
-                    "current" if used_current_sta else "reference"
-                )
+                provenance["rf_geometry"] = "current" if rf_from_current else "reference"
 
             # Match metadata for this cell (UI id space)
             match_status = ""
             match_confidence = 0.0
             reference_id = None
-            caveat = getattr(self, "match_caveats", {}).get(int(cluster_id))
+            caveat = (self._optional_attr("match_caveats") or {}).get(int(cluster_id))
+            bridge = self._optional_attr("reference_bridge")
             if caveat is not None:
                 match_status = caveat.status or ""
                 match_confidence = float(caveat.confidence or 0.0)
                 reference_id = caveat.reference_id
                 caveat.provenance["timecourse"] = provenance["timecourse"]
                 caveat.provenance["rf_geometry"] = provenance["rf_geometry"]
-            elif self.reference_bridge and self.reference_bridge.has_match(vid):
-                match_status = self.reference_bridge.get_status(vid)
-                match_confidence = self.reference_bridge.get_confidence(vid)
-                reference_id = self.reference_bridge.get_reference_id(vid)
+            elif bridge is not None and bridge.has_match(vid):
+                match_status = bridge.get_status(vid)
+                match_confidence = bridge.get_confidence(vid)
+                reference_id = bridge.get_reference_id(vid)
 
             metrics = {
                 "_computed": True,
+                "_sta_checked": self._sta_source_available(cluster_id),
                 "acg": acg_norm,
                 "timecourse": timecourse,
                 "rf_area": rf_area,
@@ -2557,7 +2625,9 @@ class DataManager(QObject):
             missing = [
                 int(cid)
                 for cid in cluster_ids
-                if not self.feature_cache.get(int(cid), {}).get("_computed")
+                if not self._physics_entry_is_fresh(
+                    int(cid), self.feature_cache.get(int(cid))
+                )
             ]
 
         if not missing:
@@ -5335,7 +5405,7 @@ class DataManager(QObject):
 
     def get_vision_id_for_cluster(self, cluster_id: int) -> int:
         """Translate UI cluster_id → Vision file key, respecting is_vision_only."""
-        if getattr(self, "is_vision_only", False):
+        if self._optional_attr("is_vision_only", False):
             return int(cluster_id)
         return int(cluster_id) + 1
 
@@ -5347,7 +5417,7 @@ class DataManager(QObject):
         must come through here rather than subtracting one by hand — the offset
         does not apply in vision-only mode and getting it wrong is silent.
         """
-        if getattr(self, "is_vision_only", False):
+        if self._optional_attr("is_vision_only", False):
             return int(vision_id)
         return int(vision_id) - 1
 

@@ -179,3 +179,104 @@ def test_apply_ei_updates_keeps_max_dup_r_as_float(tmp_path):
     assert bool(dm.cluster_df.loc[2, "potential_dups"]) is False
     assert mw.main_cluster_model.refreshed is True
     assert mw.tree_updated is True
+
+
+class _CountingSTADict(dict):
+    """Counts __getitem__ so we can see whether the STA cube was loaded."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.getitem_calls = []
+
+    def __getitem__(self, key):
+        self.getitem_calls.append(key)
+        return super().__getitem__(key)
+
+
+class _ParamsWithTimecourse:
+    def __init__(self, vid, tc, stafit=None):
+        self.vid = int(vid)
+        self.tc = np.asarray(tc, dtype=float)
+        self.stafit = stafit
+
+    def get_stafit_for_cell(self, cell_id):
+        if int(cell_id) != self.vid:
+            return None
+        return self.stafit
+
+    def get_data_for_cell(self, cell_id, field):
+        if int(cell_id) != self.vid:
+            return None
+        if field in ("RedTimeCourse", "GreenTimeCourse", "BlueTimeCourse"):
+            return self.tc.copy()
+        return None
+
+
+def test_stale_feature_cache_recomputes_when_vision_sta_arrives(tmp_path):
+    """PLAN: _computed + timecourse=None must not stick after Vision loads."""
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.is_vision_only = False
+    dm.vision_stas = None
+    dm.vision_params = None
+    dm.get_standard_plot_data = MagicMock(
+        return_value={"acg_norm": np.array([1.0, 2.0, 3.0])}
+    )
+
+    first = dm.get_cell_physics(4)
+    assert first["timecourse"] is None
+    assert first["_computed"] is True
+
+    tc = np.linspace(-1.0, 1.0, 12)
+    dm.vision_params = _ParamsWithTimecourse(5, tc)
+    dm.vision_stas = {5: object()}
+
+    second = dm.get_cell_physics(4)
+    assert second["timecourse"] is not None
+    np.testing.assert_allclose(np.abs(second["timecourse"]).max(), 1.0)
+    assert second["provenance"]["timecourse"] == "current"
+    assert second["_sta_checked"] is True
+
+    # A genuine miss after the check must not recompute forever.
+    third = dm.get_cell_physics(4)
+    assert third is second or np.array_equal(third["timecourse"], second["timecourse"])
+
+
+def test_get_cell_physics_skips_sta_cube_when_params_have_timecourse(tmp_path):
+    """PLAN: do not index the STA movie when params already have the traces."""
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.is_vision_only = False
+    tc = np.linspace(-0.5, 0.5, 8)
+    dm.vision_params = _ParamsWithTimecourse(8, tc)
+    stas = _CountingSTADict({8: object()})
+    dm.vision_stas = stas
+    dm.get_standard_plot_data = MagicMock(
+        return_value={"acg_norm": np.ones(4)}
+    )
+
+    metrics = dm.get_cell_physics(7)
+
+    assert stas.getitem_calls == []
+    assert metrics["timecourse"] is not None
+    assert metrics["provenance"]["timecourse"] == "current"
+
+
+def test_ensure_physics_cache_refreshes_sticky_none_timecourse(tmp_path):
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.is_vision_only = False
+    dm.feature_cache[3] = {
+        "_computed": True,
+        "timecourse": None,
+        "acg": np.ones(5),
+        "rf_area": 0.0,
+    }
+    dm._physics_done_count = 1
+    tc = np.ones(6)
+    dm.vision_params = _ParamsWithTimecourse(4, tc)
+    dm.vision_stas = {4: object()}
+    dm.get_standard_plot_data = MagicMock(return_value={"acg_norm": np.ones(5)})
+
+    dm.ensure_physics_cache([3])
+
+    entry = dm.feature_cache[3]
+    assert entry.get("timecourse") is not None
+    assert entry.get("_sta_checked") is True
