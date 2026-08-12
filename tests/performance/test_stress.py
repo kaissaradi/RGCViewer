@@ -1,5 +1,4 @@
 import pytest
-import psutil
 import os
 import gc
 import numpy as np
@@ -8,6 +7,10 @@ from qtpy.QtWidgets import QMainWindow
 from unittest.mock import MagicMock
 from src.gui.panels.umap_panel import UMAPPanel
 from src.gui.panels.standard_plots_panel import StandardPlotsPanel
+
+# psutil is a dev-only dependency; skip instead of aborting collection for the
+# whole tests/ tree (same reasoning as the umap guard below).
+psutil = pytest.importorskip("psutil", reason="psutil is not installed")
 
 try:
     import umap

@@ -1,9 +1,13 @@
 # tests/performance/test_ram_usage.py
 import pytest
-import psutil
 import os
 import gc
 from pathlib import Path
+
+# psutil lives in requirements-dev.txt, not requirements.txt. Skip rather than
+# raise: a bare `import psutil` here aborts collection for the whole tests/
+# tree, so one missing optional dep hides every other test's result.
+psutil = pytest.importorskip("psutil", reason="psutil is not installed")
 
 pytestmark = [pytest.mark.performance, pytest.mark.slow]
 
