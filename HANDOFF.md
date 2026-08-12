@@ -301,5 +301,11 @@ The same 20 failures as before this work. No new ones.
   `update.sh` wrapping `git pull`. Planned but not started — the plan also
   found that `torch` is a ~2 GB dependency used for one median, and that
   `hdbscan` is not imported anywhere in `src/`.
-- **Design pass (deferred):** Bauhaus design principles. All plots match
-  the color scheme in light and dark mode.
+- **Design pass (Priority 4 — specced):** Bauhaus-informed UX/UI redesign.
+  Spec: `docs/specs/ux_ui_redesign.md`. Plan: PLAN.md §4 Priority 4 + §5.
+  Eight phases: theme foundations, layout restructure, plot theming, tree/table,
+  experiment browser, command palette & shortcuts, auto-save & session
+  persistence, accessibility & polish. All work is `src/gui/` only — no
+  analysis code changes. Lab meeting feedback (laptop sizing, STA scale,
+  grating units/error bars, DSI/OSI columns, mosaic drag-to-select, loading
+  indicator, export) is tracked in the spec appendix C.
