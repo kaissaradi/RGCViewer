@@ -318,6 +318,11 @@ class UMAPPanel(QWidget):
 
         self.cluster_btn = QPushButton("Run Clustering")
         self.cluster_btn.clicked.connect(self.run_clustering)
+        # There is nothing to cluster until a UMAP run produces an embedding —
+        # run_clustering already refuses in that state. Disabled here too so the
+        # pre-run state and the state reset_for_new_dataset() restores are the
+        # same thing.
+        self.cluster_btn.setEnabled(False)
 
         # Auto-Group Checkbox
         self.auto_group_chk = QCheckBox("Auto-Group Tree")
@@ -673,6 +678,12 @@ class UMAPPanel(QWidget):
             view.set_group_colors(None)
         for key, stack in self.trace_stacks.items():
             stack.set_traces(None, [])
+            # Region shading is independent of the traces, and
+            # _apply_chirp_regions only overwrites it when the new prep's chirp
+            # file actually carries phase bounds — without this, a prep that
+            # lacks them inherits the previous prep's shading behind its own
+            # traces.
+            stack.set_regions([])
         # Greyed out rather than unchecked, so the user's own open/closed
         # choices survive the dataset swap and come back on the next run.
         for key in ("rf", "temporal", "acg", "chirp"):
@@ -683,6 +694,7 @@ class UMAPPanel(QWidget):
         # on "Ward" would show an empty plot titled as a clustering.
         self.color_combo.setCurrentText("KSLabel")
         self.show_ids_btn.setEnabled(False)
+        self.cluster_btn.setEnabled(False)
 
         self._building = True
         try:

@@ -388,6 +388,14 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
 
+    # --- Drop the previous dataset's UMAP results ---
+    # Path A of load_vision_directory builds a brand-new DataManager, so this is
+    # a different preparation just as much as a Kilosort load is. Same reasoning
+    # as in _on_kilosort_loaded. reset_for_new_dataset() re-gates the feature
+    # checkboxes itself, which this path was not doing at all before.
+    if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.reset_for_new_dataset()
+
     # --- Enable actions ---
     main_window.load_raw_action.setEnabled(True)
     main_window.save_action.setEnabled(True)
