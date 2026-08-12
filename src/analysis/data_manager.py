@@ -1845,6 +1845,92 @@ class DataManager(QObject):
                     1 for v in self.feature_cache.values() if v.get("_computed")
                 )
 
+    def _load_grating_cache_from_disk(self):
+        """Restore the on-demand grating DS/OS results, or ``{}`` if unusable.
+
+        Each entry costs an FFT plus a 1000-shuffle permutation test per
+        condition, so re-running the sweep over ~900 cells is the heavy second
+        pass users see at every launch. Keys are Kilosort cluster ids; stale
+        ones are pruned against cluster_df by build_cluster_dataframe's caller
+        path in the same way the other caches are.
+        """
+        if not self.kilosort_dir:
+            return {}
+
+        pkl = self.kilosort_dir / "grating_computed_cache.pkl"
+        if not pkl.exists():
+            return {}
+
+        try:
+            with open(pkl, "rb") as f:
+                payload = pickle.load(f)
+            cache = cache_persistence.load_versioned_entries(payload)
+        except Exception:
+            logger.warning("Could not load grating_computed_cache.pkl", exc_info=True)
+            return {}
+
+        valid_ids = None
+        cluster_df = getattr(self, "cluster_df", None)
+        if cluster_df is not None and "cluster_id" in getattr(cluster_df, "columns", []):
+            valid_ids = set(cluster_df["cluster_id"].astype(int).tolist())
+
+        restored = {}
+        for k, v in cache.items():
+            if v is None:
+                continue
+            try:
+                key = int(k)
+            except (TypeError, ValueError):
+                continue
+            if valid_ids is not None and key not in valid_ids:
+                continue
+            restored[key] = v
+
+        if restored:
+            logger.debug("Restored grating_computed_cache (%d cells)", len(restored))
+        return restored
+
+    def rebuild_caches(self):
+        """Drop every persisted physics cache, in RAM and on disk.
+
+        The user-facing "Rebuild Physics Cache" safety valve: after this the
+        warm-up sees a cold dataset and recomputes from source, and the save at
+        the end of that pass overwrites the pkls. Clearing disk as well as RAM
+        is what makes it a *rebuild* rather than a session-local reset — a
+        stale or corrupt file cannot survive it.
+
+        Cheap and non-blocking (dict clears plus three unlinks), so it is safe
+        to call from the GUI thread; the recompute itself happens on the normal
+        background warm-up path.
+        """
+        with self._standard_plot_lock:
+            self.standard_plot_cache.clear()
+
+        with self._feature_lock:
+            self.feature_cache.clear()
+            self._physics_done_count = 0
+
+        with self._grating_cache_lock:
+            self.grating_computed_cache.clear()
+
+        removed = []
+        if self.kilosort_dir:
+            for name in (
+                "standard_plot_cache.pkl",
+                "feature_cache.pkl",
+                "grating_computed_cache.pkl",
+            ):
+                path = self.kilosort_dir / name
+                try:
+                    if path.exists():
+                        path.unlink()
+                        removed.append(name)
+                except OSError:
+                    logger.warning("Could not delete %s", path, exc_info=True)
+
+        logger.info("Physics caches cleared (deleted: %s)", removed or "none")
+        return removed
+
     def get_cell_physics(self, cluster_id):
         """
         Single Source of Truth for a cell's physical metrics.
@@ -4505,7 +4591,11 @@ class DataManager(QObject):
                 self.grating_data = None
                 self.grating_available = True
                 self.grating_status = "raw_only"
-                self.grating_computed_cache = {}
+                # Restore rather than reset: recomputing the whole DS/OS sweep
+                # every launch is the second heavy pass behind the "double
+                # load". Entries are keyed by cluster id and pruned against
+                # cluster_df alongside the other caches.
+                self.grating_computed_cache = self._load_grating_cache_from_disk()
                 self.grating_conditions = sorted(
                     set(
                         (t["barWidth"], t["temporalFrequency"])
