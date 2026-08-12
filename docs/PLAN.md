@@ -2,7 +2,7 @@
 
 Read `docs/AGENTS.md` and `HANDOFF.md` before this file.
 
-Last updated: 2026-08-12. Branch: `claude/plan-ux-ui-design-62g5jl`.
+Last updated: 2026-08-12. Branch: `dev-testing`.
 
 This file lists fragile code and open defects. It is not a roadmap.
 The UX redesign spec is parked. See `docs/specs/ux_ui_redesign.md`.
@@ -49,13 +49,13 @@ The full suite still has older failures. Do not mark them skipped.
 
 | Defect | Effect | Status |
 |---|---|---|
-| Mixed no-STA cells share one temporal PCA point | Fake tight UMAP cluster | Open |
-| Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Open |
-| Stale `feature_cache.pkl` with `_computed: True` and `timecourse=None` | Population panel reports no timecourses | Open. Workaround: delete the pickle |
-| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Open |
-| `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Open |
-| `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Open |
-| Older pytest failures | Suite is not a clean gate | Open. Do not skip |
+| Mixed no-STA cells share one temporal PCA point | Fake tight UMAP cluster | Open. Needs a product call: exclude from UMAP, or change default weights. Do not start. |
+| Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Open. Scientific. Do not change defaults without the user. |
+| Stale `feature_cache.pkl` with `_computed: True` and `timecourse=None` | Population panel reports no timecourses | Fixed 2026-08-12. `_physics_entry_is_fresh` recomputes once when an STA source appears (`_sta_checked`). |
+| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12. `select_dsos_for_display` plus `update_all` on slider move. |
+| `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Fixed 2026-08-12. Params timecourse first. Cube only on a miss. |
+| `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Fixed 2026-08-12. Skip when the group timecourse and ACG caches already hold the subset. First visit of a group still draws. |
+| Older pytest failures | Suite is not a clean gate | Open. Do not skip. `__new__` physics tests that hit `getattr` on QObject now pass via `_optional_attr`. Remaining failures (qtbot, raw_feature_blocks column set) are older. |
 
 ## 4. Parked work
 

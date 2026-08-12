@@ -1,16 +1,18 @@
 # Handoff — current state
 
 **Date:** 2026-08-12
-**Branch:** `claude/plan-ux-ui-design-62g5jl`
-**Uncommitted work:** yes. Do not commit unless the user asks.
+**Branch:** `dev-testing`
+**Uncommitted work:** no (as of the PLAN pass below). Do not push unless
+the user asks.
 
 This file is the pickup point. Read `README.md`, `CLAUDE.md`, and
 `docs/AGENTS.md` first.
 
 ## What this branch is for
 
-The branch name is UX/UI. The last completed work is older-dataset load
-robustness. Do not start the UX redesign unless the user asks.
+`dev-testing` is the active lab branch. The last completed work is load
+speed plus the PLAN defects that did not need a user check. Do not start
+the UX redesign unless the user asks.
 
 ## Standing decisions
 
@@ -74,22 +76,30 @@ Last run: 11 passed.
    Confirm the EI plot can stay empty.
 4. Open 20251204. Confirm the STA dialog. Confirm spike analyses still work.
 
-## Open defects (not this work)
+## Done — PLAN defects that did not need a user check (2026-08-12)
 
-See `docs/PLAN.md`. Highest impact:
+| Defect | Change |
+|---|---|
+| Stale `_computed` + `timecourse=None` | `DataManager._physics_entry_is_fresh` / `_sta_checked` |
+| DS/OS slider ignored by grating panel | `select_dsos_for_display`; slider also calls `grating_panel.update_all` |
+| `get_cell_physics` always loaded the STA cube | Params timecourse first |
+| Population panels redrawn on every cell in a group | `population_group_plots_cached` |
 
-- Cells with no STA form a fake UMAP cluster. Not fixed.
-- Default feature weights make the embedding almost STA-only.
-- A stale `feature_cache.pkl` can keep `timecourse=None` forever.
-- The DS/OS slider does not drive the grating panel.
-- `get_cell_physics()` reads the full STA cube when it only needs the
-  params timecourse.
-- The full pytest suite still has older failures. Do not skip them to
-  make a new change look green.
+Load-speed work from the same day is in `1c601c0` (cache bar + table unlock).
+
+## Open defects (need the user, or not sure)
+
+See `docs/PLAN.md`. Still open:
+
+- Cells with no STA form a fake UMAP cluster. Product call.
+- Default feature weights make the embedding almost STA-only. Scientific.
+- The full pytest suite still has older failures. Do not skip them.
 
 ## Next
 
-No next task is assigned. If the user reports a UMAP crash on first
-open, start at `src/gui/panels/live_selectors.py` (`_axes_ready`).
+No next task is assigned. If the user wants more PLAN work, the remaining
+open rows need a decision (UMAP / weights) or a user-visible check.
+If the user reports a UMAP crash on first open, start at
+`src/gui/panels/live_selectors.py` (`_axes_ready`).
 If the user reports a start freeze, confirm `MainWindow` does not call
 `last_dataset()`.
