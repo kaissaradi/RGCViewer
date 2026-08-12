@@ -31,6 +31,21 @@ from qtpy.QtWidgets import (
     QFrame,
 )
 from qtpy.QtCore import Qt, QTimer
+
+
+class _ComboBoxNoWheel(QComboBox):
+    """Ignore wheel events unless the popup is open.
+
+    A QComboBox under the cursor steals wheel events from the canvas and
+    changes the current item. That made the EI View combo jump while the
+    user scrolled the plot.
+    """
+
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 import pyqtgraph as pg
 
 from ..widgets.widgets import MplCanvas
@@ -293,7 +308,7 @@ class EIPanel(QWidget):
         row.setSpacing(6)
 
         row.addWidget(QLabel("View:"))
-        self.view_combo = QComboBox()
+        self.view_combo = _ComboBoxNoWheel()
         self.view_combo.addItems(["Heatmap", "3D", "Waveform"])
         self.view_combo.currentTextChanged.connect(self._on_view_changed)
         row.addWidget(self.view_combo)
@@ -374,7 +389,7 @@ class EIPanel(QWidget):
         left_btn.setFixedWidth(28)
         right_btn = QPushButton("▶")
         right_btn.setFixedWidth(28)
-        dropdown = QComboBox()
+        dropdown = _ComboBoxNoWheel()
 
         left_btn.clicked.connect(self._on_overlay_left)
         right_btn.clicked.connect(self._on_overlay_right)
@@ -571,15 +586,12 @@ class EIPanel(QWidget):
         # Default the heatmap to MAX-PROJECTION (frame=-1): every electrode the
         # cell ever drives — soma + full axon path — shown at once, so the
         # whole footprint is visible on load. Pressing Play still animates
-        # through real time frames (starting at the soma spike).
-        self._draw_heatmap_frame(-1)
+        # through real time frames (starting at the soma spike). Keep
+        # `_anim_frame` at -1 so a View-combo round-trip does not snap to the
+        # soma sample that `_setup_anim_controls` parked the slider on.
+        self._anim_frame = -1
+        self._redraw_current_view()
         self._draw_temporal(final_ei, final_ids, top_ch)
-
-        # lazy 3-D: only render if that view is currently active
-        if self.current_view == "3D":
-            self.mountain_widget.plot_ei_3d(final_ei[0], ch_pos)
-        elif self.current_view == "Waveform":
-            self._draw_waveform_frame()
 
     def _load_ks_ei(self, cluster_ids: np.ndarray, is_fallback=False):
         primary_id = int(cluster_ids[0])
@@ -590,29 +602,7 @@ class EIPanel(QWidget):
             self._show_message("Error generating features", color="red")
             return
 
-        from .population_panel import plot_rich_ei
-
-        self.spatial_canvas.fig.clear()
-        colors = self.main_window.get_current_colors()
-        self.spatial_canvas.fig.patch.set_facecolor(colors["bg_panel"])
-
-        plot_rich_ei(
-            self.spatial_canvas.fig,
-            lw["median_ei"],
-            self.main_window.data_manager.channel_positions,
-            hw,
-            self.main_window.data_manager.sampling_rate,
-            _pre_samples=20,
-        )
-        title = f"Cluster {primary_id}"
-        if is_fallback:
-            title += " (KS EI)"
-        self.spatial_canvas.fig.suptitle(
-            title, color=colors["text_primary"], fontsize=14
-        )
-        self.spatial_canvas.draw()
-
-        # store minimal state so animation / 3-D still work
+        # store minimal state so animation / 3-D / waveform still work
         ei_data = lw["median_ei"]
         ch_pos = self.main_window.data_manager.channel_positions
         self.current_ei_data = [ei_data]
@@ -635,6 +625,28 @@ class EIPanel(QWidget):
             self.mountain_widget.plot_ei_3d(ei_data, ch_pos)
         elif self.current_view == "Waveform":
             self._draw_waveform_frame()
+        else:
+            from .population_panel import plot_rich_ei
+
+            self.spatial_canvas.fig.clear()
+            colors = self.main_window.get_current_colors()
+            self.spatial_canvas.fig.patch.set_facecolor(colors["bg_panel"])
+
+            plot_rich_ei(
+                self.spatial_canvas.fig,
+                lw["median_ei"],
+                ch_pos,
+                hw,
+                self.main_window.data_manager.sampling_rate,
+                _pre_samples=20,
+            )
+            title = f"Cluster {primary_id}"
+            if is_fallback:
+                title += " (KS EI)"
+            self.spatial_canvas.fig.suptitle(
+                title, color=colors["text_primary"], fontsize=14
+            )
+            self.spatial_canvas.draw()
 
     # -----------------------------------------------------------------------
     # Internal: drawing
@@ -973,30 +985,41 @@ class EIPanel(QWidget):
         self.frame_label.setText(f"t: {t_ms:.2f} ms")
         self._render_anim_frame()
 
+    def _active_overlay_index(self) -> int:
+        n = len(self.current_ei_data) if self.current_ei_data else 0
+        if n <= 0:
+            return 0
+        return int(np.clip(self.overlay_index, 0, n - 1))
+
     def _redraw_current_view(self):
         """Redraw whichever view is active. Use this instead of calling
         _draw_heatmap_frame directly from shared handlers (photo toggle,
-        alpha, canvas click, animation) — otherwise those handlers force the
-        canvas back to Heatmap even when the user is in Waveform view."""
+        alpha, canvas click, overlay dropdown) — otherwise those handlers
+        force the canvas back to Heatmap even when the user is in
+        Waveform view."""
         if self.current_view == "Waveform":
             self._draw_waveform_frame()
         elif self.current_view == "3D":
             if self.current_ei_data is not None:
                 ch_pos = self._resolve_channel_positions()
-                self.mountain_widget.plot_ei_3d(self.current_ei_data[0], ch_pos)
+                ei = self.current_ei_data[self._active_overlay_index()]
+                self.mountain_widget.plot_ei_3d(ei, ch_pos)
         else:
             self._draw_heatmap_frame(self._anim_frame)
 
     def _render_anim_frame(self):
-        if self.current_view in ("Heatmap", "Waveform"):
-            self._draw_heatmap_frame(self._anim_frame)
-            sr = (
-                self.main_window.data_manager.sampling_rate
-                if self.main_window.data_manager
-                else 20000
-            )
-            t_ms = self._anim_frame / sr * 1000.0
-            self.frame_label.setText(f"t: {t_ms:.2f} ms")
+        # Waveform and 3D are not time-frame views. Drawing the heatmap here
+        # left the View combo on "Waveform" while the canvas showed Heatmap.
+        if self.current_view != "Heatmap":
+            return
+        self._draw_heatmap_frame(self._anim_frame)
+        sr = (
+            self.main_window.data_manager.sampling_rate
+            if self.main_window.data_manager
+            else 20000
+        )
+        t_ms = self._anim_frame / sr * 1000.0
+        self.frame_label.setText(f"t: {t_ms:.2f} ms")
 
     # -----------------------------------------------------------------------
     # Canvas interaction
@@ -1049,20 +1072,12 @@ class EIPanel(QWidget):
     # -----------------------------------------------------------------------
 
     def _on_view_changed(self, text: str):
+        if text not in ("Heatmap", "3D", "Waveform"):
+            return
         self.current_view = text
-        if text == "Heatmap":
-            self.spatial_stack.setCurrentIndex(0)
-            if self.current_ei_data is not None:
-                self._draw_heatmap_frame(self._anim_frame)
-        elif text == "3D":
-            self.spatial_stack.setCurrentIndex(1)
-            if self.current_ei_data is not None:
-                ch_pos = self._resolve_channel_positions()
-                self.mountain_widget.plot_ei_3d(self.current_ei_data[0], ch_pos)
-        elif text == "Waveform":
-            self.spatial_stack.setCurrentIndex(0)  # reuse the 2-D canvas
-            if self.current_ei_data is not None:
-                self._draw_waveform_frame()
+        self.spatial_stack.setCurrentIndex(1 if text == "3D" else 0)
+        if self.current_ei_data is not None:
+            self._redraw_current_view()
 
     # -----------------------------------------------------------------------
     # Waveform view
@@ -1375,8 +1390,10 @@ class EIPanel(QWidget):
             self.overlay_dropdown.blockSignals(False)
 
     def _on_overlay_dropdown(self, idx: int):
+        if idx < 0:
+            return
         self.overlay_index = idx
-        self._draw_heatmap_frame(self._anim_frame)
+        self._redraw_current_view()
 
     def _on_overlay_left(self):
         if self.overlay_index > 0:
