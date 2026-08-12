@@ -417,111 +417,168 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
             "Vision loaded. Computing EI correlations in background...", 4000
         )
 
-    # In _on_vision_loaded, REPLACE the _warm_physics block with:
     if success:
-        _all_ids = (
+        start_physics_warmup(main_window)
+
+
+def rebuild_physics_cache(main_window):
+    """Delete the persisted physics caches and recompute them from source.
+
+    The safety valve behind the File ▸ Rebuild Physics Cache action: if a run's
+    ``feature_cache.pkl`` is stale or corrupt there is otherwise no way out of
+    it from inside the app. Deletes the pkls, clears RAM, then re-runs the
+    normal warm-up — which writes fresh files at the end, so the cache is
+    *overwritten*, not merely dropped.
+    """
+    dm = main_window.data_manager
+    if dm is None or dm.cluster_df is None or dm.cluster_df.empty:
+        QMessageBox.information(
+            main_window,
+            "Rebuild Physics Cache",
+            "Load a dataset first — there is no cache to rebuild.",
+        )
+        return
+
+    reply = QMessageBox.question(
+        main_window,
+        "Rebuild Physics Cache",
+        "Recompute and overwrite the cached physics for this run?\n\n"
+        "The cached ISI/ACG, physics and grating DS/OS files are deleted and "
+        "rebuilt from source. This takes as long as a first-time load.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    removed = dm.rebuild_caches()
+    logger.info("Rebuild requested by user; removed %s", removed or "nothing")
+
+    # start_worker() resets _cache_save_triggered and re-queues every cluster
+    # (the caches it checks are now empty), so the save fires again at the end.
+    start_worker(main_window)
+    start_physics_warmup(main_window)
+    main_window.status_bar.showMessage("Rebuilding physics cache...", 5000)
+
+
+def start_physics_warmup(main_window, all_ids=None):
+    """Queue the physics warm-up, then chain the grating DS/OS batch after it.
+
+    Called once per dataset load and again by the Rebuild Physics Cache
+    action. Both Vision-load paths used to carry byte-identical copies of
+    this chain (complete with a leftover ``REPLACE the _warm_physics block``
+    editing note); they now share this one, so the rebuild path cannot drift
+    from the load path.
+
+    Nothing here computes on the GUI thread: ``_warm_physics`` runs on a
+    plain daemon thread and hops back via ``physics_warm_done`` before any
+    QThread is started (AGENTS.md Law 2).
+    """
+    if all_ids is None:
+        all_ids = (
             main_window.data_manager.cluster_df["cluster_id"].astype(int).tolist()
         )
+    _all_ids = all_ids
 
-        def _start_grating_batch():
-            # Batch-precompute grating DSI/OSI for every cluster so the DS/OS
-            # population views (probe map, RF-plot markers) reflect the whole
-            # dataset immediately rather than only clusters the user happens
-            # to have opened individually. This deliberately overrides
-            # GratingComputeWorker's documented "only compute on demand"
-            # design — an accepted tradeoff (startup time vs. complete
-            # population views) made explicitly for this feature, not an
-            # oversight of that design note.
-            #
-            # Runs on a real QThread + GratingBatchWorker (see workers.py),
-            # NOT a plain threading.Thread — its progress/finished signals
-            # need to safely reach GUI-thread code (status bar text, a
-            # matplotlib redraw), and only a real QThread with Qt's
-            # signal/slot queuing guarantees that reliably across
-            # platforms. A bare Python thread has no Qt event loop, so
-            # QTimer.singleShot() from inside one is not reliable (Qt
-            # requires timers to be started on the thread they fire on),
-            # and calling widget methods (e.g. status_bar.showMessage)
-            # directly from a non-GUI thread is unsafe regardless.
-            from .workers.workers import GratingBatchWorker
+    def _start_grating_batch():
+        # Batch-precompute grating DSI/OSI for every cluster so the DS/OS
+        # population views (probe map, RF-plot markers) reflect the whole
+        # dataset immediately rather than only clusters the user happens
+        # to have opened individually. This deliberately overrides
+        # GratingComputeWorker's documented "only compute on demand"
+        # design — an accepted tradeoff (startup time vs. complete
+        # population views) made explicitly for this feature, not an
+        # oversight of that design note.
+        #
+        # Runs on a real QThread + GratingBatchWorker (see workers.py),
+        # NOT a plain threading.Thread — its progress/finished signals
+        # need to safely reach GUI-thread code (status bar text, a
+        # matplotlib redraw), and only a real QThread with Qt's
+        # signal/slot queuing guarantees that reliably across
+        # platforms. A bare Python thread has no Qt event loop, so
+        # QTimer.singleShot() from inside one is not reliable (Qt
+        # requires timers to be started on the thread they fire on),
+        # and calling widget methods (e.g. status_bar.showMessage)
+        # directly from a non-GUI thread is unsafe regardless.
+        from .workers.workers import GratingBatchWorker
 
-            main_window._grating_batch_thread = QThread()
-            main_window._grating_batch_worker = GratingBatchWorker(
-                main_window.data_manager, _all_ids
+        main_window._grating_batch_thread = QThread()
+        main_window._grating_batch_worker = GratingBatchWorker(
+            main_window.data_manager, _all_ids
+        )
+        main_window._grating_batch_worker.moveToThread(
+            main_window._grating_batch_thread
+        )
+        main_window._grating_batch_thread.started.connect(
+            main_window._grating_batch_worker.run
+        )
+
+        def _on_progress(done, total):
+            main_window.status_bar.showMessage(
+                f"Computing grating DS/OS tuning... ({done}/{total})"
             )
-            main_window._grating_batch_worker.moveToThread(
-                main_window._grating_batch_thread
+
+        def _on_batch_finished():
+            main_window.status_bar.showMessage(
+                "Grating DS/OS tuning computed for all clusters.", 4000
             )
-            main_window._grating_batch_thread.started.connect(
-                main_window._grating_batch_worker.run
+            # _draw_population_panel_initial (not redraw_population_
+            # panels directly) because it also redraws the Population
+            # Receptive Fields plot, which now carries the DS/OS
+            # markers — redraw_population_panels alone omits that plot.
+            if getattr(main_window, "population_view_enabled", False):
+                main_window._draw_population_panel_initial()
+            main_window._grating_batch_thread.quit()
+            main_window._grating_batch_thread.wait(2000)
+            main_window._grating_batch_worker.deleteLater()
+            main_window._grating_batch_thread.deleteLater()
+
+        main_window._grating_batch_worker.progress.connect(_on_progress)
+        main_window._grating_batch_worker.finished.connect(_on_batch_finished)
+        main_window._grating_batch_thread.start()
+
+    def _on_physics_warm_done():
+        # Self-disconnect so repeated Vision loads in one session don't
+        # stack duplicate connections — same idiom as
+        # _on_standard_plots_done just below.
+        try:
+            main_window.physics_warm_done.disconnect(_on_physics_warm_done)
+        except (RuntimeError, TypeError):
+            pass
+        _start_grating_batch()
+
+    main_window.physics_warm_done.connect(_on_physics_warm_done)
+
+    def _warm_physics():
+        main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
+        # Chain the grating batch after physics warm-up completes.
+        # _warm_physics itself runs on a plain threading.Thread (see
+        # below) — that's fine for ensure_physics_cache, which does no
+        # Qt/widget work of its own — but starting a QThread must
+        # happen from a thread with a Qt event loop for its signals to
+        # be delivered correctly, so hop back onto the GUI thread via a
+        # Qt-native mechanism (Signal, not QTimer.singleShot) rather
+        # than starting the QThread directly from this bare thread.
+        main_window.physics_warm_done.emit()
+
+    def _on_standard_plots_done():
+        # Disconnect immediately so it only fires once
+        try:
+            main_window.standard_plots_worker.all_done.disconnect(
+                _on_standard_plots_done
             )
+        except RuntimeError:
+            pass
 
-            def _on_progress(done, total):
-                main_window.status_bar.showMessage(
-                    f"Computing grating DS/OS tuning... ({done}/{total})"
-                )
+        # StandardPlotsWorker has finished — feature_cache has all ACGs.
+        # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
+        main_window.cache_progress_count = 0
+        main_window.cache_progress.setValue(0)
+        main_window.cache_progress.show()
+        start_cache_progress_polling(main_window)
+        threading.Thread(target=_warm_physics, daemon=True).start()
 
-            def _on_batch_finished():
-                main_window.status_bar.showMessage(
-                    "Grating DS/OS tuning computed for all clusters.", 4000
-                )
-                # _draw_population_panel_initial (not redraw_population_
-                # panels directly) because it also redraws the Population
-                # Receptive Fields plot, which now carries the DS/OS
-                # markers — redraw_population_panels alone omits that plot.
-                if getattr(main_window, "population_view_enabled", False):
-                    main_window._draw_population_panel_initial()
-                main_window._grating_batch_thread.quit()
-                main_window._grating_batch_thread.wait(2000)
-                main_window._grating_batch_worker.deleteLater()
-                main_window._grating_batch_thread.deleteLater()
-
-            main_window._grating_batch_worker.progress.connect(_on_progress)
-            main_window._grating_batch_worker.finished.connect(_on_batch_finished)
-            main_window._grating_batch_thread.start()
-
-        def _on_physics_warm_done():
-            # Self-disconnect so repeated Vision loads in one session don't
-            # stack duplicate connections — same idiom as
-            # _on_standard_plots_done just below.
-            try:
-                main_window.physics_warm_done.disconnect(_on_physics_warm_done)
-            except (RuntimeError, TypeError):
-                pass
-            _start_grating_batch()
-
-        main_window.physics_warm_done.connect(_on_physics_warm_done)
-
-        def _warm_physics():
-            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
-            # Chain the grating batch after physics warm-up completes.
-            # _warm_physics itself runs on a plain threading.Thread (see
-            # below) — that's fine for ensure_physics_cache, which does no
-            # Qt/widget work of its own — but starting a QThread must
-            # happen from a thread with a Qt event loop for its signals to
-            # be delivered correctly, so hop back onto the GUI thread via a
-            # Qt-native mechanism (Signal, not QTimer.singleShot) rather
-            # than starting the QThread directly from this bare thread.
-            main_window.physics_warm_done.emit()
-
-        def _on_standard_plots_done():
-            # Disconnect immediately so it only fires once
-            try:
-                main_window.standard_plots_worker.all_done.disconnect(
-                    _on_standard_plots_done
-                )
-            except RuntimeError:
-                pass
-
-            # StandardPlotsWorker has finished — feature_cache has all ACGs.
-            # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
-            main_window.cache_progress_count = 0
-            main_window.cache_progress.setValue(0)
-            main_window.cache_progress.show()
-            start_cache_progress_polling(main_window)
-            threading.Thread(target=_warm_physics, daemon=True).start()
-
-        main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
+    main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
 
 
 def load_vision_directory(main_window):
@@ -654,111 +711,8 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     # Now that Vision STA data is loaded, compute get_cell_physics for all
     # clusters. The StandardPlotsWorker deliberately skips this so it can
     # never produce stale timecourse=None entries before Vision is ready.
-    # In _on_vision_loaded, REPLACE the _warm_physics block with:
     if success:
-        _all_ids = (
-            main_window.data_manager.cluster_df["cluster_id"].astype(int).tolist()
-        )
-
-        def _start_grating_batch():
-            # Batch-precompute grating DSI/OSI for every cluster so the DS/OS
-            # population views (probe map, RF-plot markers) reflect the whole
-            # dataset immediately rather than only clusters the user happens
-            # to have opened individually. This deliberately overrides
-            # GratingComputeWorker's documented "only compute on demand"
-            # design — an accepted tradeoff (startup time vs. complete
-            # population views) made explicitly for this feature, not an
-            # oversight of that design note.
-            #
-            # Runs on a real QThread + GratingBatchWorker (see workers.py),
-            # NOT a plain threading.Thread — its progress/finished signals
-            # need to safely reach GUI-thread code (status bar text, a
-            # matplotlib redraw), and only a real QThread with Qt's
-            # signal/slot queuing guarantees that reliably across
-            # platforms. A bare Python thread has no Qt event loop, so
-            # QTimer.singleShot() from inside one is not reliable (Qt
-            # requires timers to be started on the thread they fire on),
-            # and calling widget methods (e.g. status_bar.showMessage)
-            # directly from a non-GUI thread is unsafe regardless.
-            from .workers.workers import GratingBatchWorker
-
-            main_window._grating_batch_thread = QThread()
-            main_window._grating_batch_worker = GratingBatchWorker(
-                main_window.data_manager, _all_ids
-            )
-            main_window._grating_batch_worker.moveToThread(
-                main_window._grating_batch_thread
-            )
-            main_window._grating_batch_thread.started.connect(
-                main_window._grating_batch_worker.run
-            )
-
-            def _on_progress(done, total):
-                main_window.status_bar.showMessage(
-                    f"Computing grating DS/OS tuning... ({done}/{total})"
-                )
-
-            def _on_batch_finished():
-                main_window.status_bar.showMessage(
-                    "Grating DS/OS tuning computed for all clusters.", 4000
-                )
-                # _draw_population_panel_initial (not redraw_population_
-                # panels directly) because it also redraws the Population
-                # Receptive Fields plot, which now carries the DS/OS
-                # markers — redraw_population_panels alone omits that plot.
-                if getattr(main_window, "population_view_enabled", False):
-                    main_window._draw_population_panel_initial()
-                main_window._grating_batch_thread.quit()
-                main_window._grating_batch_thread.wait(2000)
-                main_window._grating_batch_worker.deleteLater()
-                main_window._grating_batch_thread.deleteLater()
-
-            main_window._grating_batch_worker.progress.connect(_on_progress)
-            main_window._grating_batch_worker.finished.connect(_on_batch_finished)
-            main_window._grating_batch_thread.start()
-
-        def _on_physics_warm_done():
-            # Self-disconnect so repeated Vision loads in one session don't
-            # stack duplicate connections — same idiom as
-            # _on_standard_plots_done just below.
-            try:
-                main_window.physics_warm_done.disconnect(_on_physics_warm_done)
-            except (RuntimeError, TypeError):
-                pass
-            _start_grating_batch()
-
-        main_window.physics_warm_done.connect(_on_physics_warm_done)
-
-        def _warm_physics():
-            main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
-            # Chain the grating batch after physics warm-up completes.
-            # _warm_physics itself runs on a plain threading.Thread (see
-            # below) — that's fine for ensure_physics_cache, which does no
-            # Qt/widget work of its own — but starting a QThread must
-            # happen from a thread with a Qt event loop for its signals to
-            # be delivered correctly, so hop back onto the GUI thread via a
-            # Qt-native mechanism (Signal, not QTimer.singleShot) rather
-            # than starting the QThread directly from this bare thread.
-            main_window.physics_warm_done.emit()
-
-        def _on_standard_plots_done():
-            # Disconnect immediately so it only fires once
-            try:
-                main_window.standard_plots_worker.all_done.disconnect(
-                    _on_standard_plots_done
-                )
-            except RuntimeError:
-                pass
-
-            # StandardPlotsWorker has finished — feature_cache has all ACGs.
-            # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
-            main_window.cache_progress_count = 0
-            main_window.cache_progress.setValue(0)
-            main_window.cache_progress.show()
-            start_cache_progress_polling(main_window)
-            threading.Thread(target=_warm_physics, daemon=True).start()
-
-        main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
+        start_physics_warmup(main_window)
 
     # Trigger a refresh of the currently selected cluster to show new data
     if main_window._get_selected_cluster_id() is not None:
@@ -1021,9 +975,13 @@ def start_worker(main_window: MainWindow):
         for cid in dm.cluster_df["cluster_id"]:
             cid_int = int(cid)
 
-            # Check if it's already cached
+            # Check if it's already cached. feature_cache presence is not
+            # enough — the ACG pass leaves half-built {"acg": ...} rows behind,
+            # and treating those as done would skip the cell's physics.
             has_std = cid_int in getattr(dm, "standard_plot_cache", {})
-            has_feat = cid_int in getattr(dm, "feature_cache", {})
+            has_feat = bool(
+                getattr(dm, "feature_cache", {}).get(cid_int, {}).get("_computed")
+            )
 
             if not (has_std and has_feat):
                 # Only queue cells that actually need math done
