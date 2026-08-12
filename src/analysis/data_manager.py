@@ -1550,6 +1550,17 @@ class DataManager(QObject):
             .infer_objects(copy=False)
         )
 
+        # --- Release the sort scratch (this pass is its only consumer) ---
+        # load_kilosort_data() built _spk_sorted_cls/_spk_sorted_t for this ISI
+        # pass alone, and the pass itself made four more full-length temporaries.
+        # Together they are several times the size of the spike files, and
+        # nothing reads them after this point, so keeping them resident for the
+        # rest of the session is pure cost. The branch above recomputes the
+        # sorted copies if a later caller ever needs them again.
+        self._spk_sorted_cls = None
+        self._spk_sorted_t = None
+        del sorted_cls, sorted_t, isis, same_cls, violations, spike_count
+
         # --- Load status & compute remaining metrics ---
         self.load_status()
 
