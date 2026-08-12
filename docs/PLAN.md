@@ -1,6 +1,6 @@
 # RGCViewer UX / UI Redesign Plan
 
-*Last updated: 2025-08-12*
+*Last updated: 2025-08-12 — incorporates lab meeting feedback*
 
 This document is the single specification for the visual and interaction
 redesign of RGCViewer. It covers design language, color system, layout
@@ -24,7 +24,9 @@ No core analysis code changes — only `src/gui/`, `src/gui/panels/`,
 10. [Tab Navigation](#10-tab-navigation)
 11. [Status Bar & Notifications](#11-status-bar--notifications)
 12. [Accessibility](#12-accessibility)
-13. [Implementation Phases](#13-implementation-phases)
+13. [Panel-Specific Fixes (Lab Feedback)](#13-panel-specific-fixes-lab-feedback)
+14. [Export & Save Improvements](#14-export--save-improvements)
+15. [Implementation Phases](#15-implementation-phases)
 
 ---
 
@@ -237,18 +239,37 @@ Key changes:
 - **Context panel** (RF mosaic + population plots) becomes a dedicated
   right-side column rather than a toggle-in overlay. It collapses with a
   single click or `Ctrl+\` and remembers its state.
+- **RF mosaic drag-to-select**: The mosaic canvas supports lasso / rectangle
+  drag to select cells by their RF position. Selecting RFs in the mosaic
+  highlights the corresponding cells in the tree/table and vice versa.
+  (Anushka's branch has a prototype — merge and adapt to the new layout.)
 - **Sidebar** width increases from 220 → 240px to fit longer group paths.
 - **Experiment browser** (section 5) replaces the top of the sidebar when
   active.
 
-#### 4.2 Splitter Styling
+#### 4.2 Responsive Minimum Width
+
+**Lab feedback:** The window cannot shrink narrow enough for some laptop
+screens (e.g. 13″ at native resolution).
+
+- Set `MainWindow.setMinimumSize(1100, 650)` — down from the current
+  implicit ~1400px minimum imposed by hard-coded panel widths.
+- The sidebar compresses to its collapsed width (22px) when the window is
+  narrower than 1300px, freeing horizontal space for the analysis tabs.
+- Context panel auto-collapses below 1400px window width if it is open.
+- Tab content panels use `QScrollArea` wrappers so plot grids reflow rather
+  than clip when the tab area is narrow.
+- Test on 1280×800, 1366×768, and 1440×900 — the three most common laptop
+  resolutions in the lab.
+
+#### 4.3 Splitter Styling
 
 - Remove visible splitter handles. Replace with a 1px `border_subtle` line
   and a 4px invisible drag zone on hover.
 - Cursor changes to resize on hover over the drag zone.
 - Double-click a splitter edge to reset to default proportions.
 
-#### 4.3 Panel Headers
+#### 4.4 Panel Headers
 
 Each panel (sidebar sections, context panel sections) gets a minimal header:
 
@@ -590,6 +611,19 @@ The UMAP scatter plot is the most visually prominent. Special treatment:
 - Temporal filter plot: `plot_line` for the filter, `plot_shadow` for
   confidence interval fill.
 
+**Lab feedback — fixed color scale:** The current STA display rescales to
+the input range of each cell's STA, so gray drifts depending on the data.
+Fix this so gray is always zero:
+
+- Use a **symmetric fixed scale** centered at zero: `clim = (-absmax, +absmax)`
+  where `absmax = max(abs(sta))`. This is analogous to MATLAB's `imagesc`
+  with a symmetric colormap — the midpoint of `RdBu_r` always maps to zero,
+  so baseline gray stays gray across cells.
+- Add a toggle in the STA panel toolbar: `[Symmetric] / [Full range]`.
+  Default to symmetric. Full-range mode preserves the current auto-scale
+  behavior for edge cases.
+- Display the color bar with tick labels at `−absmax`, `0`, `+absmax`.
+
 ---
 
 ## 9. Tree & Table Refinements
@@ -627,6 +661,11 @@ colors.
   the status color tokens. Tooltip shows the full status name.
 - **Sortable columns**: Click header to sort; small ▲/▼ indicator in
   `text_tertiary`. Current sort column header text in `text_primary`.
+- **Restore DSI/OSI columns**: DSI (direction selectivity index) and OSI
+  (orientation selectivity index) were previously in the table but appear to
+  have been removed. Re-add them as optional columns (hidden by default,
+  toggled via right-click on the table header). Source: `DataManager` physics
+  cache, computed from grating responses.
 
 #### 9.3 Inline Search
 
@@ -692,6 +731,12 @@ triggers save/restore.
 `QStatusBar` with a permanent `QProgressBar` for cache progress.
 
 ### Changes
+
+**Lab feedback — loading indicator bugs:** The progress bar behaves
+incorrectly when reloading a dataset (does not reset, or stalls at partial
+completion). Fix: reset `QProgressBar` to 0 at the start of every load
+operation, and ensure the completion signal (`physics_warm_done`, worker
+`finished`) always sets it to 100% or hides it — no stuck partial state.
 
 #### 11.1 Status Bar Layout
 
@@ -759,7 +804,111 @@ Every icon-only button gets a tooltip describing its action and shortcut:
 
 ---
 
-## 13. Implementation Phases
+## 13. Panel-Specific Fixes (Lab Feedback)
+
+Issues raised in lab meeting that affect specific analysis panels. These are
+scoped tightly — each is a fix to an existing panel, not a redesign.
+
+#### 13.1 Grating Polar Plot — Units & Error Bars
+
+**Current state:** The polar direction-tuning plot in `grating_panel.py` shows
+response magnitude on the radial axis but has no unit label. No error bars.
+
+**Fix:**
+- Add a radial axis label: `"spikes/s"` (or `"F1 amplitude"` depending on
+  which response measure is plotted). Use `text_tertiary`, `type_caption`.
+- Show **error bars** (SD across trials) on each direction's response as
+  thin radial whiskers, color `text_disabled` at 60% opacity, capped with
+  a small perpendicular tick.
+- Source the trial-by-trial data from the precomputed `*_GratingDSOS.npy`.
+  If trial-level data is unavailable (only means stored), note this in the
+  tooltip: `"Error bars unavailable — precomputed data has means only"`.
+
+#### 13.2 Grating Panel — Per-Direction Rasters
+
+**Requested by:** Maria.
+
+**Rationale:** Raster plots framing the polar plot directions let you instantly
+see the repeat count per direction and the trial-to-trial variance — both
+important for judging whether a DSI/OSI value is meaningful or just noise from
+low trial counts.
+
+**Spec:**
+- Add a ring of small raster subplots around or beside the polar plot, one
+  per grating direction (typically 8 or 12).
+- Each subplot shows spike times across trials as horizontal tick marks,
+  one row per trial.
+- Subplot size: ~60×40px. Arranged in a circle matching the polar plot
+  directions, or as a grid beside it if circular layout is too tight.
+- Spike ticks: `plot_line`, 1px. Background: `bg_surface`. Trial separators:
+  `border_subtle`, 0.5px.
+- Connect each subplot to its polar-plot direction with a subtle radial
+  guide line (`border_subtle`, dashed, 0.5px) — only on hover to avoid
+  clutter.
+- Toggle visibility: a `[Rasters]` checkbox in the grating panel toolbar.
+  Default: on.
+
+#### 13.3 Loading Indicator Reset
+
+**Current state:** The progress bar in the status bar is slightly buggy when
+reloading a dataset — it may not reset or may stall at a partial value.
+
+**Fix:** (Also noted in section 11.) At the start of every load path
+(`load_directory`, `load_vision_directory`, `load_raw_data`):
+1. Set `progress_bar.setValue(0)`.
+2. Set `progress_bar.setVisible(True)`.
+3. On completion or error, set to 100% briefly (200ms) then hide.
+4. If the load is cancelled or errors out mid-way, hide immediately.
+
+---
+
+## 14. Export & Save Improvements
+
+#### 14.1 Classification Save Workflow
+
+Already covered in sections 6–7 (shortcuts, auto-save). Summary of the
+full save UX:
+
+| Action | Trigger | Behavior |
+|---|---|---|
+| Quick save | `Ctrl+S` | Writes to the current `.classification_MC.txt`. If none loaded, falls through to Save As. |
+| Save as | `Ctrl+Shift+S` | `QFileDialog` for a new path. Becomes the new current file. |
+| Auto-save | Timer (configurable) | Writes to `.autosave` sidecar. Never overwrites the user's explicit file. |
+| Export results | Menu / command palette | Large CSV export (in progress — complete the existing implementation). |
+
+#### 14.2 Export Results (CSV)
+
+**Current state:** An export function exists but is incomplete.
+
+**Spec for completion:**
+- Export writes one row per cell with columns: `cluster_id`, `vision_id`,
+  `group_path`, `status`, `spikes`, `channel`, `firing_rate`, `isi_violations`,
+  `contamination_pct`, `amplitude`, `dsi`, `osi`, `sta_polarity`,
+  `rf_x`, `rf_y`, `rf_diameter_long`, `rf_diameter_short`.
+- Format: standard CSV with header row. UTF-8 encoding.
+- Filename default: `<prep>_<run>_export.csv`.
+- Shortcut: add to command palette as "Export Results to CSV".
+- Progress: show in the status bar if > 500 cells (the `.ei` read can be
+  slow).
+
+#### 14.3 Save Figure
+
+**Current state:** A save-figure button exists for the RF mosaic.
+
+**Extend to all panels:**
+- Each analysis tab gets a small save icon `[💾]` in its top-right corner
+  (or in the tab bar's corner widget area).
+- Clicking it opens a `QFileDialog` defaulting to
+  `<prep>_<run>_<tab_name>.png`.
+- Supported formats: PNG (default, 300 DPI), SVG, PDF.
+- For pyqtgraph panels, use `pg.exporters.ImageExporter`.
+- For matplotlib panels, use `figure.savefig()` with `facecolor` set to
+  white (regardless of current theme) for publication-ready output.
+  Add a checkbox: `☐ Use current theme colors` for presentations.
+
+---
+
+## 15. Implementation Phases
 
 ### Phase 1 — Foundations (Theme + Spacing + Shortcuts)
 
@@ -778,17 +927,19 @@ Estimated scope: ~400 lines changed across 3 files.
 
 ### Phase 2 — Layout + Tab Bar
 
-**Files touched:** `main_window.py`, panel modules
+**Files touched:** `main_window.py`, panel modules, `rf_map_widget.py`
 
 1. Restructure to three-column layout with collapsible context panel.
 2. Restyle tab bar (underline active, remove chrome).
 3. Restyle splitters (invisible handles, 1px borders).
 4. Add panel headers with collapse toggles.
 5. Implement tab memory (save/restore view state per tab).
+6. **Mosaic drag-to-select** — merge Anushka's prototype, wire up
+   bidirectional selection between mosaic and tree/table (§4.1).
 
-Estimated scope: ~600 lines changed, mostly `main_window.py`.
+Estimated scope: ~700 lines changed, mostly `main_window.py`.
 
-### Phase 3 — Plot Theming
+### Phase 3 — Plot Theming + Panel Fixes
 
 **Files touched:** all `panels/*.py`, `theme.py`, `widgets.py`
 
@@ -797,8 +948,12 @@ Estimated scope: ~600 lines changed, mostly `main_window.py`.
 3. Implement `PLOT_CATEGORICAL` in UMAP and population plots.
 4. Theme the EI electrode map, STA RF image, and mountain plot.
 5. Theme the chirp PSTH, grating polar plot, and ACG/ISI/FR plots.
+6. **STA fixed color scale** — symmetric `clim` centered at zero (§8.6).
+7. **Grating polar plot** — add axis units (`spikes/s`), trial SD error
+   bars, and per-direction raster subplots (§13.1, §13.2).
+8. **Loading indicator** — reset progress bar on every load (§13.3).
 
-Estimated scope: ~300 lines changed across 10 files.
+Estimated scope: ~500 lines changed across 10 files.
 
 ### Phase 4 — Tree & Table Polish
 
@@ -810,10 +965,11 @@ Estimated scope: ~300 lines changed across 10 files.
 4. Restyle table headers and alternating rows.
 5. Status dot column in table.
 6. Enhanced inline search with dimming.
+7. **Restore DSI/OSI columns** as toggleable table columns (§9.2).
 
-Estimated scope: ~250 lines changed across 3 files.
+Estimated scope: ~300 lines changed across 3 files.
 
-### Phase 5 — Experiment Browser
+### Phase 5 — Experiment Browser + Responsive Layout
 
 **Files touched:** new `panels/experiment_browser.py`, `main_window.py`,
 `callbacks.py`, `recent_paths.py`
@@ -825,8 +981,10 @@ Estimated scope: ~250 lines changed across 3 files.
 5. Recent paths section.
 6. Integration into sidebar.
 7. Drag-to-load on `MainWindow`.
+8. **Responsive minimum width** — sidebar/context auto-collapse, `QScrollArea`
+   wrappers for plot grids (§4.2).
 
-Estimated scope: ~500 lines new, ~100 lines changed.
+Estimated scope: ~550 lines new, ~150 lines changed.
 
 ### Phase 6 — Quick Actions & Command Palette
 
@@ -842,9 +1000,10 @@ Estimated scope: ~500 lines new, ~100 lines changed.
 
 Estimated scope: ~600 lines new, ~200 lines changed.
 
-### Phase 7 — Auto-Save & Session Persistence
+### Phase 7 — Auto-Save, Session Persistence & Export
 
-**Files touched:** `callbacks.py`, `main_window.py`, `recent_paths.py`
+**Files touched:** `callbacks.py`, `main_window.py`, `recent_paths.py`,
+all panel modules
 
 1. Auto-save timer and sidecar file logic.
 2. Auto-save settings UI.
@@ -852,8 +1011,10 @@ Estimated scope: ~600 lines new, ~200 lines changed.
 4. Session restore prompt on launch.
 5. Save indicator in window title.
 6. Status bar auto-save display.
+7. **Complete CSV export** — finish the existing implementation (§14.2).
+8. **Save-figure button** on every analysis tab (§14.3).
 
-Estimated scope: ~300 lines new, ~100 lines changed.
+Estimated scope: ~450 lines new, ~150 lines changed.
 
 ### Phase 8 — Accessibility & Polish
 
