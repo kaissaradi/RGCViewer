@@ -102,7 +102,11 @@ def _retire_inflight_load(main_window):
     that attribute for the new load, which garbage-collected a worker whose
     ``run()`` was still executing on another thread — a segfault, not an
     exception, which is why the app vanished with no traceback.
+
+    Returns the threads it parked, so the caller can wait for them before it
+    touches anything the retired load still owns.
     """
+    parked = []
     retired = getattr(main_window, "_retired_load_threads", None)
     if retired is None:
         retired = main_window._retired_load_threads = []
@@ -146,10 +150,66 @@ def _retire_inflight_load(main_window):
         try:
             thread.finished.connect(_drop)
             thread.quit()  # takes effect once run() returns
+            parked.append(thread)
         except RuntimeError:
             pass
         setattr(main_window, thread_attr, None)
         setattr(main_window, worker_attr, None)
+
+    return parked
+
+
+def _release_previous_dataset(main_window):
+    """Free the dataset that the next load replaces.
+
+    Assigning a new DataManager over ``main_window.data_manager`` does not
+    free the old one — the panels and the worker threads still reference it —
+    so without this both datasets are resident at once. The Vision EI table
+    alone is more than 500 MB, and that peak is what makes the app run out of
+    memory when a user moves between runs during a session.
+
+    Stopping the workers first is also correct on its own: a spatial or
+    standard-plots worker left running against the old dataset goes on
+    emitting results keyed by the old run's cluster IDs, which the panels
+    would apply to the new run. Cell IDs do not carry between runs, so those
+    results are meaningless.
+
+    A load that is still in flight owns the old DataManager from another
+    thread, so it cannot be released here. ``_retire_inflight_load`` parks
+    that thread and reports it, and the release then waits for it to finish.
+    """
+    stop_worker(main_window)
+    parked = _retire_inflight_load(main_window)
+
+    old_dm = getattr(main_window, "data_manager", None)
+    if old_dm is None or not hasattr(old_dm, "close"):
+        return
+
+    if not parked:
+        old_dm.close()
+        return
+
+    # Still running. Release it once every parked thread has returned from
+    # run(); until then the load worker is free to keep writing to it.
+    #
+    # ``released`` guards the case where a thread reports finished more than
+    # once: the emptied list would otherwise read as "all done" a second time.
+    pending = list(parked)
+    released = []
+
+    def _release_when_idle(thread):
+        if thread in pending:
+            pending.remove(thread)
+        if pending or released:
+            return
+        released.append(True)
+        old_dm.close()
+
+    for thread in parked:
+        try:
+            thread.finished.connect(lambda t=thread: _release_when_idle(t))
+        except RuntimeError:
+            _release_when_idle(thread)  # wrapper gone; the thread is done
 
 
 def load_directory(main_window, kilosort_dir=None, dat_file=None):
@@ -178,7 +238,10 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     # the process aborting. This was always latent; it only became reachable
     # when the app started auto-loading the remembered dataset at startup,
     # because until then a session only ever performed one load.
-    _retire_inflight_load(main_window)
+    #
+    # The same step also stops the background workers and frees the dataset
+    # being replaced, so the old run does not stay resident behind the new one.
+    _release_previous_dataset(main_window)
 
     # 1. Lock UI and Prep DataManager
     main_window.central_widget.setEnabled(False)
@@ -606,6 +669,10 @@ def load_vision_directory(main_window):
         main_window.data_manager, "is_vision_only", False
     ):
         main_window.status_bar.showMessage("Initializing Vision-native loader...")
+
+        # Retire any load still in flight, stop the workers, and free the
+        # dataset this one replaces — see _release_previous_dataset().
+        _release_previous_dataset(main_window)
 
         # Initialize a fresh DataManager and set the flag immediately
         main_window.data_manager = DataManager(vision_dir_name, main_window)
