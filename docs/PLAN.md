@@ -100,6 +100,7 @@ Do not start these unless the user asks.
 | Desktop launcher / `update.sh` | none | Not started. |
 | Firing-rate / burstiness embedding feature | none | Do not dump mean rate as a scalar. Needs a construction that separates high-baseline RGCs and bursty vs tonic firing (retina and, later, brain neurons) without letting spike count dominate as QC. ACG already carries some of this. Not started. |
 | 3D UMAP view | none | The current 3D UMAP display is poor UX. A 3D embedding (or another embedding) may still be better *for clustering* than the 2D view; do not throw the extra dimension away without checking that. Not started. |
+| Stimulus / epoch rasters | none | Chirp already has trial rasters. Grating and Contrast do not (grating spec chose a preferred-direction PSTH instead). Want rasters in more places: per-stimulus tabs and/or a dedicated raster surface. One proposal is to put a spike raster in the Raw tab so a run with no `.bin` (Vision-only, or raw disabled) still has a time view. Open design: keep rasters next to the stimulus they align to, vs one Raster page, vs a Raw fallback when voltage is missing. Do not start until that is decided. |
 
 ## 6. Commands
 
