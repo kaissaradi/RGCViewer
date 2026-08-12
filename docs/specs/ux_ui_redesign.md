@@ -1,5 +1,9 @@
 # Specification: UX / UI Redesign — Bauhaus Design Pass
 
+**Status (2026-08-12):** Parked. The current branch uses this name. The last
+completed work is older-dataset load robustness, not this redesign. Do not
+start this spec unless the user asks. See `HANDOFF.md`.
+
 ## Block 0 — Metadata
 
 | Field | Value |
@@ -9,7 +13,7 @@
 | **Commit hash when spec was written** | `9d53e57` |
 | **Branch** | `claude/plan-ux-ui-design-62g5jl` |
 | **Author** | Kais / Claude |
-| **Spec status** | Ready for Dev |
+| **Spec status** | Parked |
 
 ---
 

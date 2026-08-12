@@ -59,7 +59,6 @@ from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
-from . import recent_paths
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
@@ -166,17 +165,14 @@ class MainWindow(QMainWindow):
         self.tree_model.rowsRemoved.connect(self._schedule_group_column_refresh)
         self.tree_model.itemChanged.connect(self._schedule_group_column_refresh)
 
-        # Reopen where you left off. An explicit path (CLI/testing) wins;
-        # otherwise fall back to the dataset that last loaded successfully, so
-        # a normal launch lands in the data instead of an empty window.
-        if not (default_kilosort_dir and os.path.isdir(default_kilosort_dir)):
-            remembered_dir, remembered_dat = recent_paths.last_dataset()
-            if remembered_dir:
-                default_kilosort_dir = remembered_dir
-                default_dat_file = default_dat_file or remembered_dat
+        # Only open a dataset when the caller asked (--kilosort-dir / tests).
+        # File dialogs still remember the last folder via recent_paths.
+        # Auto-reopening the last run made every launch look hung, and a
+        # broken remembered path made the app unusable until QSettings
+        # was cleared.
         if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
-            self._reopening_remembered = True
-            self.load_directory(default_kilosort_dir, default_dat_file)
+            ks_dir, dat_path = default_kilosort_dir, default_dat_file
+            QTimer.singleShot(0, lambda: self.load_directory(ks_dir, dat_path))
 
         # key forwarder
         self.key_forwarder = KeyForwarder(self)

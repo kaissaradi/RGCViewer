@@ -47,11 +47,8 @@ if __name__ == "__main__":
     fmt.setProfile(QSurfaceFormat.NoProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-    # No hardcoded dataset: MainWindow reopens whichever one last loaded
-    # successfully (remembered in QSettings by recent_paths). The path that
-    # used to live here was a macOS /Volumes mount, so on any other machine
-    # the isdir() check silently failed and the app opened empty every time.
-    # --kilosort-dir overrides, for testing a specific dataset.
+    # Empty window on a normal launch. File → Open (or --kilosort-dir)
+    # loads a run. Dialogs still start in the last folder you used.
     app = QApplication(sys.argv)
     window = MainWindow(args.kilosort_dir, args.dat_file)
     window.show()

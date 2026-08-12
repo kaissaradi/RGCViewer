@@ -1,136 +1,153 @@
-# RGCViewer — orientation for agents
+# RGCViewer — orientation
 
-RGCViewer (internally "Axolotl") is a PyQt GUI for curating spike-sorted
-multi-electrode array recordings from ex vivo retina and sorting the resulting
-units into retinal ganglion cell (RGC) types.
+RGCViewer (internal name Axolotl) is a PyQt GUI. Use it to curate
+spike-sorted multi-electrode array recordings from ex vivo retina and to
+sort units into retinal ganglion cell (RGC) types.
 
-Run it with `python main.py` from the `rgcviewer` conda environment
-(Python 3.10, PyQt5 via qtpy). There is no test suite in the repo; `docs/` and
-`tests/` are gitignored.
+## Start
+
+1. Activate conda environment `rgcviewer` (Python 3.10, PyQt5 via qtpy).
+2. From the repository root, run `python main.py`.
+3. Use File → Open to load a run. The window does not reopen the last run.
+
+Tests live in `tests/`. Documents live in `docs/`. Both are in the
+repository. Run tests with:
+
+```bash
+conda activate rgcviewer
+python -m pytest tests/unit/ -v
+```
+
+Read next: `docs/AGENTS.md`, then `HANDOFF.md`.
 
 ## The experiment
 
-A piece of mouse retina is laid on a **Litke 512-electrode array** — 60 µm
-pitch, 1890 × 900 µm, ~1.7 mm², sampled at 20 kHz. Visual stimuli are
-projected onto it and driven by Symphony (`manookinlab.protocols.*`,
-`fieldlab.protocols.*`). Light level is stepped between recordings with an NDF
-wheel, which is why runs are grouped as "NDF3ish", "NDF2wheel" and so on.
+A piece of mouse retina sits on a Litke 512-electrode array. Pitch is
+60 µm. Area is 1890 × 900 µm (~1.7 mm²). Sample rate is 20 kHz.
 
-Each recording is a numbered run — `data000`, `data001`, … — and each run is a
-separate protocol:
+Visual stimuli come from Symphony (`manookinlab.protocols.*`,
+`fieldlab.protocols.*`). Light level changes between recordings with an
+NDF wheel. Runs are grouped as NDF3ish, NDF2wheel, and similar labels.
 
-| Protocol | What it gives you |
+Each recording is a numbered run: `data000`, `data001`, … . Each run is
+one protocol:
+
+| Protocol | Result |
 |---|---|
-| `SpatialNoise` | White-noise checkerboard → STA, receptive field fits |
-| `ChirpStimulus` | ON/OFF steps + frequency and contrast sweeps → response shape |
-| `GratingDSOS_ks` | Drifting gratings → direction/orientation selectivity |
-| `ContrastResponseGrating` | Contrast series → contrast gain, F1/F2 |
-| `PresentMovies` | Repeated natural movies |
+| `SpatialNoise` | White-noise checkerboard. STA and receptive-field fits. |
+| `ChirpStimulus` | ON/OFF steps plus frequency and contrast sweeps. Response shape. |
+| `GratingDSOS_ks` | Drifting gratings. Direction and orientation selectivity. |
+| `ContrastResponseGrating` | Contrast series. Contrast gain, F1/F2. |
+| `PresentMovies` | Repeated natural movies. |
 
-**Every run is spike-sorted independently.** This is the single most important
-structural fact about the data: cell IDs from `data006` have nothing to do with
-cell IDs from `data007`. Some preparations also have a *concatenated* sort — a
-folder like `data010-013` or `data007-010` where several runs were sorted
-together — and only within one of those do all stimuli share a single ID space.
-`CrossRunMatcher` (EI correlation) and `ReferenceBridge` exist to bridge
-separately sorted runs; they are a lossy substitute for a concatenated sort.
+Every run is spike-sorted independently. Cell IDs in `data006` have no
+relation to cell IDs in `data007`.
+
+Some preparations have a concatenated sort folder such as `data010-013`.
+Only inside that folder do stimuli share one ID space.
+`CrossRunMatcher` (EI correlation) and `ReferenceBridge` map separately
+sorted runs. They are a lossy substitute for a concatenated sort.
 
 ## Files
 
-Layout is `<prep>/kilosort25/<run>/`, e.g. `20260721A/kilosort25/data006/`.
+Layout: `<prep>/kilosort25/<run>/`. Example: `20260721A/kilosort25/data006/`.
 
 | File | Contents |
 |---|---|
 | `.neurons` | Spike times per cell. Big-endian header: `[header_size, n_cells, n_samples, sampling_rate]` |
-| `.ei` | Electrical image — mean waveform across all 512 electrodes per cell. The largest file, often >500 MB |
-| `.sta` | Spike-triggered average. Only present for noise runs |
-| `.params` | Vision parameters, including the Gaussian RF fits (`stafit`) the mosaics are drawn from |
-| `.globals` | Run metadata |
-| `.noise` | Spike-sorting noise estimate |
-| `ksfiles/` | Raw Kilosort 2.5 output: `spike_times.npy`, `spike_clusters.npy`, `cluster_*.tsv`, and `params.py` whose `dat_path` records the machine that did the sorting |
-| `*_ChirpStimulus.npy`, `*_GratingDSOS.npy`, `*_contrastResponse_unified.npy` | Stimulus analyses precomputed **offline**. The app reads these; it does not generate them, so a run without them cannot be analysed for that stimulus |
+| `.ei` | Electrical image. Mean waveform on all electrodes per cell. Often >500 MB. |
+| `.sta` | Spike-triggered average. Present on noise runs. Can be stale. |
+| `.params` | Vision parameters, including Gaussian RF fits (`stafit`). |
+| `.globals` | Run metadata and electrode map. Can disagree with `.ei` width. |
+| `.noise` | Spike-sorting noise estimate. |
+| `ksfiles/` | Kilosort 2.5 output: `spike_times.npy`, `spike_clusters.npy`, `cluster_*.tsv`, `params.py`. |
+| `*_ChirpStimulus.npy`, `*_GratingDSOS.npy`, `*_contrastResponse_unified.npy` | Stimulus analyses computed offline. The app reads them. It does not create them. |
 | `*.classification_MC.txt` | Manual classification: `<visionID>  All/Path/To/Group/` |
 
 Two files sit in `<prep>/kilosort25/stimuli/`:
 
-- **`<prep>.json`** — the authoritative stimulus manifest. Per run it holds the
-  protocol, full parameter set, `epochStarts`/`epochEnds` in samples,
-  `frameTimesMs`, array ID, and the experimenter's notes and animal metadata
-  (strain, injection, age). **The app does not read it.** It is the best source
-  for trial alignment and for knowing what a run actually was.
-- **`<prep>.txt`** — a human-readable summary of the same thing. Incomplete and
-  sometimes wrong; prefer the JSON.
+- `<prep>.json` — authoritative stimulus manifest. Protocol, parameters,
+  `epochStarts` / `epochEnds`, `frameTimesMs`, array ID, strain, injection,
+  age. The app does not read this file.
+- `<prep>.txt` — human summary. Incomplete. Prefer the JSON.
 
 ## The analysis
 
-The goal is to partition several hundred sorted units into RGC types. The
-pipeline, roughly:
+The goal is to partition several hundred sorted units into RGC types.
 
 1. `DataManager.get_cell_physics` assembles per-cell features from Vision data.
-2. `analysis_core.build_feature_matrix` turns them into a weighted matrix:
-   PCA blocks for the temporal STA, the autocorrelogram, the grating
-   direction-tuning curve shape, and the chirp PSTH shape, plus RF long/short
-   diameter as scalars. Weights are user-set sliders (`constants.py` holds the
-   defaults and the reasoning behind them).
-3. UMAP embeds it; Ward or K-Means clusters the embedding.
-4. Clusters become groups in the tree view, which the user curates by hand and
-   exports as a classification file.
+2. `analysis_core.build_feature_matrix` builds a weighted matrix: PCA blocks
+   for temporal STA, autocorrelogram, grating direction curve, and chirp
+   PSTH, plus RF long/short diameter. Weights are sliders.
+   `constants.py` holds the defaults.
+3. UMAP embeds the matrix. Ward or K-Means clusters the embedding.
+4. Clusters become groups in the tree. The user curates them and exports a
+   classification file.
 
-**The validation criterion is the mosaic.** A real RGC type tiles the retina —
-its receptive fields cover the array without overlapping, like tiles. A
-candidate cluster whose RFs sit on top of each other is contaminated (two types
-merged, or duplicate units). The `RFMapWidget` beside the UMAP and Feature
-Extraction panels exists for exactly this check: lasso a group, see whether its
-RFs tile.
+The validation criterion is the mosaic. A real RGC type tiles the retina.
+Receptive fields cover the array and do not overlap. A cluster whose RFs
+sit on top of each other is contaminated.
 
-Note that only ~10–15% of the RGCs under the array get sorted, so most types
-will look sparse. Nearest-neighbour regularity and coverage factor both degrade
-badly under that kind of subsampling; **RF overlap does not** — removing cells
-can never make two remaining RFs overlap. Overlap is therefore the trustworthy
-mosaic statistic here.
+`RFMapWidget` exists for this check. Lasso a group. See if the RFs tile.
+
+Only about 10–15% of RGCs under the array are sorted. Types look sparse.
+Nearest-neighbour regularity and coverage degrade under that subsample.
+RF overlap does not: removal of a cell cannot create overlap. Overlap is
+the trustworthy mosaic statistic.
 
 ## Traps
 
-**Vision ID = Kilosort `cluster_id` + 1**, except in vision-only mode where they
-are equal. Always go through `DataManager.get_vision_id_for_cluster`. Off-by-one
-here is silent and produces plausible-looking nonsense.
+**Vision ID = Kilosort `cluster_id` + 1**, except in vision-only mode,
+where they are equal. Always call `DataManager.get_vision_id_for_cluster`.
+An off-by-one error is silent.
 
-**Cells with no STA collapse into a fake cluster.** `get_raw_feature_blocks`
-gives a cell with no RF fit an all-zero temporal row.
-`build_feature_matrix` guards the case where *every* cell lacks an STA but not
-the mixed case, so all such cells project to one identical point in the temporal
-PCA block — and since temporal defaults to weight 10, that dominates the
-embedding. It looks like a beautifully tight cell type. It is "cells with no
-receptive field". The same applies to the grating and chirp zero-sentinels.
-Not yet fixed.
+**Cells with no STA collapse into a fake cluster.**
+`get_raw_feature_blocks` gives a cell with no RF fit an all-zero temporal
+row. `build_feature_matrix` guards the all-missing case, not the mixed
+case. Those cells share one point in the temporal PCA block. Temporal
+default weight is 10, so that point dominates. The tight group is
+"cells with no receptive field". The same applies to grating and chirp
+zero-sentinels. Not fixed.
 
-**Feature weights are not what they look like.** A block's contribution to
-Euclidean distance scales with `n_columns × weight²`. At defaults, temporal STA
-(4 PCs × 10) contributes ~400 against ACG's (4 PCs × 1) ~4. The default
-embedding is essentially "cluster on STA timecourse alone".
+**Feature weights are not what they look like.** A block's contribution
+to Euclidean distance scales with `n_columns × weight²`. At defaults,
+temporal STA (4 PCs × 10) is ~400 against ACG (4 PCs × 1) ~4. The
+default embedding is almost STA timecourse alone.
 
-**Stixel size varies between preparations** and RF fits are only as good as it
-allows. A 200 µm stixel against a ~100–300 µm mouse RF leaves the Gaussian fit
-essentially unconstrained, so RF diameters from such a run are not comparable
-with those from a 40–50 µm run.
+**Stixel size varies between preparations.** A 200 µm stixel against a
+100–300 µm mouse RF leaves the Gaussian fit unconstrained. RF diameters
+from that run are not comparable to a 40–50 µm run.
 
-**Check the animal before assuming wild-type.** The JSON records strain and
-injection. An `rd10` retina with an optogenetic rescue (e.g. `Grm6-waChR` in ON
-bipolar cells) has no photoreceptor-driven vision, so the ON/OFF axis the usual
-taxonomy rests on partly collapses, and rd10 retina shows strong ~5–15 Hz
-network oscillation that dominates the ACG as a *network* property rather than a
-cell-type signature.
+**Check the animal before you assume wild-type.** The JSON records strain
+and injection. An `rd10` retina with an optogenetic rescue (for example
+`Grm6-waChR` in ON bipolar cells) has no photoreceptor-driven vision.
+The ON/OFF axis partly collapses. rd10 retina also shows a strong
+~5–15 Hz network oscillation that dominates the ACG as a network
+property, not a cell-type signature.
 
-**Array IDs in the 500–1500 range are the Litke 512**, resolved by
-`electrode_map.determine_array_type`. The recorded `arrayPitch` of 60 µm is
-correct for it.
+**Array IDs 500–1500 are the Litke 512**, resolved by
+`electrode_map.determine_array_type`. Recorded `arrayPitch` of 60 µm is
+correct.
+
+**A stale `.sta` attaches RFs to the wrong units.** The load dialog
+reports this. Example: 20251204, "159 of 310 cells in the .sta do not
+exist in this sort". Use the noise-run STA or Map Reference. Spike
+analyses are still valid.
+
+**Some older kilosort4 conversions have a broken EI.** The `.ei` payload
+can be 519 channels while `.globals` is a 512-row map. The loader reads
+the payload width from the `.ei` file. Plots that still disagree stay
+blank. Do not invent an electrode map to force a draw. The user accepts
+missing EI plots on those runs.
 
 ## Code layout
 
-- `src/analysis/data_manager.py` — loading, caching, the per-cell feature SSOT
+- `src/analysis/data_manager.py` — loading, caching, per-cell feature source
 - `src/analysis/analysis_core.py` — STA metrics, EI computation, feature matrix
 - `src/analysis/cross_run_matcher.py`, `reference_bridge.py` — bridging runs
-- `src/gui/main_window.py` — the shell, tree and table views, context menus
+- `src/analysis/visionloader.py` — Vision file readers; EI stride from `.ei`
+- `src/gui/main_window.py` — shell, tree, table, context menus
 - `src/gui/callbacks.py` — tree manipulation, loading, saving
 - `src/gui/panels/` — one module per analysis tab
-- `src/gui/recent_paths.py` — file-dialog location memory (QSettings)
+- `src/gui/panels/live_selectors.py` — rectangle and lasso tools
+- `src/gui/recent_paths.py` — file-dialog folder memory (QSettings)

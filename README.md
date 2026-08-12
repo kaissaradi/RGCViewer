@@ -1,32 +1,99 @@
-# Axolotl - Neural Spike Sorting Cluster Refinement GUI
+# RGCViewer (Axolotl)
 
-A high-performance GUI for refining and analyzing neural spike sorting clusters from Kilosort output.
+RGCViewer is a PyQt desktop application. Use it to inspect spike-sorted
+multi-electrode array recordings from mouse retina and to assign units to
+retinal ganglion cell (RGC) types.
 
-## Installation and Usage
+The internal name is Axolotl. The repository name is RGCViewer.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/kaissaradi/RGCViewer.git
-    cd RGCViewer
-    ```
+## Requirements
 
-2.  **Set up a virtual environment (recommended):**
-    ```bash
-    conda create --name rgcviewer python=3.10
-    conda activate rgcviewer
-    ```
+- Conda environment name: `rgcviewer`
+- Python 3.10
+- Qt through `qtpy` (PyQt5)
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+## Install
 
-    For development and tests:
-    ```bash
-    pip install -r requirements-dev.txt
-    ```
+1. Clone the repository.
+2. Create the environment:
 
-4.  **Run the application:**
-    ```bash
-    python main.py
-    ```
+```bash
+conda create --name rgcviewer python=3.10
+conda activate rgcviewer
+pip install -r requirements.txt
+```
+
+3. For tests, also install:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+## Start the application
+
+1. Activate the environment:
+
+```bash
+conda activate rgcviewer
+```
+
+2. Start from the repository root:
+
+```bash
+python main.py
+```
+
+The window opens empty. Use **File → Open** to load a run.
+
+Optional arguments:
+
+| Argument | Effect |
+|---|---|
+| `--debug` | Write DEBUG logs to the console |
+| `--kilosort-dir PATH` | Load this run at start |
+| `--dat-file PATH` | Attach a raw `.bin` / `.dat` file for the Raw tab |
+
+The application does **not** reopen the last run at start. File dialogs still
+open in the last folder you used.
+
+## Load a run
+
+A run is a folder such as:
+
+```
+<prep>/kilosort25/data006/
+```
+
+Example: `20260721A/kilosort25/data006/`.
+
+The folder must contain Vision files (`.neurons`, and usually `.ei`, `.params`).
+Kilosort files may sit in `ksfiles/`. Stimulus analyses are precomputed
+`.npy` files in the same folder. The application does not create those files.
+
+## Tests
+
+Run tests in the `rgcviewer` environment. The base environment does not have
+`pytest`.
+
+```bash
+conda activate rgcviewer
+python -m pytest tests/unit/ -v
+```
+
+Full suite (slow; some tests need lab mounts):
+
+```bash
+python -m pytest tests/ -v
+```
+
+## Documents
+
+Read documents in this order:
+
+1. This file — install and start
+2. `CLAUDE.md` — experiment, files, analysis traps
+3. `docs/AGENTS.md` — developer rules
+4. `HANDOFF.md` — current work state
+5. `docs/PLAN.md` — fragile zones and open defects
+
+The document map is `docs/README.md`.

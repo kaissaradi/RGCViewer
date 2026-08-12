@@ -141,3 +141,22 @@ def test_raw_trace_snippet_skips_litke_ttl_row(tmp_path):
         [310.0, 311.0, 312.0],
     ], dtype=np.float32)
     np.testing.assert_array_equal(snippet, expected)
+
+
+def test_apply_ei_updates_keeps_max_dup_r_as_float(tmp_path):
+    import pandas as pd
+
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.cluster_df = pd.DataFrame(
+        {
+            "cluster_id": [1, 2, 3],
+            "potential_dups": [False, False, False],
+            "max_dup_r": [0.0, 0.0, 0.0],
+        }
+    )
+    dm._apply_ei_updates({1: True}, {1: 0.864, 2: 0.0})
+
+    assert dm.cluster_df["max_dup_r"].dtype.kind == "f"
+    assert float(dm.cluster_df.loc[0, "max_dup_r"]) == 0.864
+    assert bool(dm.cluster_df.loc[0, "potential_dups"]) is True
+    assert bool(dm.cluster_df.loc[2, "potential_dups"]) is False

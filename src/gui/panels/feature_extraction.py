@@ -1230,6 +1230,8 @@ class FeatureExtractionWindow(QDialog):
         # so they must be disconnected or they go on handling events for axes
         # that no longer hold their data.
         for sel in self._rect_selectors + self._lasso_selectors:
+            if sel is None:
+                continue
             try:
                 sel.disconnect_events()
             except Exception:
@@ -1313,9 +1315,13 @@ class FeatureExtractionWindow(QDialog):
 
         # Apply initial active state
         for sel in self._lasso_selectors:
+            if sel is None:
+                continue
             sel.set_active(self._selection_mode == "lasso")
             self._retire(sel)
         for sel in self._rect_selectors:
+            if sel is None:
+                continue
             sel.set_active(self._selection_mode == "rect")
             self._retire(sel)
 
@@ -1329,13 +1335,16 @@ class FeatureExtractionWindow(QDialog):
     def _attach_rect_selector(self, ax, idx: int, x_data: np.ndarray, y_data: np.ndarray):
         """Attach an interactive rectangle whose extents drive the selection live."""
         rect = make_rect_selector(ax, self, PALETTE, index=idx)
-        self._rect_selectors.append(rect)
+        if rect is not None:
+            self._rect_selectors.append(rect)
 
     # ── Selection: Lasso ──────────────────────────────────────────────────────
 
     def _attach_lasso_selector(self, ax, idx: int, x_data: np.ndarray, y_data: np.ndarray):
         """Attach a lasso that previews as you draw and leaves its outline behind."""
         lasso = make_lasso_selector(ax, self, PALETTE, index=idx)
+        if lasso is None:
+            return
         lasso.set_active(False)  # starts inactive; activated by toolbar
         self._lasso_selectors.append(lasso)
 

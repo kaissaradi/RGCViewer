@@ -43,6 +43,7 @@ __all__ = [
     "LiveLassoSelector",
     "LiveRectangleSelector",
     "PopulationSelectionMixin",
+    "_axes_ready",
     "make_lasso_selector",
     "make_rect_selector",
     "path_from_extents",
@@ -130,62 +131,113 @@ class LiveLassoSelector(_CompositedSelector, LassoSelector):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _axes_ready(ax) -> bool:
+    """True when *ax* has a laid-out figure RectangleSelector can measure.
+
+    A hidden or collapsed Qt canvas reports a 0×0 figure. Matplotlib then
+    raises ``ValueError: 'box_aspect' and 'fig_aspect' must be positive``
+    inside ``RectangleSelector.__init__``.
+    """
+    if ax is None:
+        return False
+    fig = getattr(ax, "figure", None)
+    if fig is None:
+        return False
+    try:
+        width, height = fig.get_size_inches()
+    except Exception:
+        return False
+    if not (np.isfinite(width) and np.isfinite(height) and width > 0 and height > 0):
+        return False
+    canvas = getattr(fig, "canvas", None)
+    if canvas is None:
+        return True
+    getter = getattr(canvas, "get_width_height", None)
+    if not callable(getter):
+        return True
+    try:
+        pix_w, pix_h = getter()
+    except Exception:
+        return True
+    return pix_w > 0 and pix_h > 0
+
+
 def make_rect_selector(ax, owner, palette, onselect=None, index=None):
-    """An interactive rectangle on *ax*, owned by *owner*."""
+    """An interactive rectangle on *ax*, owned by *owner*.
+
+    Returns ``None`` when the axes are not laid out yet — the caller should
+    retry once the canvas has a real size.
+    """
+    if not _axes_ready(ax):
+        return None
 
     def _noop(_eclick, _erelease):
         # The live handler has already applied the selection; the release
         # callback only has to leave the shape on screen.
         owner._on_rect_live(sel)
 
-    sel = LiveRectangleSelector(
-        ax,
-        onselect or _noop,
-        useblit=True,
-        button=[1],
-        interactive=True,  # corner/edge handles, draggable after release
-        minspanx=5,
-        minspany=5,
-        spancoords="pixels",
-        drag_from_anywhere=True,
-        props=dict(
-            edgecolor=palette["text_primary"],
-            facecolor=palette["accent"],
-            alpha=0.14,
-            linewidth=1.2,
-            linestyle="--",
-        ),
-        handle_props=dict(
-            marker="s",
-            markersize=6,
-            markerfacecolor=palette["text_primary"],
-            markeredgecolor=palette["bg"],
-            alpha=0.95,
-        ),
-    )
+    try:
+        sel = LiveRectangleSelector(
+            ax,
+            onselect or _noop,
+            useblit=True,
+            button=[1],
+            interactive=True,  # corner/edge handles, draggable after release
+            minspanx=5,
+            minspany=5,
+            spancoords="pixels",
+            drag_from_anywhere=True,
+            props=dict(
+                edgecolor=palette["text_primary"],
+                facecolor=palette["accent"],
+                alpha=0.14,
+                linewidth=1.2,
+                linestyle="--",
+            ),
+            handle_props=dict(
+                marker="s",
+                markersize=6,
+                markerfacecolor=palette["text_primary"],
+                markeredgecolor=palette["bg"],
+                alpha=0.95,
+            ),
+        )
+    except ValueError:
+        # Figure size can still race to 0 between the check and __init__.
+        logger.debug("rectangle selector skipped: axes not laid out yet", exc_info=True)
+        return None
     sel._owner = owner
     sel._plot_index = index
     return sel
 
 
 def make_lasso_selector(ax, owner, palette, onselect=None, index=None):
-    """A lasso on *ax* that previews as it is drawn, owned by *owner*."""
+    """A lasso on *ax* that previews as it is drawn, owned by *owner*.
+
+    Returns ``None`` when the axes are not laid out yet.
+    """
+    if not _axes_ready(ax):
+        return None
 
     def _noop(verts):
         owner._apply_lasso_verts(index, verts)
 
-    sel = LiveLassoSelector(
-        ax,
-        onselect or _noop,
-        useblit=True,
-        button=[1],
-        props=dict(
-            color=palette["text_primary"],
-            linewidth=1.4,
-            linestyle="-",
-            alpha=0.85,
-        ),
-    )
+    try:
+        sel = LiveLassoSelector(
+            ax,
+            onselect or _noop,
+            useblit=True,
+            button=[1],
+            props=dict(
+                color=palette["text_primary"],
+                linewidth=1.4,
+                linestyle="-",
+                alpha=0.85,
+            ),
+        )
+    except ValueError:
+        logger.debug("lasso selector skipped: axes not laid out yet", exc_info=True)
+        return None
     sel._owner = owner
     sel._plot_index = index
     return sel
@@ -301,7 +353,8 @@ class PopulationSelectionMixin:
         if mode != "lasso" and self._lasso_poly is not None:
             self._lasso_poly.set_visible(False)
 
-        self._composite()
+        if self._rect_sel is not None or self._lasso_sel is not None:
+            self._composite()
 
     def clear_selection_shapes(self):
         """Drop the rubber band without touching the highlight."""
@@ -323,8 +376,14 @@ class PopulationSelectionMixin:
         }
 
     def _ensure_selectors(self):
-        """Create the selectors lazily, and only once there are axes to own them."""
+        """Create the selectors lazily, and only once there are axes to own them.
+
+        Hidden or collapsed views have a 0×0 figure. Creating a
+        ``RectangleSelector`` on those raises; we wait for a later resize.
+        """
         if self._ax is None or self._sel_mode == "off":
+            return
+        if not _axes_ready(self._ax):
             return
         palette = self._selection_palette()
         if self._rect_sel is None:
@@ -334,8 +393,10 @@ class PopulationSelectionMixin:
         # Redrawing the background discards the selectors and calls back here,
         # so the armed tool has to be re-applied — otherwise brushing silently
         # stops working after the next set_traces()/set_cells().
-        self._rect_sel.set_active(self._sel_mode == "rect")
-        self._lasso_sel.set_active(self._sel_mode == "lasso")
+        if self._rect_sel is not None:
+            self._rect_sel.set_active(self._sel_mode == "rect")
+        if self._lasso_sel is not None:
+            self._lasso_sel.set_active(self._sel_mode == "lasso")
 
     def _discard_selection_shapes(self):
         """Forget selectors bound to axes that are about to be cleared.

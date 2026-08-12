@@ -111,8 +111,19 @@ def _retire_inflight_load(main_window):
     if retired is None:
         retired = main_window._retired_load_threads = []
 
-    for thread_attr, worker_attr in (("ks_load_thread", "ks_load_worker"),
-                                     ("vision_load_thread", "vision_load_worker")):
+    # Physics warm is a plain threading.Thread; flip its stop event so
+    # ensure_physics_cache returns and does not emit physics_warm_done
+    # against the dataset we are about to replace.
+    stop = getattr(main_window, "_physics_warm_stop", None)
+    if stop is not None:
+        stop.set()
+
+    for thread_attr, worker_attr in (
+        ("ks_load_thread", "ks_load_worker"),
+        ("vision_load_thread", "vision_load_worker"),
+        ("_grating_batch_thread", "_grating_batch_worker"),
+        ("feature_worker_thread", "feature_worker"),
+    ):
         thread = getattr(main_window, thread_attr, None)
         worker = getattr(main_window, worker_attr, None)
         try:
@@ -125,6 +136,11 @@ def _retire_inflight_load(main_window):
         logger.info("Retiring an in-flight load before starting a new one (%s)",
                     thread_attr)
         if worker is not None:
+            if hasattr(worker, "stop"):
+                try:
+                    worker.stop()
+                except RuntimeError:
+                    pass
             for signal_name in ("finished", "progress", "error"):
                 signal = getattr(worker, signal_name, None)
                 if signal is None:
@@ -587,7 +603,12 @@ def start_physics_warmup(main_window, all_ids=None):
                 f"Computing grating DS/OS tuning... ({done}/{total})"
             )
 
-        def _on_batch_finished():
+        def _on_batch_finished(thread=main_window._grating_batch_thread,
+                               worker=main_window._grating_batch_worker):
+            # A newer load may have retired this pair. Do not quit/delete
+            # whatever now sits on the attributes.
+            if getattr(main_window, "_grating_batch_thread", None) is not thread:
+                return
             main_window.status_bar.showMessage(
                 "Grating DS/OS tuning computed for all clusters.", 4000
             )
@@ -597,10 +618,16 @@ def start_physics_warmup(main_window, all_ids=None):
             # markers — redraw_population_panels alone omits that plot.
             if getattr(main_window, "population_view_enabled", False):
                 main_window._draw_population_panel_initial()
-            main_window._grating_batch_thread.quit()
-            main_window._grating_batch_thread.wait(2000)
-            main_window._grating_batch_worker.deleteLater()
-            main_window._grating_batch_thread.deleteLater()
+            thread.quit()
+            thread.wait(2000)
+            try:
+                worker.deleteLater()
+                thread.deleteLater()
+            except RuntimeError:
+                pass
+            if getattr(main_window, "_grating_batch_thread", None) is thread:
+                main_window._grating_batch_thread = None
+                main_window._grating_batch_worker = None
 
         main_window._grating_batch_worker.progress.connect(_on_progress)
         main_window._grating_batch_worker.finished.connect(_on_batch_finished)
@@ -614,12 +641,28 @@ def start_physics_warmup(main_window, all_ids=None):
             main_window.physics_warm_done.disconnect(_on_physics_warm_done)
         except (RuntimeError, TypeError):
             pass
+        if getattr(main_window, "_physics_warm_stop", None) is not None:
+            if main_window._physics_warm_stop.is_set():
+                return
         _start_grating_batch()
 
     main_window.physics_warm_done.connect(_on_physics_warm_done)
 
+    warm_stop = threading.Event()
+    prev_stop = getattr(main_window, "_physics_warm_stop", None)
+    if prev_stop is not None:
+        prev_stop.set()
+    main_window._physics_warm_stop = warm_stop
+    dm_for_warm = main_window.data_manager
+
     def _warm_physics():
-        main_window.data_manager.ensure_physics_cache(_all_ids, max_workers=1)
+        if warm_stop.is_set():
+            return
+        dm_for_warm.ensure_physics_cache(
+            _all_ids, max_workers=1, stop_event=warm_stop
+        )
+        if warm_stop.is_set():
+            return
         # Chain the grating batch after physics warm-up completes.
         # _warm_physics itself runs on a plain threading.Thread (see
         # below) — that's fine for ensure_physics_cache, which does no
@@ -645,7 +688,11 @@ def start_physics_warmup(main_window, all_ids=None):
         main_window.cache_progress.setValue(0)
         main_window.cache_progress.show()
         start_cache_progress_polling(main_window)
-        threading.Thread(target=_warm_physics, daemon=True).start()
+        warm_thread = threading.Thread(
+            target=_warm_physics, daemon=True, name="physics-warm"
+        )
+        main_window._physics_warm_thread = warm_thread
+        warm_thread.start()
 
     main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
 

@@ -184,6 +184,12 @@ class VisionLoadWorker(QObject):
             has_sta = self.dm.vision_stas is not None
             is_partial = success and has_sta and not has_ei
 
+            # STA SNR reads the movies. Must not run on the GUI thread
+            # (attach_sta_quality_column only writes the prepared column).
+            if success and has_sta:
+                self.progress.emit("Computing STA quality...")
+                self.dm.prepare_sta_quality_column()
+
             self.finished.emit(success, message, is_partial)
         except Exception as e:
             logger.exception("Error in VisionLoadWorker")

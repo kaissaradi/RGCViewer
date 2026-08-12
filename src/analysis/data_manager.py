@@ -411,27 +411,23 @@ class DataManager(QObject):
         if self.cluster_df.empty:
             return
 
-        # .infer_objects(copy=False) after fillna silences the pandas
-        # "Downcasting object dtype arrays on .fillna is deprecated"
-        # FutureWarning — the trailing .astype() alone does NOT (the
-        # warning fires during fillna itself). Matches the pattern already
-        # used at the KSLabel / isi_violations_pct fillna sites below.
-        self.cluster_df["potential_dups"] = (
-            self.cluster_df["cluster_id"]
-            .map(potential_dups_map)
-            .fillna(False)
-            .infer_objects(copy=False)
-            .astype(bool)
+        if getattr(self.cluster_df, "_is_copy", None) is not None:
+            self.cluster_df = self.cluster_df.copy()
+
+        # .map() yields NaN for missing keys (object dtype). Do not fillna
+        # or format those into strings — fillna warns on object downcast,
+        # and writing "0.86" into a float column warns then will error.
+        # The table already formats floats as {:.2f} on DisplayRole.
+        self.cluster_df.loc[:, "potential_dups"] = (
+            self.cluster_df["cluster_id"].map(potential_dups_map).eq(True)
         )
-        self.cluster_df["max_dup_r"] = (
-            self.cluster_df["cluster_id"]
-            .map(max_dup_r_map)
+        self.cluster_df.loc[:, "max_dup_r"] = (
+            pd.to_numeric(
+                self.cluster_df["cluster_id"].map(max_dup_r_map),
+                errors="coerce",
+            )
             .fillna(0.0)
-            .infer_objects(copy=False)
             .astype(float)
-        )
-        self.cluster_df["max_dup_r"] = self.cluster_df["max_dup_r"].map(
-            lambda x: f"{x:.2f}"
         )
         logger.debug(
             "Successfully updated cluster_df with duplicates on the Main Thread."
@@ -1333,8 +1329,19 @@ class DataManager(QObject):
             )
             return None, None
 
+        int_ids = [int(c) for c in ids]
+        n_bad = sum(1 for cid in int_ids if cid <= 0 or cid > 100_000)
+        if n_bad:
+            logger.warning(
+                "%s has %d implausible cell ids (wrong-stride EI seek table); "
+                "refusing the cache",
+                path,
+                n_bad,
+            )
+            return None, None
+
         logger.debug("Loaded EI correlations for %d cells from %s", n_rows, path)
-        return cached, [int(c) for c in ids]
+        return cached, int_ids
 
     def _compute_ei_correlations_if_needed(self):
         """
@@ -1435,10 +1442,19 @@ class DataManager(QObject):
                 }
 
             self.ei_corr_dict["ids"] = [int(c) for c in ordered_ids]
-            saved_path = self._save_pickle_with_fallback(
-                self.ei_corr_dict, str_corr_pkl
-            )
-            logger.debug("EI correlations saved to %s", saved_path)
+            if any(cid <= 0 or cid > 100_000 for cid in self.ei_corr_dict["ids"]):
+                logger.warning(
+                    "Refusing to persist EI correlation cache: %d of %d ids "
+                    "look like a wrong-stride seek table, not Vision cell ids.",
+                    sum(1 for cid in self.ei_corr_dict["ids"]
+                        if cid <= 0 or cid > 100_000),
+                    len(self.ei_corr_dict["ids"]),
+                )
+            else:
+                saved_path = self._save_pickle_with_fallback(
+                    self.ei_corr_dict, str_corr_pkl
+                )
+                logger.debug("EI correlations saved to %s", saved_path)
 
         # With correlation matrices available, update cluster_df duplicate-related columns
         if not self.cluster_df.empty:
@@ -1660,7 +1676,7 @@ class DataManager(QObject):
                 "set",
                 "KSLabel",
             ]
-        ]
+        ].copy()
         self.cluster_df["cluster_id"] = self.cluster_df["cluster_id"].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         logger.debug("build_cluster_dataframe basic structure complete")
@@ -2499,7 +2515,7 @@ class DataManager(QObject):
 
         return feature_matrix, valid_ids, metadata
 
-    def ensure_physics_cache(self, cluster_ids, max_workers=1):
+    def ensure_physics_cache(self, cluster_ids, max_workers=1, stop_event=None):
         """
         Guarantee that all cluster_ids have a fully-computed feature_cache entry
         (_computed == True) before returning.
@@ -2531,6 +2547,10 @@ class DataManager(QObject):
                 executor.submit(self.get_cell_physics, cid): cid for cid in missing
             }
             for future in as_completed(futures):
+                if stop_event is not None and stop_event.is_set():
+                    for leftover in futures:
+                        leftover.cancel()
+                    return
                 cid = futures[future]
                 try:
                     future.result(timeout=_CELL_TIMEOUT_S)
@@ -4695,12 +4715,11 @@ class DataManager(QObject):
             )
         return True, ""
 
-    def attach_sta_quality_column(self) -> bool:
-        """Write ``sta_snr`` into ``cluster_df`` and check the .sta's provenance.
+    def prepare_sta_quality_column(self) -> bool:
+        """Read STAs and stash ``sta_snr`` values. Safe on a worker thread.
 
-        Separates cells with a real receptive field from cells whose STA is
-        noise — the two are indistinguishable from the KSLabel, which only
-        reports spike-sorting quality and knows nothing about visual response.
+        Does **not** write ``cluster_df`` — that stays main-thread-owned.
+        ``attach_sta_quality_column`` applies the stashed column.
         """
         if not self.vision_stas:
             return False
@@ -4713,13 +4732,15 @@ class DataManager(QObject):
         if not ok:
             logger.warning("STA provenance: %s", msg)
 
-        values = np.full(len(self.cluster_df), np.nan, dtype=float)
+        n_rows = len(self.cluster_df)
+        values = np.full(n_rows, np.nan, dtype=float)
+        n_probed = 0
         for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
             vid = self.get_vision_id_for_cluster(int(cid))
-            try:
-                sta = self.vision_stas[vid]
-            except (KeyError, TypeError):
+            if vid not in self.vision_stas:
                 continue
+            n_probed += 1
+            sta = self.vision_stas[vid]
             if sta is None:
                 continue
             # Green carries the luminance signal for the achromatic noise used
@@ -4731,14 +4752,30 @@ class DataManager(QObject):
                 continue
             values[i] = self.sta_peak_to_rms(vol)
 
-        self.cluster_df["sta_snr"] = values
+        self._sta_snr_values = values
         n = int(np.isfinite(values).sum())
-        logger.debug(
-            "Attached sta_snr to cluster_df: %d/%d cells, %d above %.0f, "
-            "provenance %s",
-            n, len(values), int(np.nansum(values >= STA_SNR_GOOD)),
-            STA_SNR_GOOD, "OK" if ok else "SUSPECT",
+        logger.info(
+            "STA present for %d/%d cells (%d readable); provenance %s",
+            n_probed, n_rows, n, "OK" if ok else "SUSPECT",
         )
+        return True
+
+    def attach_sta_quality_column(self) -> bool:
+        """Write a prepared ``sta_snr`` column into ``cluster_df``.
+
+        Main thread only. Computes first if ``prepare_sta_quality_column``
+        has not already run (tests, or a load path that skipped the worker).
+        """
+        if not hasattr(self, "_sta_snr_values"):
+            if not self.prepare_sta_quality_column():
+                return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+        # cluster_df can be a view after earlier column filters; assign
+        # on a copy so pandas does not warn and then drop the write.
+        if getattr(self.cluster_df, "_is_copy", None) is not None:
+            self.cluster_df = self.cluster_df.copy()
+        self.cluster_df.loc[:, "sta_snr"] = self._sta_snr_values
         return True
 
     def get_chirp_data_for_cluster(self, cluster_id):

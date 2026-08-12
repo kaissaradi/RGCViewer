@@ -1,8 +1,11 @@
 # Specification: Critical Production Bug Fixes
 
+**Status (2026-08-12):** Historical. This spec is not the active queue.
+See `HANDOFF.md`.
+
 ## Metadata
 
-* **Status:** In Progress
+* **Status:** Historical — not the active queue
 * **Target Release:** v1.1
 * **Primary Developer:** Kais Saradi
 * **Branch:** `fix/critical-production-bugs`

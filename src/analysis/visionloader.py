@@ -29,12 +29,15 @@ External deps preserved (these hold Litke array geometry, not byte layout):
 Writers for .neurons / .globals / .ei / .sta live at the bottom.
 """
 
+import logging
 import os
 import struct
 from collections import namedtuple
 from typing import Dict, Tuple, List, Optional, Any, Union, Set
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # --- external geometry deps (unchanged; not byte decoders) ------------------
 try:
@@ -355,6 +358,60 @@ class ImageCalibrationParamsReader:
 # EI reader.  Replaces vcext.unpack_ei_from_array with one reshape.
 # ============================================================================
 
+# Vision neuron ids are small positive ints. A cid above this is almost
+# always float payload bytes interpreted as >I — the signature of a
+# wrong record stride (globals map 512 vs .ei payload 519).
+_MAX_PLAUSIBLE_VISION_CELL_ID = 100_000
+
+
+def _ei_record_nbytes(n_payload_channels: int, n_samples: int) -> int:
+    """One cell: 8-byte (id, nspikes) header + interleaved (value, error) f32."""
+    return (N_BYTES_32BIT * 2
+            + 2 * N_BYTES_32BIT * n_samples * n_payload_channels)
+
+
+def _resolve_ei_payload_channels(file_size: int, header_size: int,
+                                 n_samples: int, array_id: int,
+                                 n_map_electrodes: int) -> int:
+    """Channel count *written in the .ei*, including the TTL row.
+
+    Payload width and plot coordinates are not the same thing. kilosort4
+    converters have been seen to write a 512-electrode .globals next to a
+    519-wide .ei (header array_id 1551). Using the globals map for the
+    stride then walks the file through the waveform and treats floats as
+    cell ids.
+
+    Prefer the .ei header's array_id when that width divides the file;
+    otherwise the globals map; otherwise the two standard Litke widths.
+    """
+    candidates = []
+    if elmap is not None:
+        try:
+            n_from_id = elmap.get_litke_array_coordinates_by_array_id(
+                array_id).shape[0] + 1
+            candidates.append(n_from_id)
+        except Exception:
+            pass
+    if n_map_electrodes > 0:
+        candidates.append(int(n_map_electrodes) + 1)
+    candidates.extend((520, 513))
+
+    body = file_size - header_size
+    seen = set()
+    dividing = []
+    for n_ch in candidates:
+        if n_ch in seen or n_ch <= 0:
+            continue
+        seen.add(n_ch)
+        rec = _ei_record_nbytes(n_ch, n_samples)
+        if rec > 0 and body >= rec and body % rec == 0:
+            dividing.append(n_ch)
+
+    if dividing:
+        return dividing[0]
+    return max(int(n_map_electrodes) + 1, 1)
+
+
 class EIReader:
     def __init__(self, analysis_folder_path, dataset_name,
                  ei_extension='ei', globals_extension='globals'):
@@ -369,27 +426,67 @@ class EIReader:
         with GlobalsFileReader(analysis_folder_path, dataset_name,
                                globals_extension=globals_extension) as g:
             self.electrode_map, self.disconnected_electrodes = g.get_electrode_map()
-        self.n_electrodes = self.electrode_map.shape[0]
 
         self.nl_points, self.nr_points, self.array_id = \
             struct.unpack('>III', self.ei_fp.read(N_BYTES_32BIT * 3))
         self.n_samples_per_ei = self.nl_points + self.nr_points + 1
         self.header_size = self.ei_fp.tell()
 
-        # per electrode per sample: (value, error) f32 pair; +1 electrode = TTL
+        # Shape comes from the .ei file, not from the globals map.
+        self.n_payload_channels = _resolve_ei_payload_channels(
+            num_bytes_in_file, self.header_size, self.n_samples_per_ei,
+            self.array_id, self.electrode_map.shape[0],
+        )
+        self.n_electrodes = self.n_payload_channels - 1
+
+        # Plot coordinates must match the payload. kilosort4 converters
+        # write a 512-row .globals next to a 519-wide .ei; using that map
+        # makes the EI panel refuse to draw (ei=519, positions=512).
+        if (self.electrode_map.shape[0] != self.n_electrodes
+                and elmap is not None):
+            try:
+                coords = elmap.get_litke_array_coordinates_by_array_id(
+                    self.array_id)
+                if coords.shape[0] == self.n_electrodes:
+                    logger.info(
+                        "EI payload is %d channels but .globals map is %d; "
+                        "using Litke coordinates for array_id %d",
+                        self.n_electrodes,
+                        self.electrode_map.shape[0],
+                        self.array_id,
+                    )
+                    self.electrode_map = coords
+            except Exception:
+                logger.debug(
+                    "Could not replace mismatched electrode map for array_id %s",
+                    self.array_id,
+                    exc_info=True,
+                )
+
+        # per electrode per sample: (value, error) f32 pair; includes TTL
         self.num_bytes_per_ei = (2 * N_BYTES_32BIT * self.n_samples_per_ei
-                                 * (self.n_electrodes + 1))
+                                 * self.n_payload_channels)
 
         self.cell_id_to_offset = {}
         self.cell_id_to_nspikes = {}
         step = self.num_bytes_per_ei + N_BYTES_32BIT * 2
         off = self.header_size
-        while off < num_bytes_in_file:
+        n_dropped = 0
+        while off + N_BYTES_32BIT * 2 <= num_bytes_in_file:
             self.ei_fp.seek(off, 0)
             cid, nspikes = struct.unpack('>II', self.ei_fp.read(N_BYTES_32BIT * 2))
-            self.cell_id_to_nspikes[cid] = nspikes
-            self.cell_id_to_offset[cid] = off + N_BYTES_32BIT * 2
+            if 0 < cid <= _MAX_PLAUSIBLE_VISION_CELL_ID:
+                self.cell_id_to_nspikes[cid] = nspikes
+                self.cell_id_to_offset[cid] = off + N_BYTES_32BIT * 2
+            else:
+                n_dropped += 1
             off += step
+        if n_dropped:
+            logger.warning(
+                "EIReader: dropped %d implausible cell ids from %s "
+                "(wrong stride or corrupt file); kept %d",
+                n_dropped, ei_path, len(self.cell_id_to_offset),
+            )
 
     def get_ei_for_cell_id(self, cell_id: int) -> EIContainer:
         assert cell_id in self.cell_id_to_offset, \
@@ -399,7 +496,7 @@ class EIReader:
 
         # interleaved (value, error) f32 BE -> (n_elec_with_ttl, n_samples, 2)
         arr = np.frombuffer(raw, dtype=BE_F4).reshape(
-            self.n_electrodes + 1, self.n_samples_per_ei, 2)
+            self.n_payload_channels, self.n_samples_per_ei, 2)
         full_ei = np.ascontiguousarray(arr[:, :, 0], dtype=np.float32)
         ei_err = np.ascontiguousarray(arr[:, :, 1], dtype=np.float32)
 

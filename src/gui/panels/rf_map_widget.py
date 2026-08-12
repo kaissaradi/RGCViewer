@@ -523,6 +523,8 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
         super().resizeEvent(event)
         # Geometry changed: the cached background no longer matches the canvas.
         self._blit_bg = None
+        if self._sel_mode != "off" and (self._rect_sel is None or self._lasso_sel is None):
+            self._ensure_selectors()
 
 
 def _to_rgba(color):

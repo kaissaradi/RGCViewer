@@ -65,7 +65,10 @@ class LazySTADict:
         if keys_set is None:
             self._keys_set = set(getattr(self, 'keys_list', []))
             keys_set = self._keys_set
-        return key in keys_set
+        try:
+            return int(key) in keys_set
+        except (TypeError, ValueError):
+            return False
     
     def get(self, key, default=None):
         """Emulate dict.get() using our internal cache and SSD reader."""
@@ -74,6 +77,15 @@ class LazySTADict:
         return default
         
     def __getitem__(self, key):
+        try:
+            key = int(key)
+        except (TypeError, ValueError):
+            return None
+        # Missing cells are the common case (many KS units have no STA).
+        # Do not open a reader / thread pool just to assert.
+        if key not in self:
+            return None
+
         # 1. Fast path: check RAM cache under lock (instant dict lookup).
         with self._cache_lock:
             if key in self._cache:
@@ -468,6 +480,9 @@ def load_sta_data(vision_dir: Path, dataset_name: str):
     except FileNotFoundError:
         logger.warning(f"STA file not found in {vision_dir}; skipping STA")
         return None
+    except AssertionError as e:
+        logger.warning("STA file missing/invalid (%s); skipping STA", e)
+        return None
     except Exception:
         logger.exception("Unexpected error initializing Lazy STA Reader")
         return None
@@ -533,7 +548,10 @@ def load_params_data(vision_dir: Path, dataset_name: str):
             logger.info(f"Loaded params for {len(vcd.get_cell_ids())} cells")
             return vcd
     except FileNotFoundError:
-        logger.error(f"Params file not found in {vision_dir}")
+        logger.warning("Params file not found in %s; skipping params", vision_dir)
+        return None
+    except AssertionError as e:
+        logger.warning("Params file missing/invalid (%s); skipping params", e)
         return None
     except Exception:
         logger.exception("Unexpected error loading params data")

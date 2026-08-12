@@ -1,27 +1,31 @@
-# AGENTS.md — RGCViewer Developer Rulebook
+# AGENTS.md — developer rules
 
-> You are an AI agent acting as a core developer on this project.
-> Read this document **in full** before touching any code.
-> Reading order: **AGENTS.md → PLAN.md (Fragile Zones) → your assigned spec → write the failing test → implement.**
+Read this document before you change code.
+
+Reading order: `README.md` → `CLAUDE.md` → this file → `HANDOFF.md` →
+`docs/PLAN.md` (fragile zones). Then write the failing test. Then implement.
+
+RGCViewer is a PyQt5 / pyqtgraph desktop GUI. A scientist uses it to inspect
+spike-sorted retinal ganglion cell (RGC) recordings and to assign clusters
+to types.
+
+Two ID spaces exist in a hybrid dataset:
+
+- **Kilosort** — `spike_times.npy`, `spike_clusters.npy`, `templates.npy`.
+  IDs are 0-indexed.
+- **Vision** — `.neurons`, `.ei`, `.sta`, `.params`. IDs are 1-indexed.
+
+`DataManager.is_vision_only` is `True` only when no Kilosort data was loaded.
+
+Start the app with `python main.py` from environment `rgcviewer`. The window
+opens empty. Do not reopen the last run at start.
 
 ---
 
-## 0. What This App Is
+## 1. The Laws
 
-RGCViewer is a **PyQt5/pyqtgraph desktop GUI for spike sorting quality control** of retinal ganglion cell (RGC) electrophysiology data. A 512-electrode Litke MEA records from hundreds of neurons simultaneously. The spike sorter Kilosort assigns voltage events to putative neurons called *clusters*. RGCViewer lets a scientist scroll through thousands of clusters rapidly, inspect autocorrelograms, receptive fields (STAs), electrical images (EIs), and raw waveforms, and mark cells as good / duplicate / noise.
-
-Data comes from **two coexisting pipelines in the same dataset**:
-
-- **Kilosort** — produces `spike_times.npy`, `spike_clusters.npy`, `templates.npy`. IDs are **0-indexed integers**.
-- **Vision** — produces `.neurons`, `.ei`, `.sta`, `.params` files. IDs are **1-indexed integers**.
-
-Both ID spaces coexist in every hybrid dataset. The flag `DataManager.is_vision_only` is `True` only when no Kilosort data was loaded.
-
----
-
-## 1. The Three Laws
-
-These three failure modes are **silent** — they raise no exception and produce no visible error. They are the most common source of bugs in this codebase.
+Laws 1–3 are silent. They raise no exception. They are the most common
+source of bugs. Laws 4–5 are standing decisions from 2026-08-12.
 
 ---
 
@@ -88,19 +92,47 @@ Use the `cache_cleared_data_manager` fixture when you need real data files but m
 
 ---
 
+### LAW 4 — Do not invent geometry for a broken EI
+
+Some older kilosort4 conversions write a 519-wide `.ei` next to a 512-row
+`.globals`. `EIReader` takes payload width from the `.ei` file. The plot map
+is replaced only when Litke coordinates match that width.
+
+If the EI panel still logs `ei=519, positions=512`, leave the plot blank.
+Do not invent or stretch an electrode map to force a draw.
+
+**Regression test:** `tests/unit/test_vision_load_robustness.py`.
+
+---
+
+### LAW 5 — Do not build a selector on a 0×0 figure
+
+A hidden or collapsed matplotlib canvas reports figure size 0×0.
+`RectangleSelector.__init__` then raises
+`ValueError: 'box_aspect' and 'fig_aspect' must be positive`.
+
+Call `_axes_ready(ax)` first. If it is false, return `None` and retry in
+`resizeEvent`. Do not catch the error by creating a dummy 1×1 map.
+
+**Regression test:** `tests/unit/test_live_selectors.py`.
+
+---
+
 ## 2. Architecture & Data Pipeline
 
 ```
 src/
 ├── analysis/
 │   ├── data_manager.py        # Single source of truth. All data, caches, locks.
-│   ├── vision_integration.py  # Vision file I/O. LazySTADict lives here.
+│   ├── vision_integration.py  # Vision file I/O. LazySTADict / LazyEIDict.
+│   ├── visionloader.py        # Vision readers. EI stride from the .ei file.
 │   ├── analysis_core.py       # Pure numpy. No Qt. No I/O.
 │   └── constants.py           # ISI_REFRACTORY_PERIOD_MS, EI_CORR_THRESHOLD, etc.
 ├── gui/
 │   ├── main_window.py         # Tier 1/2 dispatch, QThread lifecycle, menus.
 │   ├── theme.py               # All colors, spacing, light/dark mode constants.
 │   ├── panels/                # Thin UI layers. Read DataManager. No cross-panel refs.
+│   ├── panels/live_selectors.py  # Rectangle / lasso. Require _axes_ready.
 │   └── workers/
 │       └── workers.py         # All background computation. Emits Qt Signals.
 tests/
@@ -176,7 +208,7 @@ def on_result_ready(self, cluster_id: int, result: dict):
 
 | Attribute | Owner | Rule |
 |---|---|---|
-| `cluster_df` | Main thread only | Background workers emit `ei_updates_ready` signal; `_apply_ei_updates()` slot writes it |
+| `cluster_df` | Main thread only | Workers emit signals. `_apply_ei_updates()` and `attach_sta_quality_column()` write it. `max_dup_r` is float64 — never write format strings into it. Slice with `.copy()` before column writes. |
 | `spike_times`, `spike_clusters` | Read-only after load | Immutable memmaps. Never assign or sort in place. |
 | `standard_plot_cache` | Any thread | Always acquire `_standard_plot_lock` |
 | `feature_cache` | Any thread | Always acquire `_feature_lock` |
@@ -204,6 +236,8 @@ Things that look like implementation details but are actually load-bearing contr
 
 7. **`plot_ei_waveforms` is the single EI spatial rendering primitive.** Lives in `analysis_core.py`. Both `CellTracerDialog` and the EI panel waveform mode call it. Do not copy-paste waveform rendering logic into panels — extend the function instead. It returns a list of `Line2D` artists; the caller is responsible for removing them (call `.remove()` on each, never `fig.clear()`). Box geometry is auto-derived from electrode spacing — do not hardcode `box_height` or `box_width` in callers.
 
+8. **Start does not load a dataset.** `MainWindow` opens a run only when the caller passes `--kilosort-dir` or a test calls `load_directory`. `recent_paths.last_dataset()` is not used at start. File dialogs still remember the last folder.
+
 ---
 
 ## 7. Data Formats Reference
@@ -214,7 +248,7 @@ Things that look like implementation details but are actually load-bearing contr
 | `spike_clusters.npy` | **0-indexed** | `(N,)` int64, `np.load(mmap_mode='r')` | Parallel to `spike_times` — same index = same spike |
 | `templates.npy` | **0-indexed** | `(n_clusters, n_time, n_ch)`, memmapped | May not exist in all KS versions |
 | `.neurons` (Vision) | **1-indexed** | `dict[vid → spike_sample_nums]` via `vl.NeuronsReader` | Seed electrodes are also 1-indexed |
-| `.ei` (Vision) | **1-indexed** | `(N_electrodes, 201 time)` per cell via `vl.EIReader` — N=512 on 60 µm array, N=519 on 30 µm array (Vision keeps reference channels KS strips). Shape comes from the file; never hardcode 512. | `ei_corr()` expects the shape loaded from file; `plot_ei_waveforms` takes any (N_ch, T). |
+| `.ei` (Vision) | **1-indexed** | `(N_electrodes, T)` per cell via `vl.EIReader`. Width comes from the `.ei` file, not from `.globals`. A true 30 µm Litke is 519. A kilosort4 converter can write 519 samples next to a 512-row `.globals` — that pair is a broken file, not a 30 µm array. Do not hardcode 512. Do not invent a map to force a plot (Law 4). |
 | `.sta` (Vision) | **1-indexed** | `LazySTADict[vid]` → obj with `.red/.green/.blue` | Shape: `(height, width, n_frames)` |
 | `.params` (Vision) | **1-indexed** | `VisionCellDataTable` via `vl.ParametersFileReader` | `get_stafit_for_cell(vid)` may return `None` |
 | `.globals` (Vision) | N/A | `(N_electrodes, 2)` xy positions | `ch = seed_electrode - 1` to convert to 0-indexed |
@@ -230,7 +264,7 @@ Things that look like implementation details but are actually load-bearing contr
 | `spike_times` | `np.ndarray` memmap | No (after load) | Direct access |
 | `cluster_df` | `pd.DataFrame` | No (may be empty) | Check `.empty` before use |
 | `vision_stas` | `LazySTADict` | **Yes** | `if self.vision_stas and vid in self.vision_stas:` |
-| `vision_eis` | `dict` | **Yes** | Check `self.vision_available` first |
+| `vision_eis` | `LazyEIDict` or `dict` | **Yes** | Check `self.vision_available` first. One reader. Do not copy the table. |
 | `vision_params` | `VisionCellDataTable` | **Yes** | `if self.vision_params:` |
 | `raw_reader` | `PyBinFileReader` | **Yes** | `if self.raw_reader is not None:` |
 | `channel_positions` | `np.ndarray (N, 2)` | **Yes** | `if self.channel_positions is not None:` |
@@ -289,8 +323,10 @@ conda run -n rgcviewer python -m pytest --mpl tests/
 
 # --- APP ---
 
-# Launch the application
-conda run -n rgcviewer python -m src.gui.main_window
+# Launch the application (empty window; File → Open loads a run)
+conda run -n rgcviewer python main.py
+# or, after `conda activate rgcviewer`:
+python main.py --debug
 
 # Check installed packages
 conda run -n rgcviewer pip list | grep -E "pyqtgraph|hdbscan|visionloader|qtpy"
@@ -387,14 +423,18 @@ Plotting rule: `pyqtgraph` for all dynamic live-data panels. `matplotlib` only f
 
 ---
 
-## 14. Prime Directives (Summary)
+## 14. Prime directives
 
-In order, non-negotiable:
+In order:
 
-1. Read the spec before writing any code.
-2. Write the failing test before writing any implementation.
-3. Never update UI from a background thread. Use Qt Signals.
-4. Never access `vision_stas[cluster_id]` directly. Translate the ID first (Law 1).
-5. Never add heavy operations to Tier 1 of `update_cluster_views()`. (Law 2)
-6. Never test math logic without bypassing the `.pkl` cache. (Law 3)
-7. Never commit code that breaks a currently-passing test.
+1. Read `HANDOFF.md` and the assigned spec before you write code.
+2. Write the failing test before you write the implementation.
+3. Do not update the UI from a background thread. Use Qt Signals.
+4. Do not access `vision_stas[cluster_id]` directly. Translate the ID first (Law 1).
+5. Do not add heavy work to Tier 1 of `update_cluster_views()` (Law 2).
+6. Do not test math against a warm `.pkl` cache (Law 3).
+7. Do not invent EI geometry for a 519/512 mismatch (Law 4).
+8. Do not build a selector on a 0×0 figure (Law 5).
+9. Do not reopen the last run at start.
+10. Do not commit unless the user asks.
+11. Do not skip a failing test to make a change look green.

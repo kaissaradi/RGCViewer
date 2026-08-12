@@ -1,8 +1,12 @@
-Specification: Standalone Vision Integration & Bug Fixes
+# Specification: Standalone Vision Integration & Bug Fixes
+
+**Status (2026-08-12):** Partial. Missing `.sta` / `.params` no longer crash.
+A 519-wide `.ei` next to a 512-row `.globals` loads; the EI plot may stay
+blank (accepted). This spec is not the active work queue. See `HANDOFF.md`.
 
 ## Metadata
 
-* **Status:** Draft
+* **Status:** Partial — not the active queue
 * **Target Release:** v1.1
 * **Primary Developer/Agent:** [Agent Name]
 

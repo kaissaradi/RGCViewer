@@ -33,7 +33,12 @@ import logging
 
 from ..theme import resolve_theme_colors
 from ..workers.workers import UMAPWorker, ClusterWorker
-from .live_selectors import make_lasso_selector, make_rect_selector, retire
+from .live_selectors import (
+    _axes_ready,
+    make_lasso_selector,
+    make_rect_selector,
+    retire,
+)
 from .rf_map_widget import RFMapWidget
 from .trace_stack_widget import TraceStackWidget
 from .view_toggles import PopulationViewToggles
@@ -2030,6 +2035,15 @@ class UMAPPanel(QWidget):
         """Invalidate the blit cache; the following draw_event re-snapshots it."""
         super().resizeEvent(event)
         self._blit_bg = None
+        # Selectors are skipped while a canvas is 0×0 (hidden tab / collapsed
+        # splitter). Once the figure has a real size, attach them.
+        if (
+            not self._building
+            and self.embedding is not None
+            and not self.is_3d
+            and (self._rect_selector is None or self._lasso_selector is None)
+        ):
+            self.update_selector()
 
     # Colour modes that hold integer cluster assignments rather than a
     # continuous metric — only these support "highlight this whole cluster".
@@ -2214,23 +2228,34 @@ class UMAPPanel(QWidget):
             "accent": colors["accent"],
             "text_primary": colors["text_primary"],
         }
-        # button=[1] so right-click stays free for _on_canvas_click's
-        # "highlight this point's cluster" pick; the selectors otherwise grab
-        # every mouse button and would swallow it.
-        self._rect_selector = make_rect_selector(
-            self.ax, self, palette, onselect=lambda *_: self._apply_rect(self._rect_selector)
-        )
-        self._lasso_selector = make_lasso_selector(self.ax, self, palette)
-
-        self._rect_selector.set_active(self._selection_mode == "rect")
-        self._lasso_selector.set_active(self._selection_mode == "lasso")
-        retire(self._rect_selector)
-        retire(self._lasso_selector)
+        # Hidden / not-yet-laid-out canvases have a 0×0 figure. RectangleSelector
+        # then raises ValueError on fig_aspect; retry from resizeEvent.
+        if _axes_ready(self.ax):
+            # button=[1] so right-click stays free for _on_canvas_click's
+            # "highlight this point's cluster" pick; the selectors otherwise grab
+            # every mouse button and would swallow it.
+            self._rect_selector = make_rect_selector(
+                self.ax,
+                self,
+                palette,
+                onselect=lambda *_: self._apply_rect(self._rect_selector),
+            )
+            self._lasso_selector = make_lasso_selector(self.ax, self, palette)
+            if self._rect_selector is not None:
+                self._rect_selector.set_active(self._selection_mode == "rect")
+                retire(self._rect_selector)
+            if self._lasso_selector is not None:
+                self._lasso_selector.set_active(self._selection_mode == "lasso")
+                retire(self._lasso_selector)
 
         # Same tool in the mosaic and the trace overlays, so one choice covers
-        # every view a selection can be drawn in.
+        # every view a selection can be drawn in. A collapsed view must not
+        # abort the rest of the rebuild.
         for view in self._population_views:
-            view.set_selection_mode(self._selection_mode)
+            try:
+                view.set_selection_mode(self._selection_mode)
+            except Exception:
+                logger.debug("population view selector update failed", exc_info=True)
 
         # Kept pointing at whichever tool is live for anything still reading it.
         self.current_selector = (
