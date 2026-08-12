@@ -2,7 +2,7 @@
 
 **Status (2026-08-12):** Parked. The current branch uses this name. The last
 completed work is older-dataset load robustness, not this redesign. Do not
-start this spec unless the user asks. See `HANDOFF.md`.
+start this spec unless the user asks. See `docs/PLAN.md`.
 
 ## Block 0 — Metadata
 
@@ -526,7 +526,7 @@ conda run -n rgcviewer python -m pytest --mpl-generate-path tests/baseline_image
 - Does **not** change the UMAP embedding or clustering algorithms.
 - Does **not** modify `constants.py` feature weights.
 - Does **not** address the stale `feature_cache.pkl` bug (Priority 3).
-- Does **not** implement the Phase 3 launcher scripts (Priority 3 in HANDOFF.md).
+- Does **not** implement the Phase 3 launcher scripts (parked in `docs/PLAN.md`).
 - Does **not** add a second experiment browser file dialog for npy files
   (that belongs to the cross-run stimulus bridge spec).
 

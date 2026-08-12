@@ -2,8 +2,9 @@
 
 Read this document before you change code.
 
-Reading order: `README.md` → `CLAUDE.md` → this file → `HANDOFF.md` →
-`docs/PLAN.md` (fragile zones). Then write the failing test. Then implement.
+Reading order: `README.md` → `CLAUDE.md` → this file → `docs/PLAN.md`
+(pickup, fragile zones, open defects). Then write the failing test.
+Then implement.
 
 RGCViewer is a PyQt5 / pyqtgraph desktop GUI. A scientist uses it to inspect
 spike-sorted retinal ganglion cell (RGC) recordings and to assign clusters
@@ -427,7 +428,7 @@ Plotting rule: `pyqtgraph` for all dynamic live-data panels. `matplotlib` only f
 
 In order:
 
-1. Read `HANDOFF.md` and the assigned spec before you write code.
+1. Read `docs/PLAN.md` and the assigned spec before you write code.
 2. Write the failing test before you write the implementation.
 3. Do not update the UI from a background thread. Use Qt Signals.
 4. Do not access `vision_stas[cluster_id]` directly. Translate the ID first (Law 1).

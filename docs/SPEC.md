@@ -6,7 +6,7 @@
 > until every block below has been filled out and reviewed.
 >
 > Reading order before writing a spec:
-> `docs/AGENTS.md` → `HANDOFF.md` → `docs/PLAN.md` (fragile zones) → this template.
+> `docs/AGENTS.md` → `docs/PLAN.md` (fragile zones) → this template.
 
 ---
 

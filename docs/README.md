@@ -7,14 +7,13 @@ Read in this order. Do not start from a historical spec.
 | 1 | `README.md` | Human | Install, start, tests |
 | 2 | `CLAUDE.md` | Agent and human | Experiment, file layout, analysis traps |
 | 3 | `docs/AGENTS.md` | Agent | Laws, caches, threads, test rules |
-| 4 | `HANDOFF.md` | Agent and human | Current branch, done work, do-not-change list |
-| 5 | `docs/PLAN.md` | Agent | Fragile zones, open defects |
-| 6 | `docs/SPEC.md` | Agent | Template for a new feature spec |
+| 4 | `docs/PLAN.md` | Agent and human | Pickup, standing decisions, fragile zones, open defects |
+| 5 | `docs/SPEC.md` | Agent | Template for a new feature spec |
 
 ## Historical specs
 
 `docs/specs/` holds completed or parked feature specs. Treat them as
-history unless `HANDOFF.md` or `PLAN.md` names one as active.
+history unless `docs/PLAN.md` names one as active.
 
 | Spec | Status |
 |---|---|

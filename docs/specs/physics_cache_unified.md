@@ -1,7 +1,7 @@
 # docs/specs/physics_cache_unified.md
 
 **Status (2026-08-12):** Historical. Physics cache, LazyEI, and dataset
-release are in the tree. This spec is not the active queue. See `HANDOFF.md`.
+release are in the tree. This spec is not the active queue. See `docs/PLAN.md`.
 
 > Reading order: AGENTS.md (full) → PLAN.md (Fragile Zones + Untested Behaviors) → this spec → write failing tests → implement.
 

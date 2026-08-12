@@ -93,7 +93,6 @@ Read documents in this order:
 1. This file — install and start
 2. `CLAUDE.md` — experiment, files, analysis traps
 3. `docs/AGENTS.md` — developer rules
-4. `HANDOFF.md` — current work state
-5. `docs/PLAN.md` — fragile zones and open defects
+4. `docs/PLAN.md` — pickup, fragile zones, open defects
 
 The document map is `docs/README.md`.

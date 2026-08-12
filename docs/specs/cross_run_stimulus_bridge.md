@@ -1,7 +1,7 @@
 # SPEC.md — Cross-Run Stimulus Bridge (map any run → physics cache, RF mosaic, UMAP)
 
 **Status (2026-08-12):** Code is in the tree. Lab acceptance is open.
-This spec is not the active queue. See `HANDOFF.md`.
+This spec is not the active queue. See `docs/PLAN.md`.
 
 > Reading order: **AGENTS.md (full) → PLAN.md (Fragile Zones) → this spec → write failing tests → implement.**
 > Do **not** start implementation until this spec is marked **Ready for Dev** and the open design decisions in Block 11 are resolved.

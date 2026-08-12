@@ -1,7 +1,7 @@
 # Specification: Critical Production Bug Fixes
 
 **Status (2026-08-12):** Historical. This spec is not the active queue.
-See `HANDOFF.md`.
+See `docs/PLAN.md`.
 
 ## Metadata
 
