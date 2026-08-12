@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import threading
+import time
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
 from qtpy.QtCore import QThread, Qt, QTimer, QEventLoop
@@ -38,6 +39,37 @@ def _show_load_progress(main_window, msg):
     QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
 
+def _cache_progress_state(total, std_done, physics_done, expect_physics):
+    """Map cache counters to a 0–100 bar value.
+
+    After Kilosort the UI is already up. Two things still fill in the
+    background: ISI/ACG/FR (``standard_plot_cache``) and, when Vision is
+    coming, ``get_cell_physics``. Those used to share one bar that switched
+    metric the moment ``vision_stas`` appeared — physics was still 0, so the
+    bar jumped back to empty and sat there until standard plots finished.
+
+    First half is spike plots, second half is physics. Vision arriving with
+    physics still at 0 no longer drops the value.
+    """
+    if total <= 0:
+        return 0, True, "Caching spike plots: %p%"
+    std_frac = min(float(std_done) / total, 1.0)
+    phys_frac = min(float(physics_done) / total, 1.0)
+    if expect_physics:
+        val = int(50.0 * std_frac + 50.0 * phys_frac)
+        ready = std_done >= total and physics_done >= total
+        label = (
+            "Caching spike plots: %p%"
+            if std_frac < 1.0 and phys_frac <= 0.0
+            else "Pre-computing Physics Cache: %p%"
+        )
+    else:
+        val = int(100.0 * std_frac)
+        ready = std_done >= total
+        label = "Caching spike plots: %p%"
+    return min(val, 100), ready, label
+
+
 def _ensure_cache_progress_timer(main_window):
     """Main-thread timer: physics warm-up no longer emits finished_cluster."""
     timer = getattr(main_window, "_cache_progress_timer", None)
@@ -71,25 +103,28 @@ def update_cache_progress(main_window):
         return
 
     physics_done = getattr(dm, "_physics_done_count", 0)
-    std_done = len(dm.standard_plot_cache)
-    vision_loaded = bool(getattr(dm, "vision_stas", None))
+    std_done = len(getattr(dm, "standard_plot_cache", {}) or {})
+    expect_physics = bool(getattr(main_window, "_expect_physics", False)) or bool(
+        getattr(dm, "vision_stas", None)
+    )
 
-    # StandardPlotsWorker drives finished_cluster; physics warm-up does not.
-    if vision_loaded:
-        val = int(physics_done / total * 100)
-        ready = physics_done >= total
-    else:
-        val = int(std_done / total * 100)
-        ready = std_done >= total
+    val, ready, label = _cache_progress_state(
+        total, std_done, physics_done, expect_physics
+    )
 
-    main_window.cache_progress.setValue(min(val, 100))
+    bar = main_window.cache_progress
+    # A determinate range is required — the KS-load spinner uses (0, 0).
+    if bar.minimum() == 0 and bar.maximum() == 0:
+        bar.setRange(0, 100)
+    bar.setFormat(label)
+    bar.setValue(val)
 
     if ready and not getattr(main_window, "_cache_save_triggered", False):
         # Marks the warm-up milestone only. closeEvent saves again on exit, so
         # work done after this point is no longer lost.
         main_window._cache_save_triggered = True
         stop_cache_progress_polling(main_window)
-        main_window.cache_progress.hide()
+        bar.hide()
         main_window.status_bar.showMessage(
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000
         )
@@ -272,6 +307,13 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     # 1. Lock UI and Prep DataManager
     main_window.central_widget.setEnabled(False)
     main_window.status_bar.showMessage("Initializing loader...")
+    main_window._expect_physics = False
+    main_window._cache_save_triggered = False
+    bar = getattr(main_window, "cache_progress", None)
+    if bar is not None:
+        bar.setRange(0, 0)
+        bar.setFormat("Loading dataset...")
+        bar.show()
     main_window.data_manager = DataManager(ks_dir_name, main_window)
     main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
 
@@ -319,6 +361,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
             main_window._reopening_remembered = False
         main_window.status_bar.showMessage("Loading failed.", 5000)
         main_window.central_widget.setEnabled(True)
+        bar = getattr(main_window, "cache_progress", None)
+        if bar is not None:
+            bar.hide()
+            bar.setRange(0, 100)
         # Deferred, NOT called here. This function runs inside the worker's
         # finished-signal emission, and a modal dialog spins a nested event
         # loop that processes the worker's and thread's pending deleteLater
@@ -344,6 +390,7 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
     # --- GUI UPDATES (Safe because we are back on the main thread) ---
+    _ui_t0 = time.perf_counter()
 
     # 1. Raw Tab Management
     if dat_file is not None:
@@ -361,19 +408,37 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.data_manager.load_tree_structure(tree_file_path)
     else:
         populate_tree_view(main_window)
+    logger.debug("load-ui tree/table: %.2fs", time.perf_counter() - _ui_t0)
 
-    main_window._update_table_view_duplicate_highlight()
+    _ui_t1 = time.perf_counter()
+    # Tree colours only. The table highlight path rebuilds the whole
+    # model (and used to re-measure every cell) — EI correlations are
+    # not ready yet, so there are no duplicates to mark.
     main_window._update_tree_view_duplicate_highlight()
+    logger.debug("load-ui highlights: %.2fs", time.perf_counter() - _ui_t1)
 
     # 3. Enable UI & Workers
+    # Vision is located during the KS worker; if it found files we will
+    # warm physics after that load. Tell the bar now so it does not flip
+    # from a 0–100 spike-plot scale to a 0–100 physics scale (and jump
+    # back to 0) when vision_stas appears.
+    auto_dir_early = getattr(main_window.data_manager, "_auto_vision_dir", None)
+    auto_dataset_early = getattr(main_window.data_manager, "_auto_vision_dataset", None)
+    main_window._expect_physics = bool(auto_dir_early and auto_dataset_early)
     main_window.cache_progress_count = 0
+    main_window.cache_progress.setRange(0, 100)
     main_window.cache_progress.setValue(0)
+    main_window.cache_progress.setFormat("Caching spike plots: %p%")
     main_window.cache_progress.show()
     start_cache_progress_polling(main_window)
 
     # Start the worker — handles signal wiring AND queueing all clusters internally
+    _ui_t2 = time.perf_counter()
     start_worker(main_window)
+    logger.debug("load-ui start_worker: %.2fs", time.perf_counter() - _ui_t2)
+    _ui_t3 = time.perf_counter()
     main_window.central_widget.setEnabled(True)
+    logger.debug("load-ui enable UI: %.2fs", time.perf_counter() - _ui_t3)
 
     main_window.load_raw_action.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
@@ -408,7 +473,9 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # files are only globbed here; they load after the UI unlocks, and
     # refresh_feature_availability runs again then.
     if hasattr(main_window, "umap_panel"):
+        _ui_t4 = time.perf_counter()
         main_window.umap_panel.reset_for_new_dataset()
+        logger.debug("load-ui umap reset: %.2fs", time.perf_counter() - _ui_t4)
 
     # 5. Array Transform check
     transform_path = (
@@ -549,7 +616,6 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
 
     # --- Populate tree and tables ---
     populate_tree_view(main_window)
-    main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
 
     # --- Drop the previous dataset's UMAP results ---
@@ -717,8 +783,7 @@ def start_physics_warmup(main_window, all_ids=None):
 
     def _on_physics_warm_done():
         # Self-disconnect so repeated Vision loads in one session don't
-        # stack duplicate connections — same idiom as
-        # _on_standard_plots_done just below.
+        # stack duplicate connections.
         try:
             main_window.physics_warm_done.disconnect(_on_physics_warm_done)
         except (RuntimeError, TypeError):
@@ -755,28 +820,15 @@ def start_physics_warmup(main_window, all_ids=None):
         # than starting the QThread directly from this bare thread.
         main_window.physics_warm_done.emit()
 
-    def _on_standard_plots_done():
-        # Disconnect immediately so it only fires once
-        try:
-            main_window.standard_plots_worker.all_done.disconnect(
-                _on_standard_plots_done
-            )
-        except RuntimeError:
-            pass
-
-        # StandardPlotsWorker has finished — feature_cache has all ACGs.
-        # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
-        start_cache_progress_polling(main_window)
-        warm_thread = threading.Thread(
-            target=_warm_physics, daemon=True, name="physics-warm"
-        )
-        main_window._physics_warm_thread = warm_thread
-        warm_thread.start()
-
-    main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
+    # Start now. Waiting for StandardPlotsWorker.all_done used to reset the
+    # bar to 0 and, if that signal had already fired (empty queue), skip
+    # physics entirely. get_cell_physics shares get_standard_plot_data's
+    # per-cell lock, so the two workers do not recompute the same ACG.
+    warm_thread = threading.Thread(
+        target=_warm_physics, daemon=True, name="physics-warm"
+    )
+    main_window._physics_warm_thread = warm_thread
+    warm_thread.start()
 
 
 def load_vision_directory(main_window):
@@ -882,6 +934,8 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     else:
         QMessageBox.critical(main_window, "Vision Loading Error", message)
         main_window.status_bar.showMessage("Vision loading failed.", 5000)
+        main_window._expect_physics = False
+        update_cache_progress(main_window)
 
     # Show STA panel if data is now available
     if main_window.data_manager.vision_stas:

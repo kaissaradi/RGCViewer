@@ -154,9 +154,28 @@ def test_apply_ei_updates_keeps_max_dup_r_as_float(tmp_path):
             "max_dup_r": [0.0, 0.0, 0.0],
         }
     )
+    class _Model:
+        def __init__(self):
+            self.refreshed = False
+
+        def refresh_view(self):
+            self.refreshed = True
+
+    class _MW:
+        def __init__(self):
+            self.main_cluster_model = _Model()
+            self.tree_updated = False
+
+        def _update_tree_view_duplicate_highlight(self):
+            self.tree_updated = True
+
+    mw = _MW()
+    dm.main_window = mw
     dm._apply_ei_updates({1: True}, {1: 0.864, 2: 0.0})
 
     assert dm.cluster_df["max_dup_r"].dtype.kind == "f"
     assert float(dm.cluster_df.loc[0, "max_dup_r"]) == 0.864
     assert bool(dm.cluster_df.loc[0, "potential_dups"]) is True
     assert bool(dm.cluster_df.loc[2, "potential_dups"]) is False
+    assert mw.main_cluster_model.refreshed is True
+    assert mw.tree_updated is True

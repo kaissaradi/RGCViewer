@@ -413,13 +413,49 @@ def test_ensure_physics_cache_limits_parallel_sta_work():
     assert max_inflight['peak'] <= 4
 
 
-def test_update_cache_progress_uses_physics_after_vision_without_finished_cluster():
-    """
-    Regression: ensure_physics_cache does not emit finished_cluster.
-    Progress must track _physics_done_count when vision_stas is loaded.
+def test_cache_progress_does_not_drop_to_zero_when_vision_arrives():
+    """Vision used to switch the bar from std_done to physics_done=0."""
+    from src.gui.callbacks import _cache_progress_state
 
-    Full Qt progress-bar polling is not exercised here (no event loop).
-    """
+    val, ready, label = _cache_progress_state(
+        total=100, std_done=50, physics_done=0, expect_physics=True
+    )
+    assert val == 25
+    assert ready is False
+    assert "spike plots" in label.lower()
+
+
+def test_cache_progress_tracks_physics_in_second_half():
+    """ensure_physics_cache does not emit finished_cluster; the bar still moves."""
+    from src.gui.callbacks import _cache_progress_state
+
+    val, ready, label = _cache_progress_state(
+        total=100, std_done=100, physics_done=35, expect_physics=True
+    )
+    assert val == 67
+    assert ready is False
+    assert "Physics" in label
+
+    done, ready, _ = _cache_progress_state(
+        total=100, std_done=100, physics_done=100, expect_physics=True
+    )
+    assert done == 100
+    assert ready is True
+
+
+def test_cache_progress_std_only_without_vision():
+    from src.gui.callbacks import _cache_progress_state
+
+    val, ready, label = _cache_progress_state(
+        total=100, std_done=40, physics_done=0, expect_physics=False
+    )
+    assert val == 40
+    assert ready is False
+    assert "spike plots" in label.lower()
+
+
+def test_update_cache_progress_uses_two_phase_value():
+    """Full Qt progress-bar polling is not exercised here (no event loop)."""
     import pandas as pd
     from unittest.mock import MagicMock
     from src.gui.callbacks import update_cache_progress
@@ -432,10 +468,14 @@ def test_update_cache_progress_uses_physics_after_vision_without_finished_cluste
     dm.vision_stas = object()
     mw.data_manager = dm
     mw._cache_save_triggered = False
+    mw._expect_physics = True
+    mw.cache_progress.minimum.return_value = 0
+    mw.cache_progress.maximum.return_value = 100
 
     update_cache_progress(mw)
 
-    mw.cache_progress.setValue.assert_called_once_with(35)
+    # 50% * 90/100 + 50% * 35/100 = 62
+    mw.cache_progress.setValue.assert_called_once_with(62)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

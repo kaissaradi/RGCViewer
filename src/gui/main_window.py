@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         # NEW: standard-plots (ISI/ACG/FR) worker
         self.standard_worker_thread = None
         self.standard_plots_worker = None
+        self._expect_physics = False
 
         # Additional thread references for proper cleanup
         self.ks_load_thread = None
@@ -2265,7 +2266,34 @@ class MainWindow(QMainWindow):
             self._apply_default_column_order(header, df_cols, col_index)
             self._table_columns_initialized = True
 
-        self.table_view.resizeColumnsToContents()
+        self._resize_table_columns_fast()
+
+    def _resize_table_columns_fast(self, sample_rows=24):
+        """Size columns from the header and a small row sample.
+
+        ``QTableView.resizeColumnsToContents`` asks the model for every
+        cell. On a 300+ cluster run that is several thousand pandas
+        lookups and a multi-second hitch on the GUI thread after
+        Kilosort has already finished.
+        """
+        view = self.table_view
+        model = view.model()
+        if model is None:
+            return
+        fm = view.fontMetrics()
+        n_rows = min(int(model.rowCount()), int(sample_rows))
+        pad = 20
+        max_w = 240
+        min_w = 36
+        for col in range(int(model.columnCount())):
+            header = model.headerData(col, Qt.Horizontal, Qt.DisplayRole)
+            width = fm.horizontalAdvance(str(header if header is not None else "")) + pad
+            for row in range(n_rows):
+                text = model.data(model.index(row, col), Qt.DisplayRole)
+                if text is None:
+                    continue
+                width = max(width, fm.horizontalAdvance(str(text)) + pad)
+            view.setColumnWidth(col, max(min_w, min(width, max_w)))
 
     def _apply_default_column_order(self, header, df_cols, col_index):
         """Apply the desired default visual column order. Called only once."""
@@ -2426,7 +2454,7 @@ class MainWindow(QMainWindow):
                 new_col_index[old_sort_col], old_sort_order
             )
 
-        self.table_view.resizeColumnsToContents()
+        self._resize_table_columns_fast()
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""

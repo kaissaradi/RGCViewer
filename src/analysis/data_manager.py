@@ -86,6 +86,19 @@ def _load_array(path, mmap_mode):
         return arr
 
 
+def _crc32_bytes(arr):
+    """Byte view of *arr* for ``zlib.crc32`` without copying a contig memmap.
+
+    ``np.ascontiguousarray`` on a 100 MB spike file used to force a full
+    anonymous copy just to fingerprint the cache. Mapped ``.npy`` files are
+    already C-contiguous.
+    """
+    a = np.asanyarray(arr)
+    if not a.flags["C_CONTIGUOUS"]:
+        a = np.ascontiguousarray(a)
+    return memoryview(a).cast("B")
+
+
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
     template_to_channels = {}
@@ -442,6 +455,16 @@ class DataManager(QObject):
         logger.debug(
             "Successfully updated cluster_df with duplicates on the Main Thread."
         )
+        # The table model keeps a display cache. Invalidate it here — do not
+        # rebuild the model (that re-measures every column).
+        mw = getattr(self, "main_window", None)
+        if mw is not None:
+            model = getattr(mw, "main_cluster_model", None)
+            if model is not None and hasattr(model, "refresh_view"):
+                model.refresh_view()
+            tree_fn = getattr(mw, "_update_tree_view_duplicate_highlight", None)
+            if callable(tree_fn):
+                tree_fn()
 
     def _save_pickle_with_fallback(self, data, path):
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
@@ -1221,9 +1244,9 @@ class DataManager(QObject):
                 for part in (
                     1,  # key format version
                     sc.size,
-                    zlib.crc32(np.ascontiguousarray(sc)),
+                    zlib.crc32(_crc32_bytes(sc)),
                     st.size,
-                    zlib.crc32(np.ascontiguousarray(st)),
+                    zlib.crc32(_crc32_bytes(st)),
                     float(self.sampling_rate),
                     float(ISI_REFRACTORY_PERIOD_MS),
                 )

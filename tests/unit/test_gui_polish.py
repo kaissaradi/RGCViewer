@@ -187,3 +187,17 @@ class TestTreeBranchStyling:
         win.toggle_theme()
         assert delegate._colors["text_secondary"] != dark
         win.toggle_theme()
+
+
+def test_resize_table_columns_fast_noop_without_model():
+    """Must not raise when the table has no model yet."""
+    from src.gui.main_window import MainWindow
+
+    mw = MainWindow.__new__(MainWindow)
+
+    class _View:
+        def model(self):
+            return None
+
+    mw.table_view = _View()
+    MainWindow._resize_table_columns_fast(mw)

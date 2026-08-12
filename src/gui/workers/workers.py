@@ -6,6 +6,7 @@ import pandas as pd
 import sklearn.cluster
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,9 @@ class KilosortLoadWorker(QObject):
     def run(self):
         try:
             self.progress.emit("Loading Kilosort files...")
+            _t_ks = time.perf_counter()
             success, message = self.dm.load_kilosort_data()
+            logger.debug("load-ks load_kilosort_data: %.2fs", time.perf_counter() - _t_ks)
             if not success:
                 self.finished.emit(False, message)
                 return
@@ -110,7 +113,9 @@ class KilosortLoadWorker(QObject):
                 self.dm.set_dat_path(Path(self.dat_file))
 
             self.progress.emit("Building cluster dataframe (this may take a moment)...")
+            _t = time.perf_counter()
             self.dm.build_cluster_dataframe()
+            logger.debug("load-ks build_cluster_dataframe: %.2fs", time.perf_counter() - _t)
 
             # --- SYNCHRONOUS VISION LOADING ---
             ks_dir = Path(self.ks_dir_name)
@@ -470,7 +475,6 @@ class StandardPlotsWorker(QObject):
                     )
                 finally:
                     self.finished_cluster.emit(int(cluster_id))
-                    QThread.msleep(20)
             else:
                 if not self._all_done_emitted:  # ← NEW
                     self.all_done.emit()  # ← NEW
