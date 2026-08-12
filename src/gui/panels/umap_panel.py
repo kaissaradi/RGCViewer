@@ -217,6 +217,10 @@ class UMAPPanel(QWidget):
 
         self.cluster_btn = QPushButton("Run Clustering")
         self.cluster_btn.clicked.connect(self.run_clustering)
+        # There is nothing to cluster until a UMAP run produces an embedding —
+        # run_clustering already refuses in that state. Disabled here too so the
+        # pre-run state and the post-reset_views() state are the same thing.
+        self.cluster_btn.setEnabled(False)
 
         # Auto-Group Checkbox
         self.auto_group_chk = QCheckBox("Auto-Group Tree")
@@ -476,6 +480,58 @@ class UMAPPanel(QWidget):
             self.controls_widget.setMinimumHeight(hint_h)
         self.layout.activate()
         self.updateGeometry()
+
+    def reset_views(self):
+        """Drop every result of the previous run. Called on each dataset load.
+
+        The panel outlives the DataManager, so without this a new preparation
+        inherits the old one's scatter, mosaic and trace overlays. That is not
+        merely untidy: every ID on screen — the mosaic's captions, the status
+        bar, a lasso turned into a tree group — is a Kilosort cluster_id from
+        the *previous* sort, and since every run is sorted independently those
+        IDs are valid-looking numbers for the wrong cells. Vision ID =
+        cluster_id + 1 makes it worse, since the off-by-one style of error the
+        eye is trained to catch is exactly what this is not.
+
+        Everything set by on_processing_finished is cleared here, and the run
+        buttons return to the pre-run state, so the panel says "no run yet"
+        rather than something false.
+        """
+        self.embedding = None
+        self.cluster_ids = None
+        self.metadata_df = None
+        self.raw_blocks = None
+        self.feature_matrix = None
+        self.discarded_ids = None
+        self._run_feature_config = {}
+        self._pending_highlight = None
+        self._active_stacks = set()
+
+        # Rebuild the axes from scratch rather than ax.clear(): the previous run
+        # may have left a 3D projection and a colorbar, and this returns the
+        # figure to exactly the state __init__ leaves it in.
+        self.is_3d = False
+        self.cbar = None
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor(self._umap_colors["bg_panel"])
+        self.fig.patch.set_facecolor(self._umap_colors["bg_panel"])
+        # The old selector was bound to the discarded axes.
+        self.update_selector()
+        self.canvas.draw()
+
+        self.rf_map.set_cells(None, [])
+        for stack in self.trace_stacks.values():
+            stack.set_traces(None, [])
+            # set_regions state is independent of the traces, and
+            # _apply_chirp_regions only overwrites it when the new prep's chirp
+            # file actually carries phase bounds — otherwise the previous prep's
+            # shading would reappear behind the next run's traces.
+            stack.set_regions([])
+            stack.hide()
+
+        self.show_ids_btn.setEnabled(False)
+        self.cluster_btn.setEnabled(False)
 
     def _reset_workers(self):
         """Clean up any running workers."""

@@ -205,7 +205,12 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # still None, so its chirp row came up disabled regardless of the dataset.
     # load_chirp_data() runs inside KilosortLoadWorker.run(), so chirp_available
     # is final by the time this slot fires.
+    #
+    # reset_views() first: the panel persists across loads, so anything on
+    # screen belongs to the preparation we just replaced, and its cell IDs come
+    # from that prep's independent sort.
     if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.reset_views()
         main_window.umap_panel.refresh_feature_availability()
 
     # 5. Array Transform check
@@ -290,6 +295,14 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     populate_tree_view(main_window)
     main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
+
+    # --- Drop the previous dataset's UMAP results ---
+    # Path A of load_vision_directory builds a brand-new DataManager, so this is
+    # a different preparation just as much as a Kilosort load is. Same reasoning
+    # as in _on_kilosort_loaded.
+    if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.reset_views()
+        main_window.umap_panel.refresh_feature_availability()
 
     # --- Enable actions ---
     main_window.load_raw_action.setEnabled(True)
