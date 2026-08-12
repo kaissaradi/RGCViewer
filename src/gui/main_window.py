@@ -47,7 +47,11 @@ from .widgets.widgets import (
 )
 from . import callbacks
 from . import plot_export
-from .panels.population_panel import draw_population_rfs_plot, rf_vision_id_at
+from .panels.population_panel import (
+    draw_population_rfs_plot,
+    population_group_plots_cached,
+    rf_vision_id_at,
+)
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
@@ -1008,17 +1012,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Tier 2 Pop Split rebuild failed: {e}")
 
-            # Always keep the Average Timecourse & ACG panels live when a cell
-            # is selected.  These panels are normally only drawn in
-            # _process_folder_selection(), so navigating between individual
-            # cells inside a group leaves them blank.  Calling
-            # redraw_population_panels() here (with the subset derived from the
-            # selected cell's parent folder) fixes that.  The method uses the
-            # _group_timecourse_cache / _group_acg_cache, so same-group
-            # navigation is an O(1) cache hit.
+            # Keep Average Timecourse & ACG live when a cell is selected.
+            # Those plots show the parent folder, not the cell. Same-group
+            # scroll after the first draw is a cache hit; skip the matplotlib
+            # rebuild so chirp-tab scroll does not redraw them every time.
             try:
                 subset = self._get_pop_subset_ids()
-                callbacks.redraw_population_panels(self, subset=subset)
+                if not population_group_plots_cached(subset):
+                    callbacks.redraw_population_panels(self, subset=subset)
             except Exception as e:
                 logger.error(
                     f"Failed to update population panels on cell selection: {e}"
@@ -1665,6 +1666,13 @@ class MainWindow(QMainWindow):
         """
         self.dsos_threshold = slider_value / 100.0
         self.pop_dsos_threshold_label.setText(f"{self.dsos_threshold:.2f}")
+
+        # The grating panel label used to stay at the 0.3 default until the
+        # user re-clicked the cell. Refresh it if a cluster is already up.
+        gp = getattr(self, "grating_panel", None)
+        cid = getattr(gp, "_current_cluster_id", None) if gp is not None else None
+        if gp is not None and cid is not None:
+            gp.update_all(cid)
 
         if hasattr(self, "pop_mosaic_canvas"):
             if hasattr(self.pop_mosaic_canvas, "_pop_plot_state"):

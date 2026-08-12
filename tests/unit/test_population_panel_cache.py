@@ -447,6 +447,23 @@ class TestInvalidatePopulationCaches:
         assert len(pp._rf_background_cache_order) == 0
 
 
+def test_population_group_plots_cached_requires_both_caches():
+    import src.gui.panels.population_panel as pp
+    from src.gui.panels.population_panel import population_group_plots_cached
+
+    _clear_module_caches()
+    ids = [1, 2, 3]
+    assert population_group_plots_cached(ids) is False
+    assert population_group_plots_cached([]) is False
+
+    pp._group_timecourse_cache[frozenset(ids)] = {"arr": np.zeros((3, 8))}
+    assert population_group_plots_cached(ids) is False
+
+    pp._group_acg_cache[frozenset(ids)] = {"arr": np.zeros((3, 8))}
+    assert population_group_plots_cached(ids) is True
+    assert population_group_plots_cached([1, 2]) is False
+
+
 # ---------------------------------------------------------------------------
 # §5.4 — LazySTADict dynamic cache size
 # ---------------------------------------------------------------------------

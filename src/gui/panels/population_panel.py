@@ -37,6 +37,18 @@ def invalidate_population_caches():
     _rf_background_cache_order.clear()
 
 
+def population_group_plots_cached(subset_ids):
+    """True when this folder's timecourse and ACG plots are already in RAM.
+
+    Cell-to-cell scroll inside a group used to call both draw functions on
+    every selection. Those plots show the group, not the selected cell.
+    """
+    if not subset_ids:
+        return False
+    key = frozenset(subset_ids)
+    return key in _group_timecourse_cache and key in _group_acg_cache
+
+
 def _first_plot_artist(plot_result):
     if isinstance(plot_result, (list, tuple)):
         return plot_result[0] if plot_result else None
