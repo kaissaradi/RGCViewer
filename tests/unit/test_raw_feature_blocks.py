@@ -174,7 +174,7 @@ class TestGetRawFeatureBlocks:
         assert discarded_ids == [1]
 
     def test_all_filtered_returns_empty(self, filter_config):
-        """All cells filtered → empty blocks, no crash."""
+        """Oversized RF is discarded. Missing STA is not — that cell stays."""
         physics = {
             0: _make_physics(tc_value=None),
             1: _make_physics(rf_area=999.0),
@@ -182,8 +182,23 @@ class TestGetRawFeatureBlocks:
         dm = _MockDataManager(physics)
         raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
 
+        # apply_prefilter keeps timecourse=None (ACG + scalars still useful).
+        # Only the oversized fitted RF is discarded.
+        assert valid_ids == [0]
+        assert discarded_ids == [1]
+        assert raw_blocks['temporal'].shape[0] == 1
+
+    def test_all_oversized_rf_returns_empty(self, filter_config):
+        """Every cell over max_rf_area → empty blocks, no crash."""
+        physics = {
+            0: _make_physics(rf_area=999.0),
+            1: _make_physics(rf_area=500.0),
+        }
+        dm = _MockDataManager(physics)
+        raw_blocks, valid_ids, discarded_ids = dm.get_raw_feature_blocks([0, 1], filter_config)
+
         assert valid_ids == []
-        assert len(discarded_ids) == 2
+        assert discarded_ids == [0, 1]
         assert raw_blocks['temporal'].shape[0] == 0
 
     def test_copies_arrays_not_cache_refs(self, filter_config):
@@ -249,13 +264,18 @@ class TestGetRawFeatureBlocks:
         assert scalars['isi_violations'].iloc[0] == pytest.approx(2.5)
 
     def test_scalars_all_columns_present(self, filter_config):
-        """Scalars DataFrame has all 5 expected columns."""
+        """Scalars DataFrame keeps the display/hover columns plus RF diameters."""
         physics = {0: _make_physics()}
         dm = _MockDataManager(physics)
         raw_blocks, _, _ = dm.get_raw_feature_blocks([0], filter_config)
 
-        expected_cols = {'firing_rate', 'isi_violations', 'time_to_peak',
-                         'rf_area', 'ellipticity'}
+        expected_cols = {
+            'rf_long_diameter', 'rf_short_diameter',
+            'firing_rate', 'isi_violations', 'time_to_peak',
+            'rf_area', 'ellipticity',
+            'grating_dsi', 'grating_osi', 'grating_peak_rate_hz',
+            'grating_pref_angle_cos', 'grating_pref_angle_sin',
+        }
         assert set(raw_blocks['scalars'].columns) == expected_cols
 
     def test_row_count_matches_valid_ids(self, filter_config):
