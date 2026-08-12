@@ -706,16 +706,31 @@ class UMAPWorker(QObject):
             )
 
             self.progress.emit(f"Running UMAP on {len(valid_ids)} cells...")
-            reducer = umap.UMAP(
-                n_neighbors=min(15, len(valid_ids) - 1),
-                min_dist=0.1,
-                metric="euclidean",
-                low_memory=True,
-                n_jobs=-1,
-                n_components=self.n_components,
-                verbose=False,
-            )
-            embedding = reducer.fit_transform(matrix)
+            n_neighbors = min(15, max(len(valid_ids) - 1, 1))
+            if np.isfinite(matrix).all():
+                reducer = umap.UMAP(
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="euclidean",
+                    low_memory=True,
+                    n_jobs=-1,
+                    n_components=self.n_components,
+                    verbose=False,
+                )
+                embedding = reducer.fit_transform(matrix)
+            else:
+                # Missing STA / RF / stimulus blocks are NaN. Compare cells
+                # only on the features both have; do not use sklearn's
+                # nan_euclidean scale-up (structured missingness, not MCAR).
+                dist = analysis_core.observed_euclidean_distances(matrix)
+                reducer = umap.UMAP(
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="precomputed",
+                    n_components=self.n_components,
+                    verbose=False,
+                )
+                embedding = reducer.fit_transform(dist)
 
             # Reconstruct the metadata DataFrame
             meta_df = pd.DataFrame(index=range(len(valid_ids)))

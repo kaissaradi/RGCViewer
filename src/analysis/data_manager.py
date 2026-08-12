@@ -2798,9 +2798,8 @@ class DataManager(QObject):
 
             # Timecourse — must copy to prevent np.roll from mutating cache.
             # timecourse=None means no STA was available for this cell; use a
-            # zero-length sentinel so the cell still contributes ACG + scalars.
-            # build_feature_matrix detects all-zero tc_mat and skips the
-            # temporal PCA block rather than producing NaN components.
+            # zero-length sentinel. build_feature_matrix fits temporal PCA
+            # only on real rows and leaves this cell as NaN on those PCs.
             tc = phys.get("timecourse")
             if tc is not None:
                 tc = np.array(tc, dtype=np.float64).copy()

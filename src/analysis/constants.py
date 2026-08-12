@@ -113,40 +113,36 @@ DEFAULT_MAX_RF_AREA = 300.0  # Above this, RF is artifact-scale
 # HDBSCAN
 DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE = 5
 
-# Default feature weights (UI slider starting values; range 0-10 for all).
+# Default feature weights and which blocks start checked.
 #
-# Consolidated feature set: firing_rate, isi_violations, time_to_peak, and
-# ellipticity were removed as standalone weighted scalars. firing_rate/
-# isi_violations are unit-quality (QC) metrics, not functional-identity
-# signals, and belong in the spike-sorting QC pipeline rather than a
-# functional-clustering embedding. time_to_peak is a derived summary
-# statistic of the temporal STA that's already captured (non-independently)
-# by the temporal PCA block above — keeping both let PC1 (which usually
-# tracks fast/slow kinetics) and time_to_peak double-count the same signal,
-# silently inflating temporal's effective weight beyond what
-# DEFAULT_WEIGHT_TEMPORAL alone would suggest. ellipticity is dropped as a
-# single scalar weight in favor of feeding the two RF axis lengths
-# (rf_long_diameter, rf_short_diameter — see get_cell_physics) as separate
-# scalars, letting PCA/UMAP find whatever size/shape relationship matters
-# rather than pre-committing to one derived ratio.
-DEFAULT_WEIGHT_TEMPORAL = 10.0  # max — temporal STA shape is the
-# primary functional-identity signal
-DEFAULT_WEIGHT_ACG = 1.0  # low — starting point, tune per data
-DEFAULT_WEIGHT_RF_DIAMETER = 6.0  # high — RF size is a strong secondary
-# signal; applies to both long and
-# short axis diameters together
-# (combined under one slider — see
-# umap_panel.py's "RF Diameter" row)
-DEFAULT_WEIGHT_GRATING_DSOS = 3.0  # starting point for the grating
-# direction-tuning-shape PCA block
-# (see GRATING_PCA_COMPONENTS) —
-# moderate, since DS/OS tuning is
-# real but only a subset of cells
-# will have meaningful curves
-DEFAULT_WEIGHT_CHIRP = 3.0  # parity with grating — chirp is the other
-# "stimulus response shape" block; both are
-# real but partial signals (only cells with a
-# chirp response contribute a non-sentinel row)
+# 2026-08-12 product call: Temporal STA, ACG, and RF diameter start on
+# and at 10/10. Grating and chirp stay available but start off — they
+# are real type signals for a subset of cells, not the default embedding.
+# A block's Euclidean share is still n_columns × weight², so three blocks
+# at the same slider value are not equal if their column counts differ
+# (two RF diameter scalars vs four STA PCs).
+#
+# firing_rate / isi_violations are not embedding features. Mean rate
+# alone is a QC metric and was dropped for that reason. Re-adding rate
+# as a *functional* feature is parked: it has to separate high-baseline
+# RGCs and bursty vs tonic firing without letting spike count dominate.
+# See PLAN.md parked work.
+#
+# time_to_peak is a summary of the temporal STA already in the PCA block.
+# ellipticity is dropped in favour of the two RF axis lengths as separate
+# scalars.
+DEFAULT_USE_TEMPORAL = True
+DEFAULT_USE_ACG = True
+DEFAULT_USE_RF_DIAMETER = True
+DEFAULT_USE_GRATING_DSOS = False
+DEFAULT_USE_CHIRP = False
+
+DEFAULT_WEIGHT_TEMPORAL = 10.0
+DEFAULT_WEIGHT_ACG = 10.0
+DEFAULT_WEIGHT_RF_DIAMETER = 10.0
+# Slider rest positions if the user turns these on. Not used at startup.
+DEFAULT_WEIGHT_GRATING_DSOS = 10.0
+DEFAULT_WEIGHT_CHIRP = 10.0
 
 
 # cell type labels

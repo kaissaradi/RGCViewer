@@ -13,6 +13,8 @@ from src.analysis.analysis_core import (
     peak_align_timecourse,
     apply_prefilter,
     build_feature_matrix,
+    non_sentinel_mask,
+    observed_euclidean_distances,
 )
 
 
@@ -396,3 +398,209 @@ class TestBuildFeatureMatrixChirp:
         matrix, labels = build_feature_matrix(raw_blocks, chirp_only_config)
         chirp_cols = [l for l in labels if l.startswith('chirp_pc')]
         assert len(chirp_cols) == 2  # min(4, 3-1, 40)
+
+
+# ---------------------------------------------------------------------------
+# Mixed missing blocks: keep the cell, do not invent a "no STA" cluster
+# ---------------------------------------------------------------------------
+
+class TestMixedMissingBlocks:
+    """Cells without an STA (or grating/chirp/RF) stay in the matrix.
+
+    Their missing-block columns are NaN. PCA is fit only on rows that
+    have the block, so they do not collapse onto one temporal point.
+    """
+
+    def _cfg(self, **overrides):
+        cfg = {
+            "use_temporal": True,
+            "w_temporal": 10.0,
+            "use_acg": True,
+            "w_acg": 10.0,
+            "use_rf_diameter": True,
+            "w_rf_diameter": 10.0,
+            "use_grating_dsos": False,
+            "use_chirp": False,
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def test_no_sta_rows_kept_with_nan_temporal(self):
+        rng = np.random.RandomState(0)
+        temporal = rng.randn(6, 20)
+        temporal[[1, 4]] = 0.0  # no-STA sentinels
+        raw = {
+            "temporal": temporal,
+            "acg": rng.randn(6, 50),
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": [20.0, 0.0, 25.0, 18.0, 0.0, 22.0],
+                    "rf_short_diameter": [10.0, 0.0, 12.0, 9.0, 0.0, 11.0],
+                }
+            ),
+        }
+        matrix, labels = build_feature_matrix(raw, self._cfg())
+        assert matrix.shape[0] == 6
+        tc_idx = [i for i, lab in enumerate(labels) if lab.startswith("tc_pc")]
+        acg_idx = [i for i, lab in enumerate(labels) if lab.startswith("acg_pc")]
+        assert tc_idx, "STA checked and some cells have STAs — keep the block"
+        assert np.all(np.isnan(matrix[np.ix_([1, 4], tc_idx)]))
+        assert np.all(np.isfinite(matrix[np.ix_([0, 2, 3, 5], tc_idx)]))
+        # ACG is present for everyone, including the no-STA cells.
+        assert np.all(np.isfinite(matrix[:, acg_idx]))
+
+    def test_no_sta_cells_are_not_identical(self):
+        """Two no-STA cells with different ACGs must not share a matrix row."""
+        rng = np.random.RandomState(1)
+        temporal = rng.randn(4, 20)
+        temporal[[2, 3]] = 0.0
+        acg = rng.randn(4, 50)
+        acg[2] = np.linspace(0, 1, 50)
+        acg[3] = np.linspace(1, 0, 50)
+        raw = {
+            "temporal": temporal,
+            "acg": acg,
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": [20.0, 22.0, 0.0, 0.0],
+                    "rf_short_diameter": [10.0, 11.0, 0.0, 0.0],
+                }
+            ),
+        }
+        matrix, _ = build_feature_matrix(raw, self._cfg())
+        assert not np.allclose(matrix[2], matrix[3], equal_nan=True)
+
+    def test_all_valid_stays_finite(self):
+        rng = np.random.RandomState(8)
+        raw = {
+            "temporal": rng.randn(8, 20),
+            "acg": rng.randn(8, 50),
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": rng.rand(8) * 20 + 8,
+                    "rf_short_diameter": rng.rand(8) * 10 + 4,
+                }
+            ),
+        }
+        matrix, _ = build_feature_matrix(raw, self._cfg())
+        assert np.isfinite(matrix).all()
+
+    def test_all_missing_temporal_omits_block(self):
+        rng = np.random.RandomState(2)
+        raw = {
+            "temporal": np.zeros((5, 1)),
+            "acg": rng.randn(5, 50),
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": rng.rand(5) * 20 + 5,
+                    "rf_short_diameter": rng.rand(5) * 10 + 3,
+                }
+            ),
+        }
+        matrix, labels = build_feature_matrix(raw, self._cfg())
+        assert not any(lab.startswith("tc_pc") for lab in labels)
+        assert matrix.shape[0] == 5
+        assert np.isfinite(matrix).all()
+
+    def test_mixed_grating_is_nan_not_zero(self):
+        rng = np.random.RandomState(3)
+        grating = rng.randn(5, 12)
+        grating[1] = 0.0
+        grating[3] = 0.0
+        raw = {
+            "temporal": rng.randn(5, 20),
+            "acg": rng.randn(5, 50),
+            "grating": grating,
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": np.linspace(10, 30, 5),
+                    "rf_short_diameter": np.linspace(5, 15, 5),
+                }
+            ),
+        }
+        matrix, labels = build_feature_matrix(
+            raw, self._cfg(use_grating_dsos=True, w_grating_dsos=10.0)
+        )
+        g_idx = [i for i, lab in enumerate(labels) if lab.startswith("grating_pc")]
+        assert g_idx
+        assert np.all(np.isnan(matrix[np.ix_([1, 3], g_idx)]))
+        assert np.all(np.isfinite(matrix[np.ix_([0, 2, 4], g_idx)]))
+
+    def test_zero_rf_diameter_is_nan(self):
+        rng = np.random.RandomState(4)
+        raw = {
+            "temporal": rng.randn(4, 20),
+            "acg": rng.randn(4, 50),
+            "scalars": pd.DataFrame(
+                {
+                    "rf_long_diameter": [20.0, 0.0, 25.0, 18.0],
+                    "rf_short_diameter": [10.0, 0.0, 12.0, 9.0],
+                }
+            ),
+        }
+        matrix, labels = build_feature_matrix(
+            raw, self._cfg(use_temporal=False, use_acg=False)
+        )
+        assert labels == ["rf_long_diameter", "rf_short_diameter"]
+        assert np.all(np.isnan(matrix[1]))
+        assert np.all(np.isfinite(matrix[[0, 2, 3]]))
+
+
+class TestObservedEuclidean:
+    def test_matches_euclidean_when_complete(self):
+        rng = np.random.RandomState(5)
+        X = rng.randn(6, 4)
+        got = observed_euclidean_distances(X)
+        expected = np.sqrt(((X[:, None, :] - X[None, :, :]) ** 2).sum(axis=2))
+        np.testing.assert_allclose(got, expected, atol=1e-10)
+
+    def test_missing_block_does_not_collapse_or_push_apart(self):
+        """No-STA cells (NaN temporal) are compared on ACG only.
+
+        If those NaNs were filled with 0 after a weight-10 temporal block,
+        the two incomplete cells would be distance 0 from each other and
+        far from every cell that has an STA.
+        """
+        # cols 0-1 = temporal (weight already applied), cols 2-3 = ACG
+        X = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0],
+                [np.nan, np.nan, 0.0, 0.0],
+                [np.nan, np.nan, 3.0, 4.0],
+            ]
+        )
+        dist = observed_euclidean_distances(X)
+        # Incomplete pair: only ACG (0,0) vs (3,4) → 5
+        assert dist[2, 3] == pytest.approx(5.0)
+        # Incomplete vs complete, shared ACG only: (0,0) vs (0,0) → 0
+        assert dist[2, 0] == pytest.approx(0.0)
+        # They are not glued to each other.
+        assert dist[2, 3] > dist[2, 0]
+
+    def test_non_sentinel_mask(self):
+        m = np.vstack([np.ones((2, 4)), np.zeros((2, 4))])
+        np.testing.assert_array_equal(non_sentinel_mask(m), [True, True, False, False])
+
+
+class TestDefaultFeatureFlags:
+    def test_defaults_are_temporal_acg_rf_at_ten(self):
+        from src.analysis.constants import (
+            DEFAULT_USE_TEMPORAL,
+            DEFAULT_USE_ACG,
+            DEFAULT_USE_RF_DIAMETER,
+            DEFAULT_USE_GRATING_DSOS,
+            DEFAULT_USE_CHIRP,
+            DEFAULT_WEIGHT_TEMPORAL,
+            DEFAULT_WEIGHT_ACG,
+            DEFAULT_WEIGHT_RF_DIAMETER,
+        )
+
+        assert DEFAULT_USE_TEMPORAL is True
+        assert DEFAULT_USE_ACG is True
+        assert DEFAULT_USE_RF_DIAMETER is True
+        assert DEFAULT_USE_GRATING_DSOS is False
+        assert DEFAULT_USE_CHIRP is False
+        assert DEFAULT_WEIGHT_TEMPORAL == 10.0
+        assert DEFAULT_WEIGHT_ACG == 10.0
+        assert DEFAULT_WEIGHT_RF_DIAMETER == 10.0

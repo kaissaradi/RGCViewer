@@ -683,6 +683,113 @@ def apply_prefilter(physics_entries, filter_config):
     return sorted(valid_ids), sorted(discarded_ids)
 
 
+def non_sentinel_mask(matrix):
+    """True for rows that carry real data, not the all-zero missing sentinel.
+
+    ``get_raw_feature_blocks`` writes an all-zero row when a cell has no STA,
+    no grating curve, or no chirp PSTH. A real flat STA is already rejected
+    by :func:`apply_prefilter`. Real grating/chirp rows are shape-normalized
+    and cannot be all-zero.
+    """
+    arr = np.asarray(matrix, dtype=np.float64)
+    if arr.ndim != 2:
+        raise ValueError("matrix must be 2-D")
+    if arr.size == 0:
+        return np.zeros(arr.shape[0], dtype=bool)
+    return ~np.all(np.isclose(arr, 0.0), axis=1)
+
+
+def observed_euclidean_distances(X):
+    """Pairwise Euclidean using only coordinates finite in both rows.
+
+    Missing values (NaN) are skipped. Unlike sklearn's ``nan_euclidean``,
+    this does not scale by ``sqrt(n_total / n_present)``: missingness here
+    is structured (no STA, no RF fit), not MCAR, and the scale-up would
+    push incomplete cells to the periphery instead of sitting them next to
+    cells that share the features they do have.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    if X.ndim != 2:
+        raise ValueError("X must be 2-D")
+    n, d = X.shape
+    mask = np.isfinite(X)
+    dist_sq = np.zeros((n, n), dtype=np.float64)
+    for k in range(d):
+        present = mask[:, k]
+        if not np.any(present):
+            continue
+        col = X[:, k]
+        both = present[:, None] & present[None, :]
+        diff = col[:, None] - col[None, :]
+        dist_sq += np.where(both, diff * diff, 0.0)
+    np.fill_diagonal(dist_sq, 0.0)
+    np.maximum(dist_sq, 0.0, out=dist_sq)
+    return np.sqrt(dist_sq)
+
+
+def _pca_block_valid_rows(matrix, n_comp_max, weight, label_prefix):
+    """PCA + StandardScaler on non-sentinel rows; NaN for sentinels.
+
+    Fitting PCA on the sentinels as well makes PC1 "has this feature or
+    not" and stacks every missing cell on one point. Cells that lack the
+    block stay in the matrix; UMAP then uses
+    :func:`observed_euclidean_distances` so their position comes from the
+    features they do have.
+
+    Returns ``(block, labels)`` or ``(None, None)`` if the block is skipped.
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.size == 0:
+        return None, None
+    valid = non_sentinel_mask(matrix)
+    n_valid = int(valid.sum())
+    if n_valid < 2:
+        return None, None
+    valid_mat = matrix[valid]
+    if np.std(valid_mat) == 0:
+        return None, None
+    n_comp = min(int(n_comp_max), n_valid - 1, valid_mat.shape[1])
+    if n_comp < 1:
+        return None, None
+    scores = PCA(n_components=n_comp).fit_transform(valid_mat)
+    scores = StandardScaler().fit_transform(scores)
+    out = np.full((matrix.shape[0], n_comp), np.nan, dtype=np.float64)
+    out[valid] = scores * float(weight)
+    labels = [f"{label_prefix}{j}" for j in range(n_comp)]
+    return out, labels
+
+
+def _scale_positive_scalar(vals, weight):
+    """RobustScaler on values ``> 0``; NaN for missing / non-positive.
+
+    ``0.0`` is the no-fit sentinel from ``get_cell_physics``, not a
+    0 µm receptive field. Treating it as a measurement stacks every
+    no-STA cell on one RF-size point.
+    """
+    from sklearn.preprocessing import RobustScaler
+
+    vals = np.asarray(vals, dtype=np.float64).reshape(-1)
+    missing = ~np.isfinite(vals) | (vals <= 0.0)
+    n_ok = int((~missing).sum())
+    if n_ok < 1:
+        return None
+    scaled = np.full(vals.shape[0], np.nan, dtype=np.float64)
+    ok = vals[~missing].reshape(-1, 1)
+    # One cell, or every fitted RF the same size: no scale to estimate.
+    # Emit 0 so a 1-cell matrix can still be built (UMAP then fails on
+    # n_neighbors). A constant column among many cells is dropped.
+    if n_ok == 1 or float(np.std(ok)) == 0:
+        if n_ok == 1:
+            scaled[~missing] = 0.0
+            return scaled.reshape(-1, 1)
+        return None
+    scaled[~missing] = RobustScaler().fit_transform(ok).ravel() * float(weight)
+    return scaled.reshape(-1, 1)
+
+
 def build_feature_matrix(raw_blocks, feature_config):
     """
     Transform raw feature arrays into a weighted, PCA-reduced feature matrix.
@@ -691,12 +798,20 @@ def build_feature_matrix(raw_blocks, feature_config):
     --------
     1. **Temporal STA** (if enabled): peak-align each row via
        :func:`peak_align_timecourse`, PCA to ``TEMPORAL_PCA_COMPONENTS``
-       components, multiply by ``w_temporal``.
+       components on cells that have an STA, multiply by ``w_temporal``.
+       Cells with no STA keep a NaN in those columns.
     2. **ACG** (if enabled): PCA to ``ACG_PCA_COMPONENTS`` components,
-       multiply by ``w_acg``.
-    3. **Scalars** (each independently toggleable): ``RobustScaler``, multiply
-       by the per-feature weight.
-    4. ``np.hstack`` all enabled blocks.
+       multiply by ``w_acg``. Same sentinel rule.
+    3. **Grating / chirp** (if enabled): same PCA-on-valid, NaN-if-missing
+       rule as temporal.
+    4. **RF diameters** (if enabled): ``RobustScaler`` on positive values;
+       ``0`` / NaN stay missing.
+    5. ``np.hstack`` all enabled blocks.
+
+    A missing block does not drop the cell. UMAP should be run with
+    :func:`observed_euclidean_distances` when the matrix contains NaN so
+    two cells that lack an STA are compared on ACG / RF / whatever they
+    share, not stacked on a fake "no STA" point.
 
     Parameters
     ----------
@@ -716,44 +831,44 @@ def build_feature_matrix(raw_blocks, feature_config):
     ValueError
         If all features are disabled (D would be 0).
     """
-    from sklearn.decomposition import PCA
-    from sklearn.preprocessing import RobustScaler, StandardScaler
     from .constants import (
         TEMPORAL_PCA_COMPONENTS,
         ACG_PCA_COMPONENTS,
         GRATING_PCA_COMPONENTS,
         CHIRP_PCA_COMPONENTS,
+        DEFAULT_USE_TEMPORAL,
+        DEFAULT_USE_ACG,
+        DEFAULT_USE_RF_DIAMETER,
+        DEFAULT_USE_GRATING_DSOS,
+        DEFAULT_USE_CHIRP,
+        DEFAULT_WEIGHT_TEMPORAL,
+        DEFAULT_WEIGHT_ACG,
+        DEFAULT_WEIGHT_RF_DIAMETER,
+        DEFAULT_WEIGHT_GRATING_DSOS,
+        DEFAULT_WEIGHT_CHIRP,
     )
 
-    N = raw_blocks["temporal"].shape[0]  # guaranteed same N across all blocks
     blocks = []
     labels = []
 
     # ── Temporal STA ─────────────────────────────────────────────────────────
-    if feature_config.get("use_temporal", True):
-        w = feature_config.get("w_temporal", 3.0)
+    if feature_config.get("use_temporal", DEFAULT_USE_TEMPORAL):
+        w = feature_config.get("w_temporal", DEFAULT_WEIGHT_TEMPORAL)
         tc_matrix = raw_blocks["temporal"].copy()
-
-        # Guard: skip the entire temporal block when no STA data is available.
-        # get_raw_feature_blocks fills timecourse=None cells with a zero-length
-        # sentinel row; after padding they become all-zero rows of width 1.
-        # np.std==0 on such a matrix means PCA and StandardScaler would either
-        # produce NaNs (zero-variance columns) or meaningless components.
-        sta_available = tc_matrix.shape[1] > 1 and np.std(tc_matrix) > 0
-        if sta_available:
-            # Peak-align each row
+        if tc_matrix.shape[1] > 1 and np.any(non_sentinel_mask(tc_matrix)):
             for i in range(tc_matrix.shape[0]):
                 tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
-
-            n_comp = min(TEMPORAL_PCA_COMPONENTS, N - 1, tc_matrix.shape[1])
-            if n_comp >= 1:
-                tc_pca = PCA(n_components=n_comp).fit_transform(tc_matrix)
-                # Z-score each PC independently so weight sliders have a
-                # consistent meaning across feature groups (unit variance
-                # before the user weight is applied).
-                tc_pca = StandardScaler().fit_transform(tc_pca)
-                blocks.append(tc_pca * w)
-                labels.extend([f"tc_pc{j}" for j in range(n_comp)])
+            block, block_labels = _pca_block_valid_rows(
+                tc_matrix, TEMPORAL_PCA_COMPONENTS, w, "tc_pc"
+            )
+            if block is not None:
+                blocks.append(block)
+                labels.extend(block_labels)
+            else:
+                logger.debug(
+                    "build_feature_matrix: skipping temporal STA block — "
+                    "fewer than two cells with a real timecourse."
+                )
         else:
             logger.debug(
                 "build_feature_matrix: skipping temporal STA block — "
@@ -761,18 +876,15 @@ def build_feature_matrix(raw_blocks, feature_config):
             )
 
     # ── ACG ──────────────────────────────────────────────────────────────────
-    if feature_config.get("use_acg", True):
-        w = feature_config.get("w_acg", 2.0)
+    if feature_config.get("use_acg", DEFAULT_USE_ACG):
+        w = feature_config.get("w_acg", DEFAULT_WEIGHT_ACG)
         acg_matrix = raw_blocks["acg"].copy()
-
-        n_comp = min(ACG_PCA_COMPONENTS, N - 1, acg_matrix.shape[1])
-        if n_comp >= 1:
-            acg_pca = PCA(n_components=n_comp).fit_transform(acg_matrix)
-            # Z-score so ACG PCs are on the same scale as temporal PCs
-            # and scalar features — weight slider is then interpretable.
-            acg_pca = StandardScaler().fit_transform(acg_pca)
-            blocks.append(acg_pca * w)
-            labels.extend([f"acg_pc{j}" for j in range(n_comp)])
+        block, block_labels = _pca_block_valid_rows(
+            acg_matrix, ACG_PCA_COMPONENTS, w, "acg_pc"
+        )
+        if block is not None:
+            blocks.append(block)
+            labels.extend(block_labels)
 
     # ── Grating direction-tuning-curve shape ────────────────────────────────
     # PCA on grating_calc.pooled_direction_tuning_curve — a peak-weighted,
@@ -784,74 +896,63 @@ def build_feature_matrix(raw_blocks, feature_config):
     # they happen to share a DSI value; PCA on the curve shape itself
     # preserves that distinction the same way temporal/ACG PCA preserve STA/
     # autocorrelogram shape rather than collapsing them to summary scalars.
-    # Cells with no dsos conditions (or none with usable peak response) get
-    # an all-zero sentinel row from get_raw_feature_blocks — same "guard
-    # against zero-variance / all-zero matrix" pattern as the temporal
-    # block above, not a per-cell special case here.
-    if feature_config.get("use_grating_dsos", True):
-        w = feature_config.get("w_grating_dsos", 3.0)
+    # Cells with no usable curve get an all-zero sentinel row; they stay in
+    # the embedding with NaN grating PCs.
+    if feature_config.get("use_grating_dsos", DEFAULT_USE_GRATING_DSOS):
+        w = feature_config.get("w_grating_dsos", DEFAULT_WEIGHT_GRATING_DSOS)
         grating_matrix = raw_blocks.get("grating")
-        # Defensive: 'grating' is always present from the current
-        # get_raw_feature_blocks, but this is a public API (__all__) so
-        # guard rather than KeyError if a caller passes an older/partial
-        # raw_blocks dict.
-        if grating_matrix is None or grating_matrix.size == 0:
-            grating_available = False
-        else:
-            grating_matrix = grating_matrix.copy()
-            # Unlike temporal (which collapses to width-1 when no STA),
-            # grating is always POOLED_CURVE_N_BINS wide — so the real
-            # "no usable data" signal is an all-zero matrix (every cell got
-            # the zero sentinel), i.e. np.std == 0. A width check would be
-            # meaningless here.
-            grating_available = np.std(grating_matrix) > 0
-
-        if grating_available:
-            n_comp = min(GRATING_PCA_COMPONENTS, N - 1, grating_matrix.shape[1])
-            if n_comp >= 1:
-                grating_pca = PCA(n_components=n_comp).fit_transform(grating_matrix)
-                grating_pca = StandardScaler().fit_transform(grating_pca)
-                blocks.append(grating_pca * w)
-                labels.extend([f"grating_pc{j}" for j in range(n_comp)])
-        else:
+        if grating_matrix is None or np.asarray(grating_matrix).size == 0:
             logger.debug(
                 "build_feature_matrix: skipping grating block — no cells "
                 "with usable direction-tuning curves (all-zero matrix)."
             )
+        else:
+            block, block_labels = _pca_block_valid_rows(
+                np.asarray(grating_matrix, dtype=np.float64),
+                GRATING_PCA_COMPONENTS,
+                w,
+                "grating_pc",
+            )
+            if block is not None:
+                blocks.append(block)
+                labels.extend(block_labels)
+            else:
+                logger.debug(
+                    "build_feature_matrix: skipping grating block — no cells "
+                    "with usable direction-tuning curves (all-zero matrix)."
+                )
 
     # ── Chirp PSTH shape ─────────────────────────────────────────────────────
     # PCA on the L2-normalized chirp response PSTH
     # (get_chirp_data_for_cluster['psth_mean']), gated on availability. Same
-    # "shape not scalar" rationale as the grating block above: the chirp QI
-    # scalar collapses the whole ON/OFF-step + frequency/contrast-sweep
-    # response into one reliability number, which can't tell an ON-transient
-    # cell from a sustained-OFF cell that happen to share a QI. Cells with no
+    # "shape not scalar" rationale as the grating block above. Cells with no
     # chirp response (missing, or QI below CHIRP_MIN_QI) get an all-zero
-    # sentinel row from get_raw_feature_blocks — same std==0 guard as grating,
-    # not a per-cell special case here. Absent entirely when no chirp file is
+    # sentinel and a NaN chirp PC. Absent entirely when no chirp file is
     # loaded (raw_blocks['chirp'] empty / missing key), so the block simply
     # disappears rather than breaking the embedding.
-    if feature_config.get("use_chirp", True):
-        w = feature_config.get("w_chirp", 3.0)
+    if feature_config.get("use_chirp", DEFAULT_USE_CHIRP):
+        w = feature_config.get("w_chirp", DEFAULT_WEIGHT_CHIRP)
         chirp_matrix = raw_blocks.get("chirp")
-        if chirp_matrix is None or chirp_matrix.size == 0:
-            chirp_available = False
-        else:
-            chirp_matrix = chirp_matrix.copy()
-            chirp_available = np.std(chirp_matrix) > 0
-
-        if chirp_available:
-            n_comp = min(CHIRP_PCA_COMPONENTS, N - 1, chirp_matrix.shape[1])
-            if n_comp >= 1:
-                chirp_pca = PCA(n_components=n_comp).fit_transform(chirp_matrix)
-                chirp_pca = StandardScaler().fit_transform(chirp_pca)
-                blocks.append(chirp_pca * w)
-                labels.extend([f"chirp_pc{j}" for j in range(n_comp)])
-        else:
+        if chirp_matrix is None or np.asarray(chirp_matrix).size == 0:
             logger.debug(
                 "build_feature_matrix: skipping chirp block — no cells with "
                 "usable chirp responses (all-zero/absent matrix)."
             )
+        else:
+            block, block_labels = _pca_block_valid_rows(
+                np.asarray(chirp_matrix, dtype=np.float64),
+                CHIRP_PCA_COMPONENTS,
+                w,
+                "chirp_pc",
+            )
+            if block is not None:
+                blocks.append(block)
+                labels.extend(block_labels)
+            else:
+                logger.debug(
+                    "build_feature_matrix: skipping chirp block — no cells with "
+                    "usable chirp responses (all-zero/absent matrix)."
+                )
 
     # ── Scalar features ──────────────────────────────────────────────────────
     # Consolidated set: firing_rate, isi_violations, time_to_peak, and
@@ -867,29 +968,34 @@ def build_feature_matrix(raw_blocks, feature_config):
     # weight**2 per column, a block's total contribution to distance scales
     # with (n_columns * weight**2), not weight alone.
     scalar_features = [
-        ("rf_long_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
-        ("rf_short_diameter", "use_rf_diameter", "w_rf_diameter", 6.0),
+        (
+            "rf_long_diameter",
+            "use_rf_diameter",
+            "w_rf_diameter",
+            DEFAULT_WEIGHT_RF_DIAMETER,
+        ),
+        (
+            "rf_short_diameter",
+            "use_rf_diameter",
+            "w_rf_diameter",
+            DEFAULT_WEIGHT_RF_DIAMETER,
+        ),
     ]
 
     scalars_df = raw_blocks["scalars"]
     enabled_scalars = []
-    scalar_weights = []
     scalar_labels = []
 
     for col, use_key, w_key, default_w in scalar_features:
-        if feature_config.get(use_key, True) and col in scalars_df.columns:
-            vals = scalars_df[col].fillna(0.0).values.astype(np.float64)
-            enabled_scalars.append(vals.reshape(-1, 1))
-            scalar_weights.append(feature_config.get(w_key, default_w))
-            scalar_labels.append(col)
+        if feature_config.get(use_key, DEFAULT_USE_RF_DIAMETER) and col in scalars_df.columns:
+            w = feature_config.get(w_key, default_w)
+            scaled = _scale_positive_scalar(scalars_df[col].to_numpy(), w)
+            if scaled is not None:
+                enabled_scalars.append(scaled)
+                scalar_labels.append(col)
 
     if enabled_scalars:
-        scalar_block = np.hstack(enabled_scalars)
-        scalar_block = RobustScaler().fit_transform(scalar_block)
-        # Apply per-column weights
-        for j, w in enumerate(scalar_weights):
-            scalar_block[:, j] *= w
-        blocks.append(scalar_block)
+        blocks.append(np.hstack(enabled_scalars))
         labels.extend(scalar_labels)
 
     # ── Assembly ─────────────────────────────────────────────────────────────
@@ -918,5 +1024,7 @@ __all__ = [
     "plot_ei_waveforms",
     "peak_align_timecourse",
     "apply_prefilter",
+    "non_sentinel_mask",
+    "observed_euclidean_distances",
     "build_feature_matrix",
 ]

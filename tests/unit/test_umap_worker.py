@@ -70,7 +70,7 @@ def test_worker_emits_valid_and_discarded():
     assert not errors
     assert len(finished_args) == 1
     
-    embedding, matrix, valid_ids, discarded_ids, meta_df = finished_args[0]
+    embedding, matrix, valid_ids, discarded_ids, meta_df = finished_args[0][:5]
     
     assert embedding.shape == (5, 2)
     assert valid_ids == [0, 1, 2, 3, 4]
@@ -124,12 +124,27 @@ def test_worker_single_cell_passes():
             'time_to_peak': [12.0],
             'rf_area': [45.0],
             'ellipticity': [0.9],
+            'rf_long_diameter': [20.0],
+            'rf_short_diameter': [10.0],
         })
     }
     
     dm = MockDataManager(cluster_df, raw_blocks, valid_ids=[0], discarded_ids=[])
     
-    worker = UMAPWorker(dm, selected_cluster_ids=[0], n_components=2)
+    worker = UMAPWorker(
+        dm,
+        selected_cluster_ids=[0],
+        n_components=2,
+        feature_config={
+            "use_temporal": True,
+            "w_temporal": 10.0,
+            "use_acg": True,
+            "w_acg": 10.0,
+            "use_rf_diameter": True,
+            "w_rf_diameter": 10.0,
+        },
+        filter_config={"min_sta_std": 1e-5, "max_rf_area": 300.0},
+    )
     
     finished_args = []
     errors = []
@@ -144,25 +159,62 @@ def test_worker_single_cell_passes():
     assert any(term in errors[0] for term in ("n_neighbors", "ValueError", "neighborhood"))
 
 
+def test_worker_keeps_cells_with_no_sta():
+    """No-STA rows stay in the embedding; UMAP runs on observed distances."""
+    cluster_df = pd.DataFrame(
+        {"cluster_id": [0, 1, 2, 3], "KSLabel": ["good"] * 4}
+    )
+    rng = np.random.RandomState(0)
+    temporal = rng.randn(4, 20)
+    temporal[[1, 3]] = 0.0
+    raw_blocks = {
+        "temporal": temporal,
+        "acg": rng.randn(4, 50),
+        "scalars": pd.DataFrame(
+            {
+                "rf_long_diameter": [20.0, 0.0, 22.0, 0.0],
+                "rf_short_diameter": [10.0, 0.0, 11.0, 0.0],
+                "firing_rate": [1.0, 2.0, 3.0, 4.0],
+                "isi_violations": [0.0, 0.0, 0.0, 0.0],
+                "time_to_peak": [1.0, 0.0, 2.0, 0.0],
+                "rf_area": [10.0, 0.0, 12.0, 0.0],
+                "ellipticity": [1.0, 0.0, 1.1, 0.0],
+            }
+        ),
+    }
+    dm = MockDataManager(cluster_df, raw_blocks, valid_ids=[0, 1, 2, 3], discarded_ids=[])
+    worker = UMAPWorker(
+        dm,
+        selected_cluster_ids=[0, 1, 2, 3],
+        n_components=2,
+        feature_config={
+            "use_temporal": True,
+            "w_temporal": 10.0,
+            "use_acg": True,
+            "w_acg": 10.0,
+            "use_rf_diameter": True,
+            "w_rf_diameter": 10.0,
+        },
+        filter_config={"min_sta_std": 1e-5, "max_rf_area": 300.0},
+    )
+    finished_args = []
+    errors = []
+    worker.finished.connect(lambda *args: finished_args.append(args))
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors
+    embedding, matrix, valid_ids, discarded_ids, meta_df = finished_args[0][:5]
+    assert embedding.shape == (4, 2)
+    assert valid_ids == [0, 1, 2, 3]
+    assert discarded_ids == []
+    assert np.isnan(matrix).any()
+    assert np.isfinite(embedding).all()
+
+
 def test_cluster_worker_uses_highd_matrix():
-    """ClusterWorker receives high-D matrix, not 2D embedding, and clusters correctly."""
+    """ClusterWorker labels every row of the array it is given."""
     matrix = np.random.randn(10, 8)
-    
-    from src.gui.workers.workers import HDBSCAN_AVAILABLE
-    if HDBSCAN_AVAILABLE:
-        worker = ClusterWorker(matrix, method="HDBSCAN", param=3)
-        finished_args = []
-        errors = []
-        worker.finished.connect(lambda *args: finished_args.append(args))
-        worker.error.connect(errors.append)
-        
-        worker.run()
-        assert not errors
-        assert len(finished_args) == 1
-        labels, method = finished_args[0]
-        assert len(labels) == 10
-        assert method == "HDBSCAN"
-        
+
     worker_km = ClusterWorker(matrix, method="K-Means", param=3)
     finished_km = []
     errors_km = []

@@ -45,6 +45,11 @@ from .view_toggles import PopulationViewToggles
 from ...analysis.constants import (
     DEFAULT_MIN_STA_STD,
     DEFAULT_MAX_RF_AREA,
+    DEFAULT_USE_TEMPORAL,
+    DEFAULT_USE_ACG,
+    DEFAULT_USE_RF_DIAMETER,
+    DEFAULT_USE_GRATING_DSOS,
+    DEFAULT_USE_CHIRP,
     DEFAULT_WEIGHT_TEMPORAL,
     DEFAULT_WEIGHT_ACG,
     DEFAULT_WEIGHT_RF_DIAMETER,
@@ -389,31 +394,48 @@ class UMAPPanel(QWidget):
         # only columns (UMAP scatter coloring/hover), just not read by the
         # embedding anymore.
         features_info = [
-            ("Temporal STA", "use_temporal", "w_temporal", DEFAULT_WEIGHT_TEMPORAL),
-            ("ACG (Autocorrelogram)", "use_acg", "w_acg", DEFAULT_WEIGHT_ACG),
+            (
+                "Temporal STA",
+                "use_temporal",
+                "w_temporal",
+                DEFAULT_WEIGHT_TEMPORAL,
+                DEFAULT_USE_TEMPORAL,
+            ),
+            (
+                "ACG (Autocorrelogram)",
+                "use_acg",
+                "w_acg",
+                DEFAULT_WEIGHT_ACG,
+                DEFAULT_USE_ACG,
+            ),
             (
                 "RF Diameter (long + short)",
                 "use_rf_diameter",
                 "w_rf_diameter",
                 DEFAULT_WEIGHT_RF_DIAMETER,
+                DEFAULT_USE_RF_DIAMETER,
             ),
             (
                 "Grating DS/OS (tuning shape)",
                 "use_grating_dsos",
                 "w_grating_dsos",
                 DEFAULT_WEIGHT_GRATING_DSOS,
+                DEFAULT_USE_GRATING_DSOS,
             ),
             (
                 "Chirp PSTH (response shape)",
                 "use_chirp",
                 "w_chirp",
                 DEFAULT_WEIGHT_CHIRP,
+                DEFAULT_USE_CHIRP,
             ),
         ]
 
-        for idx, (label, use_key, w_key, default_w) in enumerate(features_info):
+        for idx, (label, use_key, w_key, default_w, default_on) in enumerate(
+            features_info
+        ):
             chk = QCheckBox(label)
-            chk.setChecked(True)
+            chk.setChecked(default_on)
 
             # Slider (0-100 internal range) + read-only numeric readout,
             # replacing the old bare QDoubleSpinBox. Qt's QSlider is
@@ -444,6 +466,8 @@ class UMAPPanel(QWidget):
             # Connect checkbox to enable/disable the slider + readout
             chk.toggled.connect(slider.setEnabled)
             chk.toggled.connect(value_label.setEnabled)
+            slider.setEnabled(default_on)
+            value_label.setEnabled(default_on)
 
             # Store widget references — get_feature_config() reads
             # slider.value()/10.0 rather than spin.value() directly now.
@@ -543,9 +567,13 @@ class UMAPPanel(QWidget):
             return
         chk, slider, _w_key, value_label = entry
         chk.setEnabled(enabled)
-        chk.setChecked(enabled)
-        slider.setEnabled(enabled)
-        value_label.setEnabled(enabled)
+        # Availability is not a default-on. Chirp/grating start unchecked
+        # even when a file is present; only grey the row out when missing.
+        if not enabled:
+            chk.setChecked(False)
+        live = enabled and chk.isChecked()
+        slider.setEnabled(live)
+        value_label.setEnabled(live)
         chk.setToolTip("" if enabled else disabled_tooltip)
 
     def get_feature_config(self):
@@ -1053,7 +1081,7 @@ class UMAPPanel(QWidget):
         for name, cols in blocks.items():
             # Column variance already carries the weight, so summing it is the
             # block's real share of distance without re-deriving the sliders.
-            energy[name] = float(np.nansum(matrix[:, cols].var(axis=0)))
+            energy[name] = float(np.nansum(np.nanvar(matrix[:, cols], axis=0)))
         total_energy = sum(energy.values()) or 1.0
 
         # --- what actually tracks this axis ---
@@ -1062,10 +1090,10 @@ class UMAPPanel(QWidget):
         corrs = []
         for i, lab in enumerate(labels):
             col = matrix[:, i]
-            if np.allclose(col, col[0]):
+            if not np.isfinite(col).any() or np.nanstd(col) == 0:
                 continue
             try:
-                rho = spearmanr(col, coord).statistic
+                rho = spearmanr(col, coord, nan_policy="omit").statistic
             except Exception:
                 continue
             if np.isfinite(rho):
