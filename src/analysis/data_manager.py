@@ -10,6 +10,7 @@ from pathlib import Path
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
+from . import cache_persistence
 from . import vision_integration
 from .constants import (
     ISI_REFRACTORY_PERIOD_MS,
@@ -1670,21 +1671,48 @@ class DataManager(QObject):
 
         save_path = str(self.kilosort_dir / "standard_plot_cache.pkl")
         feature_save_path = str(self.kilosort_dir / "feature_cache.pkl")
+        grating_save_path = str(self.kilosort_dir / "grating_computed_cache.pkl")
 
         with self._standard_plot_lock:
             snapshot = dict(self.standard_plot_cache)
 
+        # Only fully-computed rows may reach disk. Partial ACG-only rows would
+        # be deleted by the load-time pruner in build_cluster_dataframe, which
+        # is what used to make the persisted cache worthless every session.
         with self._feature_lock:
-            feature_snapshot = dict(getattr(self, "feature_cache", {}))
+            feature_snapshot = cache_persistence.filter_computed_entries(
+                getattr(self, "feature_cache", {})
+            )
+
+        with self._grating_cache_lock:
+            grating_snapshot = {
+                k: v
+                for k, v in getattr(self, "grating_computed_cache", {}).items()
+                if v is not None
+            }
 
         def _save():
             try:
                 self._save_pickle_with_fallback(snapshot, save_path)
-                self._save_pickle_with_fallback(feature_snapshot, feature_save_path)
+
+                # Never overwrite a good cache with an empty one. A KS-only or
+                # aborted session has nothing computed to persist; writing that
+                # would destroy the warm cache a previous session built.
+                if feature_snapshot or not os.path.exists(feature_save_path):
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(feature_snapshot),
+                        feature_save_path,
+                    )
+                if grating_snapshot or not os.path.exists(grating_save_path):
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(grating_snapshot),
+                        grating_save_path,
+                    )
                 logger.debug(
-                    "Saved caches (%d std, %d feat) to disk",
+                    "Saved caches (%d std, %d feat, %d grating) to disk",
                     len(snapshot),
                     len(feature_snapshot),
+                    len(grating_snapshot),
                 )
             except Exception:
                 logger.exception("Failed to persist standard_plot_cache")
@@ -1793,7 +1821,13 @@ class DataManager(QObject):
             if feat_pkl.exists() and not self.feature_cache:
                 try:
                     with open(feat_pkl, "rb") as f:
-                        self.feature_cache = pickle.load(f)
+                        payload = pickle.load(f)
+                    # Legacy (unversioned) and stale-version files are dropped:
+                    # they predate the _computed filter and are full of the
+                    # partial rows the pruner would delete anyway.
+                    self.feature_cache = cache_persistence.load_versioned_entries(
+                        payload
+                    )
                     self._physics_done_count = sum(
                         1 for v in self.feature_cache.values() if v.get("_computed")
                     )
