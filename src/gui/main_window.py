@@ -46,6 +46,7 @@ from .widgets.widgets import (
     PandasModel,
 )
 from . import callbacks
+from . import plot_export
 from .panels.population_panel import draw_population_rfs_plot, rf_vision_id_at
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
@@ -2800,8 +2801,19 @@ class MainWindow(QMainWindow):
 
         # ── Folder-only actions (single folder clicked) ──────────────────────
         add_group_action = rename_action = flatten_action = delete_action = None
+        export_cells_action = export_mean_action = None
         if len(targets) == 1 and callbacks.is_group_item(item):
             menu.addSeparator()
+
+            # Export is folder-scoped because both output shapes are named
+            # after the folder: the per-cell filenames carry it, and the
+            # overlay is a statement about that group as a whole.
+            export_menu = menu.addMenu("Export plots")
+            export_cells_action = export_menu.addAction("One file per cell…")
+            export_mean_action = export_menu.addAction("Group mean overlay…")
+            if not cluster_ids:
+                export_menu.setEnabled(False)
+
             add_group_action = menu.addAction("Add New Group")
             rename_action = menu.addAction("Rename")
             flatten_action = menu.addAction("Flatten Group (Remove Sub-folders)")
@@ -2833,6 +2845,10 @@ class MainWindow(QMainWindow):
                 callbacks.group_clusters_in_tree(self, cluster_ids, name)
         elif feature_action is not None and action == feature_action:
             callbacks.feature_extraction(self, cluster_ids)
+        elif export_cells_action is not None and action == export_cells_action:
+            plot_export.open_plot_export_dialog(self, item, mode="per_cell")
+        elif export_mean_action is not None and action == export_mean_action:
+            plot_export.open_plot_export_dialog(self, item, mode="group_mean")
         elif add_group_action is not None and action == add_group_action:
             text, ok = QInputDialog.getText(self, "New Group", "Enter group name:")
             if ok and text:
