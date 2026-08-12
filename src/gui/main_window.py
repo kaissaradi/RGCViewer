@@ -44,6 +44,14 @@ from .widgets.widgets import (
     CustomTableView,
     ClusterTreeDelegate,
     PandasModel,
+    TREE_CH_WIDTH,
+    TREE_COL_CH,
+    TREE_COL_ID,
+    TREE_HEADERS,
+    TREE_SPIKES_WIDTH,
+    refresh_tree_group_counts,
+    set_channel_item,
+    tree_item_from_index,
 )
 from . import callbacks
 from . import plot_export
@@ -100,7 +108,7 @@ class MainWindow(QMainWindow):
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
         self.setWindowTitle("RGC Viewer")
-        self.setGeometry(50, 50, 1800, 1000)
+        self._place_window()
 
         # --- Application State ---
         self.theme = "dark"
@@ -132,7 +140,7 @@ class MainWindow(QMainWindow):
         # --- Current STA View ---
         self.current_sta_view = "rf"  # Default to RF plot
         self._is_syncing = False
-        self.last_left_width = 450
+        self.last_left_width = 280
         self.sidebar_collapsed = False
         self.feature_worker_thread = None
         self.population_view_enabled = False
@@ -228,6 +236,18 @@ class MainWindow(QMainWindow):
                 index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
             )
             view.scrollTo(index)
+
+    def _place_window(self):
+        """Open at 1800×1000, but never larger than the usable screen."""
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        if screen is None:
+            self.setGeometry(50, 50, 1800, 1000)
+            return
+        avail = screen.availableGeometry()
+        width = min(1800, avail.width())
+        height = min(1000, avail.height())
+        self.setGeometry(avail.x(), avail.y(), width, height)
 
     def _setup_style(self, colors):
         self.setFont(QFont("Inter", 11))
@@ -648,6 +668,14 @@ class MainWindow(QMainWindow):
                 border: none;
                 image: none;
             }}
+            QHeaderView::section {{
+                background-color: {colors['bg_panel']};
+                color: {colors['text_tertiary']};
+                border: none;
+                border-bottom: 1px solid {colors['border_subtle']};
+                padding: 2px 4px;
+                font-size: 10px;
+            }}
         """)
         if hasattr(self, "_cluster_tree_delegate"):
             self._cluster_tree_delegate.update_colors(colors)
@@ -661,15 +689,28 @@ class MainWindow(QMainWindow):
         group_bg = QColor(colors["bg_elevated"])
         group_fg = QColor(colors["text_primary"])
         cell_fg = QColor(colors["text_primary"])
+        secondary = QColor(colors["text_secondary"])
 
-        def visit(item):
+        def paint_row(item):
             is_group = item.data(Qt.ItemDataRole.UserRole) is None
             item.setForeground(group_fg if is_group else cell_fg)
-            if is_group:
-                item.setBackground(group_bg)
-            else:
-                item.setBackground(QColor(colors["bg_panel"]))
+            item.setBackground(group_bg if is_group else QColor(colors["bg_panel"]))
+            model = item.model()
+            if model is None:
+                return
+            idx = item.index()
+            for col in range(1, model.columnCount()):
+                sib = model.itemFromIndex(idx.sibling(idx.row(), col))
+                if sib is None:
+                    continue
+                if is_group:
+                    sib.setBackground(group_bg)
+                    sib.setForeground(secondary)
+                else:
+                    sib.setForeground(secondary)
 
+        def visit(item):
+            paint_row(item)
             for row in range(item.rowCount()):
                 child = item.child(row)
                 if child is not None:
@@ -798,6 +839,7 @@ class MainWindow(QMainWindow):
         if "cluster_id" not in dm.cluster_df.columns:
             return
 
+        refresh_tree_group_counts(self.tree_model.invisibleRootItem())
         mapping = callbacks.build_cluster_group_map(self)
         values = [mapping.get(int(c), "") for c in dm.cluster_df["cluster_id"]]
         col = callbacks.GROUP_COLUMN
@@ -1114,7 +1156,7 @@ class MainWindow(QMainWindow):
         for btn in (self.table_view_button, self.tree_view_button):
             btn.setCheckable(True)
             btn.setFixedHeight(26)
-        self.table_view_button.setChecked(True)
+        self.tree_view_button.setChecked(True)
 
         # Reset as ghost link
         self.reset_button = QPushButton("↺")
@@ -1137,11 +1179,12 @@ class MainWindow(QMainWindow):
 
         # Tree View
         self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setHeaderHidden(False)
         self.tree_view.setRootIsDecorated(True)
-        self.tree_view.setIndentation(24)
+        self.tree_view.setIndentation(16)
         self.tree_view.setAnimated(True)
         self.tree_view.setUniformRowHeights(True)
+        self.tree_view.setAlternatingRowColors(True)
         self._cluster_tree_delegate = ClusterTreeDelegate(
             self.tree_view, self.get_current_colors()
         )
@@ -1156,6 +1199,9 @@ class MainWindow(QMainWindow):
         # row under the cursor.
         self.tree_view.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.tree_view.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
@@ -1196,8 +1242,8 @@ class MainWindow(QMainWindow):
 
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
-        # Default to table view
-        self.view_stack.setCurrentIndex(1)
+        # Default to tree — grouping is the daily path
+        self.view_stack.setCurrentIndex(0)
 
         left_content_layout.addLayout(top_ctrl_layout)
 
@@ -1476,7 +1522,8 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([220, 1800 - 220])
+        self.main_splitter.setSizes([280, 1800 - 280])
+        self.last_left_width = 280
         self.main_splitter.setStretchFactor(0, 0)  # Left panel doesn't stretch
         self.main_splitter.setStretchFactor(1, 1)  # Right panel takes remaining space
         self.main_splitter.setHandleWidth(5)
@@ -1815,7 +1862,7 @@ class MainWindow(QMainWindow):
             index = self.tree_view.currentIndex()
             if not index.isValid() or not selection_model.isSelected(index):
                 index = selection_model.selectedIndexes()[0]
-            item = self.tree_model.itemFromIndex(index)
+            item = tree_item_from_index(self.tree_model, index)
             if item is None:
                 return None
 
@@ -2117,8 +2164,7 @@ class MainWindow(QMainWindow):
         if cluster_id is None and self.view_stack.currentIndex() == 0:
             selection = self.tree_view.selectionModel().selectedIndexes()
             if selection:
-                index = selection[0]
-                item = self.tree_model.itemFromIndex(index)
+                item = tree_item_from_index(self.tree_model, selection[0])
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:  # It's a group
                     return self._get_group_cluster_ids(item)
 
@@ -2463,10 +2509,84 @@ class MainWindow(QMainWindow):
             )
 
         self._resize_table_columns_fast()
+        self._refresh_tree_channels()
+
+    def _refresh_tree_channels(self):
+        """Write best_chan into tree column 2 without rebuilding the tree."""
+        dm = self.data_manager
+        if dm is None or dm.cluster_df is None or "best_chan" not in dm.cluster_df.columns:
+            return
+        model = self.tree_model
+        if model is None:
+            return
+        chan_map = dict(
+            zip(
+                dm.cluster_df["cluster_id"].astype(int),
+                dm.cluster_df["best_chan"],
+            )
+        )
+
+        def visit(parent):
+            for row in range(parent.rowCount()):
+                item = parent.child(row, TREE_COL_ID)
+                if item is None:
+                    continue
+                cid = item.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    ch_item = parent.child(row, TREE_COL_CH)
+                    if ch_item is not None:
+                        set_channel_item(ch_item, chan_map.get(int(cid)))
+                if item.hasChildren():
+                    visit(item)
+
+        visit(model.invisibleRootItem())
+
+    def _configure_tree_columns(self):
+        model = self.tree_view.model()
+        if model is None:
+            return
+        if model.columnCount() < 3:
+            model.setColumnCount(3)
+        model.setHorizontalHeaderLabels(list(TREE_HEADERS))
+        header = self.tree_view.header()
+        header.setVisible(True)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, TREE_SPIKES_WIDTH)
+        header.resizeSection(2, TREE_CH_WIDTH)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        # Manual sort on header click. setSortingEnabled(True) re-sorts on
+        # every insert and fights drag-and-drop.
+        self.tree_view.setSortingEnabled(False)
+        if not getattr(self, "_tree_header_sort_wired", False):
+            header.sectionClicked.connect(self._on_tree_header_clicked)
+            self._tree_header_sort_wired = True
+            self._tree_sort_section = -1
+            self._tree_sort_order = Qt.SortOrder.AscendingOrder
+
+    def _on_tree_header_clicked(self, section):
+        header = self.tree_view.header()
+        if getattr(self, "_tree_sort_section", -1) == section:
+            order = (
+                Qt.SortOrder.DescendingOrder
+                if self._tree_sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            order = Qt.SortOrder.AscendingOrder
+        self._tree_sort_section = section
+        self._tree_sort_order = order
+        header.setSortIndicator(section, order)
+        if self.tree_model is not None:
+            self.tree_model.sort(section, order)
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
+        self._configure_tree_columns()
         self._apply_tree_item_theme(self.get_current_colors())
         try:
             self.tree_view.selectionModel().selectionChanged.disconnect(
@@ -2553,20 +2673,23 @@ class MainWindow(QMainWindow):
             child = parent_item.child(row)
             index = self.tree_model.indexFromItem(child)
 
-            if child.rowCount() == 0:
-                # Leaf node: match against display text
-                visible = (not query) or (query in child.text().lower())
-                self.tree_view.setRowHidden(index.row(), index.parent(), not visible)
-                if visible:
-                    any_visible = True
-            else:
-                # Group node: recurse first, then decide own visibility
+            if callbacks.is_group_item(child):
                 child_matched = self._apply_tree_filter_recursive(child, query)
                 self.tree_view.setRowHidden(
                     index.row(), index.parent(), not child_matched
                 )
                 if child_matched:
                     self.tree_view.setExpanded(index, True)
+                    any_visible = True
+            else:
+                texts = [child.text().lower()]
+                for col in (1, 2):
+                    sib = parent_item.child(row, col)
+                    if sib is not None:
+                        texts.append(sib.text().lower())
+                visible = (not query) or any(query in text for text in texts)
+                self.tree_view.setRowHidden(index.row(), index.parent(), not visible)
+                if visible:
                     any_visible = True
 
         return any_visible
@@ -2657,7 +2780,9 @@ class MainWindow(QMainWindow):
                 if matches:
                     index = matches[0]
                     self.tree_view.selectionModel().select(
-                        index, QItemSelectionModel.ClearAndSelect
+                        index,
+                        QItemSelectionModel.ClearAndSelect
+                        | QItemSelectionModel.Rows,
                     )
                     self.tree_view.scrollTo(
                         index, QAbstractItemView.ScrollHint.PositionAtCenter
@@ -2784,7 +2909,7 @@ class MainWindow(QMainWindow):
 
     def open_tree_context_menu(self, position):
         index = self.tree_view.indexAt(position)
-        item = self.tree_model.itemFromIndex(index)
+        item = tree_item_from_index(self.tree_model, index)
         if not item:
             return
 

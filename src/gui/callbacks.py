@@ -3,9 +3,8 @@ import os
 import threading
 import time
 from pathlib import Path
-from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
+from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication
 from qtpy.QtCore import QThread, Qt, QTimer, QEventLoop
-from qtpy.QtGui import QStandardItem, QColor
 
 from ..analysis.data_manager import DataManager
 from .workers.workers import (
@@ -16,7 +15,16 @@ from .workers.workers import (
     VisionLoadWorker,
     StimulusAnalysisLoadWorker,
 )
-from .widgets.widgets import HighlightStatusPandasModel
+from .widgets.widgets import (
+    HighlightStatusPandasModel,
+    TREE_COL_SPIKES,
+    TREE_HEADERS,
+    make_cell_row,
+    make_group_row,
+    refresh_tree_group_counts,
+    set_count_item,
+    tree_item_from_index,
+)
 from .panels.population_panel import (
     draw_population_timecourse_panel,
     invalidate_population_caches,
@@ -1013,8 +1021,9 @@ def on_cluster_selection_changed(main_window: MainWindow):
         if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
-                index = selection[0]
-                item = main_window.tree_model.itemFromIndex(index)
+                item = tree_item_from_index(
+                    main_window.tree_model, selection[0]
+                )
 
                 # Check if it is a group (groups store None in UserRole)
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:
@@ -1248,6 +1257,19 @@ def start_worker(main_window: MainWindow):
         update_cache_progress(main_window)
 
 
+def _cell_row_from_record(record):
+    """Build an ID / Spikes / Ch row from a DataFrame row or namedtuple."""
+    if hasattr(record, "_asdict"):
+        cluster_id = record.cluster_id
+        n_spikes = getattr(record, "n_spikes", None)
+        best_chan = getattr(record, "best_chan", None)
+    else:
+        cluster_id = record["cluster_id"]
+        n_spikes = record["n_spikes"] if "n_spikes" in record.index else None
+        best_chan = record["best_chan"] if "best_chan" in record.index else None
+    return make_cell_row(cluster_id, n_spikes, best_chan)
+
+
 def populate_tree_view(main_window: MainWindow, df=None):
     """
     Builds the tree and table from the cluster data.
@@ -1267,6 +1289,7 @@ def populate_tree_view(main_window: MainWindow, df=None):
     main_window.tree_view.setUpdatesEnabled(False)
     model = main_window.tree_model
     model.clear()  # Clear any previous data
+    model.setHorizontalHeaderLabels(list(TREE_HEADERS))
 
     # Use a copy for tree construction to ensure we have KSLabel without warning
     df_tree = df.copy()
@@ -1277,60 +1300,35 @@ def populate_tree_view(main_window: MainWindow, df=None):
     df_tree["KSLabel_str"] = df_tree["KSLabel"].astype(str)
     unique_labels = sorted(df_tree["KSLabel_str"].unique())
 
-    # Pre-fetch icons and font to avoid redundant Qt calls in the loop
-    dir_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-    file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-
     # Create top-level nodes for each unique KSLabel
     groups = {}
-    group_cell_items = {}  # To store lists of items for batch append
+    group_cell_rows = {}
 
     for label in unique_labels:
-        group_item = QStandardItem(label)
-        group_item.setEditable(False)
-        group_item.setDropEnabled(True)  # Can drop cells into it
+        group_row = make_group_row(label, 0)
+        groups[label] = group_row
+        group_cell_rows[label] = []
 
-        # Style group items differently from cells
-        font = group_item.font()
-        font.setBold(True)
-        group_item.setFont(font)
-
-        # Set different background color for groups
-        group_item.setBackground(QColor("#3C3C3C"))
-        group_item.setIcon(dir_icon)
-
-        groups[label] = group_item
-        group_cell_items[label] = []  # Initialize list for batching
-
-    # Add each cluster as a child item to its group
-    # itertuples is significantly faster than iterrows
     for row in df_tree.itertuples():
-        cluster_id = row.cluster_id
         label = row.KSLabel_str
+        if label not in group_cell_rows:
+            continue
+        group_cell_rows[label].append(
+            make_cell_row(
+                row.cluster_id,
+                getattr(row, "n_spikes", None),
+                getattr(row, "best_chan", None),
+            )
+        )
 
-        # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
-        n_spikes = getattr(row, "n_spikes", "?")
-        item_text = f"Cluster {cluster_id} (n={n_spikes})"
-        cell_item = QStandardItem(item_text)
-        cell_item.setEditable(False)
-        cell_item.setIcon(file_icon)
-
-        # IMPORTANT: Store the actual cluster ID in the item's data role.
-        cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-        # Prevent dropping items onto cells
-        cell_item.setDropEnabled(False)
-
-        if label in group_cell_items:
-            group_cell_items[label].append(cell_item)
-
-    # Now add all populated groups to the model in one pass
     for label in unique_labels:
-        group_item = groups[label]
-        # Batch append items to the group
-        if group_cell_items[label]:
-            group_item.appendRows(group_cell_items[label])
-        model.appendRow(group_item)
+        group_row = groups[label]
+        group_item = group_row[0]
+        cell_rows = group_cell_rows[label]
+        for cell_row in cell_rows:
+            group_item.appendRow(cell_row)
+        set_count_item(group_row[TREE_COL_SPIKES], len(cell_rows))
+        model.appendRow(group_row)
 
     main_window.setup_tree_model(model)
     main_window.tree_view.collapseAll()
@@ -1339,30 +1337,15 @@ def populate_tree_view(main_window: MainWindow, df=None):
 
 def add_new_group(main_window, name: str, parent_item=None):
     """Adds a new group, safely nesting it at the top of the selected folder or root."""
-    from qtpy.QtWidgets import QApplication, QStyle
-    from qtpy.QtGui import QStandardItem, QColor
-    from qtpy.QtCore import Qt
-
-    item = QStandardItem(name)
-    item.setEditable(False)
-    item.setDropEnabled(True)
-
-    font = item.font()
-    font.setBold(True)
-    item.setFont(font)
-    item.setBackground(QColor("#3C3C3C"))
-
-    app = QApplication.instance()
-    if app:
-        item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+    group_row = make_group_row(name, 0)
 
     # If a valid folder was clicked, insert inside it at the top
     if parent_item is not None and parent_item.data(Qt.ItemDataRole.UserRole) is None:
-        parent_item.insertRow(0, item)
+        parent_item.insertRow(0, group_row)
         main_window.tree_view.expand(parent_item.index())
     else:
         # Safe insertion at the absolute root of the tree
-        main_window.tree_model.invisibleRootItem().insertRow(0, item)
+        main_window.tree_model.invisibleRootItem().insertRow(0, group_row)
 
 
 def delete_group(main_window, item):
@@ -1506,21 +1489,11 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
         parent_item = model.invisibleRootItem()
 
     # 3. Create the new folder item
-    group_item = QStandardItem(group_name)
-    group_item.setEditable(False)
-    group_item.setDropEnabled(True)
-
-    font = group_item.font()
-    font.setBold(True)
-    group_item.setFont(font)
-    group_item.setBackground(QColor("#3C3C3C"))
-
-    app = QApplication.instance()
-    if app:
-        group_item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+    group_row = make_group_row(group_name, 0)
+    group_item = group_row[0]
 
     # 4. Insert the new folder at the TOP of the parent (Row 0)
-    parent_item.insertRow(0, group_item)
+    parent_item.insertRow(0, group_row)
 
     # 5. Move the clusters into the new folder safely
     for item in items_to_move:
@@ -1701,22 +1674,9 @@ def get_or_create_trash(main_window):
             if child.text() == TRASH_GROUP_NAME:
                 return child
 
-    trash = QStandardItem(TRASH_GROUP_NAME)
-    trash.setEditable(False)
-    trash.setDropEnabled(True)
-
-    font = trash.font()
-    font.setBold(True)
-    trash.setFont(font)
-    # Muted red so discarded units read as set-aside at a glance.
-    trash.setBackground(QColor("#4A2C2C"))
-
-    app = QApplication.instance()
-    if app:
-        trash.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-
-    root.appendRow(trash)
-    return trash
+    trash_row = make_group_row(TRASH_GROUP_NAME, 0)
+    root.appendRow(trash_row)
+    return trash_row[0]
 
 
 def find_trash(main_window):
@@ -1991,29 +1951,9 @@ def load_classification_file(main_window: MainWindow):
                         break
 
                 if found_item is None:
-                    # Create new group item
-                    group_item = QStandardItem(part)
-                    group_item.setEditable(False)
-                    group_item.setDropEnabled(True)
-
-                    # Style group items differently from cells
-                    font = group_item.font()
-                    font.setBold(True)
-                    group_item.setFont(font)
-
-                    # Set different background color for groups
-                    # Dark gray background for groups
-                    group_item.setBackground(QColor("#3C3C3C"))
-
-                    # Add folder icon for groups
-                    group_item.setIcon(
-                        main_window.style().standardIcon(
-                            QStyle.StandardPixmap.SP_DirIcon
-                        )
-                    )
-
-                    current_parent.appendRow(group_item)
-                    current_parent = group_item
+                    group_row = make_group_row(part, 0)
+                    current_parent.appendRow(group_row)
+                    current_parent = group_row[0]
                 else:
                     current_parent = found_item
 
@@ -2026,72 +1966,21 @@ def load_classification_file(main_window: MainWindow):
                     df.loc[df["cluster_id"] == cluster_id, "KSLabel"] = leaf_name
 
                     cluster_info = df[df["cluster_id"] == cluster_id].iloc[0]
-
-                    # Create cluster item with n_spikes and ISI info
-                    item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
-                    cell_item = QStandardItem(item_text)
-                    cell_item.setEditable(False)
-
-                    # Add file icon for cells
-                    cell_item.setIcon(
-                        main_window.style().standardIcon(
-                            QStyle.StandardPixmap.SP_FileIcon
-                        )
-                    )
-
-                    # Store the cluster ID in the item's data role
-                    cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-                    # Prevent dropping items onto cells
-                    cell_item.setDropEnabled(False)
-
-                    current_parent.appendRow(cell_item)
+                    current_parent.appendRow(_cell_row_from_record(cluster_info))
 
         # Add unclassified clusters under an 'Unclassified' group
         if unclassified_cluster_ids:
-            unclassified_group = QStandardItem("Unclassified")
-            unclassified_group.setEditable(False)
-            unclassified_group.setDropEnabled(True)
-
-            # Style group items differently from cells
-            font = unclassified_group.font()
-            font.setBold(True)
-            unclassified_group.setFont(font)
-
-            # Set different background color for groups
-            unclassified_group.setBackground(
-                QColor("#3C3C3C")
-            )  # Dark gray background for groups
-
-            # Add folder icon for groups
-            unclassified_group.setIcon(
-                main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-            )
-
-            main_window.tree_model.appendRow(unclassified_group)
+            unclassified_row = make_group_row("Unclassified", 0)
+            unclassified_group = unclassified_row[0]
+            main_window.tree_model.appendRow(unclassified_row)
 
             for cluster_id in unclassified_cluster_ids:
                 cluster_info = main_window.data_manager.cluster_df[
                     main_window.data_manager.cluster_df["cluster_id"] == cluster_id
                 ].iloc[0]
+                unclassified_group.appendRow(_cell_row_from_record(cluster_info))
 
-                # Create cluster item with n_spikes and ISI info
-                item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
-                cell_item = QStandardItem(item_text)
-                cell_item.setEditable(False)
-
-                # Add file icon for cells
-                cell_item.setIcon(
-                    main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-                )
-
-                # Store the cluster ID in the item's data role
-                cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-                # Prevent dropping items onto cells
-                cell_item.setDropEnabled(False)
-
-                unclassified_group.appendRow(cell_item)
+        refresh_tree_group_counts(main_window.tree_model.invisibleRootItem())
 
         # Set up the tree model and expand all
         main_window.setup_tree_model(main_window.tree_model)

@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from qtpy.QtGui import QColor, QPainter, QPen
+from qtpy.QtGui import QColor, QPainter, QPen, QStandardItem
 from qtpy.QtCore import (
     QAbstractTableModel,
     Qt,
@@ -366,6 +366,198 @@ class HighlightStatusPandasModel(PandasModel):
         return value
 
 
+# Tree sidebar: one row is [ID | Spikes | Ch]. Cluster identity lives on
+# column 0 UserRole (int for a cell, None for a folder). TREE_SORT_ROLE is a
+# numeric key so header-click sort does not put "1000" before "999".
+TREE_COL_ID = 0
+TREE_COL_SPIKES = 1
+TREE_COL_CH = 2
+TREE_HEADERS = ("ID", "Spikes", "Ch")
+TREE_SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+TREE_SPIKES_WIDTH = 56
+TREE_CH_WIDTH = 40
+
+
+def format_spike_count(n_spikes) -> str:
+    if n_spikes is None:
+        return "—"
+    try:
+        if isinstance(n_spikes, float) and np.isnan(n_spikes):
+            return "—"
+        return f"{int(n_spikes)}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def format_channel(best_chan) -> str:
+    if best_chan is None:
+        return "—"
+    try:
+        if isinstance(best_chan, float) and np.isnan(best_chan):
+            return "—"
+        ch = int(best_chan)
+    except (TypeError, ValueError):
+        return "—"
+    if ch < 0:
+        return "—"
+    return str(ch)
+
+
+def _sort_int(value):
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return None
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number < 0:
+        return None
+    return number
+
+
+class TreeStandardItem(QStandardItem):
+    """QStandardItem that compares TREE_SORT_ROLE numerically when both sides have it."""
+
+    def __lt__(self, other):
+        if not isinstance(other, QStandardItem):
+            return super().__lt__(other)
+        left = self.data(TREE_SORT_ROLE)
+        right = other.data(TREE_SORT_ROLE)
+        if left is not None and right is not None:
+            try:
+                return left < right
+            except TypeError:
+                pass
+        if left is not None:
+            return False
+        if right is not None:
+            return True
+        return (self.text() or "") < (other.text() or "")
+
+
+def make_group_row(name, child_count=0):
+    """Folder row: name, leaf count, empty Ch. UserRole on col 0 stays None."""
+    name_item = TreeStandardItem(str(name))
+    name_item.setEditable(False)
+    name_item.setDropEnabled(True)
+    font = name_item.font()
+    font.setBold(True)
+    name_item.setFont(font)
+
+    count_item = TreeStandardItem()
+    count_item.setEditable(False)
+    count_item.setDropEnabled(False)
+    count_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    set_count_item(count_item, child_count)
+
+    ch_item = TreeStandardItem("")
+    ch_item.setEditable(False)
+    ch_item.setDropEnabled(False)
+
+    return [name_item, count_item, ch_item]
+
+
+def make_cell_row(cluster_id, n_spikes=None, best_chan=None):
+    """Cell row: ID, spike count, channel. UserRole on col 0 is the cluster id."""
+    cid = int(cluster_id)
+    id_item = TreeStandardItem(str(cid))
+    id_item.setEditable(False)
+    id_item.setDropEnabled(False)
+    id_item.setData(cid, Qt.ItemDataRole.UserRole)
+    id_item.setData(cid, TREE_SORT_ROLE)
+
+    spikes_item = TreeStandardItem(format_spike_count(n_spikes))
+    spikes_item.setEditable(False)
+    spikes_item.setDropEnabled(False)
+    spikes_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    spikes_sort = _sort_int(n_spikes)
+    if spikes_sort is not None:
+        spikes_item.setData(spikes_sort, TREE_SORT_ROLE)
+
+    ch_item = TreeStandardItem(format_channel(best_chan))
+    ch_item.setEditable(False)
+    ch_item.setDropEnabled(False)
+    ch_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    ch_sort = _sort_int(best_chan)
+    if ch_sort is not None:
+        ch_item.setData(ch_sort, TREE_SORT_ROLE)
+
+    return [id_item, spikes_item, ch_item]
+
+
+def set_count_item(count_item, n):
+    try:
+        count = int(n)
+    except (TypeError, ValueError):
+        count = 0
+    text = str(count) if count else ""
+    if count_item.text() != text:
+        count_item.setText(text)
+    if count_item.data(TREE_SORT_ROLE) != count:
+        count_item.setData(count, TREE_SORT_ROLE)
+
+
+def set_channel_item(ch_item, best_chan):
+    text = format_channel(best_chan)
+    if ch_item.text() != text:
+        ch_item.setText(text)
+    ch_sort = _sort_int(best_chan)
+    if ch_item.data(TREE_SORT_ROLE) != ch_sort:
+        ch_item.setData(ch_sort, TREE_SORT_ROLE)
+
+
+def tree_item_from_index(model, index):
+    """Column-0 item for a tree index. Spikes/Ch cells are not identity items."""
+    if model is None or index is None or not index.isValid():
+        return None
+    if index.column() != TREE_COL_ID:
+        index = index.sibling(index.row(), TREE_COL_ID)
+    return model.itemFromIndex(index)
+
+
+def count_tree_leaves(item) -> int:
+    """Recursive cell count under a folder (col-0 walk)."""
+    if item is None:
+        return 0
+    total = 0
+    for row in range(item.rowCount()):
+        child = item.child(row, TREE_COL_ID)
+        if child is None:
+            continue
+        if child.data(Qt.ItemDataRole.UserRole) is None:
+            total += count_tree_leaves(child)
+        else:
+            total += 1
+    return total
+
+
+def refresh_tree_group_counts(root_item):
+    """Write leaf counts into every folder's Spikes cell."""
+    if root_item is None:
+        return
+
+    def visit(item):
+        for row in range(item.rowCount()):
+            child = item.child(row, TREE_COL_ID)
+            if child is None:
+                continue
+            if child.data(Qt.ItemDataRole.UserRole) is None:
+                visit(child)
+                count_item = item.child(row, TREE_COL_SPIKES)
+                if count_item is not None:
+                    set_count_item(count_item, count_tree_leaves(child))
+
+    visit(root_item)
+
+
 class ClusterTreeDelegate(QStyledItemDelegate):
     """
     Paints +/- expand toggles and hierarchy guide lines for folder rows in the
@@ -446,6 +638,9 @@ class ClusterTreeDelegate(QStyledItemDelegate):
             painter.drawLine(cx, cy - 3, cx, cy + 3)
 
     def paint(self, painter, option, index):
+        if index.column() != TREE_COL_ID:
+            super().paint(painter, option, index)
+            return
         tree = self._tree
         row_rect = tree.visualRect(index)
         if row_rect.isValid():
@@ -459,6 +654,13 @@ class ClusterTreeDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
+        if index.column() != TREE_COL_ID:
+            return super().editorEvent(
+                event,
+                model,
+                option if option is not None else QStyleOptionViewItem(),
+                index,
+            )
         if (
             event.type() == QEvent.MouseButtonRelease
             and event.button() == Qt.LeftButton

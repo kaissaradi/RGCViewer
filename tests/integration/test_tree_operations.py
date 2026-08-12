@@ -3,19 +3,30 @@ import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QStandardItemModel
-from qtpy.QtWidgets import QMainWindow, QTreeView
 from unittest.mock import MagicMock
 
 from src.gui.callbacks import group_clusters_in_tree, populate_tree_view
 
 
-class MockMainWindow(QMainWindow):
+class _FakeTreeView:
+    def setUpdatesEnabled(self, _enabled):
+        pass
+
+    def collapseAll(self):
+        pass
+
+    def setModel(self, model):
+        self._model = model
+
+    def expand(self, _index):
+        pass
+
+
+class MockMainWindow:
     def __init__(self):
-        super().__init__()
         self.data_manager = MagicMock()
         self.tree_model = QStandardItemModel()
-        self.tree_view = QTreeView()
-        self.tree_view.setModel(self.tree_model)
+        self.tree_view = _FakeTreeView()
         self.status_bar = MagicMock()
 
     def setup_tree_model(self, model):
@@ -27,10 +38,8 @@ class MockMainWindow(QMainWindow):
 
 
 @pytest.fixture
-def main_window(qtbot):
-    window = MockMainWindow()
-    qtbot.addWidget(window)
-    return window
+def main_window():
+    return MockMainWindow()
 
 
 def _cluster_df(include_label=True):
@@ -54,7 +63,11 @@ def test_populate_tree_view_groups_clusters_without_mutating_input(main_window):
     group = main_window.tree_model.item(0)
     assert group.text() == "Unknown"
     assert group.rowCount() == 4
+    assert main_window.tree_model.columnCount() == 3
     assert group.child(0).data(Qt.ItemDataRole.UserRole) == 1
+    assert group.child(0).text() == "1"
+    assert group.child(0, 1).text() == "10"
+    assert group.child(0, 2).text() == "—"
 
 
 def test_group_clusters_in_tree_moves_items_and_updates_dataframe(main_window):
@@ -78,4 +91,7 @@ def test_group_clusters_in_tree_moves_items_and_updates_dataframe(main_window):
         for row in range(reviewed.rowCount())
     ]
     assert sorted(moved_ids) == [1, 3]
+    moved = reviewed.child(0)
+    assert reviewed.child(0, 1) is not None
+    assert moved.data(Qt.ItemDataRole.UserRole) in {1, 3}
     assert set(df.loc[df["KSLabel"] == "Reviewed", "cluster_id"]) == {1, 3}

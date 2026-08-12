@@ -822,6 +822,8 @@ class UMAPPanel(QWidget):
                         extract_cids_recursively(child)
 
             for index in selected_indexes:
+                if index.column() != 0:
+                    continue
                 item = model.itemFromIndex(index)
                 if item:
                     extract_cids_recursively(item)

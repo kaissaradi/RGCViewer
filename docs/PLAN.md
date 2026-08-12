@@ -14,6 +14,11 @@ User check 2026-08-12: load, UMAP defaults, no-STA cells, and EI View combo
 are good. Grating, Contrast, and the DS/OS slider were not checked — no
 suitable direction/contrast run on hand.
 
+Tree sidebar (2026-08-12): tree is a 3-column ID / Spikes / Ch table.
+Folder/file icons and `#3C3C3C` fills are gone. Window open size is
+clamped to the usable screen. Sidebar auto-collapse on a narrow window
+is still parked.
+
 ## 0. Standing decisions
 
 These are also Laws 4–5 and invariant 8 in `docs/AGENTS.md`.
@@ -60,6 +65,7 @@ Read the failure column before you change the file.
 | Dataset switch / memory | `tests/unit/test_dataset_release.py` |
 | Theme tokens | `test_theme_keys_match` |
 | Feature blocks / prefilter | `tests/unit/test_raw_feature_blocks.py` `tests/unit/test_dynamic_clustering.py` |
+| Tree sidebar rows | `tests/unit/test_tree_rows.py` `tests/integration/test_tree_operations.py` |
 
 Use `tmp_path` or `cache_cleared_data_manager` for any math test. A real
 run folder can hold a warm `.pkl` and skip the code under test (Law 3).
@@ -97,7 +103,7 @@ Do not start these unless the user asks.
 
 | Item | Spec | Notes |
 |---|---|---|
-| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only. This branch name refers to it. |
+| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only. This branch name refers to it. Tree mini-table and initial window clamp are done; auto-collapse and the rest of the spec are not. |
 | Cross-run stimulus bridge lab acceptance | `docs/specs/cross_run_stimulus_bridge.md` | Code is in the tree. Lab AC is open. |
 | Vision-only remaining gaps | `docs/specs/vision_standalone.md` | Missing `.sta` / `.params` no longer crash. |
 | EI panel waveform view | none | View combo exists. Further waveform work is not started. |
