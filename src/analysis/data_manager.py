@@ -47,6 +47,39 @@ logger = logging.getLogger(__name__)
 FR_CACHE_MAX_BINS = 300
 
 
+def _load_array(path, mmap_mode):
+    """Load a Kilosort .npy as a flat array, memory-mapped where possible.
+
+    Mapping keeps the spike arrays out of anonymous RAM — together they are
+    200-800 MB for a 1-hour recording — because the faulted pages stay
+    file-backed and so remain evictable under memory pressure.
+
+    ``mmap_mode`` is ``"r"`` for an array nothing writes to, and ``"c"``
+    (copy-on-write) for one the application modifies in place. Under ``"c"``
+    a changed page becomes private to this process, so the Kilosort output on
+    disk is never altered.
+
+    Mapping can fail — a network mount that does not support it, or a file
+    saved in a format numpy cannot map. Loading the array is more important
+    than saving the memory, so fall back to a normal read. The fallback is
+    made read-only under mode ``"r"`` as well, so a caller that writes where
+    it should not fails the same way on both paths instead of only on some
+    machines.
+    """
+    try:
+        return np.load(path, mmap_mode=mmap_mode).ravel()
+    except (ValueError, OSError):
+        logger.warning(
+            "Could not memory-map %s; reading it into RAM instead.",
+            path,
+            exc_info=True,
+        )
+        arr = np.load(path).ravel()
+        if mmap_mode == "r":
+            arr.flags.writeable = False
+        return arr
+
+
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
     channel_to_templates = {}
     template_to_channels = {}
@@ -580,13 +613,19 @@ class DataManager(QObject):
                     "Missing spike_times.npy or spike_clusters.npy in kilosort dir.",
                 )
 
-            # mmap_mode="r" avoids loading the full arrays into RAM upfront
-            # (~200–800 MB for a 1-hour recording). Per-cluster access via
-            # cluster_spike_indices does a single fancy-index copy of only that
-            # cluster's spikes, so UI scrolling is unaffected; the OS page
-            # cache keeps hot pages warm across accesses.
-            self.spike_times = np.load(st_path).ravel()
-            self.spike_clusters = np.load(sc_path).ravel()
+            # Memory-mapping keeps these arrays out of anonymous RAM
+            # (~200–800 MB for a 1-hour recording). The pages the OS faults in
+            # stay file-backed, so they are evictable under pressure, and
+            # per-cluster access through cluster_spike_indices copies only that
+            # cluster's spikes — UI scrolling is unaffected.
+            #
+            # spike_times stays read-only for the whole session, so mode "r" is
+            # enough. update_after_refinement() writes new cluster IDs into
+            # spike_clusters, so that one maps copy-on-write ("c"): the pages it
+            # changes become private to this process and the Kilosort file on
+            # disk is never modified. Mode "r" would raise on that write.
+            self.spike_times = _load_array(st_path, "r")
+            self.spike_clusters = _load_array(sc_path, "c")
 
             # --- channel positions / map -----------------------------------------
             chan_pos_path = ks / "channel_positions.npy"
@@ -629,9 +668,10 @@ class DataManager(QObject):
             )
 
             # --- spike amplitudes (optional) ------------------------------------
+            # Read-only for the whole session — see the spike-array note above.
             amplitudes_path = ks / "amplitudes.npy"
             self.spike_amplitudes = (
-                np.load(amplitudes_path).ravel() if amplitudes_path.exists() else None
+                _load_array(amplitudes_path, "r") if amplitudes_path.exists() else None
             )
 
             # --- cluster info / fallback ----------------------------------------
