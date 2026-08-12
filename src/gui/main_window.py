@@ -1528,6 +1528,12 @@ class MainWindow(QMainWindow):
         self.map_reference_action = file_menu.addAction("Map &Reference Run...")
         self.map_reference_action.setEnabled(False)
 
+        file_menu.addSeparator()
+        # Escape hatch for a stale or corrupt physics cache: without it a bad
+        # feature_cache.pkl can only be cleared by deleting files by hand.
+        self.rebuild_cache_action = file_menu.addAction("Re&build Physics Cache...")
+        self.rebuild_cache_action.setEnabled(False)
+
         # --- Array Menu ---
         array_menu = menu.addMenu("&Array")
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
@@ -1549,6 +1555,9 @@ class MainWindow(QMainWindow):
         )
         self.save_action.triggered.connect(self.on_save_action)
         self.map_reference_action.triggered.connect(self.map_reference_run)
+        self.rebuild_cache_action.triggered.connect(
+            lambda: callbacks.rebuild_physics_cache(self)
+        )
 
         # Connect New Left Panel Buttons
         self.filter_all_btn.clicked.connect(self.reset_views)

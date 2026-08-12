@@ -281,6 +281,9 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.calibrate_array_action.setEnabled(True)
     if hasattr(main_window, 'map_reference_action'):
         main_window.map_reference_action.setEnabled(True)
+    # A cache can only be rebuilt once there is a run to rebuild it for.
+    if hasattr(main_window, 'rebuild_cache_action'):
+        main_window.rebuild_cache_action.setEnabled(True)
 
     # 4. Handle Vision specific UI updates
     if main_window.data_manager.vision_stas:
@@ -402,6 +405,9 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     main_window.save_classification_action.setEnabled(True)
     if hasattr(main_window, 'map_reference_action'):
         main_window.map_reference_action.setEnabled(True)
+    # A cache can only be rebuilt once there is a run to rebuild it for.
+    if hasattr(main_window, 'rebuild_cache_action'):
+        main_window.rebuild_cache_action.setEnabled(True)
 
     # --- Show STA panel if data is available ---
     if main_window.data_manager.vision_stas:
