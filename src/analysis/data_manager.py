@@ -1176,6 +1176,68 @@ class DataManager(QObject):
         t = threading.Thread(target=_run, daemon=True, name="EICorrelationWorker")
         t.start()
 
+    def _load_cached_ei_corr(self, path):
+        """Read ``ei_corr_dict.pkl``, returning ``(matrices, row_ids)``.
+
+        Three outcomes, and the caller branches on all three:
+
+        - ``(None, None)`` — nothing usable on disk; compute from scratch.
+        - ``(dict, ids)`` — fully warm. ``ids`` is the cell id of each matrix
+          row, so the caller needs no EI array at all.
+        - ``(dict, None)`` — a pickle written before row ids were stored. The
+          matrices are fine but their row order has to be re-derived from the
+          EIs, which is the slow path this whole method exists to avoid.
+
+        Storing the ids is what makes the warm path free, and it also closes a
+        silent-corruption hole: the row order used to be recovered by walking
+        the *current* EI dict, so a regenerated .ei file with a different cell
+        set was read against yesterday's matrix and produced plausible,
+        wrong duplicate flags rather than an error.
+        """
+        if not os.path.exists(path):
+            return None, None
+
+        try:
+            with open(path, "rb") as f:
+                cached = pickle.load(f)
+        except Exception:
+            logger.warning(
+                "Failed to load EI correlation pickle %s; recomputing",
+                path,
+                exc_info=True,
+            )
+            return None, None
+
+        if not isinstance(cached, dict):
+            logger.warning("%s did not contain a dict; recomputing", path)
+            return None, None
+
+        matrices = [cached.get(k) for k in ("full", "space", "power")]
+        if any(not isinstance(m, np.ndarray) or m.ndim != 2 for m in matrices):
+            logger.warning("%s is missing a correlation matrix; recomputing", path)
+            return None, None
+
+        n_rows = matrices[0].shape[0]
+        if any(m.shape[0] != n_rows for m in matrices):
+            logger.warning("%s has mismatched matrix shapes; recomputing", path)
+            return None, None
+
+        ids = cached.get("ids")
+        if ids is None:
+            return cached, None  # legacy file; caller re-derives the order
+
+        if len(ids) != n_rows:
+            logger.warning(
+                "%s row ids (%d) do not match the matrices (%d rows); recomputing",
+                path,
+                len(ids),
+                n_rows,
+            )
+            return None, None
+
+        logger.debug("Loaded EI correlations for %d cells from %s", n_rows, path)
+        return cached, [int(c) for c in ids]
+
     def _compute_ei_correlations_if_needed(self):
         """
         Lazily compute EI correlation matrices and duplicate flags.
@@ -1206,77 +1268,83 @@ class DataManager(QObject):
 
         str_corr_pkl = os.path.join(self.kilosort_dir, "ei_corr_dict.pkl")
 
-        # Sanitize loaded EIs before any numeric operations
-        sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
+        # Read the cached matrices FIRST. Sanitizing ahead of this check used to
+        # walk every EI on a warm run, only to throw the result away when the
+        # pickle turned out to be there — several hundred MB of arrays touched
+        # for nothing on every single load.
+        cached, ordered_ids = self._load_cached_ei_corr(str_corr_pkl)
 
-        if len(sanitized_eis) < 2:
-            logger.warning(
-                "Not enough Vision EIs to compute correlations; skipping duplicate detection"
-            )
-            # Thread-safe fallback: emit empty dicts so the main thread applies defaults
-            if hasattr(self, "ei_updates_ready"):
-                self.ei_updates_ready.emit({}, {})
-            return
-
-        # Try to load existing correlations from disk
-        if os.path.exists(str_corr_pkl):
-            try:
-                logger.debug(
-                    "Loading precomputed EI correlations from %s", str_corr_pkl
-                )
-                with open(str_corr_pkl, "rb") as f:
-                    self.ei_corr_dict = pickle.load(f)
-                logger.debug("Loaded EI correlations successfully")
-                full_corr = self.ei_corr_dict.get("full")
-                space_corr = self.ei_corr_dict.get("space")
-                power_corr = self.ei_corr_dict.get("power")
-            except Exception as e:
-                logger.warning(
-                    "Failed to load EI correlation pickle: %s; recomputing", e
-                )
-                full_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
-                )
-                space_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
-                )
-                power_corr = ei_corr(
-                    sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
-                )
-                self.ei_corr_dict = {
-                    "full": full_corr,
-                    "space": space_corr,
-                    "power": power_corr,
-                }
-                saved_path = self._save_pickle_with_fallback(
-                    self.ei_corr_dict, str_corr_pkl
-                )
-                logger.debug("EI correlations recomputed and saved to %s", saved_path)
+        if cached is not None and ordered_ids is not None:
+            # Fully warm: the pickle carries its own row order, so no EI array
+            # is needed at all.
+            self.ei_corr_dict = cached
         else:
-            # Compute from scratch
-            logger.debug("Computing EI correlations")
-            full_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="full", n_removed_channels=1
-            )
-            space_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="space", n_removed_channels=1
-            )
-            power_corr = ei_corr(
-                sanitized_eis, sanitized_eis, method="power", n_removed_channels=1
-            )
-            self.ei_corr_dict = {
-                "full": full_corr,
-                "space": space_corr,
-                "power": power_corr,
-            }
+            # Sanitize only on a path that actually reads the EIs.
+            sanitized_eis = self._sanitize_ei_dict(self.vision_eis)
+
+            if len(sanitized_eis) < 2:
+                logger.warning(
+                    "Not enough Vision EIs to compute correlations; skipping duplicate detection"
+                )
+                # Thread-safe fallback: emit empty dicts so the main thread applies defaults
+                if hasattr(self, "ei_updates_ready"):
+                    self.ei_updates_ready.emit({}, {})
+                return
+
+            ordered_ids = list(sanitized_eis.keys())
+
+            if cached is not None and len(ordered_ids) != cached["full"].shape[0]:
+                # A legacy pickle whose matrices no longer describe this EI set —
+                # the .ei file was regenerated with a different cell population
+                # after it was written. Adopting it would index row i with the
+                # wrong cell and mark the wrong units as duplicates.
+                logger.warning(
+                    "Legacy EI correlation cache covers %d cells but this dataset "
+                    "has %d; recomputing.",
+                    cached["full"].shape[0],
+                    len(ordered_ids),
+                )
+                cached = None
+
+            if cached is not None:
+                # A pre-"ids" pickle. The matrices are still good, and the row
+                # order is the one ei_corr would produce from this same dict, so
+                # adopt it and stamp the ids in on the way past — the next load
+                # then takes the warm path above.
+                logger.debug("Upgrading legacy EI correlation cache with row ids")
+                self.ei_corr_dict = cached
+            else:
+                logger.debug("Computing EI correlations")
+                self.ei_corr_dict = {
+                    "full": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="full",
+                        n_removed_channels=1,
+                    ),
+                    "space": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="space",
+                        n_removed_channels=1,
+                    ),
+                    "power": ei_corr(
+                        sanitized_eis,
+                        sanitized_eis,
+                        method="power",
+                        n_removed_channels=1,
+                    ),
+                }
+
+            self.ei_corr_dict["ids"] = [int(c) for c in ordered_ids]
             saved_path = self._save_pickle_with_fallback(
                 self.ei_corr_dict, str_corr_pkl
             )
-            logger.debug("EI correlations computed and saved to %s", saved_path)
+            logger.debug("EI correlations saved to %s", saved_path)
 
         # With correlation matrices available, update cluster_df duplicate-related columns
         if not self.cluster_df.empty:
-            cluster_ids = list(sanitized_eis.keys())
+            cluster_ids = list(ordered_ids)
             # Convert to 0-based ONLY if Kilosort is the boss
             if not getattr(self, "is_vision_only", False):
                 cluster_ids = np.array(cluster_ids) - 1
