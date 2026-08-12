@@ -26,6 +26,7 @@ import os
 import tempfile
 import logging
 import ast
+import zlib
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler
 
@@ -269,6 +270,8 @@ class DataManager(QObject):
         # Set by close() so teardown is safe to repeat, and so a caller can
         # tell a released DataManager from a live one.
         self._closed = False
+        # Set by load_kilosort_data when the ISI percentages come from disk.
+        self._cached_isi_pct = None
 
         self.ei_cache = {}
         self.heavyweight_cache = {}
@@ -787,7 +790,13 @@ class DataManager(QObject):
             logger.debug("Building cluster index mapping...")
             order = np.argsort(self.spike_clusters, kind="mergesort")
             sorted_cls = self.spike_clusters[order]
-            sorted_t = self.spike_times[order]
+
+            # The ISI percentages are the only consumer of spike times in
+            # cluster order, so when they come from the cache the gather below
+            # is 160 MB of copying for nothing. The argsort itself still has to
+            # happen — cluster_spike_indices needs it.
+            self._cached_isi_pct = self._load_isi_cache()
+            sorted_t = None if self._cached_isi_pct is not None else self.spike_times[order]
 
             self._spk_sorted_cls = sorted_cls
             self._spk_sorted_t = sorted_t
@@ -1175,6 +1184,95 @@ class DataManager(QObject):
 
         t = threading.Thread(target=_run, daemon=True, name="EICorrelationWorker")
         t.start()
+
+    ISI_CACHE_NAME = "isi_violations_cache.pkl"
+
+    def _spike_content_key(self):
+        """Fingerprint the exact spike data the ISI percentages come from.
+
+        A file mtime will not do here. Refinement writes to ``spike_clusters``
+        **in memory** — the array is mapped copy-on-write precisely so the
+        Kilosort output on disk is never touched — so the file is byte-identical
+        before and after a split. A cache keyed on the file would keep serving
+        the pre-split percentages, and an ISI violation rate is a number people
+        curate on, so being wrong there is worse than being slow.
+
+        Hashing the array contents sees the split. CRC32 over both spike arrays
+        costs about 25 ms against the ~3 s it saves, and the lengths, the
+        sampling rate and the refractory window go into the key as well, since
+        the percentages depend on all of them.
+
+        Returns None if anything is missing, which reads as "do not cache".
+        """
+        sc = getattr(self, "spike_clusters", None)
+        st = getattr(self, "spike_times", None)
+        if sc is None or st is None:
+            return None
+
+        try:
+            return "|".join(
+                str(part)
+                for part in (
+                    1,  # key format version
+                    sc.size,
+                    zlib.crc32(np.ascontiguousarray(sc)),
+                    st.size,
+                    zlib.crc32(np.ascontiguousarray(st)),
+                    float(self.sampling_rate),
+                    float(ISI_REFRACTORY_PERIOD_MS),
+                )
+            )
+        except Exception:
+            logger.warning("Could not fingerprint the spike arrays", exc_info=True)
+            return None
+
+    def _load_isi_cache(self):
+        """Return the cached ISI percentages for this exact spike data, or None."""
+        if not self.kilosort_dir:
+            return None
+
+        path = Path(self.kilosort_dir) / self.ISI_CACHE_NAME
+        if not path.exists():
+            return None
+
+        key = self._spike_content_key()
+        if key is None:
+            return None
+
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+        except Exception:
+            logger.warning("Could not read %s; recomputing", path, exc_info=True)
+            return None
+
+        if not isinstance(payload, dict) or payload.get("key") != key:
+            logger.debug("ISI cache does not match this spike data; recomputing")
+            return None
+
+        pct = payload.get("isi_pct")
+        if not isinstance(pct, dict) or not pct:
+            return None
+
+        logger.debug("Restored ISI violations for %d clusters", len(pct))
+        return {int(k): float(v) for k, v in pct.items()}
+
+    def _save_isi_cache(self, isi_pct_map):
+        """Persist the ISI percentages under the current spike fingerprint."""
+        if not self.kilosort_dir or not isi_pct_map:
+            return
+
+        key = self._spike_content_key()
+        if key is None:
+            return
+
+        path = str(Path(self.kilosort_dir) / self.ISI_CACHE_NAME)
+        try:
+            self._save_pickle_with_fallback(
+                {"key": key, "isi_pct": dict(isi_pct_map)}, path
+            )
+        except Exception:
+            logger.warning("Could not write %s", path, exc_info=True)
 
     def _load_cached_ei_corr(self, path):
         """Read ``ei_corr_dict.pkl``, returning ``(matrices, row_ids)``.
@@ -1578,41 +1676,65 @@ class DataManager(QObject):
 
         refractory_samples = (ISI_REFRACTORY_PERIOD_MS / 1000.0) * self.sampling_rate
 
-        # Reuse the sort order already computed in load_kilosort_data.
-        # This avoids two more full scans + fancy-index reads of spike arrays.
-        if hasattr(self, "_spk_sorted_cls") and self._spk_sorted_cls is not None:
-            sorted_cls = self._spk_sorted_cls
-            sorted_t = self._spk_sorted_t
+        cached_isi = getattr(self, "_cached_isi_pct", None)
+        if cached_isi is not None:
+            # These are the same spikes as last time, proven by content hash
+            # rather than by file mtime — see _spike_content_key.
+            isi_pct_map = cached_isi
+            logger.debug(
+                "Reused cached ISI violations for %d clusters", len(isi_pct_map)
+            )
         else:
-            _order = np.argsort(self.spike_clusters, kind="stable")
-            sorted_cls = self.spike_clusters[_order]
-            sorted_t = self.spike_times[_order]
+            # Reuse the sort order already computed in load_kilosort_data.
+            # This avoids two more full scans + fancy-index reads of spike arrays.
+            if (
+                getattr(self, "_spk_sorted_cls", None) is not None
+                and getattr(self, "_spk_sorted_t", None) is not None
+            ):
+                sorted_cls = self._spk_sorted_cls
+                sorted_t = self._spk_sorted_t
+            else:
+                _order = np.argsort(self.spike_clusters, kind="stable")
+                sorted_cls = self.spike_clusters[_order]
+                sorted_t = self.spike_times[_order]
 
-        isis = np.diff(sorted_t.astype(np.int64))
-        same_cls = sorted_cls[:-1] == sorted_cls[1:]  # mask out cluster boundaries
-        violations = (isis < refractory_samples) & same_cls
-        spike_count = same_cls  # denominator: pairs within same cluster
+            # copy=False: spike_times is normally already int64, and astype
+            # copies 160 MB by default even when the dtype already matches.
+            isis = np.diff(sorted_t.astype(np.int64, copy=False))
+            same_cls = sorted_cls[:-1] == sorted_cls[1:]  # mask cluster boundaries
+            violations = (isis < refractory_samples) & same_cls
+            spike_count = same_cls  # denominator: pairs within same cluster
 
-        # Count violations and total pairs per cluster
-        unique_ids, first_idx = np.unique(sorted_cls, return_index=True)
-        # split_indices mark where each cluster starts in the sorted arrays
-        viol_counts = np.array(
-            [
-                violations[i:j].sum()
-                for i, j in zip(first_idx, np.append(first_idx[1:], len(violations)))
-            ]
-        )
-        pair_counts = np.array(
-            [
-                spike_count[i:j].sum()
-                for i, j in zip(first_idx, np.append(first_idx[1:], len(spike_count)))
-            ]
-        )
+            # Count violations and total pairs per cluster
+            unique_ids, first_idx = np.unique(sorted_cls, return_index=True)
+            # split_indices mark where each cluster starts in the sorted arrays
+            viol_counts = np.array(
+                [
+                    violations[i:j].sum()
+                    for i, j in zip(
+                        first_idx, np.append(first_idx[1:], len(violations))
+                    )
+                ]
+            )
+            pair_counts = np.array(
+                [
+                    spike_count[i:j].sum()
+                    for i, j in zip(
+                        first_idx, np.append(first_idx[1:], len(spike_count))
+                    )
+                ]
+            )
 
-        isi_pct_map = {}
-        for cid, viol, pairs in zip(unique_ids, viol_counts, pair_counts):
-            val = float(viol / pairs * 100) if pairs > 0 else 0.0
-            isi_pct_map[int(cid)] = val
+            isi_pct_map = {}
+            for cid, viol, pairs in zip(unique_ids, viol_counts, pair_counts):
+                val = float(viol / pairs * 100) if pairs > 0 else 0.0
+                isi_pct_map[int(cid)] = val
+
+            self._save_isi_cache(isi_pct_map)
+
+            del sorted_cls, sorted_t, isis, same_cls, violations, spike_count
+
+        for cid, val in isi_pct_map.items():
             self.isi_cache[(int(cid), float(ISI_REFRACTORY_PERIOD_MS))] = val
 
         self.cluster_df["isi_violations_pct"] = (
@@ -1631,7 +1753,6 @@ class DataManager(QObject):
         # sorted copies if a later caller ever needs them again.
         self._spk_sorted_cls = None
         self._spk_sorted_t = None
-        del sorted_cls, sorted_t, isis, same_cls, violations, spike_count
 
         # --- Load status & compute remaining metrics ---
         self.load_status()
@@ -2042,6 +2163,7 @@ class DataManager(QObject):
                 "standard_plot_cache.pkl",
                 "feature_cache.pkl",
                 "grating_computed_cache.pkl",
+                self.ISI_CACHE_NAME,
             ):
                 path = self.kilosort_dir / name
                 try:
@@ -3465,6 +3587,7 @@ class DataManager(QObject):
             "_spk_sorted_t",
             "_spk_unique_cls",
             "_spk_unique_counts",
+            "_cached_isi_pct",
             "cluster_spike_indices",
             # Kilosort templates, geometry and similarity
             "templates",
