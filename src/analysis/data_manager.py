@@ -3439,6 +3439,20 @@ class DataManager(QObject):
         except Exception:
             logger.warning("Error closing the raw reader", exc_info=True)
 
+        # The lazy Vision readers hold open file handles for the life of the
+        # dataset. Dropping the reference below is not enough — CPython would
+        # collect them eventually, but "eventually" leaks a descriptor per run
+        # switch, and on Windows it also keeps the file locked.
+        for name in ("vision_eis", "vision_stas"):
+            reader = getattr(self, name, None)
+            close = getattr(reader, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning("Error closing %s", name, exc_info=True)
+
         # Rebind rather than clear in place. Rebinding is atomic under the GIL,
         # so a background save that is part way through iterating one of these
         # caches keeps its own reference and finishes on the old object.
