@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.analysis import cache_persistence
+
 # ---------------------------------------------------------------------------
 # Shared synthetic data helpers
 # ---------------------------------------------------------------------------
@@ -282,13 +284,18 @@ class TestFeatureMatrixKilosortOnly:
 
 class TestCacheMigrationPrunesLegacy:
     """
-    load_persisted_caches() must detect a pre-spatial-footprint cache
-    (entries that have _computed=True but no spatial_footprint key) and
-    discard it entirely so physics is recomputed on next ensure_physics_cache().
+    load_persisted_caches() must discard a legacy feature_cache.pkl entirely,
+    so physics is recomputed on the next ensure_physics_cache().
+
+    "Legacy" is now decided by the version stamp cache_persistence writes, not
+    by sniffing for a spatial_footprint key. The stamp is the stronger test:
+    only the current save path writes it, and that path both post-dates the
+    footprint work and filters out the partial ACG-only rows. Any pkl without a
+    current stamp predates one or the other, so it is dropped.
     """
 
     def _write_legacy_cache(self, path: Path):
-        """Write a feature_cache.pkl that lacks the spatial_footprint key."""
+        """Write an unstamped feature_cache.pkl, as older releases wrote it."""
         legacy = {
             0: {"_computed": True, "acg": _make_acg(), "timecourse": _make_timecourse(),
                 "rf_area": 10.0, "ellipticity": 1.1, "time_to_peak": 5},
@@ -299,14 +306,14 @@ class TestCacheMigrationPrunesLegacy:
             pickle.dump(legacy, f)
 
     def _write_current_cache(self, path: Path):
-        """Write a feature_cache.pkl that already has the spatial_footprint key."""
+        """Write a feature_cache.pkl exactly as the current save path writes it."""
         current = {
             0: {"_computed": True, "acg": _make_acg(), "timecourse": _make_timecourse(),
                 "spatial_footprint": _make_footprint(),
                 "rf_area": 10.0, "ellipticity": 1.1, "time_to_peak": 5},
         }
         with open(path / "feature_cache.pkl", "wb") as f:
-            pickle.dump(current, f)
+            pickle.dump(cache_persistence.add_version(current), f)
 
     def test_legacy_cache_is_discarded(self, tmp_path, mock_dm):
         """A pre-footprint pkl must be discarded; feature_cache ends up empty."""
