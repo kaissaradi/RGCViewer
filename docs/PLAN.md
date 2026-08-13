@@ -7,8 +7,8 @@ Last updated: 2026-08-12. Branch: `feat/bauhaus-redesign` (off `dev-testing`).
 This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
 color / layout / plot-refresh pass now on this branch. Chrome is blue.
-Light Standard plots are Swiss ink on white. Population ensembles use a
-blue wash plus a black mean, not grey. Chrome accent stays blue. See
+Light plots use Bauhaus primaries (black template, blue ACG/ISI/ensemble,
+yellow FR/peak), not an all-black figure. Chrome accent stays blue. See
 `docs/specs/ux_ui_redesign.md`.
 
 Do not push unless the user asks.

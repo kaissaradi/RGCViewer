@@ -1,9 +1,9 @@
 """Semantic color palettes and shared UI constants for RGCViewer.
 
-Swiss layout (hairline panes, caption titles, black ink on white) with a
-blue chrome accent instead of the mockup red. Population ensembles use a
-chromatic wash (`plot_ensemble`), not grey. Existing semantic key names
-are kept so QSS and restyle_plots do not break on rename.
+Swiss layout (hairline panes, caption titles) with a blue chrome accent.
+Light-mode *plots* use the Bauhaus primaries — black, blue, yellow — not
+an all-black figure and not a pale wash. Existing semantic key names are
+kept so QSS and restyle_plots do not break on rename.
 """
 
 import pyqtgraph as pg
@@ -94,17 +94,17 @@ LIGHT_COLORS = {
     "selection_bg_strong": "rgba(29, 78, 216, 0.24)",
     "plot_bg": "#ffffff",
     "plot_line": "#000000",
-    "plot_scatter": "#1d4ed8",
-    "plot_shadow": "#888888",
-    "plot_ensemble": "#2f5aa0",
-    "plot_fill": "#d4d4d4",
+    "plot_scatter": "#0d47a1",
+    "plot_shadow": "#5a5a5a",
+    "plot_ensemble": "#0d47a1",
+    "plot_fill": "#1565c0",
     "plot_mean": "#000000",
     "plot_peak": "#c47f00",
-    "plot_highlight": "#1d4ed8",
-    "plot_acg": "#000000",
-    "plot_isi": "#000000",
-    "plot_fr": "#000000",
-    "plot_overlay": "#666666",
+    "plot_highlight": "#0d47a1",
+    "plot_acg": "#0d47a1",
+    "plot_isi": "#0d47a1",
+    "plot_fr": "#c47f00",
+    "plot_overlay": "#1565c0",
     "plot_compare": "#c2410c",
     "plot_waveform_shadow": "#e0e0e0",
 }
@@ -176,9 +176,9 @@ def plot_stroke(colors: dict = None, weight: str = "line") -> float:
     """
     light = is_light_theme(colors)
     strokes = {
-        "thin": (1.2, 0.9),
-        "line": (2.2, 1.8),
-        "thick": (2.8, 2.3),
+        "thin": (1.6, 1.0),
+        "line": (2.6, 2.0),
+        "thick": (3.2, 2.4),
     }
     lo, dk = strokes.get(weight, strokes["line"])
     return lo if light else dk
@@ -196,8 +196,8 @@ def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
 
 
 def plot_ensemble_alpha(colors: dict = None) -> float:
-    """Many overlapping traces: a chromatic wash, not a grey slab."""
-    return 0.38 if is_light_theme(colors) else 0.36
+    """Many overlapping traces: saturated enough to read on white."""
+    return 0.58 if is_light_theme(colors) else 0.40
 
 
 def plot_rf_bg_alpha(colors: dict = None) -> float:

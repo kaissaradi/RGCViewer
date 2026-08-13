@@ -124,6 +124,13 @@ def test_light_and_dark_plot_roles_are_designed_separately():
     assert LIGHT_COLORS["accent"] != "#e30613"
 
 
+def test_light_plots_use_bauhaus_primaries_not_only_black():
+    assert LIGHT_COLORS["plot_acg"].lower() != "#000000"
+    assert LIGHT_COLORS["plot_fr"].lower() != "#000000"
+    assert LIGHT_COLORS["plot_ensemble"].lower() != "#000000"
+    assert LIGHT_COLORS["plot_isi"].lower() != LIGHT_COLORS["plot_fr"].lower()
+
+
 def test_is_light_theme_and_plot_stroke():
     assert is_light_theme(LIGHT_COLORS) is True
     assert is_light_theme(DARK_COLORS) is False

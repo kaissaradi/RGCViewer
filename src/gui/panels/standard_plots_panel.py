@@ -123,7 +123,7 @@ class StandardPlotsPanel(QWidget):
         # --- PERSISTENT ACG/CCG ITEMS ---
         # 1. ACG Line (Purple) - positive lags only
         self._acg_line = self.acg_plot.plot(
-            [], [], pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors))
+            [], [], pen=pg.mkPen(colors["plot_acg"], width=plot_stroke(colors))
         )
 
         # 2. CCG Bar (Orange) - Hidden by default
@@ -209,8 +209,8 @@ class StandardPlotsPanel(QWidget):
             [],
             stepMode=False,
             fillLevel=0,
-            brush=opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 220),
-            pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors)),
+            brush=opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 210),
+            pen=pg.mkPen(colors["plot_isi"], width=plot_stroke(colors)),
         )
 
         # 2. Scatter
@@ -255,14 +255,14 @@ class StandardPlotsPanel(QWidget):
             f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE OVER TIME</span>"
         )
         self.fr_plot.setLabel("bottom", "Time (s)")
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
         self._style_plot(self.fr_plot)
 
         # --- PERSISTENT FR ITEMS ---
         self._fr_rate_curve = self.fr_plot.plot(
             [],
             [],
-            pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors)),
+            pen=pg.mkPen(colors["plot_fr"], width=plot_stroke(colors)),
             name="fr",
         )
 
@@ -309,7 +309,7 @@ class StandardPlotsPanel(QWidget):
 
         stroke = plot_stroke(colors)
         thin = plot_stroke(colors, "thin")
-        self._acg_line.setPen(pg.mkPen(colors["plot_line"], width=stroke))
+        self._acg_line.setPen(pg.mkPen(colors["plot_acg"], width=stroke))
         self._ccg_bar.setOpts(
             brush=opaque_brush(colors["plot_compare"], 230),
             pen=pg.mkPen(colors["plot_compare"], width=thin),
@@ -317,20 +317,20 @@ class StandardPlotsPanel(QWidget):
         self._acg_zero_line.setPen(
             pg.mkPen(colors["text_primary"], width=stroke, style=Qt.DashLine)
         )
-        self._isi_curve.setPen(pg.mkPen(colors["plot_line"], width=stroke))
+        self._isi_curve.setPen(pg.mkPen(colors["plot_isi"], width=stroke))
         if hasattr(self._isi_curve, "curve") and hasattr(
             self._isi_curve.curve, "setBrush"
         ):
             self._isi_curve.curve.setBrush(
-                opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 220)
+                opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 210)
             )
         self._isi_scatter.setBrush(opaque_brush(colors["plot_compare"], 220))
         self._isi_ref_line.setPen(
             pg.mkPen(colors["status_noise_text"], width=thin, style=Qt.DashLine)
         )
-        self._fr_rate_curve.setPen(pg.mkPen(colors["plot_line"], width=stroke))
+        self._fr_rate_curve.setPen(pg.mkPen(colors["plot_fr"], width=stroke))
         self._fr_overlay_curve.setPen(pg.mkPen(colors["plot_overlay"], width=thin))
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
 
         # Refresh widgets
         self.grid_widget.setBackground(plot_field(colors))
