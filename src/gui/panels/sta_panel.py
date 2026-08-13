@@ -327,8 +327,18 @@ class STAPanel(QWidget):
         self.temporal_filter_canvas = MplCanvas(self, width=4, height=5, dpi=110)
         self._draw_temporal_placeholder(colors)
 
+        from ..widgets.widgets import make_nav_toolbar
+
+        temporal_col = QWidget()
+        temporal_layout = QVBoxLayout(temporal_col)
+        temporal_layout.setContentsMargins(0, 0, 0, 0)
+        temporal_layout.setSpacing(0)
+        temporal_layout.addWidget(self.temporal_filter_canvas, stretch=1)
+        self.temporal_toolbar = make_nav_toolbar(self.temporal_filter_canvas, temporal_col)
+        temporal_layout.addWidget(self.temporal_toolbar)
+
         self.main_splitter.addWidget(self.rf_canvas)
-        self.main_splitter.addWidget(self.temporal_filter_canvas)
+        self.main_splitter.addWidget(temporal_col)
         self.main_splitter.setSizes([580, 320])
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 2)

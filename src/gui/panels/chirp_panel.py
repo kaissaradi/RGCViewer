@@ -88,6 +88,18 @@ class ChirpPanel(QWidget):
             "run, which is the honest view when a chirp file spans NDF steps.")
         self.split_chk.toggled.connect(lambda: self.update_all(self._cluster_id))
         self.header_layout.addWidget(self.split_chk)
+
+        from ..widgets.widgets import make_reset_button
+
+        def _reset_chirp_views():
+            for plot in getattr(self, "plots", ()):
+                try:
+                    plot.enableAutoRange()
+                except Exception:
+                    pass
+
+        self.reset_views_btn = make_reset_button(_reset_chirp_views, page)
+        self.header_layout.addWidget(self.reset_views_btn)
         layout.addLayout(self.header_layout)
 
         # --- graphics ---

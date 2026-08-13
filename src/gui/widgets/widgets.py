@@ -17,6 +17,8 @@ from qtpy.QtWidgets import (
     QStyledItemDelegate,
     QTreeView,
     QStyleOptionViewItem,
+    QToolButton,
+    QSizePolicy,
 )
 
 from ..theme import DARK_COLORS
@@ -131,6 +133,12 @@ class HiddenIdFilterProxyModel(QSortFilterProxyModel):
         self._hidden_ids_fn = hidden_ids_fn
         self._hidden = frozenset()
 
+    def update_colors(self, colors):
+        """Forward theme colors to the source table model."""
+        source = self.sourceModel()
+        if source is not None and hasattr(source, "update_colors"):
+            source.update_colors(colors)
+
     def refresh_hidden(self):
         """Re-read the hidden set; re-filter only if it actually changed."""
         try:
@@ -172,18 +180,50 @@ class MplCanvas(FigureCanvas):
 
     def restyle(self, colors):
         """Updates the canvas background based on the provided color scheme."""
-        self.fig.patch.set_facecolor(colors["bg_panel"])
-        self.draw()
+        from ..theme import apply_plot_theme
+
+        apply_plot_theme(self.fig, colors)
+        self.draw_idle()
+
+    def reset_view(self):
+        """Restore every axes to its autoscale limits (Home)."""
+        for ax in self.fig.axes:
+            ax.relim()
+            ax.autoscale()
+        self.draw_idle()
 
     def _on_click(self, _event):
         """Handle matplotlib mouse click events."""
         self.clicked.emit()
 
 
+def make_nav_toolbar(canvas, parent=None):
+    """Compact matplotlib Home/Pan/Zoom/Save bar used on every plot pane."""
+    from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+
+    bar = NavigationToolbar2QT(canvas, parent)
+    bar.setIconSize(bar.iconSize() * 0.75)
+    bar.setMaximumHeight(28)
+    bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    return bar
+
+
+def make_reset_button(on_reset, parent=None):
+    """Small ↺ control for pyqtgraph panes that have no matplotlib toolbar."""
+    btn = QToolButton(parent)
+    btn.setText("↺")
+    btn.setToolTip("Reset plot view")
+    btn.setAutoRaise(True)
+    btn.setFixedSize(22, 22)
+    btn.clicked.connect(on_reset)
+    return btn
+
+
 class HighlightStatusPandasModel(PandasModel):
     """Optimized model with role-based caching for faster scrolling."""
 
     STATUS_COLORS = {
+        "Good": DARK_COLORS["status_good_text"],
         "Clean": DARK_COLORS["status_good_text"],
         "Edge": DARK_COLORS["status_mua_text"],
         "Duplicate": DARK_COLORS["status_noise_text"],
@@ -203,14 +243,18 @@ class HighlightStatusPandasModel(PandasModel):
         self._background_cache = {}
         self._foreground_cache = {}
         self._display_cache = {}
+        self._colors = dict(DARK_COLORS)
         # Set by MainWindow once the chirp file's repeat count is known.
         self._chirp_qi_trustworthy = True
         self._chirp_n_repeats = None
         self._chirp_min_repeats = None
 
     def update_colors(self, colors):
-        """Updates status colors based on the current theme."""
+        """Updates status and body text colors based on the current theme."""
+        self._colors = dict(colors)
+        text = colors.get("text_primary", DARK_COLORS["text_primary"])
         self.STATUS_COLORS = {
+            "Good": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
             "Clean": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
             "Edge": colors.get("status_mua_text", DARK_COLORS["status_mua_text"]),
             "Duplicate": colors.get(
@@ -220,7 +264,7 @@ class HighlightStatusPandasModel(PandasModel):
             "Unsure": colors.get(
                 "status_unsort_text", DARK_COLORS["status_unsort_text"]
             ),
-            "Original": colors.get("text_primary", DARK_COLORS["text_primary"]),
+            "Original": text,
         }
         self.refresh_view()
 
@@ -341,7 +385,11 @@ class HighlightStatusPandasModel(PandasModel):
                         "Treat these values as unusable, not merely noisy."
                     )
 
+            body = self._colors.get("text_primary", DARK_COLORS["text_primary"])
+
             if "status" not in self._dataframe.columns:
+                if role == Qt.ForegroundRole:
+                    return QColor(body)
                 return value
 
             status_col_idx = self._dataframe.columns.get_loc("status")
@@ -349,13 +397,9 @@ class HighlightStatusPandasModel(PandasModel):
 
             if role == Qt.ForegroundRole:
                 if col_name == "status":
-                    color = self.STATUS_COLORS.get(
-                        status_value, DARK_COLORS["text_primary"]
-                    )
+                    color = self.STATUS_COLORS.get(status_value, body)
                     return QColor(color)
-                return QColor(
-                    self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"])
-                )
+                return QColor(self.STATUS_COLORS.get("Original", body))
 
             if role == Qt.BackgroundRole:
                 return None

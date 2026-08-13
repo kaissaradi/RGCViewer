@@ -2,10 +2,11 @@
 
 Read `docs/AGENTS.md` before this file. This file is the pickup point.
 
-Last updated: 2026-08-12. Branch: `dev-testing`.
+Last updated: 2026-08-12. Branch: `feat/bauhaus-redesign` (off `dev-testing`).
 
 This file lists standing decisions, fragile code, and open defects. It is
-not a roadmap. The UX redesign spec is parked. See
+not a roadmap. The full UX redesign spec is still parked except the
+Bauhaus color / plot-refresh pass now on this branch. See
 `docs/specs/ux_ui_redesign.md`.
 
 Do not push unless the user asks.
@@ -103,7 +104,7 @@ Do not start these unless the user asks.
 
 | Item | Spec | Notes |
 |---|---|---|
-| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only. This branch name refers to it. Tree mini-table and initial window clamp are done; auto-collapse and the rest of the spec are not. |
+| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only for later phases (browser, command palette, undo, auto-collapse, min 1100×650). Bauhaus tokens from `encore_mockup.html` plus table light-mode text, UMAP first-show layout, and plot Home/reset bars are on `feat/bauhaus-redesign`. Do not add the 1100×650 minimum. |
 | Cross-run stimulus bridge lab acceptance | `docs/specs/cross_run_stimulus_bridge.md` | Code is in the tree. Lab AC is open. |
 | Vision-only remaining gaps | `docs/specs/vision_standalone.md` | Missing `.sta` / `.params` no longer crash. |
 | EI panel waveform view | none | View combo exists. Further waveform work is not started. |

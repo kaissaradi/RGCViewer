@@ -60,6 +60,20 @@ class StandardPlotsPanel(QWidget):
 
         ctrl_bar.addStretch()
 
+        from ..widgets.widgets import make_reset_button
+
+        def _reset_all_views():
+            for plot in (self.grid_plot, self.acg_plot, self.isi_plot, self.fr_plot):
+                try:
+                    plot.enableAutoRange()
+                except Exception:
+                    vb = getattr(plot, "getViewBox", lambda: None)()
+                    if vb is not None:
+                        vb.autoRange()
+
+        self.reset_views_btn = make_reset_button(_reset_all_views, ctrl_bar_widget)
+        ctrl_bar.addWidget(self.reset_views_btn)
+
         self.channel_mode_combo.currentTextChanged.connect(self._on_control_changed)
 
         layout.addWidget(ctrl_bar_widget)

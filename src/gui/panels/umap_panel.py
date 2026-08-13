@@ -32,6 +32,7 @@ from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
 
 from ..theme import resolve_theme_colors
+from ..widgets.widgets import make_nav_toolbar
 from ..workers.workers import UMAPWorker, ClusterWorker
 from .live_selectors import (
     _axes_ready,
@@ -101,6 +102,7 @@ class UMAPPanel(QWidget):
         self._umap_colors = {
             "accent": colors["accent"],
             "accent_positive": colors["accent_positive"],
+            "accent_text": colors.get("accent_text", "#ffffff"),
             "bg_panel": colors["bg_panel"],
         }
 
@@ -181,8 +183,16 @@ class UMAPPanel(QWidget):
         side_layout.addWidget(self.side_splitter, stretch=1)
         side_layout.addWidget(self._build_selection_panel(colors))
 
+        plot_col = QWidget()
+        plot_col_layout = QVBoxLayout(plot_col)
+        plot_col_layout.setContentsMargins(0, 0, 0, 0)
+        plot_col_layout.setSpacing(0)
+        plot_col_layout.addWidget(self.canvas, stretch=1)
+        self.plot_toolbar = make_nav_toolbar(self.canvas, plot_col)
+        plot_col_layout.addWidget(self.plot_toolbar)
+
         self.plot_splitter = QSplitter(Qt.Horizontal)
-        self.plot_splitter.addWidget(self.canvas)
+        self.plot_splitter.addWidget(plot_col)
         self.plot_splitter.addWidget(side)
         self.plot_splitter.setStretchFactor(0, 3)
         self.plot_splitter.setStretchFactor(1, 1)
@@ -265,13 +275,16 @@ class UMAPPanel(QWidget):
         self.run_btn = QPushButton("Run UMAP (2D)")
         self.run_btn.clicked.connect(self.run_umap)
         self.run_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent']}; font-weight: bold;"
+            f"background-color: {self._umap_colors['accent']}; "
+            f"color: {self._umap_colors['accent_text']}; font-weight: bold; "
+            f"border-color: {self._umap_colors['accent']};"
         )
 
         self.run_3d_btn = QPushButton("Run UMAP (3D)")
         self.run_3d_btn.clicked.connect(self.run_umap_3d)
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent_positive']}; font-weight: bold;"
+            f"background-color: {self._umap_colors['accent_positive']}; "
+            f"color: {self._umap_colors['accent_text']}; font-weight: bold;"
         )
 
         self.color_combo = QComboBox()
@@ -596,24 +609,43 @@ class UMAPPanel(QWidget):
         Qt defers geometry computation for widgets inside QTabWidget until they
         are first shown. On the initial visit the first paint can fire before
         the layout pass has committed sizes, causing the two toolbar rows to
-        overlap. singleShot(0) defers the layout activation until after the
-        event loop processes the show, guaranteeing geometry is committed
-        before first paint.
+        overlap. The first-show catch-up is the same path as a later visit
+        (STA and back), so the buttons land at their final height immediately.
         """
         super().showEvent(event)
-        QTimer.singleShot(0, self._refresh_layout)
-        QTimer.singleShot(50, self._refresh_layout)
+        self._schedule_layout()
         # Catch up on any tree selection that landed while this tab was hidden
         # (see highlight_cells). Deferred past the layout pass so the blit
         # background is snapshotted at the final geometry.
         if self._pending_highlight is not None and self.embedding is not None:
             QTimer.singleShot(60, lambda: self._highlight(self._pending_highlight))
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_layout()
+
+    def _schedule_layout(self):
+        if getattr(self, "_layout_pending", False):
+            return
+        self._layout_pending = True
+        QTimer.singleShot(0, self._refresh_layout)
+
     def _refresh_layout(self):
-        self.controls_widget.adjustSize()
-        hint_h = self.controls_widget.sizeHint().height()
+        self._layout_pending = False
+        w = getattr(self, "controls_widget", None)
+        if w is None:
+            return
+        # Unlock any stale first-show height before measuring.
+        w.setMinimumHeight(0)
+        w.setMaximumHeight(16777215)
+        if w.layout() is not None:
+            w.layout().invalidate()
+            w.layout().activate()
+        w.adjustSize()
+        self.layout.activate()
+        hint_h = max(w.sizeHint().height(), w.minimumSizeHint().height())
         if hint_h > 0:
-            self.controls_widget.setMinimumHeight(hint_h)
+            w.setFixedHeight(hint_h)
         self.layout.activate()
         self.updateGeometry()
 
@@ -1465,16 +1497,20 @@ class UMAPPanel(QWidget):
 
         # Update button colors
         self.run_btn.setStyleSheet(
-            f"background-color: {colors['accent']}; font-weight: bold;"
+            f"background-color: {colors['accent']}; "
+            f"color: {colors.get('accent_text', '#ffffff')}; font-weight: bold; "
+            f"border-color: {colors['accent']};"
         )
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {colors['accent_positive']}; font-weight: bold;"
+            f"background-color: {colors['accent_positive']}; "
+            f"color: {colors.get('accent_text', '#ffffff')}; font-weight: bold;"
         )
 
         # Update stored colors
         self._umap_colors = {
             "accent": colors["accent"],
             "accent_positive": colors["accent_positive"],
+            "accent_text": colors.get("accent_text", "#ffffff"),
             "bg_panel": colors["bg_panel"],
         }
 

@@ -53,6 +53,7 @@ from .widgets.widgets import (
     find_cell_item,
     set_channel_item,
     tree_item_from_index,
+    make_nav_toolbar,
 )
 from . import callbacks
 from . import plot_export
@@ -79,6 +80,7 @@ from .theme import (
     PANEL_PADDING,
     CTRL_SPACING,
     ROW_HEIGHT,
+    UI_FONT_FAMILY,
     configure_pyqtgraph_theme,
     get_theme_colors,
 )
@@ -251,14 +253,14 @@ class MainWindow(QMainWindow):
         self.setGeometry(avail.x(), avail.y(), width, height)
 
     def _setup_style(self, colors):
-        self.setFont(QFont("Inter", 11))
+        self.setFont(QFont("Helvetica Neue", 11))
 
         self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
             QWidget {{
                 color: {colors['text_primary']};
                 background-color: {colors['bg_base']};
-                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-family: {UI_FONT_FAMILY};
                 font-size: 12px;
             }}
             QMainWindow, QDialog {{
@@ -334,9 +336,9 @@ class MainWindow(QMainWindow):
                 background-color: {colors['bg_elevated']};
             }}
             QPushButton:checked {{
-                background-color: {colors['status_unsort_bg']};
+                background-color: {colors['accent']};
                 border-color: {colors['accent']};
-                color: {colors['accent_hover']};
+                color: {colors['accent_text']};
             }}
             QPushButton:disabled {{
                 color: {colors['text_disabled']};
@@ -358,8 +360,8 @@ class MainWindow(QMainWindow):
                 min-width: 40px;
             }}
             QTabBar::tab:selected {{
-                color: {colors['text_primary']};
-                border-bottom: 2px solid {colors['accent_hover']};
+                color: {colors['accent']};
+                border-bottom: 2px solid {colors['accent']};
             }}
             QTabBar::tab:hover:!selected {{
                 color: {colors['text_primary']};
@@ -431,8 +433,59 @@ class MainWindow(QMainWindow):
 
             /* ── Labels ──────────────────────────── */
             QLabel {{
-                color: {colors['text_secondary']};
+                color: {colors['text_primary']};
                 font-size: 12px;
+            }}
+
+            /* ── Group boxes ─────────────────────── */
+            QGroupBox {{
+                color: {colors['text_primary']};
+                border: 1px solid {colors['border_default']};
+                border-radius: 3px;
+                margin-top: 12px;
+                padding-top: 8px;
+                font-size: 12px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: {colors['text_tertiary']};
+            }}
+
+            /* ── Line edits ──────────────────────── */
+            QLineEdit {{
+                background-color: {colors['bg_panel']};
+                border: 1px solid {colors['border_default']};
+                border-radius: 3px;
+                padding: 3px 8px;
+                color: {colors['text_primary']};
+                font-size: 12px;
+                min-height: 22px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['border_focus']};
+            }}
+            QLineEdit::placeholder {{
+                color: {colors['text_tertiary']};
+            }}
+
+            /* ── Plot toolbars ───────────────────── */
+            QToolBar {{
+                background: {colors['bg_panel']};
+                border: none;
+                spacing: 2px;
+                padding: 0;
+            }}
+            QToolButton {{
+                background: transparent;
+                color: {colors['text_secondary']};
+                border: none;
+                padding: 2px;
+            }}
+            QToolButton:hover {{
+                background: {colors['bg_elevated']};
+                color: {colors['text_primary']};
             }}
 
             /* ── Scrollbars ──────────────────────── */
@@ -520,12 +573,12 @@ class MainWindow(QMainWindow):
 
             /* ── Tooltip ─────────────────────────── */
             QToolTip {{
-                background-color: {colors['bg_surface']};
+                background-color: {colors['bg_tooltip']};
                 border: 0.5px solid {colors['border_default']};
-                color: {colors['text_primary']};
+                color: {colors['text_tooltip']};
                 font-size: 11px;
                 padding: 4px 8px;
-                border-radius: 4px;
+                border-radius: 3px;
             }}
         """)
 
@@ -549,6 +602,7 @@ class MainWindow(QMainWindow):
         panels = [
             self.standard_plots_panel,
             self.chirp_panel,
+            self.contrast_panel,
             self.grating_panel,
             self.ei_panel,
             self.waveforms_panel,
@@ -615,9 +669,9 @@ class MainWindow(QMainWindow):
                     background: transparent;
                 }}
                 QPushButton:checked {{
-                    background: {colors['status_unsort_bg']};
+                    background: {colors['accent']};
                     border-color: {colors['accent']};
-                    color: {colors['accent_hover']};
+                    color: {colors['accent_text']};
                 }}
                 QPushButton:hover:!checked {{
                     background: {colors['bg_surface']};
@@ -632,7 +686,8 @@ class MainWindow(QMainWindow):
                 else colors["accent"]
             )
             self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {bg}; padding: 4px 10px;"
+                f"font-weight: bold; background-color: {bg}; "
+                f"color: {colors['accent_text']}; padding: 4px 10px;"
             )
 
         if hasattr(self, "pop_tc_label"):
@@ -1000,11 +1055,17 @@ class MainWindow(QMainWindow):
 
         Only the active panel is updated.
         """
+        current_panel = self.analysis_tabs.widget(index)
+        # Hidden tabs skip layout until first show. Force the UMAP toolbar
+        # to commit sizes on every visit so the first open matches STA-and-back.
+        if current_panel is self.umap_panel and hasattr(
+            self.umap_panel, "_schedule_layout"
+        ):
+            self.umap_panel._schedule_layout()
+
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is None:
             return
-
-        current_panel = self.analysis_tabs.widget(index)
 
         if current_panel == self.standard_plots_panel:
             # Only compute standard plots when this tab is actually visible
@@ -1314,9 +1375,9 @@ class MainWindow(QMainWindow):
                     background: transparent;
                 }}
                 QPushButton:checked {{
-                    background: {colors['status_unsort_bg']};
+                    background: {colors['accent']};
                     border-color: {colors['accent']};
-                    color: {colors['accent_hover']};
+                    color: {colors['accent_text']};
                 }}
                 QPushButton:hover:!checked {{
                     background: {colors['bg_surface']};
@@ -1462,6 +1523,10 @@ class MainWindow(QMainWindow):
         tc_layout.addLayout(tc_hdr)
         self.pop_timecourse_canvas = MplCanvas(width=6, height=2, dpi=100)
         tc_layout.addWidget(self.pop_timecourse_canvas)
+        self.pop_tc_toolbar = make_nav_toolbar(
+            self.pop_timecourse_canvas, self.pop_timecourse_widget
+        )
+        tc_layout.addWidget(self.pop_tc_toolbar)
         self.pop_master_splitter.addWidget(self.pop_timecourse_widget)
 
         # 3. ACG Panel
@@ -1480,6 +1545,10 @@ class MainWindow(QMainWindow):
         acg_layout.addLayout(acg_hdr)
         self.pop_acg_canvas = MplCanvas(width=6, height=2, dpi=100)
         acg_layout.addWidget(self.pop_acg_canvas)
+        self.pop_acg_toolbar = make_nav_toolbar(
+            self.pop_acg_canvas, self.pop_acg_widget
+        )
+        acg_layout.addWidget(self.pop_acg_toolbar)
         self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
         # Standalone "DS/OS Probe Map" panel removed — DS/OS is now shown
