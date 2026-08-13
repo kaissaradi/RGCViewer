@@ -50,6 +50,7 @@ from .widgets.widgets import (
     TREE_HEADERS,
     TREE_SPIKES_WIDTH,
     refresh_tree_group_counts,
+    find_cell_item,
     set_channel_item,
     tree_item_from_index,
 )
@@ -594,11 +595,14 @@ class MainWindow(QMainWindow):
 
     def _apply_theme_widget_styles(self, colors):
         """Refresh inline styles that cannot be fully expressed in global QSS."""
+        ghost = f"""
+            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+            QPushButton:hover {{ color: {colors['text_primary']}; }}
+        """
         if hasattr(self, "reset_button"):
-            self.reset_button.setStyleSheet(f"""
-                QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
-                QPushButton:hover {{ color: {colors['text_primary']}; }}
-            """)
+            self.reset_button.setStyleSheet(ghost)
+        if hasattr(self, "collapse_all_btn"):
+            self.collapse_all_btn.setStyleSheet(ghost)
 
         if hasattr(self, "pop_view_btn"):
             self.pop_view_btn.setStyleSheet(f"""
@@ -1158,20 +1162,26 @@ class MainWindow(QMainWindow):
             btn.setFixedHeight(26)
         self.tree_view_button.setChecked(True)
 
-        # Reset as ghost link
+        ghost = f"""
+            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+            QPushButton:hover {{ color: {colors['text_primary']}; }}
+        """
+        self.collapse_all_btn = QPushButton("⊟")
+        self.collapse_all_btn.setToolTip("Collapse all folders")
+        self.collapse_all_btn.setFixedSize(26, 26)
+        self.collapse_all_btn.setStyleSheet(ghost)
+
         self.reset_button = QPushButton("↺")
         self.reset_button.setToolTip("Reset View")
         self.reset_button.setFixedSize(26, 26)
-        self.reset_button.setStyleSheet(f"""
-            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
-            QPushButton:hover {{ color: {colors['text_primary']}; }}
-        """)
+        self.reset_button.setStyleSheet(ghost)
 
         top_ctrl_layout.addWidget(self.filter_all_btn)
         top_ctrl_layout.addSpacing(8)
         top_ctrl_layout.addWidget(self.table_view_button)
         top_ctrl_layout.addWidget(self.tree_view_button)
         top_ctrl_layout.addStretch()
+        top_ctrl_layout.addWidget(self.collapse_all_btn)
         top_ctrl_layout.addWidget(self.reset_button)
 
         # --- View Stack (Tree and Table) ---
@@ -1609,6 +1619,7 @@ class MainWindow(QMainWindow):
         self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
         self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
 
+        self.collapse_all_btn.clicked.connect(self.collapse_tree)
         self.reset_button.clicked.connect(self.reset_views)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
@@ -1869,7 +1880,9 @@ class MainWindow(QMainWindow):
             # Only leaf nodes (cells) have a cluster ID stored. Groups will
             # return None.
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
-            return cluster_id
+            if cluster_id is None:
+                return None
+            return int(cluster_id)
 
         # Case 2: Table View is active
         elif current_view_index == 1:
@@ -1894,7 +1907,10 @@ class MainWindow(QMainWindow):
             else:
                 # Bare model (no proxy), use the row directly
                 cluster_id = model._dataframe.iloc[selected_row]["cluster_id"]
-            return cluster_id
+            try:
+                return int(cluster_id)
+            except (TypeError, ValueError):
+                return None
 
         return None
 
@@ -2168,26 +2184,17 @@ class MainWindow(QMainWindow):
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:  # It's a group
                     return self._get_group_cluster_ids(item)
 
-        # Case 2: A single cell is selected. Find its immediate parent folder.
+        # Case 2: A cell is selected (tree or table). Population is the
+        # innermost tree folder that cell sits in — not KSLabel, not the
+        # whole run. Table mode uses the same walk; Qt match misses numpy ids.
         if cluster_id is not None:
-            # Always trust the Tree Model first, as it perfectly reflects nested folders
-            model = self.tree_model
-            matches = model.match(
-                model.index(0, 0),
-                Qt.ItemDataRole.UserRole,
-                cluster_id,
-                1,
-                Qt.MatchExactly | Qt.MatchRecursive,
-            )
-
-            if matches:
-                item = model.itemFromIndex(matches[0])
-                parent_item = item.parent()
-                if parent_item is None:
-                    parent_item = model.invisibleRootItem()
-                return self._get_group_cluster_ids(parent_item)
-
-            return [cluster_id]  # Fallback
+            item = find_cell_item(self.tree_model, cluster_id)
+            if item is None:
+                return [int(cluster_id)]
+            parent_item = item.parent()
+            if parent_item is None or parent_item is self.tree_model.invisibleRootItem():
+                return [int(cluster_id)]
+            return self._get_group_cluster_ids(parent_item)
 
         return []
 
@@ -2862,6 +2869,10 @@ class MainWindow(QMainWindow):
 
     def apply_good_filter(self):
         callbacks.apply_good_filter(self)
+
+    def collapse_tree(self):
+        if getattr(self, "tree_view", None) is not None:
+            self.tree_view.collapseAll()
 
     def reset_views(self):
         callbacks.reset_views(self)

@@ -1444,10 +1444,14 @@ def flatten_group(main_window, item):
         df.loc[df["cluster_id"].isin(cluster_ids), "KSLabel"] = item.text()
 
 
-def group_clusters_in_tree(main_window, cluster_ids, group_name):
+def group_clusters_in_tree(main_window, cluster_ids, group_name, expand_new=True):
     """
     Dynamically groups selected clusters into a new folder exactly where they are,
     without destroying the rest of the tree. Safe against numpy/Qt type issues.
+
+    ``expand_new`` is True for a hand-made folder so the user sees the cells
+    land. Feature Extraction Nc* groups pass False so the new folder stays
+    collapsed.
     """
     model = main_window.tree_model
 
@@ -1510,10 +1514,14 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
     df = main_window.data_manager.cluster_df
     df.loc[df["cluster_id"].isin(list(target_ids)), "KSLabel"] = group_name
 
-    # 7. Expand only the new folder to show the user it workedload_vision_directory
-    main_window.tree_view.expand(group_item.index())
+    # Parent stays open so the new folder is visible in the tree. The folder
+    # itself opens only when the caller wants the cells in view.
     if hasattr(parent_item, "index"):
         main_window.tree_view.expand(parent_item.index())
+    if expand_new:
+        main_window.tree_view.expand(group_item.index())
+    else:
+        main_window.tree_view.collapse(group_item.index())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

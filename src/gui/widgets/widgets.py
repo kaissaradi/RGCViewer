@@ -523,6 +523,40 @@ def tree_item_from_index(model, index):
     return model.itemFromIndex(index)
 
 
+def find_cell_item(model, cluster_id):
+    """Column-0 cell item whose UserRole equals *cluster_id*, or None.
+
+    Walks the tree with ``int()`` so a numpy id from the table still matches
+    a Python int stored on the item. ``QStandardItemModel.match`` does not.
+    """
+    if model is None or cluster_id is None:
+        return None
+    try:
+        target = int(cluster_id)
+    except (TypeError, ValueError):
+        return None
+
+    def walk(parent):
+        for row in range(parent.rowCount()):
+            child = parent.child(row, TREE_COL_ID)
+            if child is None:
+                continue
+            cid = child.data(Qt.ItemDataRole.UserRole)
+            if cid is not None:
+                try:
+                    if int(cid) == target:
+                        return child
+                except (TypeError, ValueError):
+                    continue
+            else:
+                found = walk(child)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(model.invisibleRootItem())
+
+
 def count_tree_leaves(item) -> int:
     """Recursive cell count under a folder (col-0 walk)."""
     if item is None:

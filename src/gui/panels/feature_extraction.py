@@ -1686,7 +1686,9 @@ class FeatureExtractionWindow(QDialog):
         self.main_window.data_manager.new_class_id += 1
         from ..callbacks import group_clusters_in_tree
 
-        group_clusters_in_tree(self.main_window, selected_ids, group_name)
+        group_clusters_in_tree(
+            self.main_window, selected_ids, group_name, expand_new=False
+        )
         logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
         # ← self.close() removed: window stays open so you can keep selecting
         return group_name
