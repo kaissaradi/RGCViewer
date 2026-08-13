@@ -272,10 +272,10 @@ class MainWindow(QMainWindow):
                 background: {colors['border_subtle']};
             }}
             QSplitter::handle:horizontal {{
-                width: 5px;
+                width: 6px;
             }}
             QSplitter::handle:vertical {{
-                height: 5px;
+                height: 6px;
             }}
             QSplitter::handle:horizontal:hover,
             QSplitter::handle:vertical:hover {{
@@ -294,19 +294,19 @@ class MainWindow(QMainWindow):
             }}
             QTableView::item {{
                 border-bottom: 1px solid {colors['border_subtle']};
-                padding: 0 8px;
+                padding: 2px 10px;
             }}
             QTableView::item:selected {{
                 background-color: {colors['selection_bg']};
             }}
             QHeaderView::section {{
                 background-color: {colors['bg_panel']};
-                color: {colors['text_tertiary']};
-                padding: 4px 8px;
+                color: {colors['text_secondary']};
+                padding: 6px 10px;
                 border: none;
                 border-bottom: 1px solid {colors['border_default']};
                 font-size: 10px;
-                font-weight: 500;
+                font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
             }}
@@ -321,10 +321,10 @@ class MainWindow(QMainWindow):
             /* ── Buttons ─────────────────────────── */
             QPushButton {{
                 background-color: transparent;
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 color: {colors['text_secondary']};
-                padding: 4px 10px;
-                border-radius: 5px;
+                padding: 5px 12px;
+                border-radius: 4px;
                 font-size: 12px;
             }}
             QPushButton:hover {{
@@ -353,11 +353,11 @@ class MainWindow(QMainWindow):
             QTabBar::tab {{
                 color: {colors['text_secondary']};
                 background: transparent;
-                padding: 6px 16px;
+                padding: 8px 18px;
                 font-size: 12px;
                 border-bottom: 2px solid transparent;
-                margin-right: 2px;
-                min-width: 40px;
+                margin-right: 4px;
+                min-width: 44px;
             }}
             QTabBar::tab:selected {{
                 color: {colors['accent']};
@@ -374,12 +374,12 @@ class MainWindow(QMainWindow):
             /* ── Inputs ──────────────────────────── */
             QComboBox {{
                 background-color: {colors['bg_panel']};
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 border-radius: 4px;
-                padding: 3px 8px;
+                padding: 4px 10px;
                 color: {colors['text_primary']};
                 font-size: 12px;
-                min-height: 22px;
+                min-height: 24px;
             }}
             QComboBox:hover {{ border-color: {colors['border_strong']}; }}
             QComboBox::drop-down {{
@@ -394,9 +394,9 @@ class MainWindow(QMainWindow):
             }}
             QDoubleSpinBox, QSpinBox {{
                 background-color: {colors['bg_panel']};
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 border-radius: 4px;
-                padding: 3px 6px;
+                padding: 4px 8px;
                 color: {colors['text_primary']};
                 font-size: 12px;
             }}
@@ -457,11 +457,11 @@ class MainWindow(QMainWindow):
             QLineEdit {{
                 background-color: {colors['bg_panel']};
                 border: 1px solid {colors['border_default']};
-                border-radius: 3px;
-                padding: 3px 8px;
+                border-radius: 4px;
+                padding: 4px 10px;
                 color: {colors['text_primary']};
                 font-size: 12px;
-                min-height: 22px;
+                min-height: 24px;
             }}
             QLineEdit:focus {{
                 border-color: {colors['border_focus']};
@@ -680,15 +680,7 @@ class MainWindow(QMainWindow):
             """)
 
         if hasattr(self, "pop_expand_btn"):
-            bg = (
-                colors["accent_positive"]
-                if self.pop_expand_btn.isChecked()
-                else colors["accent"]
-            )
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {bg}; "
-                f"color: {colors['accent_text']}; padding: 4px 10px;"
-            )
+            self._style_pop_expand_btn(colors)
 
         if hasattr(self, "pop_tc_label"):
             self.pop_tc_label.setStyleSheet(
@@ -714,7 +706,7 @@ class MainWindow(QMainWindow):
             }}
             QTreeView::item {{
                 color: {colors['text_primary']};
-                padding: 2px 0;
+                padding: 3px 0;
             }}
             QTreeView::item:hover {{
                 background: {colors['bg_surface']};
@@ -732,7 +724,7 @@ class MainWindow(QMainWindow):
                 color: {colors['text_tertiary']};
                 border: none;
                 border-bottom: 1px solid {colors['border_subtle']};
-                padding: 2px 4px;
+                padding: 4px 8px;
                 font-size: 10px;
             }}
         """)
@@ -1206,7 +1198,7 @@ class MainWindow(QMainWindow):
 
         self.filter_all_btn = QPushButton("All")
         self.filter_all_btn.setCheckable(True)
-        self.filter_all_btn.setFixedHeight(26)
+        self.filter_all_btn.setFixedHeight(28)
         self.filter_all_btn.setChecked(True)
         self.filter_all_btn.setStyleSheet("border-radius: 5px;")
 
@@ -1220,7 +1212,7 @@ class MainWindow(QMainWindow):
 
         for btn in (self.table_view_button, self.tree_view_button):
             btn.setCheckable(True)
-            btn.setFixedHeight(26)
+            btn.setFixedHeight(28)
         self.tree_view_button.setChecked(True)
 
         ghost = f"""
@@ -1322,7 +1314,7 @@ class MainWindow(QMainWindow):
         self.cluster_search_bar = QLineEdit()
         self.cluster_search_bar.setPlaceholderText("Search clusters...")
         self.cluster_search_bar.setClearButtonEnabled(True)
-        self.cluster_search_bar.setFixedHeight(28)
+        self.cluster_search_bar.setFixedHeight(30)
         self.cluster_search_bar.textChanged.connect(self._filter_sidebar)
         left_content_layout.addWidget(self.cluster_search_bar)
 
@@ -1390,8 +1382,8 @@ class MainWindow(QMainWindow):
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
         pop_layout = QVBoxLayout(self.pop_context_widget)
-        pop_layout.setContentsMargins(4, 4, 4, 4)
-        pop_layout.setSpacing(6)
+        pop_layout.setContentsMargins(8, 8, 8, 8)
+        pop_layout.setSpacing(8)
 
         # Top Control Bar (with Expand Button)
         pop_ctrl_layout = QHBoxLayout()
@@ -1428,9 +1420,7 @@ class MainWindow(QMainWindow):
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
         self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
-        self.pop_expand_btn.setStyleSheet(
-            f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
-        )
+        self._style_pop_expand_btn(colors)
         pop_ctrl_layout.addStretch()
         pop_ctrl_layout.addWidget(self.pop_expand_btn)
         pop_layout.addLayout(pop_ctrl_layout)
@@ -3194,6 +3184,21 @@ class MainWindow(QMainWindow):
         self._update_sidebar_toggle_btn()
         self._animate_splitter_sizes(target_left)
 
+    def _style_pop_expand_btn(self, colors):
+        """Outline by default; fill only when the population pane is expanded."""
+        if self.pop_expand_btn.isChecked():
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: 600; background-color: {colors['accent_positive']}; "
+                f"color: {colors['accent_text']}; border: 1px solid {colors['accent_positive']}; "
+                f"padding: 5px 12px;"
+            )
+        else:
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: 600; background-color: transparent; "
+                f"color: {colors['text_secondary']}; "
+                f"border: 1px solid {colors['border_default']}; padding: 5px 12px;"
+            )
+
     def toggle_population_fullscreen(self, checked):
         """Toggles the Population panel to take up 100% of the right pane."""
         colors = self.get_current_colors()
@@ -3201,9 +3206,6 @@ class MainWindow(QMainWindow):
             # Full screen mode: Collapse the main tabs completely
             self.right_splitter.setSizes([0, 1000])
             self.pop_expand_btn.setText("🗗 Restore")
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {colors['accent_positive']}; padding: 4px 10px;"
-            )
         else:
             # Restore mode: 75/25 split
             total = sum(self.right_splitter.sizes()) or 1400
@@ -3211,9 +3213,7 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
             self.pop_expand_btn.setText("⛶ Full Screen")
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
-            )
+        self._style_pop_expand_btn(colors)
 
     def closeEvent(self, event):
         """Handles the window close event."""

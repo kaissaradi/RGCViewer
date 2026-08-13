@@ -1,9 +1,10 @@
 # Specification: UX / UI Redesign — Bauhaus Design Pass
 
 **Status (2026-08-12):** Phase 1 tokens + first visual bugs are in progress
-on `feat/bauhaus-redesign`. Colors come from `encore_mockup.html` (Bauhaus
-red / black / white), not the older blue Appendix A. Later phases
-(browser, palette, undo, auto-collapse, 1100×650 minimum) stay parked.
+on `feat/bauhaus-redesign`. Chrome is blue (`#2563eb` / `#1d4ed8`) with
+amber / teal / violet plot roles. The encore mockup is a layout idea only —
+do not copy its hard red. Later phases (browser, palette, undo,
+auto-collapse, 1100×650 minimum) stay parked.
 
 ## Block 0 — Metadata
 

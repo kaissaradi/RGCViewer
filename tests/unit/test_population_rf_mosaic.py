@@ -102,7 +102,7 @@ class TestEllipseVisibility:
     """AC1: Ellipses must have spec-compliant alpha and linewidth values."""
 
     def test_background_ellipse_alpha_and_lw(self):
-        """Background (non-target) ellipses: alpha 0.12–0.18, lw 0.6–0.9."""
+        """Background (non-target) ellipses stay visible on both themes."""
         cells, vp = _make_vision_params(6)
         mw = _make_mock_main_window(vp)
         colors = mw.get_current_colors()
@@ -127,20 +127,19 @@ class TestEllipseVisibility:
             for c in ax.collections
             if isinstance(c, EllipseCollection)
             and c.get_alpha() is not None
-            and c.get_alpha() < 0.20
+            and c.get_alpha() < 0.50
         ]
         assert len(bg_colls) > 0, "Expected background EllipseCollection"
         for c in bg_colls:
-            # Dark-theme bg uses alpha=0.15; light uses 0.35 — accept both bands
-            # plus a small tolerance for borrowed-layer variants.
-            assert 0.12 <= c.get_alpha() <= 0.40, (
-                f"Background alpha {c.get_alpha()} outside [0.12, 0.40]"
+            # Dark bg ~0.28; light ~0.55. Borrowed layer is slightly lower.
+            assert 0.20 <= c.get_alpha() <= 0.60, (
+                f"Background alpha {c.get_alpha()} outside [0.20, 0.60]"
             )
             lw = float(np.asarray(c.get_linewidths()).ravel()[0])
-            assert 0.6 <= lw <= 0.9, f"Background lw {lw} outside [0.6, 0.9]"
+            assert 0.75 <= lw <= 1.25, f"Background lw {lw} outside [0.75, 1.25]"
 
     def test_target_ellipse_alpha_and_lw(self):
-        """Target (in-subset) ellipses: alpha 0.45–0.65, lw 0.9–1.2."""
+        """Target (in-subset) ellipses are heavier than the background layer."""
         cells, vp = _make_vision_params(6)
         mw = _make_mock_main_window(vp)
         colors = mw.get_current_colors()
@@ -168,11 +167,11 @@ class TestEllipseVisibility:
         ]
         assert len(target_colls) > 0, "Expected target EllipseCollection"
         for c in target_colls:
-            assert 0.40 <= c.get_alpha() <= 0.65, (
-                f"Target alpha {c.get_alpha()} outside [0.40, 0.65]"
+            assert 0.50 <= c.get_alpha() <= 0.85, (
+                f"Target alpha {c.get_alpha()} outside [0.50, 0.85]"
             )
             lw = float(np.asarray(c.get_linewidths()).ravel()[0])
-            assert 0.9 <= lw <= 1.2, f"Target lw {lw} outside [0.9, 1.2]"
+            assert 1.1 <= lw <= 1.8, f"Target lw {lw} outside [1.1, 1.8]"
 
     def test_highlight_ellipse_alpha_and_lw(self):
         """Highlight (selected cell): fill alpha 0.35–0.50, edge lw 1.5–2.0."""

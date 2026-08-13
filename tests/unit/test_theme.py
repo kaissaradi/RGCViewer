@@ -13,6 +13,9 @@ from src.gui.theme import (
     contrast_ratio,
     feature_palette,
     get_theme_colors,
+    is_light_theme,
+    plot_grid_alpha,
+    plot_stroke,
 )
 
 
@@ -102,6 +105,35 @@ def test_get_theme_colors_returns_copy():
     colors = get_theme_colors("light")
     colors["accent"] = "#000000"
     assert LIGHT_COLORS["accent"] != "#000000"
+
+
+def test_accent_is_blue_not_bauhaus_red():
+    assert DARK_COLORS["accent"].lower() != "#e30613"
+    assert LIGHT_COLORS["accent"].lower() != "#e30613"
+    assert contrast_ratio(DARK_COLORS["accent_text"], DARK_COLORS["accent"]) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["accent_text"], LIGHT_COLORS["accent"]) >= 4.5
+
+
+def test_light_and_dark_plot_roles_are_designed_separately():
+    assert LIGHT_COLORS["plot_line"] != DARK_COLORS["plot_line"]
+    assert LIGHT_COLORS["plot_fr"] != DARK_COLORS["plot_fr"]
+    assert LIGHT_COLORS["plot_acg"] != DARK_COLORS["plot_acg"]
+    assert LIGHT_COLORS["accent"] != "#e30613"
+
+
+def test_is_light_theme_and_plot_stroke():
+    assert is_light_theme(LIGHT_COLORS) is True
+    assert is_light_theme(DARK_COLORS) is False
+    assert plot_stroke(LIGHT_COLORS) > plot_stroke(DARK_COLORS)
+    assert plot_grid_alpha(LIGHT_COLORS) > plot_grid_alpha(DARK_COLORS)
+
+
+def test_light_body_and_status_text_contrast():
+    bg = LIGHT_COLORS["bg_panel"]
+    assert contrast_ratio(LIGHT_COLORS["text_primary"], bg) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["text_secondary"], bg) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["status_good_text"], bg) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["status_mua_text"], bg) >= 4.5
 
 
 def _mpl_hex(rgba) -> str:

@@ -28,7 +28,7 @@ from qtpy.QtWidgets import (
     QCheckBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget,
 )
 
-from ..theme import resolve_theme_colors
+from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
 from ...analysis import chirp_calc
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,8 @@ class ChirpPanel(QWidget):
 
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         # --- header ---
         self.header_layout = QHBoxLayout()
@@ -163,12 +164,8 @@ class ChirpPanel(QWidget):
     # ── chrome ───────────────────────────────────────────────────────────────
 
     def _style_plot(self, p, colors):
-        for axis in ("bottom", "left"):
-            p.getAxis(axis).setPen(pg.mkPen(colors["border_default"]))
-            p.getAxis(axis).setTextPen(pg.mkPen(colors["text_secondary"]))
-        p.showAxis("top", False)
-        p.showAxis("right", False)
-        p.showGrid(x=True, y=True, alpha=0.08)
+        apply_plot_theme(p, colors)
+        p.showGrid(x=True, y=True, alpha=plot_grid_alpha(colors))
         if p.titleLabel:
             p.titleLabel.setText(p.titleLabel.text, color=colors["text_secondary"],
                                  size="9pt")
@@ -294,9 +291,9 @@ class ChirpPanel(QWidget):
                 self.psth_plot.plot(
                     t[:len(block)],
                     ndimage.gaussian_filter1d(block, sigma=sigma, mode="nearest"),
-                    pen=pg.mkPen(self._level_color(i), width=1.5))
+                    pen=pg.mkPen(self._level_color(i), width=plot_stroke(colors)))
         else:
-            pen = pg.mkPen(colors.get("plot_fr", "y"), width=1.5)
+            pen = pg.mkPen(colors.get("plot_fr", "y"), width=plot_stroke(colors))
             fill = pg.mkColor(colors.get("plot_fr", "y"))
             fill.setAlpha(40)
             self.psth_plot.plot(t, smoothed, pen=pen, fillLevel=0,

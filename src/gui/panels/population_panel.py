@@ -12,7 +12,7 @@ from matplotlib.patches import Ellipse, FancyArrowPatch
 from matplotlib.collections import LineCollection, EllipseCollection
 from qtpy.QtGui import QColor
 
-from ..theme import DARK_COLORS
+from ..theme import DARK_COLORS, is_light_theme, plot_stroke, resolve_theme_colors
 from ...analysis import grating_calc
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
@@ -295,7 +295,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             subset_ids = []
 
     canvas = main_window.pop_timecourse_canvas
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     # Early exit: nothing selected
     if not subset_ids:
@@ -452,21 +452,24 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
-        # 2. Shadow Traces — bolder/more opaque so individual outliers are
-        # actually visible, not nearly-invisible at alpha=0.15.
+        # 2. Shadow traces use the muted plot role, never the chrome accent.
+        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
         shadow_lines = LineCollection(
-            segments, color=colors["accent"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors["plot_shadow"],
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=shadow_alpha,
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
 
-        # 3. Mean Trace — thinned so it reads as a reference line rather than
-        # a solid band that paints over the traces underneath it.
+        # 3. Mean trace — heavier in light mode so it sits on white.
         mean_line = _first_plot_artist(
             ax.plot(
                 t_axis,
                 mean_tc,
                 color=colors["plot_mean"],
-                linewidth=1.6,
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )
@@ -543,7 +546,7 @@ def draw_population_rfs_plot(
         except Exception:
             pass
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
     dm = main_window.data_manager
     vision_params = dm.vision_params
     bridge = getattr(dm, "reference_bridge", None)
@@ -656,7 +659,7 @@ def draw_population_rfs_plot(
             angle=0,
             edgecolor=colors["plot_highlight"],
             facecolor=(*highlight_rgb, 0.42),
-            lw=1.75,
+            lw=plot_stroke(colors),
             zorder=10,
             visible=False,
         )
@@ -796,6 +799,7 @@ def plot_population_rfs_background(
     ax, vision_params, main_window, sta_height, subset_cell_ids, colors
 ):
     """Draw native RF ellipses plus dashed borrowed RFs from ReferenceBridge."""
+    colors = resolve_theme_colors(colors)
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
     dm = main_window.data_manager
@@ -929,16 +933,17 @@ def plot_population_rfs_background(
         else:
             borrowed_bg.append(entry)
 
-    is_light = colors.get("bg_panel", "").upper() in ("#FFFFFF", "#FAFAFA", "#F8F9FA")
+    is_light = is_light_theme(colors)
     bg_edgecolor = (
-        colors.get("text_tertiary", "#ADB5BD")
+        colors.get("text_secondary", "#334155")
         if is_light
-        else colors.get("border_subtle", "#2E3038")
+        else colors.get("text_tertiary", "#74859b")
     )
-    bg_alpha = 0.35 if is_light else 0.15
+    bg_alpha = 0.55 if is_light else 0.28
+    bg_lw = 1.15 if is_light else 0.85
 
     bg_coll = _build_ellipse_collection(
-        bg_ellipses, edgecolor=bg_edgecolor, alpha=bg_alpha, lw=0.75, zorder=1
+        bg_ellipses, edgecolor=bg_edgecolor, alpha=bg_alpha, lw=bg_lw, zorder=1
     )
     if bg_coll is not None:
         ax.add_collection(bg_coll)
@@ -947,8 +952,8 @@ def plot_population_rfs_background(
     target_coll = _build_ellipse_collection(
         target_ellipses,
         edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.55,
-        lw=1.0,
+        alpha=0.80 if is_light else 0.65,
+        lw=1.6 if is_light else 1.2,
         zorder=2,
     )
     if target_coll is not None:
@@ -959,8 +964,8 @@ def plot_population_rfs_background(
     borrowed_bg_coll = _build_ellipse_collection(
         borrowed_bg,
         edgecolor=bg_edgecolor,
-        alpha=max(0.2, bg_alpha * 0.85),
-        lw=0.75,
+        alpha=max(0.25, bg_alpha * 0.85),
+        lw=bg_lw,
         zorder=1,
     )
     if borrowed_bg_coll is not None:
@@ -971,8 +976,8 @@ def plot_population_rfs_background(
     borrowed_target_coll = _build_ellipse_collection(
         borrowed_target,
         edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.40,
-        lw=1.0,
+        alpha=0.60 if is_light else 0.45,
+        lw=1.6 if is_light else 1.2,
         zorder=2,
     )
     if borrowed_target_coll is not None:
@@ -1180,6 +1185,7 @@ def plot_rich_ei(
     """
     if colors is None:
         colors = DARK_COLORS
+    colors = resolve_theme_colors(colors)
 
     fig.clear()
     fig.set_facecolor(colors["bg_panel"])
@@ -1282,7 +1288,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
     if canvas is None:
         return
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     if not subset_ids:
         canvas.fig.clear()
@@ -1429,8 +1435,13 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
+        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
         shadow_lines = LineCollection(
-            segments, color=colors["plot_acg"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors["plot_acg"],
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=shadow_alpha,
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
         mean_line = _first_plot_artist(
@@ -1438,7 +1449,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
                 t_axis,
                 mean_acg,
                 color=colors["plot_compare"],
-                linewidth=1.6,
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )
@@ -1484,7 +1495,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
     if canvas is None:
         return
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     if not subset_ids:
         canvas.fig.clear()
@@ -1600,8 +1611,13 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         ax = canvas.fig.add_subplot(111)
         ax.set_facecolor(colors["bg_panel"])
 
+        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
         shadow_lines = LineCollection(
-            segments, color=colors["plot_fr"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors["plot_fr"],
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=shadow_alpha,
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
         mean_line = _first_plot_artist(
@@ -1609,7 +1625,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
                 t_axis,
                 mean_fr,
                 color=colors["plot_compare"],
-                linewidth=1.6,
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )

@@ -1,122 +1,124 @@
 """Semantic color palettes and shared UI constants for RGCViewer.
 
-The palettes follow the Bauhaus / Swiss tokens in encore_mockup.html:
-red accent, black/white surfaces, no decoration. Existing semantic key
-names are kept so QSS and restyle_plots do not break on rename.
+Swiss / Bauhaus *structure* (flat surfaces, tight type, no decoration) is
+kept. The palette is not a copy of encore_mockup.html: chrome is blue, not
+Bauhaus red, and plots carry a second register of amber / teal / violet so
+light mode stays readable. Existing semantic key names are kept so QSS and
+restyle_plots do not break on rename.
 """
 
 import pyqtgraph as pg
 
 DARK_COLORS = {
-    "bg_base": "#0d0d0d",
-    "bg_panel": "#1a1a1a",
-    "bg_surface": "#1a1a1a",
-    "bg_elevated": "#242424",
+    "bg_base": "#111214",
+    "bg_panel": "#181b22",
+    "bg_surface": "#1e222b",
+    "bg_elevated": "#272c37",
     "bg_overlay": "rgba(0,0,0,0.55)",
-    "bg_tooltip": "#242424",
-    "accent": "#e30613",
-    "accent_hover": "#ff2a36",
-    "accent_pressed": "#b0050f",
-    "accent_muted": "rgba(227,6,19,0.14)",
+    "bg_tooltip": "#272c37",
+    "accent": "#2563eb",
+    "accent_hover": "#3b82f6",
+    "accent_pressed": "#1d4ed8",
+    "accent_muted": "rgba(37,99,235,0.18)",
     "accent_text": "#ffffff",
-    "accent_positive": "#00c853",
-    "accent_pos_text": "#00c853",
-    "text_primary": "#ffffff",
-    "text_secondary": "#b0b0b0",
-    "text_tertiary": "#707070",
-    "text_disabled": "#555555",
-    "text_tooltip": "#ffffff",
-    "border_subtle": "#2a2a2a",
-    "border_default": "#333333",
-    "border_strong": "#555555",
-    "border_focus": "#e30613",
-    "status_good_bg": "rgba(0, 200, 83, 0.18)",
-    "status_good_text": "#00c853",
-    "status_mua_bg": "rgba(255, 193, 7, 0.18)",
-    "status_mua_text": "#ffc107",
-    "status_noise_bg": "rgba(227, 6, 19, 0.18)",
-    "status_noise_text": "#ff6b6b",
-    "status_unsort_bg": "rgba(10, 132, 255, 0.18)",
-    "status_unsort_text": "#64b5ff",
-    "selection_bg": "rgba(227, 6, 19, 0.16)",
-    "selection_bg_strong": "rgba(227, 6, 19, 0.28)",
-    "plot_line": "#ffffff",
-    "plot_scatter": "#ff6b6b",
-    "plot_shadow": "#707070",
-    "plot_mean": "#ffffff",
-    "plot_peak": "#ffc107",
-    "plot_highlight": "#18ffff",
-    "plot_acg": "#d1b3ff",
-    "plot_isi": "#64b5ff",
-    "plot_fr": "#ffc107",
-    "plot_overlay": "#00e676",
-    "plot_compare": "#ffb74d",
-    "plot_waveform_shadow": "#333333",
+    "accent_positive": "#34d399",
+    "accent_pos_text": "#34d399",
+    "text_primary": "#f8fafc",
+    "text_secondary": "#94a3b8",
+    "text_tertiary": "#74859b",
+    "text_disabled": "#475569",
+    "text_tooltip": "#f8fafc",
+    "border_subtle": "#2a303c",
+    "border_default": "#3a4252",
+    "border_strong": "#5b6578",
+    "border_focus": "#3b82f6",
+    "status_good_bg": "rgba(52, 211, 153, 0.16)",
+    "status_good_text": "#34d399",
+    "status_mua_bg": "rgba(251, 191, 36, 0.16)",
+    "status_mua_text": "#fbbf24",
+    "status_noise_bg": "rgba(251, 113, 133, 0.16)",
+    "status_noise_text": "#fb7185",
+    "status_unsort_bg": "rgba(56, 189, 248, 0.16)",
+    "status_unsort_text": "#38bdf8",
+    "selection_bg": "rgba(37, 99, 235, 0.18)",
+    "selection_bg_strong": "rgba(37, 99, 235, 0.30)",
+    "plot_line": "#f8fafc",
+    "plot_scatter": "#60a5fa",
+    "plot_shadow": "#64748b",
+    "plot_mean": "#e2e8f0",
+    "plot_peak": "#fbbf24",
+    "plot_highlight": "#22d3ee",
+    "plot_acg": "#c4b5fd",
+    "plot_isi": "#38bdf8",
+    "plot_fr": "#fbbf24",
+    "plot_overlay": "#34d399",
+    "plot_compare": "#fb923c",
+    "plot_waveform_shadow": "#334155",
 }
 
 
 LIGHT_COLORS = {
-    "bg_base": "#f2f2f2",
+    "bg_base": "#e8ecf2",
     "bg_panel": "#ffffff",
-    "bg_surface": "#ffffff",
-    "bg_elevated": "#eaeaea",
-    "bg_overlay": "rgba(0,0,0,0.25)",
+    "bg_surface": "#f4f6fa",
+    "bg_elevated": "#e4e9f0",
+    "bg_overlay": "rgba(15,23,42,0.28)",
     "bg_tooltip": "#ffffff",
-    "accent": "#e30613",
-    "accent_hover": "#b0050f",
-    "accent_pressed": "#8a040c",
-    "accent_muted": "rgba(227,6,19,0.08)",
+    "accent": "#1d4ed8",
+    "accent_hover": "#1e40af",
+    "accent_pressed": "#1e3a8a",
+    "accent_muted": "rgba(29,78,216,0.10)",
     "accent_text": "#ffffff",
-    "accent_positive": "#00703a",
-    "accent_pos_text": "#00703a",
-    "text_primary": "#000000",
-    "text_secondary": "#333333",
-    "text_tertiary": "#666666",
-    "text_disabled": "#a0a0a0",
-    "text_tooltip": "#000000",
-    "border_subtle": "#e0e0e0",
-    "border_default": "#d0d0d0",
-    "border_strong": "#a0a0a0",
-    "border_focus": "#e30613",
-    "status_good_bg": "rgba(0, 112, 58, 0.12)",
-    "status_good_text": "#00703a",
-    "status_mua_bg": "rgba(245, 166, 35, 0.18)",
-    "status_mua_text": "#8a5a00",
-    "status_noise_bg": "rgba(227, 6, 19, 0.12)",
-    "status_noise_text": "#b0050f",
-    "status_unsort_bg": "rgba(10, 132, 255, 0.12)",
-    "status_unsort_text": "#0050b4",
-    "selection_bg": "rgba(227, 6, 19, 0.10)",
-    "selection_bg_strong": "rgba(227, 6, 19, 0.18)",
-    "plot_line": "#000000",
-    "plot_scatter": "#c00000",
-    "plot_shadow": "#888888",
-    "plot_mean": "#000000",
-    "plot_peak": "#8a5a00",
-    "plot_highlight": "#006f7a",
-    "plot_acg": "#5b2bb3",
-    "plot_isi": "#0050b4",
-    "plot_fr": "#8a5a00",
-    "plot_overlay": "#00703a",
-    "plot_compare": "#b34a00",
-    "plot_waveform_shadow": "#e0e0e0",
+    "accent_positive": "#047857",
+    "accent_pos_text": "#047857",
+    "text_primary": "#0f172a",
+    "text_secondary": "#334155",
+    "text_tertiary": "#475569",
+    "text_disabled": "#94a3b8",
+    "text_tooltip": "#0f172a",
+    "border_subtle": "#d5dce6",
+    "border_default": "#c5cdd8",
+    "border_strong": "#94a3b8",
+    "border_focus": "#1d4ed8",
+    "status_good_bg": "rgba(4, 120, 87, 0.12)",
+    "status_good_text": "#047857",
+    "status_mua_bg": "rgba(180, 83, 9, 0.14)",
+    "status_mua_text": "#b45309",
+    "status_noise_bg": "rgba(190, 18, 60, 0.12)",
+    "status_noise_text": "#be123c",
+    "status_unsort_bg": "rgba(3, 105, 161, 0.12)",
+    "status_unsort_text": "#0369a1",
+    "selection_bg": "rgba(29, 78, 216, 0.12)",
+    "selection_bg_strong": "rgba(29, 78, 216, 0.22)",
+    "plot_line": "#0f172a",
+    "plot_scatter": "#1d4ed8",
+    "plot_shadow": "#64748b",
+    "plot_mean": "#1e293b",
+    "plot_peak": "#b45309",
+    "plot_highlight": "#0e7490",
+    "plot_acg": "#6d28d9",
+    "plot_isi": "#1d4ed8",
+    "plot_fr": "#d97706",
+    "plot_overlay": "#047857",
+    "plot_compare": "#c2410c",
+    "plot_waveform_shadow": "#cbd5e1",
 }
 
 
 # 12 (dark, light) pairs. Each variant is WCAG AA against that theme's bg_panel.
 PLOT_CATEGORICAL = [
-    ("#ff6b6b", "#c00000"),
-    ("#ffd54f", "#8a6a00"),
-    ("#64b5ff", "#0050b4"),
-    ("#ffffff", "#000000"),
-    ("#00e676", "#00703a"),
-    ("#ffb74d", "#b34a00"),
-    ("#18ffff", "#006f7a"),
-    ("#d1b3ff", "#5b2bb3"),
-    ("#ff80ab", "#ad1457"),
-    ("#d4ff4d", "#5a7000"),
-    ("#1de9b6", "#00695c"),
-    ("#ffe082", "#7a4f00"),
+    ("#60a5fa", "#1d4ed8"),
+    ("#fbbf24", "#b45309"),
+    ("#34d399", "#047857"),
+    ("#f8fafc", "#0f172a"),
+    ("#fb923c", "#c2410c"),
+    ("#22d3ee", "#0e7490"),
+    ("#c4b5fd", "#6d28d9"),
+    ("#f472b6", "#be185d"),
+    ("#a3e635", "#3f6212"),
+    ("#38bdf8", "#0369a1"),
+    ("#fde047", "#a16207"),
+    ("#fb7185", "#be123c"),
 ]
 
 
@@ -127,7 +129,7 @@ SP_4 = 16
 SP_5 = 24
 
 PANEL_PADDING = SP_2
-CTRL_SPACING = 6
+CTRL_SPACING = SP_2
 ROW_HEIGHT = 28
 
 TYPE_HEADING = 13
@@ -151,6 +153,37 @@ def resolve_theme_colors(colors: dict = None, theme_name: str = "dark") -> dict:
     return resolved
 
 
+def is_light_theme(colors: dict = None, theme_name: str = "dark") -> bool:
+    """True when *bg_panel* is closer to white than to black."""
+    colors = resolve_theme_colors(colors, theme_name)
+    bg = colors.get("bg_panel", "#000000")
+    if not isinstance(bg, str) or not bg.startswith("#") or len(bg) < 7:
+        return False
+    hex_bg = bg[:7]
+    return contrast_ratio("#000000", hex_bg) >= contrast_ratio("#ffffff", hex_bg)
+
+
+def plot_stroke(colors: dict = None, weight: str = "line") -> float:
+    """Line width that stays readable on the current plot field.
+
+    Light-mode traces sit on white, so they are drawn heavier than the same
+    role on a dark field.
+    """
+    light = is_light_theme(colors)
+    strokes = {
+        "thin": (1.6, 1.0),
+        "line": (2.6, 2.0),
+        "thick": (3.1, 2.4),
+    }
+    lo, dk = strokes.get(weight, strokes["line"])
+    return lo if light else dk
+
+
+def plot_grid_alpha(colors: dict = None) -> float:
+    """Grid opacity. 0.08 on white is almost invisible."""
+    return 0.22 if is_light_theme(colors) else 0.10
+
+
 def configure_pyqtgraph_theme(colors: dict) -> None:
     """Apply global pyqtgraph colors for newly-created widgets."""
     pg.setConfigOption("background", colors["bg_panel"])
@@ -171,8 +204,6 @@ def apply_plot_theme(target, colors: dict) -> None:
     """
     colors = resolve_theme_colors(colors)
     bg = colors["bg_panel"]
-    spine = colors["border_default"]
-    tick = colors["text_secondary"]
 
     if pg is not None:
         plot_widget = getattr(pg, "PlotWidget", None)
@@ -216,7 +247,8 @@ def _style_pg_plot_item(plot_item, colors: dict) -> None:
     try:
         plot_item.showAxis("top", False)
         plot_item.showAxis("right", False)
-        plot_item.showGrid(x=True, y=True, alpha=0.08)
+        plot_item.showGrid(x=True, y=True, alpha=plot_grid_alpha(colors))
+        plot_item.setContentsMargins(SP_2, SP_2, SP_2, SP_2)
     except Exception:
         pass
 
@@ -235,7 +267,8 @@ def _style_mpl_axes(ax, colors: dict) -> None:
     title = ax.title
     if title is not None:
         title.set_color(colors["text_primary"])
-    ax.grid(True, color=colors["border_subtle"], linewidth=0.6, alpha=0.8)
+    grid_alpha = 0.55 if is_light_theme(colors) else 0.35
+    ax.grid(True, color=colors["border_subtle"], linewidth=0.7, alpha=grid_alpha)
 
 
 def feature_palette(colors: dict = None) -> dict:
@@ -248,7 +281,7 @@ def feature_palette(colors: dict = None) -> dict:
         "text_primary": colors["text_primary"],
         "text_muted": colors["text_secondary"],
         "accent": colors["accent"],
-        "highlight": colors["plot_compare"],
+        "highlight": colors["plot_peak"],
         "grid": colors["border_subtle"],
         "progress_fg": colors["accent"],
         "progress_bg": colors["bg_elevated"],

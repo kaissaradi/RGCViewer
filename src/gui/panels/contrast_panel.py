@@ -28,7 +28,7 @@ from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget,
 )
 
-from ..theme import resolve_theme_colors
+from ..theme import apply_plot_theme, plot_grid_alpha, resolve_theme_colors
 from ...analysis import contrast_calc
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,8 @@ class ContrastPanel(QWidget):
 
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         # --- header ---
         header = QHBoxLayout()
@@ -148,13 +149,8 @@ class ContrastPanel(QWidget):
     # ── chrome ───────────────────────────────────────────────────────────────
 
     def _style_plot(self, p, colors):
-        p.getAxis("bottom").setPen(pg.mkPen(colors["border_default"]))
-        p.getAxis("left").setPen(pg.mkPen(colors["border_default"]))
-        p.getAxis("bottom").setTextPen(pg.mkPen(colors["text_secondary"]))
-        p.getAxis("left").setTextPen(pg.mkPen(colors["text_secondary"]))
-        p.showAxis("top", False)
-        p.showAxis("right", False)
-        p.showGrid(x=True, y=True, alpha=0.08)
+        apply_plot_theme(p, colors)
+        p.showGrid(x=True, y=True, alpha=plot_grid_alpha(colors))
         if p.titleLabel:
             p.titleLabel.setText(p.titleLabel.text, color=colors["text_secondary"],
                                  size="9pt")

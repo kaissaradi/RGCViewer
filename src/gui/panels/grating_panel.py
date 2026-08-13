@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..theme import resolve_theme_colors
+from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
 from ..workers.workers import GratingComputeWorker
 from ...analysis import grating_calc
 
@@ -91,7 +91,8 @@ class GratingPanel(QWidget):
         # ---------------------------------------------------------
         data_page = QWidget()
         data_layout = QVBoxLayout(data_page)
-        data_layout.setContentsMargins(4, 4, 4, 4)
+        data_layout.setContentsMargins(8, 8, 8, 8)
+        data_layout.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel(
@@ -213,16 +214,9 @@ class GratingPanel(QWidget):
             colors = resolve_theme_colors(self.main_window.get_current_colors())
         else:
             colors = resolve_theme_colors(colors)
+        apply_plot_theme(plot_widget, colors)
         plot_item = plot_widget.getPlotItem()
-        plot_widget.setBackground(colors["bg_panel"])
-        plot_item.getAxis("bottom").setPen(pg.mkPen(colors["border_default"]))
-        plot_item.getAxis("left").setPen(pg.mkPen(colors["border_default"]))
-        plot_item.getAxis("bottom").setTextPen(pg.mkPen(colors["text_secondary"]))
-        plot_item.getAxis("left").setTextPen(pg.mkPen(colors["text_secondary"]))
-        plot_item.showAxis("top", False)
-        plot_item.showAxis("right", False)
-        plot_item.showGrid(x=True, y=True, alpha=0.08)
-        plot_item.setContentsMargins(8, 8, 8, 8)
+        plot_item.showGrid(x=True, y=True, alpha=plot_grid_alpha(colors))
 
     def restyle_plots(self, colors):
         colors = resolve_theme_colors(colors)
@@ -231,9 +225,15 @@ class GratingPanel(QWidget):
         self._style_plot(self.sf_plot, colors)
         self.psth_grid_widget.setBackground(colors["bg_panel"])
         self._polar_pref_line.setPen(
-            pg.mkPen(colors.get("plot_compare", "r"), width=2, style=Qt.DashLine)
+            pg.mkPen(
+                colors.get("plot_compare", "r"),
+                width=plot_stroke(colors),
+                style=Qt.DashLine,
+            )
         )
-        self._sf_curve.setPen(pg.mkPen(colors.get("plot_overlay", "c"), width=2))
+        self._sf_curve.setPen(
+            pg.mkPen(colors.get("plot_overlay", "c"), width=plot_stroke(colors))
+        )
         if self._current_cluster_id is not None:
             self.update_all(self._current_cluster_id)
 
