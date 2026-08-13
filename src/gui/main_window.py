@@ -24,6 +24,9 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QShortcut,
     QSlider,
+    QToolButton,
+    QSizePolicy,
+    QTabBar,
 )
 from qtpy.QtCore import (
     Qt,
@@ -76,12 +79,14 @@ from .shortcuts import KeyForwarder
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
+    APP_NAME,
     DARK_COLORS,
     PANEL_PADDING,
     CTRL_SPACING,
     ROW_HEIGHT,
     UI_FONT_FAMILY,
     configure_pyqtgraph_theme,
+    format_run_meta,
     get_theme_colors,
 )
 
@@ -289,15 +294,16 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 gridline-color: transparent;
                 border: none;
-                selection-background-color: {colors['selection_bg']};
-                selection-color: {colors['text_primary']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             QTableView::item {{
                 border-bottom: 1px solid {colors['border_subtle']};
                 padding: 2px 10px;
             }}
             QTableView::item:selected {{
-                background-color: {colors['selection_bg']};
+                background-color: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QHeaderView::section {{
                 background-color: {colors['bg_panel']};
@@ -345,16 +351,19 @@ class MainWindow(QMainWindow):
                 border-color: {colors['border_subtle']};
             }}
 
-            /* ── Tabs ────────────────────────────── */
+            /* ── Tabs (Swiss header pills) ───────── */
             QTabWidget::pane {{
                 border: none;
-                border-top: 1px solid {colors['border_default']};
-                top: 4px;
+                top: 0;
+            }}
+            QTabBar {{
+                background: transparent;
+                border: none;
             }}
             QTabBar::tab {{
                 color: {colors['text_secondary']};
                 background: transparent;
-                padding: 6px 12px;
+                padding: 5px 10px;
                 font-size: 12px;
                 font-weight: 500;
                 border: none;
@@ -370,8 +379,63 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 background: {colors['bg_elevated']};
             }}
+            QTabBar::tab:disabled {{
+                color: {colors['text_disabled']};
+            }}
             QTabBar::scroller {{
                 width: 24px;
+            }}
+
+            /* ── Swiss app header ────────────────── */
+            QWidget#appTopbar {{
+                background-color: {colors['bg_panel']};
+                border: none;
+                border-bottom: 1px solid {colors['border_default']};
+            }}
+            QWidget#appTopbar QLabel#brandDot {{
+                background-color: {colors['accent']};
+                border-radius: 1px;
+                min-width: 8px;
+                max-width: 8px;
+                min-height: 8px;
+                max-height: 8px;
+            }}
+            QWidget#appTopbar QLabel#brandLabel {{
+                color: {colors['accent']};
+                font-weight: 700;
+                font-size: 13px;
+                letter-spacing: 1px;
+                background: transparent;
+            }}
+            QWidget#appTopbar QLabel#runMeta {{
+                color: {colors['text_secondary']};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QWidget#appTopbar QToolButton,
+            QWidget#appTopbar QPushButton {{
+                height: 26px;
+                padding: 0 10px;
+                border-radius: 3px;
+                border: 1px solid {colors['border_default']};
+                background: {colors['bg_panel']};
+                color: {colors['text_secondary']};
+                font-size: 11px;
+                font-weight: 500;
+            }}
+            QWidget#appTopbar QToolButton:hover,
+            QWidget#appTopbar QPushButton:hover {{
+                border-color: {colors['border_strong']};
+                color: {colors['text_primary']};
+            }}
+            QWidget#appTopbar QPushButton:checked {{
+                background: {colors['accent']};
+                border-color: {colors['accent']};
+                color: {colors['accent_text']};
+            }}
+            QWidget#leftRail {{
+                background-color: {colors['bg_panel']};
+                border-right: 1px solid {colors['border_default']};
             }}
 
             /* ── Inputs ──────────────────────────── */
@@ -525,7 +589,8 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 border: none;
                 alternate-background-color: {colors['bg_surface']};
-                selection-background-color: {colors['selection_bg']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             /* Tree item colors handled on tree_view + ClusterTreeDelegate */
 
@@ -533,9 +598,10 @@ class MainWindow(QMainWindow):
             QStatusBar {{
                 color: {colors['text_tertiary']};
                 font-size: 11px;
-                border-top: 0.5px solid {colors['border_subtle']};
+                border-top: 1px solid {colors['border_subtle']};
                 background: {colors['bg_base']};
-                padding: 2px 8px;
+                padding: 2px 10px;
+                min-height: 26px;
             }}
 
             /* ── Menu bar ────────────────────────── */
@@ -588,6 +654,157 @@ class MainWindow(QMainWindow):
     def get_current_colors(self):
         """Returns the color dictionary for the current theme."""
         return get_theme_colors(self.theme)
+
+    def _build_topbar(self):
+        """Swiss 40px header: brand, run meta, view tabs, File/Array, actions."""
+        colors = self.get_current_colors()
+        bar = QWidget()
+        bar.setObjectName("appTopbar")
+        bar.setFixedHeight(40)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(10)
+
+        brand = QWidget()
+        brand_layout = QHBoxLayout(brand)
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(6)
+        self.brand_dot = QLabel()
+        self.brand_dot.setObjectName("brandDot")
+        self.brand_dot.setFixedSize(8, 8)
+        self.brand_label = QLabel(APP_NAME)
+        self.brand_label.setObjectName("brandLabel")
+        brand_layout.addWidget(self.brand_dot)
+        brand_layout.addWidget(self.brand_label)
+        layout.addWidget(brand)
+
+        self.run_meta_label = QLabel("No run loaded")
+        self.run_meta_label.setObjectName("runMeta")
+        self.run_meta_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.run_meta_label.setMinimumWidth(80)
+        self.run_meta_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        layout.addWidget(self.run_meta_label)
+
+        self.app_tab_bar = QTabBar()
+        self.app_tab_bar.setObjectName("appTabBar")
+        self.app_tab_bar.setExpanding(False)
+        self.app_tab_bar.setDocumentMode(True)
+        self.app_tab_bar.setDrawBase(False)
+        self.app_tab_bar.setUsesScrollButtons(True)
+        self.app_tab_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.app_tab_bar.currentChanged.connect(self._on_header_tab_changed)
+        layout.addWidget(self.app_tab_bar, 1)
+
+        self.file_btn = QToolButton()
+        self.file_btn.setText("File")
+        self.file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.file_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        layout.addWidget(self.file_btn)
+
+        self.array_btn = QToolButton()
+        self.array_btn.setText("Array")
+        self.array_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.array_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        layout.addWidget(self.array_btn)
+
+        self.open_run_btn = QPushButton("Open run")
+        self.open_run_btn.setToolTip("Load a Kilosort directory")
+        self.open_run_btn.clicked.connect(lambda: self.load_directory())
+        layout.addWidget(self.open_run_btn)
+
+        self.theme_btn = QPushButton("Light" if self.theme == "dark" else "Dark")
+        self.theme_btn.setToolTip("Toggle light / dark mode")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        layout.addWidget(self.theme_btn)
+
+        self.pop_view_btn = QPushButton("Population")
+        self.pop_view_btn.setCheckable(True)
+        self.pop_view_btn.setToolTip("Show the population context pane")
+        self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
+        layout.addWidget(self.pop_view_btn)
+
+        self.topbar = bar
+        self.setMenuWidget(bar)
+        self._style_topbar_actions(colors)
+
+    def _style_topbar_actions(self, colors):
+        if hasattr(self, "theme_btn"):
+            self.theme_btn.setText("Light" if self.theme == "dark" else "Dark")
+        if hasattr(self, "pop_view_btn"):
+            self.pop_view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 1px solid {colors['border_default']};
+                    border-radius: 3px;
+                    color: {colors['text_secondary']};
+                    background: {colors['bg_panel']};
+                }}
+                QPushButton:checked {{
+                    background: {colors['accent']};
+                    border-color: {colors['accent']};
+                    color: {colors['accent_text']};
+                }}
+                QPushButton:hover:!checked {{
+                    border-color: {colors['border_strong']};
+                    color: {colors['text_primary']};
+                }}
+            """)
+
+    def _on_header_tab_changed(self, index):
+        if not hasattr(self, "analysis_tabs"):
+            return
+        if self.analysis_tabs.currentIndex() != index:
+            self.analysis_tabs.setCurrentIndex(index)
+
+    def _sync_header_tab(self, index):
+        bar = getattr(self, "app_tab_bar", None)
+        if bar is None:
+            return
+        if bar.currentIndex() != index:
+            bar.blockSignals(True)
+            bar.setCurrentIndex(index)
+            bar.blockSignals(False)
+
+    def sync_header_tab_enabled(self):
+        """Copy QTabWidget enabled flags onto the header tab strip."""
+        bar = getattr(self, "app_tab_bar", None)
+        tabs = getattr(self, "analysis_tabs", None)
+        if bar is None or tabs is None:
+            return
+        for i in range(min(bar.count(), tabs.count())):
+            bar.setTabEnabled(i, tabs.isTabEnabled(i))
+
+    def refresh_run_meta(self):
+        """Update the header breadcrumb from the loaded DataManager."""
+        label = getattr(self, "run_meta_label", None)
+        if label is None:
+            return
+        dm = self.data_manager
+        if dm is None:
+            label.setText(format_run_meta(None, None, None, 0))
+            return
+        ks = getattr(dm, "kilosort_dir", None)
+        sorter = ks.name if ks is not None else ""
+        n = 0
+        try:
+            n = len(dm.cluster_df)
+        except Exception:
+            n = 0
+        label.setText(
+            format_run_meta(
+                getattr(dm, "exp_name", "") or "",
+                getattr(dm, "datafile_name", "") or "",
+                sorter,
+                n,
+            )
+        )
 
     def toggle_theme(self):
         """Toggles between light and dark themes."""
@@ -661,26 +878,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "collapse_all_btn"):
             self.collapse_all_btn.setStyleSheet(ghost)
 
-        if hasattr(self, "pop_view_btn"):
-            self.pop_view_btn.setStyleSheet(f"""
-                QPushButton {{
-                    font-size: 11px;
-                    padding: 0 10px;
-                    border: 0.5px solid {colors['border_default']};
-                    border-radius: 5px;
-                    color: {colors['text_secondary']};
-                    background: transparent;
-                }}
-                QPushButton:checked {{
-                    background: {colors['accent']};
-                    border-color: {colors['accent']};
-                    color: {colors['accent_text']};
-                }}
-                QPushButton:hover:!checked {{
-                    background: {colors['bg_surface']};
-                    color: {colors['text_primary']};
-                }}
-            """)
+        self._style_topbar_actions(colors)
 
         if hasattr(self, "pop_expand_btn"):
             self._style_pop_expand_btn(colors)
@@ -705,7 +903,8 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 border: none;
                 alternate-background-color: {colors['bg_surface']};
-                selection-background-color: {colors['selection_bg']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             QTreeView::item {{
                 color: {colors['text_primary']};
@@ -715,7 +914,8 @@ class MainWindow(QMainWindow):
                 background: {colors['bg_surface']};
             }}
             QTreeView::item:selected {{
-                background: {colors['selection_bg']};
+                background: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QTreeView::branch {{
                 background: transparent;
@@ -1175,12 +1375,17 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
+        self._build_topbar()
+
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         main_layout = QHBoxLayout(self.central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # --- Left Pane ---
         self.left_pane = QWidget()
+        self.left_pane.setObjectName("leftRail")
         left_pane_layout = QHBoxLayout(self.left_pane)
         left_pane_layout.setContentsMargins(0, 0, 0, 0)
         left_pane_layout.setSpacing(0)
@@ -1315,7 +1520,7 @@ class MainWindow(QMainWindow):
 
         # --- Sidebar Search Bar ---
         self.cluster_search_bar = QLineEdit()
-        self.cluster_search_bar.setPlaceholderText("Search clusters...")
+        self.cluster_search_bar.setPlaceholderText("Search cells, groups…")
         self.cluster_search_bar.setClearButtonEnabled(True)
         self.cluster_search_bar.setFixedHeight(30)
         self.cluster_search_bar.textChanged.connect(self._filter_sidebar)
@@ -1351,36 +1556,12 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # Create Tab Widget
+        # Create Tab Widget. The visible tab strip lives in the Swiss header.
         self.analysis_tabs = QTabWidget()
+        self.analysis_tabs.setDocumentMode(True)
         self.analysis_tabs.tabBar().setUsesScrollButtons(True)
         self.analysis_tabs.tabBar().setElideMode(Qt.ElideNone)
-
-        # Replace corner widget checkbox with a compact icon button:
-        self.pop_view_btn = QPushButton("⊞  Population")
-        self.pop_view_btn.setCheckable(True)
-        self.pop_view_btn.setFixedHeight(28)
-        self.pop_view_btn.setStyleSheet(f"""
-                QPushButton {{
-                    font-size: 11px;
-                    padding: 0 10px;
-                    border: 0.5px solid {colors['border_default']};
-                border-radius: 5px;
-                    color: {colors['text_secondary']};
-                    background: transparent;
-                }}
-                QPushButton:checked {{
-                    background: {colors['accent']};
-                    border-color: {colors['accent']};
-                    color: {colors['accent_text']};
-                }}
-                QPushButton:hover:!checked {{
-                    background: {colors['bg_surface']};
-                    color: {colors['text_primary']};
-                }}
-        """)
-        self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
-        self.analysis_tabs.setCornerWidget(self.pop_view_btn, Qt.TopRightCorner)
+        self.analysis_tabs.tabBar().hide()
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
@@ -1589,6 +1770,9 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")
         self.analysis_tabs.addTab(self.waveforms_panel, "Waveforms")
         self.analysis_tabs.addTab(self.raw_panel, "Raw")
+        for i in range(self.analysis_tabs.count()):
+            self.app_tab_bar.addTab(self.analysis_tabs.tabText(i))
+        self.analysis_tabs.currentChanged.connect(self._sync_header_tab)
 
         # --- Main Splitter and Layout ---
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1615,9 +1799,9 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.cache_progress)
         self.cache_progress_count = 0
 
-        # --- Menu Bar ---
-        menu = self.menuBar()
-        file_menu = menu.addMenu("&File")
+        # --- Menus live on the Swiss header, not a native menu bar ---
+        file_menu = QMenu("&File", self)
+        self.file_btn.setMenu(file_menu)
 
         load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
 
@@ -1652,15 +1836,11 @@ class MainWindow(QMainWindow):
         self.rebuild_cache_action.setEnabled(False)
 
         # --- Array Menu ---
-        array_menu = menu.addMenu("&Array")
+        array_menu = QMenu("&Array", self)
+        self.array_btn.setMenu(array_menu)
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
         self.calibrate_array_action.setEnabled(False)  # Enabled after data loads
         self.calibrate_array_action.triggered.connect(self._open_array_calibration)
-
-        # --- View Menu ---
-        view_menu = menu.addMenu("&View")
-        self.toggle_theme_action = view_menu.addAction("Toggle Light/Dark Mode")
-        self.toggle_theme_action.triggered.connect(self.toggle_theme)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())

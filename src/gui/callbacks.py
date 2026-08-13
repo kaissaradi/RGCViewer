@@ -389,6 +389,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     recent_paths.remember_dataset(ks_dir_name, dat_file)
 
     n_clusters = len(main_window.data_manager.cluster_df)
+    if hasattr(main_window, "refresh_run_meta"):
+        main_window.refresh_run_meta()
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
     # Take "Checking for…" off the bar before tree / UMAP setup. That work
     # used to leave the last check message on screen and look like the
     # check itself was still running.
@@ -409,6 +413,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.analysis_tabs.setTabEnabled(
             main_window.analysis_tabs.indexOf(main_window.raw_panel), False
         )
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
 
     # 2. Tree/Table Population
     tree_file_path = os.path.join(ks_dir_name, "cluster_group_refined_tree.json")
@@ -925,6 +931,10 @@ def _on_vision_loaded(main_window, success, message, is_partial):
         main_window.vision_load_worker = None
 
     main_window.central_widget.setEnabled(True)
+    if hasattr(main_window, "refresh_run_meta"):
+        main_window.refresh_run_meta()
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
 
     if success and not is_partial:
         invalidate_population_caches()

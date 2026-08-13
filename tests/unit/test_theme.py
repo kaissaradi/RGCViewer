@@ -1,8 +1,11 @@
 from matplotlib.figure import Figure
 
 from src.gui.theme import (
+    APP_NAME,
     DARK_COLORS,
     LIGHT_COLORS,
+    PALETTE_DARK,
+    PALETTE_LIGHT,
     PLOT_CATEGORICAL,
     SP_1,
     SP_2,
@@ -12,6 +15,7 @@ from src.gui.theme import (
     apply_plot_theme,
     contrast_ratio,
     feature_palette,
+    format_run_meta,
     get_theme_colors,
     is_light_theme,
     plot_grid_alpha,
@@ -110,9 +114,57 @@ def test_get_theme_colors_returns_copy():
     assert LIGHT_COLORS["accent"] != "#000000"
 
 
-def test_accent_is_blue_not_bauhaus_red():
-    assert DARK_COLORS["accent"].lower() != "#e30613"
+def test_locked_palette_tokens():
+    assert PALETTE_LIGHT == {
+        "bg": "#F2EFE6",
+        "surface": "#FFFFFF",
+        "ink": "#1B1B1B",
+        "muted": "#6E6A61",
+        "rule": "#D9D4C7",
+        "red": "#C8322B",
+        "yellow": "#E9B520",
+        "blue": "#1B4E9B",
+    }
+    assert PALETTE_DARK == {
+        "bg": "#1A1917",
+        "surface": "#232220",
+        "ink": "#F2EFE6",
+        "muted": "#A19C91",
+        "rule": "#35332E",
+        "red": "#E8564A",
+        "yellow": "#F5C842",
+        "blue": "#4A82D6",
+    }
+    assert APP_NAME == "AXOLOTL"
+
+
+def test_semantic_roles_map_onto_locked_palette():
+    assert LIGHT_COLORS["bg_base"] == PALETTE_LIGHT["bg"]
+    assert LIGHT_COLORS["bg_panel"] == PALETTE_LIGHT["surface"]
+    assert LIGHT_COLORS["text_primary"] == PALETTE_LIGHT["ink"]
+    assert LIGHT_COLORS["text_secondary"] == PALETTE_LIGHT["muted"]
+    assert LIGHT_COLORS["border_default"] == PALETTE_LIGHT["rule"]
+    assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["red"]
+    assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
+    assert LIGHT_COLORS["plot_acg"] == PALETTE_LIGHT["blue"]
+    assert LIGHT_COLORS["plot_line"] == PALETTE_LIGHT["ink"]
+    assert DARK_COLORS["bg_base"] == PALETTE_DARK["bg"]
+    assert DARK_COLORS["plot_fr"] == PALETTE_DARK["yellow"]
+    assert DARK_COLORS["accent"] != "#e30613"
+
+
+def test_ink_is_warm_black_never_pure_black():
+    assert LIGHT_COLORS["text_primary"].lower() != "#000000"
+    assert LIGHT_COLORS["plot_line"].lower() != "#000000"
+    assert LIGHT_COLORS["plot_mean"].lower() != "#000000"
+    assert LIGHT_COLORS["text_primary"] == "#1B1B1B"
+
+
+def test_accent_is_palette_red_and_readable():
+    assert LIGHT_COLORS["accent"] == "#C8322B"
+    assert DARK_COLORS["accent"] == "#C43A32"
     assert LIGHT_COLORS["accent"].lower() != "#e30613"
+    assert DARK_COLORS["accent"].lower() != "#e30613"
     assert contrast_ratio(DARK_COLORS["accent_text"], DARK_COLORS["accent"]) >= 4.5
     assert contrast_ratio(LIGHT_COLORS["accent_text"], LIGHT_COLORS["accent"]) >= 4.5
 
@@ -125,10 +177,21 @@ def test_light_and_dark_plot_roles_are_designed_separately():
 
 
 def test_light_plots_use_bauhaus_primaries_not_only_black():
-    assert LIGHT_COLORS["plot_acg"].lower() != "#000000"
-    assert LIGHT_COLORS["plot_fr"].lower() != "#000000"
-    assert LIGHT_COLORS["plot_ensemble"].lower() != "#000000"
-    assert LIGHT_COLORS["plot_isi"].lower() != LIGHT_COLORS["plot_fr"].lower()
+    assert LIGHT_COLORS["plot_acg"] == PALETTE_LIGHT["blue"]
+    assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
+    assert LIGHT_COLORS["plot_ensemble"] == PALETTE_LIGHT["blue"]
+    assert LIGHT_COLORS["plot_isi"] != LIGHT_COLORS["plot_fr"]
+
+
+def test_format_run_meta_breadcrumb():
+    assert format_run_meta(None, None, None, 0) == "No run loaded"
+    assert (
+        format_run_meta("20251015A", "chunk20", "kilosort4", 312)
+        == "20251015A / chunk20 / kilosort4  ·  312 cells"
+    )
+    assert format_run_meta("20251015A", "chunk20", "kilosort4", 0) == (
+        "20251015A / chunk20 / kilosort4"
+    )
 
 
 def test_is_light_theme_and_plot_stroke():
@@ -148,6 +211,7 @@ def test_light_body_and_status_text_contrast():
     bg = LIGHT_COLORS["bg_panel"]
     assert contrast_ratio(LIGHT_COLORS["text_primary"], bg) >= 4.5
     assert contrast_ratio(LIGHT_COLORS["text_secondary"], bg) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["text_tertiary"], bg) >= 4.5
     assert contrast_ratio(LIGHT_COLORS["status_good_text"], bg) >= 4.5
     assert contrast_ratio(LIGHT_COLORS["status_mua_text"], bg) >= 4.5
 

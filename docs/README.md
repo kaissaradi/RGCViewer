@@ -8,7 +8,8 @@ Read in this order. Do not start from a historical spec.
 | 2 | `CLAUDE.md` | Agent and human | Experiment, file layout, analysis traps |
 | 3 | `docs/AGENTS.md` | Agent | Laws, caches, threads, test rules |
 | 4 | `docs/PLAN.md` | Agent and human | Pickup, standing decisions, fragile zones, open defects |
-| 5 | `docs/SPEC.md` | Agent | Template for a new feature spec |
+| 5 | `docs/design/palette.md` | Agent and human | Locked Bauhaus color tokens |
+| 6 | `docs/SPEC.md` | Agent | Template for a new feature spec |
 
 ## Historical specs
 

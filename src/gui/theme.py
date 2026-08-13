@@ -1,129 +1,166 @@
 """Semantic color palettes and shared UI constants for RGCViewer.
 
-Swiss layout (hairline panes, caption titles) with a blue chrome accent.
-Light-mode *plots* use the Bauhaus primaries — black, blue, yellow — not
-an all-black figure and not a pale wash. Existing semantic key names are
-kept so QSS and restyle_plots do not break on rename.
+Canonical Bauhaus tokens live in ``PALETTE_LIGHT`` / ``PALETTE_DARK``.
+Do not invent extra primaries. Ink is warm black (``#1B1B1B``), never
+``#000000``. See ``docs/design/palette.md``.
+
+Semantic keys (``bg_base``, ``accent``, ``plot_acg``, …) are derived from
+those eight tokens so QSS and ``restyle_plots`` keep stable names.
 """
 
 import pyqtgraph as pg
 
+# Product mark in the Swiss header. Window title stays "RGC Viewer".
+APP_NAME = "AXOLOTL"
+
+# Locked 2026-08-12. These eight names are the only primaries.
+PALETTE_LIGHT = {
+    "bg": "#F2EFE6",  # warm paper, not white
+    "surface": "#FFFFFF",
+    "ink": "#1B1B1B",  # warm black, never #000
+    "muted": "#6E6A61",
+    "rule": "#D9D4C7",
+    "red": "#C8322B",
+    "yellow": "#E9B520",
+    "blue": "#1B4E9B",
+}
+
+PALETTE_DARK = {
+    "bg": "#1A1917",
+    "surface": "#232220",
+    "ink": "#F2EFE6",
+    "muted": "#A19C91",
+    "rule": "#35332E",
+    "red": "#E8564A",
+    "yellow": "#F5C842",
+    "blue": "#4A82D6",
+}
+
+# Functional extras (not Bauhaus primaries). Used for status / AA fills.
+_GOOD_LIGHT = "#1F7A4D"
+_GOOD_DARK = "#5DCAA0"
+_YELLOW_TEXT_LIGHT = "#8A6500"  # #E9B520 fails AA as 12px text on white
+_BLUE_PLOT_DARK = "#6B9BE0"  # #4A82D6 is 4.13:1 on #232220
+_RED_FILL_DARK = "#C43A32"  # #E8564A + paper ink is 3.12:1
+_RED_TEXT_DARK = "#F28A82"  # #E8564A is 4.44:1 on #232220
+
+
 DARK_COLORS = {
-    "bg_base": "#111214",
-    "bg_panel": "#181b22",
-    "bg_surface": "#1e222b",
-    "bg_elevated": "#272c37",
+    "bg_base": PALETTE_DARK["bg"],
+    "bg_panel": PALETTE_DARK["surface"],
+    "bg_surface": "#2A2926",
+    "bg_elevated": "#312F2B",
     "bg_overlay": "rgba(0,0,0,0.55)",
-    "bg_tooltip": "#272c37",
-    "accent": "#2563eb",
-    "accent_hover": "#3b82f6",
-    "accent_pressed": "#1d4ed8",
-    "accent_muted": "rgba(37,99,235,0.18)",
-    "accent_text": "#ffffff",
-    "accent_positive": "#34d399",
-    "accent_pos_text": "#34d399",
-    "text_primary": "#f8fafc",
-    "text_secondary": "#94a3b8",
-    "text_tertiary": "#74859b",
-    "text_disabled": "#475569",
-    "text_tooltip": "#f8fafc",
-    "border_subtle": "#2a303c",
-    "border_default": "#3a4252",
-    "border_strong": "#5b6578",
-    "border_focus": "#3b82f6",
-    "status_good_bg": "rgba(52, 211, 153, 0.16)",
-    "status_good_text": "#34d399",
-    "status_mua_bg": "rgba(251, 191, 36, 0.16)",
-    "status_mua_text": "#fbbf24",
-    "status_noise_bg": "rgba(251, 113, 133, 0.16)",
-    "status_noise_text": "#fb7185",
-    "status_unsort_bg": "rgba(56, 189, 248, 0.16)",
-    "status_unsort_text": "#38bdf8",
-    "selection_bg": "rgba(37, 99, 235, 0.18)",
-    "selection_bg_strong": "rgba(37, 99, 235, 0.30)",
-    "plot_bg": "#181b22",
-    "plot_line": "#f8fafc",
-    "plot_scatter": "#60a5fa",
-    "plot_shadow": "#94a3b8",
-    "plot_ensemble": "#7eb8f7",
-    "plot_fill": "#334155",
-    "plot_mean": "#f8fafc",
-    "plot_peak": "#fbbf24",
-    "plot_highlight": "#22d3ee",
-    "plot_acg": "#c4b5fd",
-    "plot_isi": "#38bdf8",
-    "plot_fr": "#fbbf24",
-    "plot_overlay": "#34d399",
-    "plot_compare": "#fb923c",
-    "plot_waveform_shadow": "#334155",
+    "bg_tooltip": "#312F2B",
+    "accent": _RED_FILL_DARK,
+    "accent_hover": PALETTE_DARK["red"],
+    "accent_pressed": "#A8322C",
+    "accent_muted": "rgba(232,86,74,0.18)",
+    "accent_text": "#FFFFFF",
+    "accent_positive": _GOOD_DARK,
+    "accent_pos_text": _GOOD_DARK,
+    "text_primary": PALETTE_DARK["ink"],
+    "text_secondary": PALETTE_DARK["muted"],
+    "text_tertiary": PALETTE_DARK["muted"],
+    "text_disabled": "#6B675F",
+    "text_tooltip": PALETTE_DARK["ink"],
+    "border_subtle": PALETTE_DARK["rule"],
+    "border_default": PALETTE_DARK["rule"],
+    "border_strong": "#4A4740",
+    "border_focus": PALETTE_DARK["red"],
+    "status_good_bg": "rgba(93, 202, 160, 0.16)",
+    "status_good_text": _GOOD_DARK,
+    "status_mua_bg": "rgba(245, 200, 66, 0.16)",
+    "status_mua_text": PALETTE_DARK["yellow"],
+    "status_noise_bg": "rgba(232, 86, 74, 0.16)",
+    "status_noise_text": _RED_TEXT_DARK,
+    "status_unsort_bg": "rgba(74, 130, 214, 0.16)",
+    "status_unsort_text": _BLUE_PLOT_DARK,
+    "selection_bg": "rgba(232, 86, 74, 0.22)",
+    "selection_bg_strong": "rgba(232, 86, 74, 0.36)",
+    "plot_bg": PALETTE_DARK["surface"],
+    "plot_line": PALETTE_DARK["ink"],
+    "plot_scatter": _BLUE_PLOT_DARK,
+    "plot_shadow": PALETTE_DARK["muted"],
+    "plot_ensemble": _BLUE_PLOT_DARK,
+    "plot_fill": _BLUE_PLOT_DARK,
+    "plot_mean": PALETTE_DARK["ink"],
+    "plot_peak": PALETTE_DARK["yellow"],
+    "plot_highlight": _BLUE_PLOT_DARK,
+    "plot_acg": _BLUE_PLOT_DARK,
+    "plot_isi": _BLUE_PLOT_DARK,
+    "plot_fr": PALETTE_DARK["yellow"],
+    "plot_overlay": _GOOD_DARK,
+    "plot_compare": PALETTE_DARK["red"],
+    "plot_waveform_shadow": PALETTE_DARK["rule"],
 }
 
 
 LIGHT_COLORS = {
-    "bg_base": "#f2f2f2",
-    "bg_panel": "#ffffff",
-    "bg_surface": "#f2f2f2",
-    "bg_elevated": "#eaeaea",
-    "bg_overlay": "rgba(15,23,42,0.28)",
-    "bg_tooltip": "#ffffff",
-    "accent": "#1d4ed8",
-    "accent_hover": "#1e40af",
-    "accent_pressed": "#1e3a8a",
-    "accent_muted": "rgba(29,78,216,0.10)",
-    "accent_text": "#ffffff",
-    "accent_positive": "#047857",
-    "accent_pos_text": "#047857",
-    "text_primary": "#000000",
-    "text_secondary": "#333333",
-    "text_tertiary": "#666666",
-    "text_disabled": "#a0a0a0",
-    "text_tooltip": "#000000",
-    "border_subtle": "#e0e0e0",
-    "border_default": "#d0d0d0",
-    "border_strong": "#a0a0a0",
-    "border_focus": "#1d4ed8",
-    "status_good_bg": "rgba(4, 120, 87, 0.12)",
-    "status_good_text": "#047857",
-    "status_mua_bg": "rgba(180, 83, 9, 0.14)",
-    "status_mua_text": "#b45309",
-    "status_noise_bg": "rgba(190, 18, 60, 0.12)",
-    "status_noise_text": "#be123c",
-    "status_unsort_bg": "rgba(3, 105, 161, 0.12)",
-    "status_unsort_text": "#0369a1",
-    "selection_bg": "rgba(29, 78, 216, 0.14)",
-    "selection_bg_strong": "rgba(29, 78, 216, 0.24)",
-    "plot_bg": "#ffffff",
-    "plot_line": "#000000",
-    "plot_scatter": "#0d47a1",
-    "plot_shadow": "#5a5a5a",
-    "plot_ensemble": "#0d47a1",
-    "plot_fill": "#1565c0",
-    "plot_mean": "#000000",
-    "plot_peak": "#c47f00",
-    "plot_highlight": "#0d47a1",
-    "plot_acg": "#0d47a1",
-    "plot_isi": "#0d47a1",
-    "plot_fr": "#c47f00",
-    "plot_overlay": "#1565c0",
-    "plot_compare": "#c2410c",
-    "plot_waveform_shadow": "#e0e0e0",
+    "bg_base": PALETTE_LIGHT["bg"],
+    "bg_panel": PALETTE_LIGHT["surface"],
+    "bg_surface": PALETTE_LIGHT["bg"],
+    "bg_elevated": "#E8E4D8",
+    "bg_overlay": "rgba(27,27,27,0.32)",
+    "bg_tooltip": PALETTE_LIGHT["surface"],
+    "accent": PALETTE_LIGHT["red"],
+    "accent_hover": "#B02B25",
+    "accent_pressed": "#98241F",
+    "accent_muted": "rgba(200,50,43,0.12)",
+    "accent_text": "#FFFFFF",
+    "accent_positive": _GOOD_LIGHT,
+    "accent_pos_text": _GOOD_LIGHT,
+    "text_primary": PALETTE_LIGHT["ink"],
+    "text_secondary": PALETTE_LIGHT["muted"],
+    "text_tertiary": PALETTE_LIGHT["muted"],
+    "text_disabled": "#A39E94",
+    "text_tooltip": PALETTE_LIGHT["ink"],
+    "border_subtle": PALETTE_LIGHT["rule"],
+    "border_default": PALETTE_LIGHT["rule"],
+    "border_strong": "#B8B2A4",
+    "border_focus": PALETTE_LIGHT["red"],
+    "status_good_bg": "rgba(31, 122, 77, 0.12)",
+    "status_good_text": _GOOD_LIGHT,
+    "status_mua_bg": "rgba(138, 101, 0, 0.14)",
+    "status_mua_text": _YELLOW_TEXT_LIGHT,
+    "status_noise_bg": "rgba(200, 50, 43, 0.12)",
+    "status_noise_text": PALETTE_LIGHT["red"],
+    "status_unsort_bg": "rgba(27, 78, 155, 0.12)",
+    "status_unsort_text": PALETTE_LIGHT["blue"],
+    "selection_bg": "rgba(200, 50, 43, 0.16)",
+    "selection_bg_strong": "rgba(200, 50, 43, 0.28)",
+    "plot_bg": PALETTE_LIGHT["surface"],
+    "plot_line": PALETTE_LIGHT["ink"],
+    "plot_scatter": PALETTE_LIGHT["blue"],
+    "plot_shadow": PALETTE_LIGHT["muted"],
+    "plot_ensemble": PALETTE_LIGHT["blue"],
+    "plot_fill": PALETTE_LIGHT["blue"],
+    "plot_mean": PALETTE_LIGHT["ink"],
+    "plot_peak": PALETTE_LIGHT["yellow"],
+    "plot_highlight": PALETTE_LIGHT["blue"],
+    "plot_acg": PALETTE_LIGHT["blue"],
+    "plot_isi": PALETTE_LIGHT["blue"],
+    "plot_fr": PALETTE_LIGHT["yellow"],
+    "plot_overlay": PALETTE_LIGHT["blue"],
+    "plot_compare": PALETTE_LIGHT["red"],
+    "plot_waveform_shadow": PALETTE_LIGHT["rule"],
 }
 
 
 # 12 (dark, light) pairs. Each variant is WCAG AA against that theme's bg_panel.
 PLOT_CATEGORICAL = [
-    ("#60a5fa", "#1d4ed8"),
-    ("#fbbf24", "#b45309"),
-    ("#34d399", "#047857"),
-    ("#f8fafc", "#0f172a"),
-    ("#fb923c", "#c2410c"),
-    ("#22d3ee", "#0e7490"),
-    ("#c4b5fd", "#6d28d9"),
-    ("#f472b6", "#be185d"),
-    ("#a3e635", "#3f6212"),
-    ("#38bdf8", "#0369a1"),
-    ("#fde047", "#a16207"),
-    ("#fb7185", "#be123c"),
+    (_BLUE_PLOT_DARK, PALETTE_LIGHT["blue"]),
+    (PALETTE_DARK["yellow"], _YELLOW_TEXT_LIGHT),
+    (_RED_TEXT_DARK, PALETTE_LIGHT["red"]),
+    (PALETTE_DARK["ink"], PALETTE_LIGHT["ink"]),
+    (_GOOD_DARK, _GOOD_LIGHT),
+    ("#F0A050", "#B45309"),
+    ("#B794F4", "#6D28D9"),
+    ("#F472B6", "#BE185D"),
+    ("#A3E635", "#3F6212"),
+    ("#67C4E8", "#0E7490"),
+    ("#E9B520", "#A16207"),
+    ("#FB7185", "#9F1239"),
 ]
 
 
@@ -143,6 +180,21 @@ TYPE_CAPTION = 11
 TYPE_MONO = 11
 
 UI_FONT_FAMILY = "Helvetica Neue, Helvetica, Arial, sans-serif"
+
+
+def format_run_meta(exp_name, datafile_name, sorter_name, n_cells) -> str:
+    """Swiss header breadcrumb: ``20251015A / chunk20 / kilosort4  ·  312 cells``."""
+    parts = [str(p) for p in (exp_name, datafile_name, sorter_name) if p]
+    if not parts:
+        return "No run loaded"
+    try:
+        n = int(n_cells)
+    except (TypeError, ValueError):
+        n = 0
+    crumb = " / ".join(parts)
+    if n > 0:
+        return f"{crumb}  ·  {n} cells"
+    return crumb
 
 
 def get_theme_colors(theme_name: str) -> dict:
@@ -196,8 +248,8 @@ def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
 
 
 def plot_ensemble_alpha(colors: dict = None) -> float:
-    """Many overlapping traces: saturated enough to read on white."""
-    return 0.58 if is_light_theme(colors) else 0.40
+    """Many overlapping traces: saturated enough to read on paper/surface."""
+    return 0.65 if is_light_theme(colors) else 0.45
 
 
 def plot_rf_bg_alpha(colors: dict = None) -> float:

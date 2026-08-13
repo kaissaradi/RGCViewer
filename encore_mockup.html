@@ -11,48 +11,48 @@
   ═══════════════════════════════════════════════════════════════ */
 
   :root {
-    /* LIGHT — strict Bauhaus / Swiss */
-    --bg:            #f2f2f2;
-    --surface:       #ffffff;
-    --elevated:      #eaeaea;
-    --border:        #d0d0d0;
-    --border-strong: #a0a0a0;
-    --text:          #000000;
-    --text-2:        #333333;
-    --text-3:        #666666;
-    --accent:        #e30613;          /* pure Bauhaus red */
-    --accent-soft:   #fce8e9;
-    --accent-text:   #ffffff;
-    --good:          #008c45;          /* functional green */
-    --warn:          #f5a623;          /* pure-ish yellow */
-    --bad:           #e30613;
-    --plot:          #000000;
-    --plot-dim:      #888888;
-    --grid:          #e0e0e0;
+    /* LIGHT — locked 2026-08-12. See docs/design/palette.md */
+    --bg:            #F2EFE6;
+    --surface:       #FFFFFF;
+    --elevated:      #E8E4D8;
+    --border:        #D9D4C7;
+    --border-strong: #B8B2A4;
+    --text:          #1B1B1B;
+    --text-2:        #6E6A61;
+    --text-3:        #8A857A;
+    --accent:        #C8322B;
+    --accent-soft:   #F8E8E6;
+    --accent-text:   #FFFFFF;
+    --good:          #1F7A4D;
+    --warn:          #E9B520;
+    --bad:           #C8322B;
+    --plot:          #1B1B1B;
+    --plot-dim:      #6E6A61;
+    --grid:          #D9D4C7;
     --shadow:        none;
     --font:          "Helvetica Neue", Helvetica, Arial, sans-serif;
     --mono:          "SF Mono", "Courier New", monospace;
   }
 
   [data-theme="dark"] {
-    /* DARK — industrial Bauhaus */
-    --bg:            #0d0d0d;
-    --surface:       #1a1a1a;
-    --elevated:      #242424;
-    --border:        #333333;
-    --border-strong: #555555;
-    --text:          #ffffff;
-    --text-2:        #b0b0b0;
-    --text-3:        #707070;
-    --accent:        #e30613;          /* same pure red */
-    --accent-soft:   #2a0a0c;
-    --accent-text:   #ffffff;
-    --good:          #00c853;
-    --warn:          #ffc107;
-    --bad:           #e30613;
-    --plot:          #ffffff;
-    --plot-dim:      #707070;
-    --grid:          #2a2a2a;
+    /* DARK — locked 2026-08-12. See docs/design/palette.md */
+    --bg:            #1A1917;
+    --surface:       #232220;
+    --elevated:      #312F2B;
+    --border:        #35332E;
+    --border-strong: #4A4740;
+    --text:          #F2EFE6;
+    --text-2:        #A19C91;
+    --text-3:        #8A857A;
+    --accent:        #E8564A;
+    --accent-soft:   #3A201E;
+    --accent-text:   #F2EFE6;
+    --good:          #5DCAA0;
+    --warn:          #F5C842;
+    --bad:           #E8564A;
+    --plot:          #F2EFE6;
+    --plot-dim:      #A19C91;
+    --grid:          #35332E;
     --shadow:        none;
   }
 
@@ -794,47 +794,12 @@
 </script>
 
 <!--
-═══════════════════════════════════════════════════════════════════
-BAUHAUS COLOR SYSTEM
-═══════════════════════════════════════════════════════════════════
-
-LIGHT
-─────
-bg             #f2f2f2
-surface        #ffffff
-elevated       #eaeaea
-border         #d0d0d0
-border-strong  #a0a0a0
-text           #000000
-text-2         #333333
-text-3         #666666
-accent         #e30613     ← pure Bauhaus red
-accent-soft    #fce8e9
-good           #008c45
-warn           #f5a623
-plot           #000000
-
-DARK
-────
-bg             #0d0d0d
-surface        #1a1a1a
-elevated       #242424
-border         #333333
-border-strong  #555555
-text           #ffffff
-text-2         #b0b0b0
-text-3         #707070
-accent         #e30613     ← same pure red (no warm drift)
-accent-soft    #2a0a0c
-good           #00c853
-warn           #ffc107
-plot           #ffffff
-
-Rules
-• Neutrals are pure (no warm/cool tint)
-• Only one chromatic accent used for structure (selection, primary actions)
-• Data plots remain free to use any saturated scientific colors
-• No soft “UI gray” muddiness — geometric, high-contrast, industrial
+Locked palette: docs/design/palette.md
+Light  bg #F2EFE6  surface #FFFFFF  ink #1B1B1B  muted #6E6A61
+       rule #D9D4C7  red #C8322B  yellow #E9B520  blue #1B4E9B
+Dark   bg #1A1917  surface #232220  ink #F2EFE6  muted #A19C91
+       rule #35332E  red #E8564A  yellow #F5C842  blue #4A82D6
+Ink is never #000. Yellow is a plot stroke, not 12px text.
 -->
 </body>
 </html>

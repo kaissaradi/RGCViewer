@@ -255,7 +255,7 @@ class StandardPlotsPanel(QWidget):
             f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE OVER TIME</span>"
         )
         self.fr_plot.setLabel("bottom", "Time (s)")
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
         self._style_plot(self.fr_plot)
 
         # --- PERSISTENT FR ITEMS ---
@@ -330,7 +330,7 @@ class StandardPlotsPanel(QWidget):
         )
         self._fr_rate_curve.setPen(pg.mkPen(colors["plot_fr"], width=stroke))
         self._fr_overlay_curve.setPen(pg.mkPen(colors["plot_overlay"], width=thin))
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
 
         # Refresh widgets
         self.grid_widget.setBackground(plot_field(colors))
