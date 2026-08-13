@@ -12,7 +12,16 @@ from matplotlib.patches import Ellipse, FancyArrowPatch
 from matplotlib.collections import LineCollection, EllipseCollection
 from qtpy.QtGui import QColor
 
-from ..theme import DARK_COLORS, is_light_theme, plot_stroke, resolve_theme_colors
+from ..theme import (
+    DARK_COLORS,
+    is_light_theme,
+    plot_ensemble_alpha,
+    plot_field,
+    plot_rf_bg_alpha,
+    plot_rf_target_alpha,
+    plot_stroke,
+    resolve_theme_colors,
+)
 from ...analysis import grating_calc
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
@@ -215,7 +224,7 @@ def rf_vision_id_at(ax, x, y, tolerance_px=_RF_CLICK_TOLERANCE_PX):
 def _apply_rf_axes_style(ax, colors, title=None):
     if title:
         ax.set_title(title, color=colors["text_primary"])
-    ax.set_facecolor(colors["bg_panel"])
+    ax.set_facecolor(plot_field(colors))
     ax.set_aspect("equal", adjustable="box")
     ax.tick_params(colors=colors["text_secondary"])
     for spine in ax.spines.values():
@@ -300,7 +309,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
     # Early exit: nothing selected
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -334,7 +343,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -402,7 +411,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax = state["ax"]
 
         # Check if theme changed (background color mismatch)
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         # ax.get_facecolor() returns RGBA tuple, need to unpack it
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
@@ -438,9 +447,9 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
         # Full Rebuild
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
         # 1. Zero Line
         ax.axhline(
@@ -452,13 +461,12 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
-        # 2. Shadow traces use the muted plot role, never the chrome accent.
-        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
+        # 2. Ensemble traces: ink, not glass.
         shadow_lines = LineCollection(
             segments,
             color=colors["plot_shadow"],
             linewidth=plot_stroke(colors, "thin"),
-            alpha=shadow_alpha,
+            alpha=plot_ensemble_alpha(colors),
             zorder=2,
         )
         ax.add_collection(shadow_lines)
@@ -560,7 +568,7 @@ def draw_population_rfs_plot(
 
     if not vision_params and not has_borrowed_rfs:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -619,9 +627,9 @@ def draw_population_rfs_plot(
         canvas.draw_idle()
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
         show_ids = _show_population_ids(main_window)
         cache_entry = _rf_background_cache.get(current_subset_hash)
 
@@ -651,15 +659,17 @@ def draw_population_rfs_plot(
             colors=colors,
         )
 
-        highlight_rgb = QColor(colors["plot_highlight"]).getRgbF()[:3]
+        highlight_hex = colors.get("plot_peak", colors["plot_highlight"])
+        highlight_rgb = QColor(highlight_hex).getRgbF()[:3]
+        highlight_fill = 0.55 if is_light_theme(colors) else 0.48
         highlight_patch = Ellipse(
             xy=(0, 0),
             width=1,
             height=1,
             angle=0,
-            edgecolor=colors["plot_highlight"],
-            facecolor=(*highlight_rgb, 0.42),
-            lw=plot_stroke(colors),
+            edgecolor=colors["plot_line"],
+            facecolor=(*highlight_rgb, highlight_fill),
+            lw=plot_stroke(colors, "thick"),
             zorder=10,
             visible=False,
         )
@@ -934,13 +944,12 @@ def plot_population_rfs_background(
             borrowed_bg.append(entry)
 
     is_light = is_light_theme(colors)
-    bg_edgecolor = (
-        colors.get("text_secondary", "#334155")
-        if is_light
-        else colors.get("text_tertiary", "#74859b")
-    )
-    bg_alpha = 0.55 if is_light else 0.28
-    bg_lw = 1.15 if is_light else 0.85
+    bg_edgecolor = colors.get("plot_shadow", "#3d3d3d")
+    bg_alpha = plot_rf_bg_alpha(colors)
+    bg_lw = 1.35 if is_light else 0.9
+    target_color = colors.get("plot_scatter", colors.get("plot_highlight", "#0d47a1"))
+    target_alpha = plot_rf_target_alpha(colors)
+    target_lw = 1.8 if is_light else 1.25
 
     bg_coll = _build_ellipse_collection(
         bg_ellipses, edgecolor=bg_edgecolor, alpha=bg_alpha, lw=bg_lw, zorder=1
@@ -951,9 +960,9 @@ def plot_population_rfs_background(
 
     target_coll = _build_ellipse_collection(
         target_ellipses,
-        edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.80 if is_light else 0.65,
-        lw=1.6 if is_light else 1.2,
+        edgecolor=target_color,
+        alpha=target_alpha,
+        lw=target_lw,
         zorder=2,
     )
     if target_coll is not None:
@@ -975,9 +984,9 @@ def plot_population_rfs_background(
 
     borrowed_target_coll = _build_ellipse_collection(
         borrowed_target,
-        edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.60 if is_light else 0.45,
-        lw=1.6 if is_light else 1.2,
+        edgecolor=target_color,
+        alpha=max(0.70, target_alpha * 0.85),
+        lw=target_lw,
         zorder=2,
     )
     if borrowed_target_coll is not None:
@@ -1188,9 +1197,9 @@ def plot_rich_ei(
     colors = resolve_theme_colors(colors)
 
     fig.clear()
-    fig.set_facecolor(colors["bg_panel"])
+    fig.set_facecolor(plot_field(colors))
     ax = fig.add_subplot(111)
-    ax.set_facecolor(colors["bg_panel"])
+    ax.set_facecolor(plot_field(colors))
 
     if median_ei is not None and channel_positions is not None:
         max_amplitudes = np.max(np.abs(median_ei), axis=1)
@@ -1245,7 +1254,7 @@ def plot_rich_ei(
                         ax.add_patch(circle)
                     ax.legend(
                         loc="upper right",
-                        facecolor=colors["bg_panel"],
+                        facecolor=plot_field(colors),
                         labelcolor=colors["text_primary"],
                     )
         else:
@@ -1292,7 +1301,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -1336,7 +1345,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -1389,7 +1398,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         state = canvas._acg_state
         ax = state["ax"]
 
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         # ax.get_facecolor() returns RGBA tuple, need to unpack it
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
@@ -1414,9 +1423,9 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
         ax.axhline(
             0,
@@ -1435,12 +1444,11 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
-        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
         shadow_lines = LineCollection(
             segments,
             color=colors["plot_acg"],
             linewidth=plot_stroke(colors, "thin"),
-            alpha=shadow_alpha,
+            alpha=plot_ensemble_alpha(colors),
             zorder=2,
         )
         ax.add_collection(shadow_lines)
@@ -1499,7 +1507,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -1544,7 +1552,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -1583,7 +1591,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         state = canvas._fr_state
         ax = state["ax"]
 
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
             QColor.fromRgbF(
@@ -1607,16 +1615,15 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
-        shadow_alpha = 0.45 if is_light_theme(colors) else 0.32
         shadow_lines = LineCollection(
             segments,
             color=colors["plot_fr"],
             linewidth=plot_stroke(colors, "thin"),
-            alpha=shadow_alpha,
+            alpha=plot_ensemble_alpha(colors),
             zorder=2,
         )
         ax.add_collection(shadow_lines)

@@ -6,9 +6,9 @@ Last updated: 2026-08-12. Branch: `feat/bauhaus-redesign` (off `dev-testing`).
 
 This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
-color / layout / plot-refresh pass now on this branch. Chrome is blue
-with amber/teal plot roles — not a copy of the encore mockup red. See
-`docs/specs/ux_ui_redesign.md`.
+color / layout / plot-refresh pass now on this branch. Chrome is blue.
+Light-mode plots use a paper field and solid Bauhaus ink (black / blue /
+yellow), not translucent cyan or gray. See `docs/specs/ux_ui_redesign.md`.
 
 Do not push unless the user asks.
 

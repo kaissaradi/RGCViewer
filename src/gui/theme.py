@@ -1,10 +1,9 @@
 """Semantic color palettes and shared UI constants for RGCViewer.
 
 Swiss / Bauhaus *structure* (flat surfaces, tight type, no decoration) is
-kept. The palette is not a copy of encore_mockup.html: chrome is blue, not
-Bauhaus red, and plots carry a second register of amber / teal / violet so
-light mode stays readable. Existing semantic key names are kept so QSS and
-restyle_plots do not break on rename.
+kept. Chrome is blue. Light-mode plots sit on warm paper with solid ink
+(black, blue, yellow) — not translucent pastels. Existing semantic key
+names are kept so QSS and restyle_plots do not break on rename.
 """
 
 import pyqtgraph as pg
@@ -42,9 +41,10 @@ DARK_COLORS = {
     "status_unsort_text": "#38bdf8",
     "selection_bg": "rgba(37, 99, 235, 0.18)",
     "selection_bg_strong": "rgba(37, 99, 235, 0.30)",
+    "plot_bg": "#181b22",
     "plot_line": "#f8fafc",
     "plot_scatter": "#60a5fa",
-    "plot_shadow": "#64748b",
+    "plot_shadow": "#94a3b8",
     "plot_mean": "#e2e8f0",
     "plot_peak": "#fbbf24",
     "plot_highlight": "#22d3ee",
@@ -90,18 +90,19 @@ LIGHT_COLORS = {
     "status_unsort_text": "#0369a1",
     "selection_bg": "rgba(29, 78, 216, 0.12)",
     "selection_bg_strong": "rgba(29, 78, 216, 0.22)",
-    "plot_line": "#0f172a",
-    "plot_scatter": "#1d4ed8",
-    "plot_shadow": "#64748b",
-    "plot_mean": "#1e293b",
-    "plot_peak": "#b45309",
-    "plot_highlight": "#0e7490",
-    "plot_acg": "#6d28d9",
-    "plot_isi": "#1d4ed8",
-    "plot_fr": "#d97706",
-    "plot_overlay": "#047857",
+    "plot_bg": "#f3efe6",
+    "plot_line": "#111111",
+    "plot_scatter": "#0d47a1",
+    "plot_shadow": "#3d3d3d",
+    "plot_mean": "#111111",
+    "plot_peak": "#b8860b",
+    "plot_highlight": "#0d47a1",
+    "plot_acg": "#0d47a1",
+    "plot_isi": "#0d47a1",
+    "plot_fr": "#b8860b",
+    "plot_overlay": "#1b5e20",
     "plot_compare": "#c2410c",
-    "plot_waveform_shadow": "#cbd5e1",
+    "plot_waveform_shadow": "#cfc8bb",
 }
 
 
@@ -180,13 +181,39 @@ def plot_stroke(colors: dict = None, weight: str = "line") -> float:
 
 
 def plot_grid_alpha(colors: dict = None) -> float:
-    """Grid opacity. 0.08 on white is almost invisible."""
-    return 0.22 if is_light_theme(colors) else 0.10
+    """Grid opacity. Keep it quieter once traces are solid ink."""
+    return 0.16 if is_light_theme(colors) else 0.10
+
+
+def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
+    """Background of a plot, which may differ from chrome ``bg_panel``."""
+    colors = resolve_theme_colors(colors, theme_name)
+    return colors.get("plot_bg", colors["bg_panel"])
+
+
+def plot_ensemble_alpha(colors: dict = None) -> float:
+    """Opacity for overlapping population traces. Light mode is ink, not glass."""
+    return 0.70 if is_light_theme(colors) else 0.40
+
+
+def plot_rf_bg_alpha(colors: dict = None) -> float:
+    return 0.90 if is_light_theme(colors) else 0.32
+
+
+def plot_rf_target_alpha(colors: dict = None) -> float:
+    return 1.0 if is_light_theme(colors) else 0.75
+
+
+def opaque_brush(color_hex: str, alpha: int = 255):
+    """Fully-specified pyqtgraph brush so fills do not inherit a wash."""
+    c = pg.mkColor(color_hex)
+    c.setAlpha(int(alpha))
+    return pg.mkBrush(c)
 
 
 def configure_pyqtgraph_theme(colors: dict) -> None:
     """Apply global pyqtgraph colors for newly-created widgets."""
-    pg.setConfigOption("background", colors["bg_panel"])
+    pg.setConfigOption("background", plot_field(colors))
     pg.setConfigOption("foreground", colors["text_secondary"])
     pg.setConfigOptions(antialias=True)
 
@@ -203,7 +230,7 @@ def apply_plot_theme(target, colors: dict) -> None:
     or matplotlib Axes. Unknown objects are ignored.
     """
     colors = resolve_theme_colors(colors)
-    bg = colors["bg_panel"]
+    bg = plot_field(colors)
 
     if pg is not None:
         plot_widget = getattr(pg, "PlotWidget", None)
@@ -254,7 +281,7 @@ def _style_pg_plot_item(plot_item, colors: dict) -> None:
 
 
 def _style_mpl_axes(ax, colors: dict) -> None:
-    bg = colors["bg_panel"]
+    bg = plot_field(colors)
     spine = colors["border_default"]
     tick = colors["text_secondary"]
     ax.set_facecolor(bg)

@@ -50,6 +50,7 @@ def test_theme_palettes_include_required_plot_roles():
         "plot_mean",
         "plot_peak",
         "plot_highlight",
+        "plot_bg",
     }
 
     assert required_roles.issubset(DARK_COLORS)
@@ -84,12 +85,12 @@ def test_apply_plot_theme_matplotlib():
     fig = Figure()
     ax = fig.add_subplot(111)
     apply_plot_theme(fig, DARK_COLORS)
-    assert _mpl_hex(fig.get_facecolor()) == DARK_COLORS["bg_panel"].lower()
-    assert _mpl_hex(ax.get_facecolor()) == DARK_COLORS["bg_panel"].lower()
+    assert _mpl_hex(fig.get_facecolor()) == DARK_COLORS["plot_bg"].lower()
+    assert _mpl_hex(ax.get_facecolor()) == DARK_COLORS["plot_bg"].lower()
 
     apply_plot_theme(fig, LIGHT_COLORS)
-    assert _mpl_hex(fig.get_facecolor()) == LIGHT_COLORS["bg_panel"].lower()
-    assert _mpl_hex(ax.get_facecolor()) == LIGHT_COLORS["bg_panel"].lower()
+    assert _mpl_hex(fig.get_facecolor()) == LIGHT_COLORS["plot_bg"].lower()
+    assert _mpl_hex(ax.get_facecolor()) == LIGHT_COLORS["plot_bg"].lower()
 
 
 def test_feature_palette_tracks_theme_text():
@@ -126,6 +127,12 @@ def test_is_light_theme_and_plot_stroke():
     assert is_light_theme(DARK_COLORS) is False
     assert plot_stroke(LIGHT_COLORS) > plot_stroke(DARK_COLORS)
     assert plot_grid_alpha(LIGHT_COLORS) > plot_grid_alpha(DARK_COLORS)
+
+
+def test_light_plot_ink_contrasts_against_paper():
+    paper = LIGHT_COLORS["plot_bg"]
+    for key in ("plot_line", "plot_mean", "plot_acg", "plot_isi", "plot_shadow"):
+        assert contrast_ratio(LIGHT_COLORS[key], paper) >= 4.5, key
 
 
 def test_light_body_and_status_text_contrast():

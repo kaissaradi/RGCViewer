@@ -13,7 +13,7 @@ from qtpy.QtWidgets import (
     QFrame,
 )
 from qtpy.QtCore import Qt
-from ..theme import apply_plot_theme, plot_stroke, resolve_theme_colors
+from ..theme import apply_plot_theme, opaque_brush, plot_field, plot_stroke, resolve_theme_colors
 import logging
 
 logger = logging.getLogger(__name__)
@@ -209,7 +209,7 @@ class StandardPlotsPanel(QWidget):
             [],
             stepMode=False,
             fillLevel=0,
-            brush=pg.mkBrush(colors["plot_isi"]),
+            brush=opaque_brush(colors["plot_isi"], 230),
             pen=pg.mkPen(colors["plot_isi"], width=plot_stroke(colors)),
         )
 
@@ -312,7 +312,7 @@ class StandardPlotsPanel(QWidget):
         thin = plot_stroke(colors, "thin")
         self._acg_line.setPen(pg.mkPen(colors["plot_acg"], width=stroke))
         self._ccg_bar.setOpts(
-            brush=pg.mkBrush(colors["plot_compare"]),
+            brush=opaque_brush(colors["plot_compare"], 230),
             pen=pg.mkPen(colors["plot_compare"], width=thin),
         )
         self._acg_zero_line.setPen(
@@ -322,10 +322,8 @@ class StandardPlotsPanel(QWidget):
         if hasattr(self._isi_curve, "curve") and hasattr(
             self._isi_curve.curve, "setBrush"
         ):
-            self._isi_curve.curve.setBrush(pg.mkBrush(colors["plot_isi"]))
-        compare = pg.mkColor(colors["plot_compare"])
-        compare.setAlpha(180)
-        self._isi_scatter.setBrush(pg.mkBrush(compare))
+            self._isi_curve.curve.setBrush(opaque_brush(colors["plot_isi"], 230))
+        self._isi_scatter.setBrush(opaque_brush(colors["plot_compare"], 220))
         self._isi_ref_line.setPen(
             pg.mkPen(colors["status_noise_text"], width=thin, style=Qt.DashLine)
         )
@@ -334,7 +332,7 @@ class StandardPlotsPanel(QWidget):
         self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
 
         # Refresh widgets
-        self.grid_widget.setBackground(colors["bg_panel"])
+        self.grid_widget.setBackground(plot_field(colors))
 
     def _style_plot(self, plot_widget, colors=None):
         if colors is None:

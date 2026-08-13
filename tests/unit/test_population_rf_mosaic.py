@@ -127,16 +127,16 @@ class TestEllipseVisibility:
             for c in ax.collections
             if isinstance(c, EllipseCollection)
             and c.get_alpha() is not None
-            and c.get_alpha() < 0.50
+            and c.get_alpha() < 0.55
         ]
         assert len(bg_colls) > 0, "Expected background EllipseCollection"
         for c in bg_colls:
-            # Dark bg ~0.28; light ~0.55. Borrowed layer is slightly lower.
-            assert 0.20 <= c.get_alpha() <= 0.60, (
-                f"Background alpha {c.get_alpha()} outside [0.20, 0.60]"
+            # Dark bg ~0.32; light ~0.90. Borrowed layer is slightly lower.
+            assert 0.25 <= c.get_alpha() <= 0.95, (
+                f"Background alpha {c.get_alpha()} outside [0.25, 0.95]"
             )
             lw = float(np.asarray(c.get_linewidths()).ravel()[0])
-            assert 0.75 <= lw <= 1.25, f"Background lw {lw} outside [0.75, 1.25]"
+            assert 0.8 <= lw <= 1.5, f"Background lw {lw} outside [0.8, 1.5]"
 
     def test_target_ellipse_alpha_and_lw(self):
         """Target (in-subset) ellipses are heavier than the background layer."""
@@ -167,11 +167,11 @@ class TestEllipseVisibility:
         ]
         assert len(target_colls) > 0, "Expected target EllipseCollection"
         for c in target_colls:
-            assert 0.50 <= c.get_alpha() <= 0.85, (
-                f"Target alpha {c.get_alpha()} outside [0.50, 0.85]"
+            assert 0.70 <= c.get_alpha() <= 1.0, (
+                f"Target alpha {c.get_alpha()} outside [0.70, 1.0]"
             )
             lw = float(np.asarray(c.get_linewidths()).ravel()[0])
-            assert 1.1 <= lw <= 1.8, f"Target lw {lw} outside [1.1, 1.8]"
+            assert 1.1 <= lw <= 2.0, f"Target lw {lw} outside [1.1, 2.0]"
 
     def test_highlight_ellipse_alpha_and_lw(self):
         """Highlight (selected cell): fill alpha 0.35–0.50, edge lw 1.5–2.0."""
@@ -208,11 +208,11 @@ class TestEllipseVisibility:
         hp = highlight_patches[0]
         # facecolor is RGBA — check alpha component
         fc = hp.get_facecolor()
-        assert 0.35 <= fc[3] <= 0.50, (
-            f"Highlight fill alpha {fc[3]} outside [0.35, 0.50]"
+        assert 0.40 <= fc[3] <= 0.65, (
+            f"Highlight fill alpha {fc[3]} outside [0.40, 0.65]"
         )
-        assert 1.5 <= hp.get_linewidth() <= 2.0, (
-            f"Highlight lw {hp.get_linewidth()} outside [1.5, 2.0]"
+        assert 2.0 <= hp.get_linewidth() <= 3.2, (
+            f"Highlight lw {hp.get_linewidth()} outside [2.0, 3.2]"
         )
 
 
