@@ -51,6 +51,8 @@ def test_theme_palettes_include_required_plot_roles():
         "plot_peak",
         "plot_highlight",
         "plot_bg",
+        "plot_ensemble",
+        "plot_fill",
     }
 
     assert required_roles.issubset(DARK_COLORS)
@@ -131,7 +133,7 @@ def test_is_light_theme_and_plot_stroke():
 
 def test_light_plot_ink_contrasts_against_paper():
     paper = LIGHT_COLORS["plot_bg"]
-    for key in ("plot_line", "plot_mean", "plot_acg", "plot_isi", "plot_shadow"):
+    for key in ("plot_line", "plot_mean", "plot_acg", "plot_isi", "plot_ensemble"):
         assert contrast_ratio(LIGHT_COLORS[key], paper) >= 4.5, key
 
 

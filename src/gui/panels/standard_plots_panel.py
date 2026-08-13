@@ -100,7 +100,7 @@ class StandardPlotsPanel(QWidget):
         self.grid_widget = pg.GraphicsLayoutWidget()
         self.grid_plot = self.grid_widget.addPlot()
         self.grid_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
         )
         self.grid_plot.setAspectLocked(True)
         self.grid_plot.hideAxis("bottom")
@@ -114,7 +114,7 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         self.acg_plot = pg.PlotWidget()
         self.acg_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELOGRAM</span>"
         )
         self.acg_plot.setLabel("bottom", "Time lag (ms)")
         self.acg_plot.setLabel("left", "Autocorrelation")
@@ -123,7 +123,7 @@ class StandardPlotsPanel(QWidget):
         # --- PERSISTENT ACG/CCG ITEMS ---
         # 1. ACG Line (Purple) - positive lags only
         self._acg_line = self.acg_plot.plot(
-            [], [], pen=pg.mkPen(colors["plot_acg"], width=plot_stroke(colors))
+            [], [], pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors))
         )
 
         # 2. CCG Bar (Orange) - Hidden by default
@@ -197,7 +197,7 @@ class StandardPlotsPanel(QWidget):
 
         self.isi_plot = pg.PlotWidget()
         self.isi_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>ISI DISTRIBUTION</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>INTER-SPIKE INTERVAL</span>"
         )
         self.isi_plot.setLabel("bottom", "ISI (ms)")
         self._style_plot(self.isi_plot)
@@ -209,8 +209,8 @@ class StandardPlotsPanel(QWidget):
             [],
             stepMode=False,
             fillLevel=0,
-            brush=opaque_brush(colors["plot_isi"], 230),
-            pen=pg.mkPen(colors["plot_isi"], width=plot_stroke(colors)),
+            brush=opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 220),
+            pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors)),
         )
 
         # 2. Scatter
@@ -252,18 +252,17 @@ class StandardPlotsPanel(QWidget):
         # ---------------------------------------------------------
         self.fr_plot = pg.PlotWidget()
         self.fr_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>SIGNAL HEALTH</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE OVER TIME</span>"
         )
         self.fr_plot.setLabel("bottom", "Time (s)")
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
         self._style_plot(self.fr_plot)
 
         # --- PERSISTENT FR ITEMS ---
-        # 1. Amber rate curve
         self._fr_rate_curve = self.fr_plot.plot(
             [],
             [],
-            pen=pg.mkPen(colors["plot_fr"], width=plot_stroke(colors)),
+            pen=pg.mkPen(colors["plot_line"], width=plot_stroke(colors)),
             name="fr",
         )
 
@@ -296,21 +295,21 @@ class StandardPlotsPanel(QWidget):
 
         # Update Titles
         self.grid_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>SPATIAL TEMPLATE</span>"
         )
         self.acg_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELATION</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>AUTOCORRELOGRAM</span>"
         )
         self.isi_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>INTER-SPIKE INTERVAL</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>INTER-SPIKE INTERVAL</span>"
         )
         self.fr_plot.setTitle(
-            f"<span style='color:{colors['text_secondary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE (OVER TIME)</span>"
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>FIRING RATE OVER TIME</span>"
         )
 
         stroke = plot_stroke(colors)
         thin = plot_stroke(colors, "thin")
-        self._acg_line.setPen(pg.mkPen(colors["plot_acg"], width=stroke))
+        self._acg_line.setPen(pg.mkPen(colors["plot_line"], width=stroke))
         self._ccg_bar.setOpts(
             brush=opaque_brush(colors["plot_compare"], 230),
             pen=pg.mkPen(colors["plot_compare"], width=thin),
@@ -318,18 +317,20 @@ class StandardPlotsPanel(QWidget):
         self._acg_zero_line.setPen(
             pg.mkPen(colors["text_primary"], width=stroke, style=Qt.DashLine)
         )
-        self._isi_curve.setPen(pg.mkPen(colors["plot_isi"], width=stroke))
+        self._isi_curve.setPen(pg.mkPen(colors["plot_line"], width=stroke))
         if hasattr(self._isi_curve, "curve") and hasattr(
             self._isi_curve.curve, "setBrush"
         ):
-            self._isi_curve.curve.setBrush(opaque_brush(colors["plot_isi"], 230))
+            self._isi_curve.curve.setBrush(
+                opaque_brush(colors.get("plot_fill", colors["plot_isi"]), 220)
+            )
         self._isi_scatter.setBrush(opaque_brush(colors["plot_compare"], 220))
         self._isi_ref_line.setPen(
             pg.mkPen(colors["status_noise_text"], width=thin, style=Qt.DashLine)
         )
-        self._fr_rate_curve.setPen(pg.mkPen(colors["plot_fr"], width=stroke))
+        self._fr_rate_curve.setPen(pg.mkPen(colors["plot_line"], width=stroke))
         self._fr_overlay_curve.setPen(pg.mkPen(colors["plot_overlay"], width=thin))
-        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["plot_fr"])
+        self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
 
         # Refresh widgets
         self.grid_widget.setBackground(plot_field(colors))

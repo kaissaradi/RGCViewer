@@ -461,10 +461,10 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
-        # 2. Ensemble traces: ink, not glass.
+        # 2. Ensemble: a blue wash so the black mean can be read.
         shadow_lines = LineCollection(
             segments,
-            color=colors["plot_shadow"],
+            color=colors.get("plot_ensemble", colors["plot_shadow"]),
             linewidth=plot_stroke(colors, "thin"),
             alpha=plot_ensemble_alpha(colors),
             zorder=2,
@@ -1446,7 +1446,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         shadow_lines = LineCollection(
             segments,
-            color=colors["plot_acg"],
+            color=colors.get("plot_ensemble", colors["plot_acg"]),
             linewidth=plot_stroke(colors, "thin"),
             alpha=plot_ensemble_alpha(colors),
             zorder=2,
@@ -1456,7 +1456,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             ax.plot(
                 t_axis,
                 mean_acg,
-                color=colors["plot_compare"],
+                color=colors["plot_mean"],
                 linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
@@ -1621,7 +1621,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 
         shadow_lines = LineCollection(
             segments,
-            color=colors["plot_fr"],
+            color=colors.get("plot_ensemble", colors["plot_fr"]),
             linewidth=plot_stroke(colors, "thin"),
             alpha=plot_ensemble_alpha(colors),
             zorder=2,
@@ -1631,7 +1631,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
             ax.plot(
                 t_axis,
                 mean_fr,
-                color=colors["plot_compare"],
+                color=colors["plot_mean"],
                 linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,

@@ -1,9 +1,9 @@
 """Semantic color palettes and shared UI constants for RGCViewer.
 
-Swiss / Bauhaus *structure* (flat surfaces, tight type, no decoration) is
-kept. Chrome is blue. Light-mode plots sit on warm paper with solid ink
-(black, blue, yellow) — not translucent pastels. Existing semantic key
-names are kept so QSS and restyle_plots do not break on rename.
+Swiss layout (hairline panes, caption titles, black ink on white) with a
+blue chrome accent instead of the mockup red. Population ensembles use a
+chromatic wash (`plot_ensemble`), not grey. Existing semantic key names
+are kept so QSS and restyle_plots do not break on rename.
 """
 
 import pyqtgraph as pg
@@ -45,7 +45,9 @@ DARK_COLORS = {
     "plot_line": "#f8fafc",
     "plot_scatter": "#60a5fa",
     "plot_shadow": "#94a3b8",
-    "plot_mean": "#e2e8f0",
+    "plot_ensemble": "#7eb8f7",
+    "plot_fill": "#334155",
+    "plot_mean": "#f8fafc",
     "plot_peak": "#fbbf24",
     "plot_highlight": "#22d3ee",
     "plot_acg": "#c4b5fd",
@@ -58,10 +60,10 @@ DARK_COLORS = {
 
 
 LIGHT_COLORS = {
-    "bg_base": "#e8ecf2",
+    "bg_base": "#f2f2f2",
     "bg_panel": "#ffffff",
-    "bg_surface": "#f4f6fa",
-    "bg_elevated": "#e4e9f0",
+    "bg_surface": "#f2f2f2",
+    "bg_elevated": "#eaeaea",
     "bg_overlay": "rgba(15,23,42,0.28)",
     "bg_tooltip": "#ffffff",
     "accent": "#1d4ed8",
@@ -71,14 +73,14 @@ LIGHT_COLORS = {
     "accent_text": "#ffffff",
     "accent_positive": "#047857",
     "accent_pos_text": "#047857",
-    "text_primary": "#0f172a",
-    "text_secondary": "#334155",
-    "text_tertiary": "#475569",
-    "text_disabled": "#94a3b8",
-    "text_tooltip": "#0f172a",
-    "border_subtle": "#d5dce6",
-    "border_default": "#c5cdd8",
-    "border_strong": "#94a3b8",
+    "text_primary": "#000000",
+    "text_secondary": "#333333",
+    "text_tertiary": "#666666",
+    "text_disabled": "#a0a0a0",
+    "text_tooltip": "#000000",
+    "border_subtle": "#e0e0e0",
+    "border_default": "#d0d0d0",
+    "border_strong": "#a0a0a0",
     "border_focus": "#1d4ed8",
     "status_good_bg": "rgba(4, 120, 87, 0.12)",
     "status_good_text": "#047857",
@@ -88,21 +90,23 @@ LIGHT_COLORS = {
     "status_noise_text": "#be123c",
     "status_unsort_bg": "rgba(3, 105, 161, 0.12)",
     "status_unsort_text": "#0369a1",
-    "selection_bg": "rgba(29, 78, 216, 0.12)",
-    "selection_bg_strong": "rgba(29, 78, 216, 0.22)",
-    "plot_bg": "#f3efe6",
-    "plot_line": "#111111",
-    "plot_scatter": "#0d47a1",
-    "plot_shadow": "#3d3d3d",
-    "plot_mean": "#111111",
-    "plot_peak": "#b8860b",
-    "plot_highlight": "#0d47a1",
-    "plot_acg": "#0d47a1",
-    "plot_isi": "#0d47a1",
-    "plot_fr": "#b8860b",
-    "plot_overlay": "#1b5e20",
+    "selection_bg": "rgba(29, 78, 216, 0.14)",
+    "selection_bg_strong": "rgba(29, 78, 216, 0.24)",
+    "plot_bg": "#ffffff",
+    "plot_line": "#000000",
+    "plot_scatter": "#1d4ed8",
+    "plot_shadow": "#888888",
+    "plot_ensemble": "#2f5aa0",
+    "plot_fill": "#d4d4d4",
+    "plot_mean": "#000000",
+    "plot_peak": "#c47f00",
+    "plot_highlight": "#1d4ed8",
+    "plot_acg": "#000000",
+    "plot_isi": "#000000",
+    "plot_fr": "#000000",
+    "plot_overlay": "#666666",
     "plot_compare": "#c2410c",
-    "plot_waveform_shadow": "#cfc8bb",
+    "plot_waveform_shadow": "#e0e0e0",
 }
 
 
@@ -172,17 +176,17 @@ def plot_stroke(colors: dict = None, weight: str = "line") -> float:
     """
     light = is_light_theme(colors)
     strokes = {
-        "thin": (1.6, 1.0),
-        "line": (2.6, 2.0),
-        "thick": (3.1, 2.4),
+        "thin": (1.2, 0.9),
+        "line": (2.2, 1.8),
+        "thick": (2.8, 2.3),
     }
     lo, dk = strokes.get(weight, strokes["line"])
     return lo if light else dk
 
 
 def plot_grid_alpha(colors: dict = None) -> float:
-    """Grid opacity. Keep it quieter once traces are solid ink."""
-    return 0.16 if is_light_theme(colors) else 0.10
+    """Hairline grid. The mockup panes are almost gridless."""
+    return 0.10 if is_light_theme(colors) else 0.08
 
 
 def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
@@ -192,8 +196,8 @@ def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
 
 
 def plot_ensemble_alpha(colors: dict = None) -> float:
-    """Opacity for overlapping population traces. Light mode is ink, not glass."""
-    return 0.70 if is_light_theme(colors) else 0.40
+    """Many overlapping traces: a chromatic wash, not a grey slab."""
+    return 0.38 if is_light_theme(colors) else 0.36
 
 
 def plot_rf_bg_alpha(colors: dict = None) -> float:

@@ -269,13 +269,13 @@ class MainWindow(QMainWindow):
 
             /* ── Splitter handles ────────────────── */
             QSplitter::handle {{
-                background: {colors['border_subtle']};
+                background: {colors['border_default']};
             }}
             QSplitter::handle:horizontal {{
-                width: 6px;
+                width: 4px;
             }}
             QSplitter::handle:vertical {{
-                height: 6px;
+                height: 4px;
             }}
             QSplitter::handle:horizontal:hover,
             QSplitter::handle:vertical:hover {{
@@ -348,24 +348,27 @@ class MainWindow(QMainWindow):
             /* ── Tabs ────────────────────────────── */
             QTabWidget::pane {{
                 border: none;
-                border-top: 1px solid {colors['border_subtle']};
+                border-top: 1px solid {colors['border_default']};
+                top: 4px;
             }}
             QTabBar::tab {{
                 color: {colors['text_secondary']};
                 background: transparent;
-                padding: 8px 18px;
+                padding: 6px 12px;
                 font-size: 12px;
-                border-bottom: 2px solid transparent;
-                margin-right: 4px;
+                font-weight: 500;
+                border: none;
+                border-radius: 3px;
+                margin-right: 2px;
                 min-width: 44px;
             }}
             QTabBar::tab:selected {{
-                color: {colors['accent']};
-                border-bottom: 2px solid {colors['accent']};
+                background: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QTabBar::tab:hover:!selected {{
                 color: {colors['text_primary']};
-                background: {colors['bg_surface']};
+                background: {colors['bg_elevated']};
             }}
             QTabBar::scroller {{
                 width: 24px;
