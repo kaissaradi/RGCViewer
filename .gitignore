@@ -12,3 +12,4 @@ htmlcov/
 .vscode/
 .codex_artifacts
 .claude
+profile_load.log

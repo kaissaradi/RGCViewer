@@ -175,8 +175,20 @@ class MplCanvas(FigureCanvas):
             figsize=(width, height), dpi=dpi, facecolor=DARK_COLORS["bg_panel"]
         )
         super().__init__(self.fig)
+        self._in_paint = False
         self.setCursor(Qt.PointingHandCursor)
         self.mpl_connect("button_press_event", self._on_click)
+
+    def paintEvent(self, event):
+        # FigureCanvasQTAgg.paintEvent may call draw(), which asks Qt to
+        # paint again. Guard so a status-bar update cannot recurse.
+        if self._in_paint:
+            return
+        self._in_paint = True
+        try:
+            super().paintEvent(event)
+        finally:
+            self._in_paint = False
 
     def restyle(self, colors):
         """Updates the canvas background based on the provided color scheme."""
@@ -720,9 +732,15 @@ class ClusterTreeDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
         tree = self._tree
-        row_rect = tree.visualRect(index)
+        # option.rect is already the cell being painted. visualRect() during
+        # paint forces a layout update and Qt logs "Recursive repaint detected"
+        # then QPainter::begin on a null engine.
+        row_rect = QRect(option.rect)
+        if row_rect.left() > 0:
+            row_rect.setLeft(0)
         if row_rect.isValid():
             painter.save()
+            painter.setClipRect(row_rect)
             painter.setRenderHint(QPainter.Antialiasing)
             self._draw_guides(painter, index, row_rect)
             toggle = self._toggle_rect(index, row_rect)
