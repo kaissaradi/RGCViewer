@@ -313,7 +313,7 @@ def test_ensure_physics_cache_fills_misses():
 
     call_counter = {'n': 0}
 
-    def fake_get_physics(cid):
+    def fake_get_physics(cid, *args, **kwargs):
         call_counter['n'] += 1
         with dm._feature_lock:
             dm.feature_cache[int(cid)] = {
@@ -358,7 +358,7 @@ def test_ensure_physics_cache_respects_max_workers():
     dm._physics_done_count = 0
     dm.feature_cache = {}
 
-    def fake_physics(cid):
+    def fake_physics(cid, *args, **kwargs):
         with dm._feature_lock:
             dm.feature_cache[int(cid)] = {'_computed': True}
 
@@ -394,7 +394,7 @@ def test_ensure_physics_cache_limits_parallel_sta_work():
     inflight = {'n': 0}
     lock = threading.Lock()
 
-    def slow_physics(cid):
+    def slow_physics(cid, *args, **kwargs):
         with lock:
             inflight['n'] += 1
             max_inflight['peak'] = max(max_inflight['peak'], inflight['n'])
@@ -411,6 +411,50 @@ def test_ensure_physics_cache_limits_parallel_sta_work():
         DataManager.ensure_physics_cache(dm, list(range(20)), max_workers=4)
 
     assert max_inflight['peak'] <= 4
+
+
+def test_cache_progress_stays_on_spike_plots_until_std_done():
+    """Physics finishing first must not relabel the remaining ACG work."""
+    from src.gui.callbacks import _cache_progress_state
+
+    val, ready, label = _cache_progress_state(
+        total=100, std_done=40, physics_done=80, expect_physics=True
+    )
+    assert ready is False
+    assert "spike plots" in label.lower()
+    assert "Physics" not in label
+
+
+def test_get_cell_physics_warmup_skips_acg_compute():
+    """ensure_physics_cache must not run the ACG/ISI pass cell by cell."""
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager.__new__(DataManager)
+    dm._feature_lock = threading.Lock()
+    dm._physics_cell_locks = {}
+    dm._physics_cell_locks_lock = threading.Lock()
+    dm._physics_done_count = 0
+    dm.is_vision_only = False
+    dm.vision_stas = None
+    dm.vision_params = None
+    dm.feature_cache = {}
+    dm.get_standard_plot_data = MagicMock(return_value={"acg_norm": np.ones(8)})
+
+    metrics = DataManager.get_cell_physics(dm, 9, allow_std_compute=False)
+
+    dm.get_standard_plot_data.assert_not_called()
+    assert metrics["_computed"] is True
+    assert metrics["acg"] is None
+
+
+def test_standard_plots_write_acg_into_already_computed_row(tmp_path):
+    from src.analysis.data_manager import DataManager
+
+    dm = DataManager(kilosort_dir=str(tmp_path))
+    dm.feature_cache[3] = {"_computed": True, "acg": None, "timecourse": None}
+    dm._write_acg_into_feature_cache(3, np.arange(5))
+    assert np.array_equal(dm.feature_cache[3]["acg"], np.arange(5))
+    assert dm.feature_cache[3]["_computed"] is True
 
 
 def test_cache_progress_does_not_drop_to_zero_when_vision_arrives():

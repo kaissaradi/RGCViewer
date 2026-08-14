@@ -107,7 +107,7 @@ def test_warm_load_skips_the_spike_time_gather(ks_dir, monkeypatch):
     assert dm.load_kilosort_data()[0]
 
     assert dm._spk_sorted_t is None
-    assert dm._spk_sorted_cls is not None  # still needed for the index grouping
+    assert dm._spk_sorted_cls is None  # grouping no longer needs the gather
 
 
 # ---------------------------------------------------------------------------

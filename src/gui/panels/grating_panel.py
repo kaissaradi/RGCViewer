@@ -38,6 +38,36 @@ _SHADOW_ALPHA = 70  # 0-255, applied to non-best condition traces
 _BEST_ALPHA = 255
 
 
+# 3x3 compass: 0° right, 90° top. Center (1,1) stays empty.
+_COMPASS_CELLS = {
+    0: (1, 2),
+    45: (0, 2),
+    90: (0, 1),
+    135: (0, 0),
+    180: (1, 0),
+    225: (2, 0),
+    270: (2, 1),
+    315: (2, 2),
+}
+
+
+def assign_directions_to_compass(directions_deg):
+    """One PSTH per compass cell. 12×30° gratings used to collide on corners."""
+    dirs = np.asarray(directions_deg, dtype=float)
+    if dirs.size == 0:
+        return []
+    compass = np.array(list(_COMPASS_CELLS.keys()), dtype=float)
+    claimed = {}
+    for d in dirs:
+        nearest = compass[np.argmin(np.abs(((compass - d + 180.0) % 360.0) - 180.0))]
+        cell = _COMPASS_CELLS[int(nearest)]
+        dist = abs(((nearest - d + 180.0) % 360.0) - 180.0)
+        prev = claimed.get(cell)
+        if prev is None or dist < prev[1]:
+            claimed[cell] = (float(d), dist)
+    return [(cell, pair[0]) for cell, pair in claimed.items()]
+
+
 def select_dsos_for_display(data, dsos_threshold=None):
     """Classify one cluster with the same threshold the population slider uses.
 
@@ -701,30 +731,10 @@ class GratingPanel(QWidget):
                 np.argmin(np.abs(((directions_deg - pref_dir_deg + 180) % 360) - 180))
             )
 
-        # Map each direction onto a 3x3 compass grid cell by angle.
-        # 0 deg -> right-center, 90 -> top-center, 180 -> left-center, etc.
-        # (row, col), row 0 = top, col 0 = left, center cell (1,1) unused.
-        compass_cells = {
-            0: (1, 2),
-            45: (0, 2),
-            90: (0, 1),
-            135: (0, 0),
-            180: (1, 0),
-            225: (2, 0),
-            270: (2, 1),
-            315: (2, 2),
-        }
-
-        def _nearest_cell(deg):
-            keys = np.array(list(compass_cells.keys()))
-            nearest = keys[np.argmin(np.abs(((keys - deg + 180) % 360) - 180))]
-            return compass_cells[nearest]
-
-        order = np.argsort(directions_deg)
-        for i in order:
-            d = directions_deg[i]
+        dir_to_idx = {float(d): i for i, d in enumerate(directions_deg)}
+        for (row, col), d in assign_directions_to_compass(directions_deg):
             rate = np.asarray(psth_by_dir.get(d, []), dtype=float)
-            row, col = _nearest_cell(d)
+            i = dir_to_idx.get(float(d))
 
             plot_item = self.psth_grid_widget.addPlot(row=row, col=col)
             plot_item.hideAxis("bottom")

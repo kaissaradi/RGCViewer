@@ -150,6 +150,18 @@ def test_grating_cache_prunes_ids_absent_from_cluster_df(tmp_path):
     assert set(fresh._load_grating_cache_from_disk()) == {5}
 
 
+def test_save_does_not_shrink_a_larger_grating_cache(tmp_path):
+    """Physics-ready save used to overwrite a 720-cell DS/OS cache with 1 cell."""
+    dm = _bare_dm(tmp_path)
+    dm.grating_computed_cache = {i: {"dsi": 0.1 * i} for i in range(10)}
+    dm.save_standard_plot_cache(blocking=True)
+
+    dm.grating_computed_cache = {0: {"dsi": 0.99}}
+    dm.save_standard_plot_cache(blocking=True)
+
+    assert set(_bare_dm(tmp_path)._load_grating_cache_from_disk()) == set(range(10))
+
+
 def test_grating_cache_stale_version_discarded(tmp_path):
     with open(tmp_path / "grating_computed_cache.pkl", "wb") as f:
         pickle.dump({5: {"dsi": 0.4}}, f)  # legacy, unversioned

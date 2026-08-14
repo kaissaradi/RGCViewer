@@ -1,5 +1,6 @@
 from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from ...analysis import analysis_core
 import numpy as np
 import pandas as pd
@@ -459,26 +460,41 @@ class StandardPlotsWorker(QObject):
         if hasattr(self.data_manager, "load_persisted_caches"):
             self.data_manager.load_persisted_caches()
 
+        # One reader on a network dataset (DataManager.io_workers): the fan-out
+        # below is pure loss over CIFS, where it only queues each read behind
+        # the others. Local runs keep the 4.
+        workers = max(1, int(getattr(self.data_manager, "io_workers", 4) or 4))
         while self.is_running:
-            if self.queue:
-                self._all_done_emitted = False  # ← reset if new work arrives
-                cluster_id = self.queue.popleft()
-                try:
-                    self.data_manager.get_standard_plot_data(cluster_id)
-                except Exception as e:
-                    # Added missing logger call for test verification
-                    logger.error(
-                        f"Failed to compute standard plots for cluster {cluster_id}"
-                    )
-                    self.error.emit(
-                        f"Background precompute failed for cluster {cluster_id}: {str(e)}"
-                    )
-                finally:
-                    self.finished_cluster.emit(int(cluster_id))
+            batch = []
+            while self.queue and len(batch) < workers:
+                batch.append(self.queue.popleft())
+            if batch:
+                self._all_done_emitted = False
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(
+                            self.data_manager.get_standard_plot_data, cid
+                        ): cid
+                        for cid in batch
+                    }
+                    for fut in as_completed(futures):
+                        cluster_id = futures[fut]
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            logger.error(
+                                "Failed to compute standard plots for cluster %s",
+                                cluster_id,
+                            )
+                            self.error.emit(
+                                f"Background precompute failed for cluster {cluster_id}: {str(e)}"
+                            )
+                        finally:
+                            self.finished_cluster.emit(int(cluster_id))
             else:
-                if not self._all_done_emitted:  # ← NEW
-                    self.all_done.emit()  # ← NEW
-                    self._all_done_emitted = True  # ← NEW
+                if not self._all_done_emitted:
+                    self.all_done.emit()
+                    self._all_done_emitted = True
                 QThread.msleep(100)
 
     def add_to_queue(self, cluster_id, high_priority=False):
@@ -527,6 +543,10 @@ class GratingComputeWorker(QObject):
                     f"No grating trials for cluster {self.cluster_id}",
                 )
             else:
+                try:
+                    self.dm.save_standard_plot_cache()
+                except Exception:
+                    logger.debug("grating cache save skipped", exc_info=True)
                 self.finished.emit(self.cluster_id, True, "")
         except Exception as e:
             logger.exception(
@@ -586,7 +606,7 @@ class GratingBatchWorker(QObject):
             # harmless redundant recompute for that one cluster — the
             # actual cache write in compute_grating_data_for_cluster is
             # properly locked, so this can't corrupt the shared cache.
-            if cid in self.dm.grating_computed_cache:
+            if cid in self.dm.grating_computed_cache and self.dm.grating_computed_cache.get(cid) is not None:
                 continue
             try:
                 self.dm.compute_grating_data_for_cluster(cid)
@@ -596,6 +616,10 @@ class GratingBatchWorker(QObject):
                 )
             if i % 25 == 0 or i == total - 1:
                 self.progress.emit(i + 1, total)
+                try:
+                    self.dm.save_standard_plot_cache()
+                except Exception:
+                    logger.debug("grating cache save skipped", exc_info=True)
         self.finished.emit()
 
 

@@ -41,3 +41,14 @@ def test_select_dsos_for_display_matches_grating_calc_override():
     assert helper["classification"] == direct["classification"]
     assert helper["classification"] in ("DS", "OS")
     np.testing.assert_allclose(helper["DSI"], direct["DSI"])
+
+
+def test_compass_cells_are_unique_for_twelve_directions():
+    """12×30° gratings used to map two dirs onto each corner cell."""
+    from src.gui.panels.grating_panel import assign_directions_to_compass
+
+    dirs = np.arange(0.0, 360.0, 30.0)
+    assigned = assign_directions_to_compass(dirs)
+    cells = [cell for cell, _d in assigned]
+    assert len(cells) == len(set(cells))
+    assert len(assigned) == 8
