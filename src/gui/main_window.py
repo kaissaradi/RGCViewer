@@ -1914,6 +1914,9 @@ class MainWindow(QMainWindow):
             self.right_splitter.setSizes([left_size, right_size])
 
             QTimer.singleShot(0, self._draw_population_panel_initial)
+            # Fill missing DS/OS in the background only when this view is on.
+            # Opening a run no longer sweeps every cell.
+            callbacks.maybe_fill_grating_cache(self)
         else:
             # hide it
             self.pop_context_widget.hide()
@@ -2649,6 +2652,15 @@ class MainWindow(QMainWindow):
         # by *column name* — the rebuild can change column indices.
         old_sort_col = None
         old_sort_order = Qt.AscendingOrder
+        # Capture the selected cell so the rebuild does not steal it. Installing
+        # a new proxy hands the view a fresh QItemSelectionModel, which drops the
+        # selection outright — so a background column arriving (sta_snr, chirp_qi)
+        # would yank the user off the cluster they were looking at and blank the
+        # detail panels. On a local run both columns land within ~0.4 s, before
+        # anyone has clicked, so this never showed; on a server run they land
+        # seconds apart, well into the session, and it looked like the app
+        # losing its place at random.
+        old_selected_cid = self._selected_table_cluster_id()
         old_view_model = self.table_view.model()
         if old_view_model is not None:
             # Unwrap proxy if present
@@ -2757,8 +2769,87 @@ class MainWindow(QMainWindow):
                 new_col_index[old_sort_col], old_sort_order
             )
 
+        # Put the user back on the row they were on, after the sort is applied
+        # so the row number is the final one.
+        if old_selected_cid is not None:
+            self._select_table_cluster_id(old_selected_cid)
+
         self._resize_table_columns_fast()
         self._refresh_tree_channels()
+
+    def _selected_table_cluster_id(self):
+        """cluster_id selected in the table, or None.
+
+        Reads the table directly rather than going through
+        ``_get_selected_cluster_id``, which answers for whichever view is on
+        top: the table's selection has to be preserved across a rebuild even
+        while the tree is the visible view.
+        """
+        model = self.table_view.model()
+        selection_model = self.table_view.selectionModel()
+        if model is None or selection_model is None:
+            return None
+        index = self.table_view.currentIndex()
+        if not index.isValid():
+            indexes = selection_model.selectedIndexes()
+            if not indexes:
+                return None
+            index = indexes[0]
+        source = model.sourceModel() if hasattr(model, "mapToSource") else model
+        row = (
+            model.mapToSource(model.index(index.row(), 0)).row()
+            if hasattr(model, "mapToSource")
+            else index.row()
+        )
+        df = getattr(source, "_dataframe", None)
+        if df is None or row < 0 or row >= len(df):
+            return None
+        try:
+            return int(df.iloc[row]["cluster_id"])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _select_table_cluster_id(self, cluster_id):
+        """Reselect *cluster_id* in the table, scrolling it back into view.
+
+        A no-op when the cell is not in the rebuilt model — it may be filtered
+        out by the search bar or sitting in Trash, and forcing a selection then
+        would be its own surprise.
+        """
+        model = self.table_view.model()
+        if model is None or self.main_cluster_model is None:
+            return
+        df = getattr(self.main_cluster_model, "_dataframe", None)
+        if df is None or "cluster_id" not in df.columns:
+            return
+        target = int(cluster_id)
+        source_row = None
+        for row, value in enumerate(df["cluster_id"].to_numpy()):
+            try:
+                if int(value) == target:
+                    source_row = row
+                    break
+            except (TypeError, ValueError):
+                continue
+        if source_row is None:
+            return
+        source_index = self.main_cluster_model.index(int(source_row), 0)
+        view_index = (
+            model.mapFromSource(source_index)
+            if hasattr(model, "mapFromSource")
+            else source_index
+        )
+        if not view_index.isValid():
+            return
+        selection_model = self.table_view.selectionModel()
+        if selection_model is None:
+            return
+        self.table_view.setCurrentIndex(view_index)
+        selection_model.select(
+            view_index,
+            QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+        )
+        self.table_view.scrollTo(view_index, QAbstractItemView.EnsureVisible)
 
     def _refresh_tree_channels(self):
         """Write best_chan into tree column 2 without rebuilding the tree."""

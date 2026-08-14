@@ -233,6 +233,44 @@ def test_load_grating_raw_only_when_no_analyzed(tmp_path):
     assert 0 in dm.grating_raw_data["spike_times_by_trial"]
 
 
+def test_load_grating_does_not_unpickle_a_second_raw_file(tmp_path, monkeypatch):
+    """Two raw GratingDSOS.npy files (sort dir + parent) must not both load.
+
+    Each is ~80 MB of pickled trials. Opening the second looking for an
+    analyzed file is what made 'Checking for grating' hang on every load.
+    """
+    _write_npy_dict(tmp_path / "a_GratingDSOS.npy", _raw_grating_dict())
+    _write_npy_dict(tmp_path / "b_GratingDSOS.npy", _raw_grating_dict())
+
+    loads = []
+    real_load = np.load
+
+    def _counting_load(path, *args, **kwargs):
+        loads.append(Path(path).name)
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(np, "load", _counting_load)
+
+    dm = _analysis_dm(tmp_path)
+    dm._load_grating_cache_from_disk = lambda: {}
+    ok, _msg = dm.load_grating_data()
+
+    assert ok
+    assert dm.grating_status == "raw_only"
+    assert loads == ["a_GratingDSOS.npy"]
+
+
+def test_grating_ids_needing_compute_skips_cached_and_analyzed():
+    dm = _analysis_dm("/tmp")
+    dm.grating_status = "raw_only"
+    dm.grating_raw_data = {"spike_times_by_trial": {}, "trial_parameters": []}
+    dm.grating_computed_cache = {1: {"dsi": 0.2}, 2: None}
+    assert dm.grating_ids_needing_compute([1, 2, 3]) == [2, 3]
+
+    dm.grating_status = "ok"
+    assert dm.grating_ids_needing_compute([1, 2, 3]) == []
+
+
 def test_analysis_worker_loads_probed_chirp(tmp_path):
     from src.gui.workers.workers import StimulusAnalysisLoadWorker
 
