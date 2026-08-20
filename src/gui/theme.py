@@ -11,7 +11,7 @@ those eight tokens so QSS and ``restyle_plots`` keep stable names.
 import pyqtgraph as pg
 
 # Product mark in the Swiss header. Window title stays "RGC Viewer".
-APP_NAME = "AXOLOTL"
+APP_NAME = "ENCORE"
 
 # Locked 2026-08-12. These eight names are the only primaries.
 PALETTE_LIGHT = {
@@ -41,7 +41,7 @@ _GOOD_LIGHT = "#1F7A4D"
 _GOOD_DARK = "#5DCAA0"
 _YELLOW_TEXT_LIGHT = "#8A6500"  # #E9B520 fails AA as 12px text on white
 _BLUE_PLOT_DARK = "#6B9BE0"  # #4A82D6 is 4.13:1 on #232220
-_RED_FILL_DARK = "#C43A32"  # #E8564A + paper ink is 3.12:1
+_BLUE_FILL_DARK = "#1B4E9B"  # #4A82D6 + white is 3.85:1
 _RED_TEXT_DARK = "#F28A82"  # #E8564A is 4.44:1 on #232220
 
 
@@ -52,10 +52,10 @@ DARK_COLORS = {
     "bg_elevated": "#312F2B",
     "bg_overlay": "rgba(0,0,0,0.55)",
     "bg_tooltip": "#312F2B",
-    "accent": _RED_FILL_DARK,
-    "accent_hover": PALETTE_DARK["red"],
-    "accent_pressed": "#A8322C",
-    "accent_muted": "rgba(232,86,74,0.18)",
+    "accent": _BLUE_FILL_DARK,
+    "accent_hover": "#2260B5",
+    "accent_pressed": "#163E80",
+    "accent_muted": "rgba(74,130,214,0.18)",
     "accent_text": "#FFFFFF",
     "accent_positive": _GOOD_DARK,
     "accent_pos_text": _GOOD_DARK,
@@ -67,7 +67,7 @@ DARK_COLORS = {
     "border_subtle": PALETTE_DARK["rule"],
     "border_default": PALETTE_DARK["rule"],
     "border_strong": "#4A4740",
-    "border_focus": PALETTE_DARK["red"],
+    "border_focus": PALETTE_DARK["blue"],
     "status_good_bg": "rgba(93, 202, 160, 0.16)",
     "status_good_text": _GOOD_DARK,
     "status_mua_bg": "rgba(245, 200, 66, 0.16)",
@@ -76,8 +76,8 @@ DARK_COLORS = {
     "status_noise_text": _RED_TEXT_DARK,
     "status_unsort_bg": "rgba(74, 130, 214, 0.16)",
     "status_unsort_text": _BLUE_PLOT_DARK,
-    "selection_bg": "rgba(232, 86, 74, 0.22)",
-    "selection_bg_strong": "rgba(232, 86, 74, 0.36)",
+    "selection_bg": "rgba(74, 130, 214, 0.22)",
+    "selection_bg_strong": "rgba(74, 130, 214, 0.36)",
     "plot_bg": PALETTE_DARK["surface"],
     "plot_line": PALETTE_DARK["ink"],
     "plot_scatter": _BLUE_PLOT_DARK,
@@ -103,10 +103,10 @@ LIGHT_COLORS = {
     "bg_elevated": "#E8E4D8",
     "bg_overlay": "rgba(27,27,27,0.32)",
     "bg_tooltip": PALETTE_LIGHT["surface"],
-    "accent": PALETTE_LIGHT["red"],
-    "accent_hover": "#B02B25",
-    "accent_pressed": "#98241F",
-    "accent_muted": "rgba(200,50,43,0.12)",
+    "accent": PALETTE_LIGHT["blue"],
+    "accent_hover": "#15448A",
+    "accent_pressed": "#12356F",
+    "accent_muted": "rgba(27,78,155,0.12)",
     "accent_text": "#FFFFFF",
     "accent_positive": _GOOD_LIGHT,
     "accent_pos_text": _GOOD_LIGHT,
@@ -118,7 +118,7 @@ LIGHT_COLORS = {
     "border_subtle": PALETTE_LIGHT["rule"],
     "border_default": PALETTE_LIGHT["rule"],
     "border_strong": "#B8B2A4",
-    "border_focus": PALETTE_LIGHT["red"],
+    "border_focus": PALETTE_LIGHT["blue"],
     "status_good_bg": "rgba(31, 122, 77, 0.12)",
     "status_good_text": _GOOD_LIGHT,
     "status_mua_bg": "rgba(138, 101, 0, 0.14)",
@@ -127,8 +127,8 @@ LIGHT_COLORS = {
     "status_noise_text": PALETTE_LIGHT["red"],
     "status_unsort_bg": "rgba(27, 78, 155, 0.12)",
     "status_unsort_text": PALETTE_LIGHT["blue"],
-    "selection_bg": "rgba(200, 50, 43, 0.16)",
-    "selection_bg_strong": "rgba(200, 50, 43, 0.28)",
+    "selection_bg": "rgba(27, 78, 155, 0.16)",
+    "selection_bg_strong": "rgba(27, 78, 155, 0.28)",
     "plot_bg": PALETTE_LIGHT["surface"],
     "plot_line": PALETTE_LIGHT["ink"],
     "plot_scatter": PALETTE_LIGHT["blue"],

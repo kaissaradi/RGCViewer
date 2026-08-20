@@ -42,9 +42,9 @@ caption titles). Its older hard red `#e30613` and cool grays are retired.
 | `ink` | Body text | Template / mean traces |
 | `muted` | Secondary text, run meta | Ensemble shadow / RF background |
 | `rule` | Hairlines, splitter, borders | Plot spines |
-| `red` | Brand, selected tab, selected row, primary buttons | Compare / noise |
+| `red` | — | Compare / noise |
 | `yellow` | — | Firing-rate line, RF peak |
-| `blue` | Focus ring is red, not blue | ACG, ISI, ensemble, RF target, scatter |
+| `blue` | Brand, selected tab, selected row, primary buttons, focus ring | ACG, ISI, ensemble, RF target, scatter |
 
 Yellow `#E9B520` on white is a **stroke color**, not 12px text (contrast
 is ~1.9:1). Status / table text that must stay yellow uses `#8A6500`.
@@ -56,7 +56,7 @@ locked surfaces:
 
 | Role | Why it is not the raw token |
 |---|---|
-| Dark `accent` fill `#C43A32` | `#E8564A` + paper ink is 3.12:1 |
+| Dark `accent` fill `#1B4E9B` | `#4A82D6` + white is 3.85:1 |
 | Dark plot blue `#6B9BE0` | `#4A82D6` on `#232220` is 4.13:1 |
 | Dark noise text `#F28A82` | `#E8564A` on `#232220` is 4.44:1 |
 
@@ -64,8 +64,8 @@ locked surfaces:
 
 1. Ink is `#1B1B1B` in light mode. Never `#000000`.
 2. Plot field is `surface`, not `bg`. Paper chrome frames white panes.
-3. Selected chrome (tabs, tree/table row, checked buttons) is `red` with
-   ink-on-red or white-on-red, not a translucent wash that disappears.
+3. Selected chrome (tabs, tree/table row, checked buttons) is `blue` with
+   white-on-blue, not a translucent wash that disappears.
 4. Keep the existing semantic key names (`accent`, `plot_acg`, …). Remap
    them onto these tokens. Do not rename keys — QSS and `restyle_plots`
    break.
@@ -76,7 +76,7 @@ locked surfaces:
 
 The Swiss header is a 40px `setMenuWidget` strip, not a native menu bar:
 
-`[■ AXOLOTL]  20251015A / chunk20 / kilosort4 · 312 cells    Standard STA …    [File] [Array] [Open run] [Light] [Population]`
+`[■ ENCORE]  20251015A / chunk20 / kilosort4 · 312 cells    Standard STA …    [File] [Array] [Open run] [Light] [Population]`
 
-Brand mark is an 8px red square + `AXOLOTL` in red. Window title stays
+Brand mark is an 8px blue square + `ENCORE` in Bauhaus blue. Window title stays
 `RGC Viewer`.

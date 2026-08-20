@@ -1,10 +1,10 @@
-# RGCViewer (Axolotl)
+# RGCViewer (Encore)
 
 RGCViewer is a PyQt desktop application. Use it to inspect spike-sorted
 multi-electrode array recordings from mouse retina and to assign units to
 retinal ganglion cell (RGC) types.
 
-The internal name is Axolotl. The repository name is RGCViewer.
+The internal name is Encore. The repository name is RGCViewer.
 
 ## Requirements
 

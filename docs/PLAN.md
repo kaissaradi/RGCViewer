@@ -8,7 +8,7 @@ This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
 color / Swiss-header / plot-refresh pass now on this branch. The locked
 palette is in `docs/design/palette.md` (warm paper, warm ink never
-`#000`, red / yellow / blue). Chrome accent is Bauhaus red. Plots use
+`#000`, red / yellow / blue). Chrome accent is Bauhaus blue. Plots use
 ink + blue + yellow on `surface`. See `docs/specs/ux_ui_redesign.md`.
 
 Do not push unless the user asks.
@@ -106,7 +106,7 @@ Do not start these unless the user asks.
 
 | Item | Spec | Notes |
 |---|---|---|
-| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only for later phases (browser, command palette, undo, auto-collapse, min 1100×650). Colors are the locked palette in `docs/design/palette.md`. Swiss 40px header (AXOLOTL + run meta + inline tabs) is in. Do not add the 1100×650 minimum. |
+| UX / UI redesign | `docs/specs/ux_ui_redesign.md` | Spec only for later phases (browser, command palette, undo, auto-collapse, min 1100×650). Colors are the locked palette in `docs/design/palette.md`. Swiss 40px header (ENCORE + run meta + inline tabs) is in. Do not add the 1100×650 minimum. |
 | Cross-run stimulus bridge lab acceptance | `docs/specs/cross_run_stimulus_bridge.md` | Code is in the tree. Lab AC is open. |
 | Vision-only remaining gaps | `docs/specs/vision_standalone.md` | Missing `.sta` / `.params` no longer crash. |
 | EI panel waveform view | none | View combo exists. Further waveform work is not started. |
