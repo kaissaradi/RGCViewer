@@ -728,6 +728,22 @@ class UMAPWorker(QObject):
             matrix, col_labels = analysis_core.build_feature_matrix(
                 raw_blocks, self.feature_config
             )
+            n_before = len(valid_ids)
+            matrix, valid_ids, discarded_ids, raw_blocks = (
+                analysis_core.drop_empty_feature_rows(
+                    matrix, valid_ids, discarded_ids, raw_blocks
+                )
+            )
+            n_dropped = n_before - len(valid_ids)
+            if n_dropped:
+                self.progress.emit(
+                    f"Skipping {n_dropped} cells with none of the selected features..."
+                )
+            if len(valid_ids) == 0:
+                self.error.emit(
+                    "No cells have any of the selected features."
+                )
+                return
 
             self.progress.emit(f"Running UMAP on {len(valid_ids)} cells...")
             n_neighbors = min(15, max(len(valid_ids) - 1, 1))

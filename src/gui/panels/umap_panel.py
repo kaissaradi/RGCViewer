@@ -84,6 +84,7 @@ class UMAPPanel(QWidget):
         self._blit_bg = None
         self._defer_composite = False
         self._building = False
+        self._in_draw = False
         self._selection = np.empty(0, dtype=int)
         self._selection_mode = "lasso"
         self._rect_selector = None
@@ -2059,23 +2060,14 @@ class UMAPPanel(QWidget):
         self._lasso_poly.set_visible(True)
         self._composite()
 
-    def _composite(self):
-        """The single painter for this canvas.
+    def _stamp_overlay(self):
+        """Draw animated layers onto the current renderer, without blit.
 
-        Restore the clean background, then stamp the animated layers back on in
-        a fixed order: selected points, the frozen lasso outline, then whatever
-        the live selector is drawing. Because every repaint goes through here,
-        no layer can wipe another.
+        Must not call canvas.draw / draw_idle / blit — those re-enter the
+        Qt paint and log ``QWidget::repaint: Recursive repaint detected``.
         """
-        if self._building or self._defer_composite:
+        if self.ax is None:
             return
-        if self.is_3d or self._blit_bg is None:
-            # 3D repaints wholesale on every rotation, so there is no stable
-            # background to cache. draw_idle re-enters _on_canvas_draw.
-            self.canvas.draw_idle()
-            return
-
-        self.canvas.restore_region(self._blit_bg)
         if self._overlay_artist is not None:
             self.ax.draw_artist(self._overlay_artist)
         if self._lasso_poly is not None and self._lasso_poly.get_visible():
@@ -2086,15 +2078,43 @@ class UMAPPanel(QWidget):
             for artist in sel.artists:
                 if artist.get_visible() and artist.axes is not None:
                     artist.axes.draw_artist(artist)
+
+    def _composite(self):
+        """The single painter for this canvas.
+
+        Restore the clean background, then stamp the animated layers back on in
+        a fixed order: selected points, the frozen lasso outline, then whatever
+        the live selector is drawing. Because every repaint goes through here,
+        no layer can wipe another.
+        """
+        if self._building or self._defer_composite or self._in_draw:
+            return
+        if self.is_3d or self._blit_bg is None:
+            # 3D has no stable blit cache (the axes redraw on every rotation).
+            # A missing 2D snapshot means a draw_event is still pending —
+            # _on_canvas_draw will stamp the overlay then. Do not draw() here:
+            # that re-enters paint and Qt rejects the nested QPainter.
+            return
+
+        self.canvas.restore_region(self._blit_bg)
+        self._stamp_overlay()
         self.canvas.blit(self.fig.bbox)
 
     def _on_canvas_draw(self, _event):
-        """Cache the freshly rendered background, then repaint the live layers."""
+        """Cache the freshly rendered background, then stamp live layers.
+
+        Overlay artists are animated, so they were left out of this draw.
+        draw_artist onto the active renderer; do not blit (nested paint).
+        """
         if self._building or self.is_3d:
             self._blit_bg = None
             return
-        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
-        self._composite()
+        self._in_draw = True
+        try:
+            self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+            self._stamp_overlay()
+        finally:
+            self._in_draw = False
 
     def resizeEvent(self, event):
         """Invalidate the blit cache; the following draw_event re-snapshots it."""
