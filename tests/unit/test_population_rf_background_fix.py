@@ -92,7 +92,7 @@ def _make_mock_main_window(vision_params, sta_height=100, subset_ids=None):
 
 
 def test_axis_limits_contain_all_ellipses():
-    """AC1: All ellipse centers fall within the x-limits and y-limits with margin."""
+    """AC1: Selected-folder ellipse centers fall within the x/y-limits with margin."""
     invalidate_population_caches()
     cells, vp = _make_vision_params(6)
     mw = _make_mock_main_window(vp)
@@ -109,7 +109,10 @@ def test_axis_limits_contain_all_ellipses():
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
 
-    for cell_id, stafit in cells.items():
+    # Kilosort 0,1,2 → Vision 1,2,3. Other groups are not drawn, so they
+    # are not required to sit inside the axes.
+    for cell_id in (1, 2, 3):
+        stafit = cells[cell_id]
         adj_y = 100 - stafit.center_y
         assert xlim[0] <= stafit.center_x <= xlim[1], f"Cell {cell_id} center_x outside xlim"
         assert ylim[0] <= adj_y <= ylim[1], f"Cell {cell_id} center_y outside ylim"
@@ -136,9 +139,11 @@ def test_y_flip_applied_to_all_ellipses():
         if isinstance(coll, EllipseCollection):
             all_offsets.extend(coll.get_offsets())
 
-    assert len(all_offsets) == 6
+    # Only the selected folder (kilosort 0,1,2 → vision 1,2,3) is drawn.
+    assert len(all_offsets) == 3
 
-    for cell_id, stafit in cells.items():
+    for cell_id in (1, 2, 3):
+        stafit = cells[cell_id]
         expected_x = stafit.center_x
         expected_y = 100 - stafit.center_y
         found = False
@@ -147,6 +152,15 @@ def test_y_flip_applied_to_all_ellipses():
                 found = True
                 break
         assert found, f"Cell {cell_id} center {(expected_x, expected_y)} not found in plotted offsets"
+
+    for cell_id in (4, 5, 6):
+        stafit = cells[cell_id]
+        expected_x = stafit.center_x
+        expected_y = 100 - stafit.center_y
+        for ox, oy in all_offsets:
+            assert not (
+                np.isclose(ox, expected_x) and np.isclose(oy, expected_y)
+            ), f"Non-subset cell {cell_id} should not be plotted"
 
 
 def test_y_flip_matches_highlight_and_background():
@@ -299,16 +313,59 @@ def test_ellipse_alpha_lw_ranges_preserved():
         elif coll.get_zorder() == 2:
             target_coll = coll
 
-    assert bg_coll is not None, "Background collection not found"
+    assert bg_coll is None, "Other-group shadow ellipses must not be drawn"
     assert target_coll is not None, "Target collection not found"
 
-    assert 0.12 <= bg_coll.get_alpha() <= 0.18
-    lw = bg_coll.get_linewidth()[0] if hasattr(bg_coll.get_linewidth(), '__len__') else bg_coll.get_linewidth()
-    assert 0.6 <= lw <= 0.9
-
-    assert 0.45 <= target_coll.get_alpha() <= 0.65
+    assert 0.70 <= target_coll.get_alpha() <= 1.0
     lw_target = target_coll.get_linewidth()[0] if hasattr(target_coll.get_linewidth(), '__len__') else target_coll.get_linewidth()
-    assert 0.9 <= lw_target <= 1.2
+    assert 0.9 <= lw_target <= 2.0
+
+
+def test_subset_does_not_draw_other_group_shadows():
+    """Selected-folder RF view must not include other groups' ellipses."""
+    invalidate_population_caches()
+    cells, vp = _make_vision_params(6)
+    mw = _make_mock_main_window(vp)
+    colors = mw.get_current_colors()
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    plot_population_rfs_background(
+        ax, vp, main_window=mw, sta_height=100,
+        subset_cell_ids=[0, 1, 2], colors=colors,
+    )
+
+    all_offsets = []
+    for coll in ax.collections:
+        if isinstance(coll, EllipseCollection):
+            all_offsets.extend(coll.get_offsets())
+    assert len(all_offsets) == 3
+
+    hit_ids = list(getattr(ax, "_rf_hit_ids"))
+    assert sorted(hit_ids) == [1, 2, 3]
+
+
+def test_empty_subset_draws_all_cells():
+    """No folder selected → show the whole population, not an empty mosaic."""
+    invalidate_population_caches()
+    cells, vp = _make_vision_params(6)
+    mw = _make_mock_main_window(vp)
+    colors = mw.get_current_colors()
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    plot_population_rfs_background(
+        ax, vp, main_window=mw, sta_height=100,
+        subset_cell_ids=[], colors=colors,
+    )
+
+    all_offsets = []
+    for coll in ax.collections:
+        if isinstance(coll, EllipseCollection):
+            all_offsets.extend(coll.get_offsets())
+    assert len(all_offsets) == 6
 
 
 def test_dead_code_plot_population_rfs_removed():

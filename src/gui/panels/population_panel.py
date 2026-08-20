@@ -17,7 +17,6 @@ from ..theme import (
     is_light_theme,
     plot_ensemble_alpha,
     plot_field,
-    plot_rf_bg_alpha,
     plot_rf_target_alpha,
     plot_stroke,
     resolve_theme_colors,
@@ -808,7 +807,11 @@ def _tight_limits(ellipses, frac_margin=0.05):
 def plot_population_rfs_background(
     ax, vision_params, main_window, sta_height, subset_cell_ids, colors
 ):
-    """Draw native RF ellipses plus dashed borrowed RFs from ReferenceBridge."""
+    """Draw RF ellipses for the selected folder, plus dashed borrowed RFs.
+
+    Only the selected subset is drawn. Other groups are not shown as a
+    shadow / background layer in the RF mosaic.
+    """
     colors = resolve_theme_colors(colors)
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
@@ -853,15 +856,10 @@ def plot_population_rfs_background(
     # subset_cell_ids are UI/Kilosort ids → Vision ids
     if subset_cell_ids is not None and len(subset_cell_ids) > 0:
         subset_vision_ids = {_vision_id(cid) for cid in subset_cell_ids}
-        universe = native_ids | set(borrowed_map.keys())
-        has_subset = len(universe) > 0 and len(subset_vision_ids) < len(universe)
     else:
         subset_vision_ids = native_ids | set(borrowed_map.keys())
-        has_subset = False
 
-    bg_ellipses = []
     target_ellipses = []
-    borrowed_bg = []
     borrowed_target = []
     native_drawn = set()
     # (vision_id, cx, cy, width, height, angle_deg) for every ellipse actually
@@ -886,6 +884,8 @@ def plot_population_rfs_background(
 
     if vision_params is not None:
         for cell_id in native_ids:
+            if cell_id not in subset_vision_ids:
+                continue
             try:
                 stafit = vision_params.get_stafit_for_cell(cell_id)
             except Exception:
@@ -915,15 +915,15 @@ def plot_population_rfs_background(
             )
             native_drawn.add(cell_id)
             hit_entries.append((cell_id,) + entry)
-            if cell_id in subset_vision_ids:
-                target_ellipses.append(entry)
-                _label(stafit.center_x, adjusted_y, cell_id)
-            else:
-                bg_ellipses.append(entry)
+            target_ellipses.append(entry)
+            _label(stafit.center_x, adjusted_y, cell_id)
 
-    # Borrowed only when native RF is missing for that Vision id
+    # Borrowed only when native RF is missing for that Vision id, and only
+    # for cells in the selected folder.
     for vision_id, params in borrowed_map.items():
         if vision_id in native_drawn:
+            continue
+        if vision_id not in subset_vision_ids:
             continue
         cx = params["x0"]
         cy = params["y0"]
@@ -937,26 +937,13 @@ def plot_population_rfs_background(
         adjusted_y = sta_height - cy if sta_height is not None else cy
         entry = (cx, adjusted_y, sx * 2, sy * 2, np.degrees(rot))
         hit_entries.append((vision_id,) + entry)
-        if vision_id in subset_vision_ids:
-            borrowed_target.append(entry)
-            _label(cx, adjusted_y, vision_id)
-        else:
-            borrowed_bg.append(entry)
+        borrowed_target.append(entry)
+        _label(cx, adjusted_y, vision_id)
 
     is_light = is_light_theme(colors)
-    bg_edgecolor = colors.get("plot_shadow", "#3d3d3d")
-    bg_alpha = plot_rf_bg_alpha(colors)
-    bg_lw = 1.35 if is_light else 0.9
     target_color = colors.get("plot_scatter", colors.get("plot_highlight", "#0d47a1"))
     target_alpha = plot_rf_target_alpha(colors)
     target_lw = 1.8 if is_light else 1.25
-
-    bg_coll = _build_ellipse_collection(
-        bg_ellipses, edgecolor=bg_edgecolor, alpha=bg_alpha, lw=bg_lw, zorder=1
-    )
-    if bg_coll is not None:
-        ax.add_collection(bg_coll)
-        bg_coll.set_offset_transform(ax.transData)
 
     target_coll = _build_ellipse_collection(
         target_ellipses,
@@ -970,18 +957,6 @@ def plot_population_rfs_background(
         target_coll.set_offset_transform(ax.transData)
 
     # Spec D1: dashed + slightly lower alpha for borrowed ellipses
-    borrowed_bg_coll = _build_ellipse_collection(
-        borrowed_bg,
-        edgecolor=bg_edgecolor,
-        alpha=max(0.25, bg_alpha * 0.85),
-        lw=bg_lw,
-        zorder=1,
-    )
-    if borrowed_bg_coll is not None:
-        borrowed_bg_coll.set_linestyle("--")
-        ax.add_collection(borrowed_bg_coll)
-        borrowed_bg_coll.set_offset_transform(ax.transData)
-
     borrowed_target_coll = _build_ellipse_collection(
         borrowed_target,
         edgecolor=target_color,
@@ -994,11 +969,7 @@ def plot_population_rfs_background(
         ax.add_collection(borrowed_target_coll)
         borrowed_target_coll.set_offset_transform(ax.transData)
 
-    zoom_ellipses = (
-        target_ellipses + borrowed_target
-        if (has_subset and (target_ellipses or borrowed_target))
-        else (target_ellipses + bg_ellipses + borrowed_target + borrowed_bg)
-    )
+    zoom_ellipses = target_ellipses + borrowed_target
     limits = _tight_limits(zoom_ellipses, frac_margin=0.05)
     if limits is not None:
         ax.set_xlim(limits[0], limits[1])
@@ -1007,7 +978,7 @@ def plot_population_rfs_background(
     set_rf_hit_entries(ax, hit_entries)
 
     n_target = len(target_ellipses) + len(borrowed_target)
-    n_borrowed = len(borrowed_target) + len(borrowed_bg)
+    n_borrowed = len(borrowed_target)
     title = f"Population Receptive Fields (n={n_target}"
     if n_borrowed:
         title += f", {n_borrowed} borrowed"

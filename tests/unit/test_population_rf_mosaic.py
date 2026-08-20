@@ -102,7 +102,7 @@ class TestEllipseVisibility:
     """AC1: Ellipses must have spec-compliant alpha and linewidth values."""
 
     def test_background_ellipse_alpha_and_lw(self):
-        """Background (non-target) ellipses stay visible on both themes."""
+        """Other groups are not drawn as a shadow layer when a folder is selected."""
         cells, vp = _make_vision_params(6)
         mw = _make_mock_main_window(vp)
         colors = mw.get_current_colors()
@@ -119,24 +119,20 @@ class TestEllipseVisibility:
             subset_cell_ids=subset_cell_ids, colors=colors,
         )
 
-        # Background ellipses live in EllipseCollection (not individual patches).
         from matplotlib.collections import EllipseCollection
 
-        bg_colls = [
-            c
-            for c in ax.collections
-            if isinstance(c, EllipseCollection)
-            and c.get_alpha() is not None
-            and c.get_alpha() < 0.55
-        ]
-        assert len(bg_colls) > 0, "Expected background EllipseCollection"
-        for c in bg_colls:
-            # Dark bg ~0.32; light ~0.90. Borrowed layer is slightly lower.
-            assert 0.25 <= c.get_alpha() <= 0.95, (
-                f"Background alpha {c.get_alpha()} outside [0.25, 0.95]"
-            )
-            lw = float(np.asarray(c.get_linewidths()).ravel()[0])
-            assert 0.8 <= lw <= 1.5, f"Background lw {lw} outside [0.8, 1.5]"
+        colls = [c for c in ax.collections if isinstance(c, EllipseCollection)]
+        assert len(colls) >= 1, "Expected target EllipseCollection"
+        all_offsets = []
+        for c in colls:
+            all_offsets.extend(c.get_offsets())
+        assert len(all_offsets) == 3, (
+            f"Expected only the 3 selected-folder RFs, got {len(all_offsets)}"
+        )
+        # No shadow layer: every collection is the in-subset (zorder 2) draw.
+        for c in colls:
+            assert c.get_zorder() == 2
+            assert c.get_alpha() is None or c.get_alpha() >= 0.55
 
     def test_target_ellipse_alpha_and_lw(self):
         """Target (in-subset) ellipses are heavier than the background layer."""
