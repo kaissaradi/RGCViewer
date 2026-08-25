@@ -5,9 +5,19 @@
 | Field | Value |
 |---|---|
 | **Date created** | 2026-07-01 |
+| **Last updated** | 2026-08-25 |
 | **Branch** | `feat/grating-panel` |
 | **Author** | Kais |
-| **Spec status** | Draft |
+| **Spec status** | Done. Current grouping, ranking, batch, and population polar: `grating_dsos_flexible_conditions.md`. |
+
+The numbers below are the original design. Do not copy them into new code.
+
+| Original | Current |
+|---|---|
+| `min_directions_for_dsos=8` | `MIN_DIRECTIONS_FOR_DSOS = 4` |
+| `n_shuffles=1000` | `N_SHUFFLES = 200` |
+| On-demand only; do not batch at load | `GratingBatchWorker` starts with physics warm-up |
+| Assume a typical 12-dir × 2 TF × 2 bar-width grid | Plot the `(bw, tf, orientation)` combinations that ran |
 
 ---
 

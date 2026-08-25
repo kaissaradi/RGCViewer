@@ -2,7 +2,7 @@
 
 Read `docs/AGENTS.md` before this file. This file is the pickup point.
 
-Last updated: 2026-08-12. Branch: `feat/bauhaus-redesign` (off `dev-testing`).
+Last updated: 2026-08-25. Branch: `dev-testing`.
 
 This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
@@ -14,8 +14,12 @@ ink + blue + yellow on `surface`. See `docs/specs/ux_ui_redesign.md`.
 Do not push unless the user asks.
 
 User check 2026-08-12: load, UMAP defaults, no-STA cells, and EI View combo
-are good. Grating, Contrast, and the DS/OS slider were not checked — no
-suitable direction/contrast run on hand.
+are good. Contrast was not checked.
+
+User check 2026-08-24: grating DS/OS on `1212A/data018-` (6 dirs per
+`(bw, tf)`, not a 12-dir crossed grid). Grouping, best-run pick, and
+population polar without STA are in. Spec:
+`docs/specs/grating_dsos_flexible_conditions.md`.
 
 Tree sidebar (2026-08-12): tree is a 3-column ID / Spikes / Ch table.
 Folder/file icons and `#3C3C3C` fills are gone. Window open size is
@@ -53,6 +57,9 @@ Read the failure column before you change the file.
 | `_apply_ei_updates()` | `cluster_df` is main-thread only. `max_dup_r` is float64. | Run `test_apply_ei_updates_keeps_max_dup_r_as_float`. |
 | `EIPanel._redraw_current_view()` | Shared handlers that call `_draw_heatmap_frame` steal the View combo. | Run `tests/unit/test_ei_panel_view.py`. |
 | `build_feature_matrix()` | Missing STA/grating/chirp/RF rows are NaN. Filling them with 0 rebuilds the fake "no STA" cluster. | Run `tests/unit/test_dynamic_clustering.py`. Do not switch UMAP to sklearn `nan_euclidean` (MCAR scale-up). |
+| `pop_mosaic_canvas._pop_plot_state` | A `None` sentinel makes `hasattr` true and `.get` throw. Nested `fig.clear` / `add_axes` during selection paints recursively. | Use `pop_canvas_can_hot_swap`. Never assign `None`. Hot-swap highlight only. Defer full redraw with `QTimer.singleShot(0, ...)`. Run `tests/unit/test_dsos_population.py`. |
+| `group_grating_conditions()` / `select_best_dsos_condition()` | An 8-dir cutoff tags 6-dir protocols as SF. Ranking by max `|DSI|` or a 2 Hz veto hides real DS/OS. | Plot the `(bw, tf)` pairs that ran. Rank classified pairs by peak response. Run `tests/unit/test_grating_calc.py` and `tests/unit/test_dsos_threshold.py`. |
+| `grating_computed_cache.pkl` | Old DSOS/SF tags survive a protocol change. | `grating_entry_needs_recompute()` must drop the row. Do not reuse it. |
 
 ## 2. Tests to run after a change
 
@@ -69,6 +76,8 @@ Read the failure column before you change the file.
 | Theme tokens | `test_theme_keys_match` |
 | Feature blocks / prefilter | `tests/unit/test_raw_feature_blocks.py` `tests/unit/test_dynamic_clustering.py` |
 | Tree sidebar rows | `tests/unit/test_tree_rows.py` `tests/integration/test_tree_operations.py` |
+| Grating grouping / DSI/OSI pick | `tests/unit/test_grating_calc.py` `tests/unit/test_dsos_threshold.py` |
+| Population DS/OS polar / hot-swap | `tests/unit/test_dsos_population.py` |
 
 Use `tmp_path` or `cache_cleared_data_manager` for any math test. A real
 run folder can hold a warm `.pkl` and skip the code under test (Law 3).
@@ -83,7 +92,10 @@ The full suite still has older failures. Do not mark them skipped.
 | Default weights: STA block ~400 vs ACG ~4 | Embedding is almost STA-only | Fixed 2026-08-12. Defaults are Temporal + ACG + RF diameter, each 10/10, grating and chirp off. Euclidean share is still `n_columns × weight²`. |
 | EI View combo stolen by heatmap redraws | Combo said Waveform; canvas showed Heatmap | Fixed 2026-08-12. Shared handlers go through `_redraw_current_view`. Wheel on a closed combo is ignored. |
 | Stale `feature_cache.pkl` with `_computed: True` and `timecourse=None` | Population panel reports no timecourses | Fixed 2026-08-12. `_physics_entry_is_fresh` recomputes once when an STA source appears (`_sta_checked`). |
-| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12 in code. Not user-checked (no grating/contrast run on hand). |
+| DS/OS slider writes `dsos_threshold` but grating panel uses 0.3 | Slider does not change the grating label | Fixed 2026-08-12. User-checked 2026-08-24 on a 6-dir-per-condition grating run. |
+| 6-dir `(bw, tf)` tagged SF; best run was max `|DSI|` | OSI/DSI missing; wrong condition shown | Fixed 2026-08-24. `MIN_DIRECTIONS_FOR_DSOS = 4`. Rank by peak response. |
+| Grating batch after physics; 1000 shuffles | Second load wait | Fixed 2026-08-24. Batch starts with physics. 200 shuffles. Skip shuffle below 0.10. |
+| `_pop_plot_state = None` plus nested mosaic draw | `AttributeError` and recursive QWidget repaint on cluster click | Fixed 2026-08-24. State is a dict or absent. Highlight-only hot-swap. |
 | `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Fixed 2026-08-12. Params timecourse first. Cube only on a miss. |
 | `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Fixed 2026-08-12. Skip when the group timecourse and ACG caches already hold the subset. First visit of a group still draws. |
 | Older pytest failures | Suite is not a clean gate | Open. Do not skip. `test_raw_feature_blocks` now matches the prefilter and scalar-column contracts. `test_gui_polish` still ERRORs: `qtbot` is missing because `pytest-qt` is not installed in `rgcviewer` (it is listed in `requirements-dev.txt`). |

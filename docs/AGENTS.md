@@ -62,10 +62,11 @@ This translation is already implemented in `DataManager.get_cell_physics()`. **C
 | Allowed | Forbidden |
 |---|---|
 | Reading from `ei_cache` (already in RAM) | Any disk I/O |
-| Population plot hot-swap if state already exists | Any scan of full spike arrays |
+| Population plot hot-swap if `pop_canvas_can_hot_swap` is true | Any scan of full spike arrays |
 | Updating `_pending_cluster_id` | Any `panel.update_all()` |
 | Restarting `selection_timer` | Any worker spawn |
 | | Any `DataManager` method that acquires a lock |
+| | `fig.clear`, `fig.add_axes`, or `canvas.draw` on the population mosaic |
 
 **Tier 2 — Debounced (fires 25ms after scrolling stops, via `_process_selection()`):**
 
@@ -152,7 +153,7 @@ tests/
 
 ---
 
-## 3. The Five Caches
+## 3. Caches
 
 | Cache | Attribute | Key | Persisted to | Lock | Written by |
 |---|---|---|---|---|---|
@@ -161,10 +162,14 @@ tests/
 | Waveform / EI snippets | `ei_cache` | `cluster_id` | Not persisted | Main thread only | `on_features_ready()` slot |
 | ISI violations | `isi_cache` | `(cluster_id, refractory_ms)` | Not persisted | None | `_calculate_isi_violations()` |
 | Spatial / heavyweight | `heavyweight_cache` | `cluster_id` | Not persisted | `_heavyweight_lock` | `get_heavyweight_features()` |
+| Grating DS/OS | `grating_computed_cache` | `cluster_id` | `grating_computed_cache.pkl` | `_grating_cache_lock` | `compute_grating_data_for_cluster()` |
 
 Physics features (`timecourse`, `rf_area`, `ellipticity`, `acg`) → `feature_cache`.
 ISI/ACG/FR dicts → `standard_plot_cache`.
+Grating DSI/OSI per `(barWidth, temporalFrequency)` → `grating_computed_cache`.
 Do not mix them.
+
+A grating cache row whose DSOS/SF tags do not match the direction counts that were actually run is stale. `grating_entry_needs_recompute()` drops it. Do not reuse an 8-dir cutoff result on a 4- or 6-dir protocol.
 
 ---
 
@@ -214,6 +219,7 @@ def on_result_ready(self, cluster_id: int, result: dict):
 | `standard_plot_cache` | Any thread | Always acquire `_standard_plot_lock` |
 | `feature_cache` | Any thread | Always acquire `_feature_lock` |
 | `heavyweight_cache` | Any thread | Always acquire `_heavyweight_lock` |
+| `grating_computed_cache` | Any thread | Always acquire `_grating_cache_lock` |
 | `ei_cache` | Main thread only | Written only inside `on_features_ready()` slot |
 | `vision_stas`, `vision_eis` | Read-only after load | Set once by loader, then never reassigned |
 
@@ -238,6 +244,10 @@ Things that look like implementation details but are actually load-bearing contr
 7. **`plot_ei_waveforms` is the single EI spatial rendering primitive.** Lives in `analysis_core.py`. Both `CellTracerDialog` and the EI panel waveform mode call it. Do not copy-paste waveform rendering logic into panels — extend the function instead. It returns a list of `Line2D` artists; the caller is responsible for removing them (call `.remove()` on each, never `fig.clear()`). Box geometry is auto-derived from electrode spacing — do not hardcode `box_height` or `box_width` in callers.
 
 8. **Start does not load a dataset.** `MainWindow` opens a run only when the caller passes `--kilosort-dir` or a test calls `load_directory`. `recent_paths.last_dataset()` is not used at start. File dialogs still remember the last folder.
+
+9. **Population mosaic `_pop_plot_state` is a dict or absent.** Never assign `None`. `hasattr` is then true and `.get` throws. Use `pop_canvas_can_hot_swap(canvas)`. Selection hot-swap updates the highlight only. Do not rebuild DS/OS markers or call `fig.clear` / `fig.add_axes` from a selection or paint handler. Defer a full redraw with `QTimer.singleShot(0, ...)`.
+
+10. **Grating conditions are the `(barWidth, temporalFrequency)` pairs that ran.** A pair with 4 or more unique orientations is DSOS. Fewer is SF. Do not assume 12 directions or a crossed grid. `select_best_dsos_condition()` ranks classified pairs by peak response, not by max `|DSI|`.
 
 ---
 
@@ -420,7 +430,7 @@ from qtpy.QtGui import QColor
 # from PyQt5.QtGui import QColor
 ```
 
-Plotting rule: `pyqtgraph` for all dynamic live-data panels. `matplotlib` only for the population RF mosaic and static file exports.
+Plotting rule: `pyqtgraph` for all dynamic live-data panels. `matplotlib` only for the population RF mosaic and static file exports. Nested `canvas.draw()` / `fig.clear()` / `fig.add_axes()` during a Qt paint produces `QWidget::repaint: Recursive repaint detected` and a dead painter.
 
 ---
 
