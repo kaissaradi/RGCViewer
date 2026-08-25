@@ -1,7 +1,7 @@
 from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from ...analysis import analysis_core
+from ...analysis import analysis_core, grating_calc
 import numpy as np
 import pandas as pd
 import sklearn.cluster
@@ -517,10 +517,10 @@ class GratingComputeWorker(QObject):
     One-shot DSI/OSI compute for a single cluster, from raw grating data.
 
     Deliberately NOT a persistent queue-worker like StandardPlotsWorker.
-    Grating DSI/OSI (FFT + 1000-shuffle permutation test per condition) is
-    only ever needed for clusters the user actually views — batch
-    precomputing all ~900 clusters at dataset-load time would be wasted
-    work for the vast majority never opened in a session. Spawned on demand
+    Grating DSI/OSI (FFT + shuffle test per condition that could pass the
+    DS/OS slider) is also batch-filled at load. This worker is the
+    on-demand path for a cell the user opens before that batch lands.
+    Spawned on demand
     by GratingPanel with its own throwaway QThread; caches into
     DataManager.grating_computed_cache so repeat views of the same cluster
     don't recompute.
@@ -557,30 +557,13 @@ class GratingComputeWorker(QObject):
 
 class GratingBatchWorker(QObject):
     """
-    One-time, sequential DSI/OSI compute for every cluster in the dataset,
-    run once at startup (chained after physics-cache warm-up) so
-    population-level DS/OS views (probe map, RF-plot markers) reflect the
-    whole dataset immediately, rather than only clusters the user has
-    individually opened in GratingPanel.
+    DSI/OSI compute for every cluster still missing from the cache.
 
-    This intentionally overrides the "don't batch-precompute" design
-    documented on GratingComputeWorker above — that tradeoff (startup time
-    vs. complete population views without manual per-cluster visits) was a
-    deliberate choice, not an oversight; see the ADR-style justification in
-    callbacks.py's _on_vision_loaded where this is wired up.
+    Started with physics warm-up (not after it). Raw grating trials are
+    already in RAM, so this is CPU-bound and can fan out across cores.
+    Untuned cells skip the permutation test inside grating_calc.
 
-    Runs on a real QThread (not a plain threading.Thread) specifically so
-    its `progress`/`finished` signals reliably marshal back onto the GUI
-    thread via Qt's normal cross-thread signal/slot queuing — this is
-    NOT interchangeable with QTimer.singleShot() called from a bare Python
-    thread, which requires the calling thread to already have a running
-    Qt event loop and is not reliable cross-platform (confirmed broken on
-    Windows in practice; Qt's own docs state a QTimer must be started on
-    the thread that has the event loop it needs to fire on).
-
-    Sequential by design (one cluster at a time, not a worker pool) — see
-    _on_vision_loaded for the reasoning: this can take a while for a large
-    dataset, which is an accepted, deliberate tradeoff.
+    Runs on a QThread so progress/finished marshal onto the GUI thread.
     """
 
     progress = Signal(int, int)  # (done_count, total_count)
@@ -597,29 +580,45 @@ class GratingBatchWorker(QObject):
         self._stop_requested = True
 
     def run(self):
-        total = len(self.cluster_ids)
-        for i, cid in enumerate(self.cluster_ids):
-            if self._stop_requested:
-                break
-            # Unlocked membership check: worst case under a race with a
-            # concurrent GratingPanel-triggered single-cluster compute is a
-            # harmless redundant recompute for that one cluster — the
-            # actual cache write in compute_grating_data_for_cluster is
-            # properly locked, so this can't corrupt the shared cache.
-            if cid in self.dm.grating_computed_cache and self.dm.grating_computed_cache.get(cid) is not None:
+        needed = []
+        for cid in self.cluster_ids:
+            cached = self.dm.grating_computed_cache.get(cid)
+            if cached is not None and not grating_calc.grating_entry_needs_recompute(
+                cached
+            ):
                 continue
+            needed.append(cid)
+        total = len(needed)
+        if total == 0:
+            self.finished.emit()
+            return
+
+        workers = min(8, os.cpu_count() or 4)
+        done = 0
+
+        def _one(cid):
+            if self._stop_requested:
+                return
             try:
                 self.dm.compute_grating_data_for_cluster(cid)
             except Exception:
                 logger.exception(
                     "GratingBatchWorker failed for cluster %s; skipping.", cid
                 )
-            if i % 25 == 0 or i == total - 1:
-                self.progress.emit(i + 1, total)
-                try:
-                    self.dm.save_standard_plot_cache()
-                except Exception:
-                    logger.debug("grating cache save skipped", exc_info=True)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_one, cid) for cid in needed]
+            for fut in as_completed(futures):
+                if self._stop_requested:
+                    break
+                done += 1
+                if done % 25 == 0 or done == total:
+                    self.progress.emit(done, total)
+                if done == total or done % 100 == 0:
+                    try:
+                        self.dm.save_standard_plot_cache()
+                    except Exception:
+                        logger.debug("grating cache save skipped", exc_info=True)
         self.finished.emit()
 
 

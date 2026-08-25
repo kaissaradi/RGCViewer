@@ -864,12 +864,11 @@ def rebuild_physics_cache(main_window):
 
 
 def maybe_fill_grating_cache(main_window, cluster_ids=None):
-    """Background DSI/OSI only for cells that are not already cached.
+    """Background DSI/OSI for cells that are not already cached.
 
-    Not part of opening a run. Each cell is an FFT plus a 1000-shuffle
-    test per condition; doing all ~720 at load is what made the first
-    open sit on "Computing grating DS/OS" for minutes. Population view
-    and Rebuild Physics Cache call this for the cells they still need.
+    Started with physics warm-up so DS/OS is part of the same cache pass,
+    not a second wait after it. Untuned cells skip the permutation test,
+    so this is cheap relative to the old 1000-shuffle full sweep.
     """
     dm = getattr(main_window, "data_manager", None)
     if dm is None or getattr(dm, "cluster_df", None) is None:
@@ -916,7 +915,15 @@ def _start_grating_batch(main_window, cluster_ids):
         if dm is not None:
             dm.save_standard_plot_cache()
         if getattr(main_window, "population_view_enabled", False):
-            main_window._draw_population_panel_initial()
+            canvas = getattr(main_window, "pop_mosaic_canvas", None)
+            if canvas is not None and hasattr(canvas, "_pop_plot_state"):
+                try:
+                    del canvas._pop_plot_state
+                except Exception:
+                    canvas._pop_plot_state = {}
+            # Defer so this does not nest a matplotlib draw inside a
+            # selection/paint that is already running.
+            QTimer.singleShot(0, main_window._draw_population_panel_initial)
         thread.quit()
         thread.wait(2000)
         try:
@@ -935,23 +942,22 @@ def _start_grating_batch(main_window, cluster_ids):
     thread.start()
 
 
-def start_physics_warmup(main_window, all_ids=None, fill_grating=False):
-    """Queue the physics warm-up. Optionally fill missing grating DS/OS after.
+def start_physics_warmup(main_window, all_ids=None, fill_grating=True):
+    """Queue physics warm-up and, by default, grating DS/OS in parallel.
 
-    Called once per dataset load and again by the Rebuild Physics Cache
-    action. Opening a run does not sweep every cell's grating permutation
-    test — that is ``fill_grating=True`` (rebuild) or population view.
+    Called once per dataset load and again by Rebuild Physics Cache.
+    Grating used to wait until physics finished, so the DS/OS pass felt
+    like a second load. Both read from RAM (spikes / raw grating trials)
+    so they can run at the same time. ``fill_grating=False`` skips DS/OS.
 
     Nothing here computes on the GUI thread: ``_warm_physics`` runs on a
-    plain daemon thread and hops back via ``physics_warm_done`` before any
-    QThread is started (AGENTS.md Law 2).
+    daemon thread. Grating uses a QThread started here (GUI thread).
     """
     if all_ids is None:
         all_ids = (
             main_window.data_manager.cluster_df["cluster_id"].astype(int).tolist()
         )
     _all_ids = all_ids
-    _fill_grating = bool(fill_grating)
 
     def _on_physics_warm_done():
         # Self-disconnect so repeated Vision loads in one session don't
@@ -960,11 +966,6 @@ def start_physics_warmup(main_window, all_ids=None, fill_grating=False):
             main_window.physics_warm_done.disconnect(_on_physics_warm_done)
         except (RuntimeError, TypeError):
             pass
-        if getattr(main_window, "_physics_warm_stop", None) is not None:
-            if main_window._physics_warm_stop.is_set():
-                return
-        if _fill_grating:
-            maybe_fill_grating_cache(main_window, _all_ids)
 
     main_window.physics_warm_done.connect(_on_physics_warm_done)
 
@@ -983,8 +984,6 @@ def start_physics_warmup(main_window, all_ids=None, fill_grating=False):
         dm_for_warm.ensure_physics_cache(_all_ids, stop_event=warm_stop)
         if warm_stop.is_set():
             return
-        # Hop back onto the GUI thread before any optional grating fill
-        # (rebuild / population view). A bare thread cannot start a QThread.
         main_window.physics_warm_done.emit()
 
     # Start now. Waiting for StandardPlotsWorker.all_done used to reset the
@@ -996,6 +995,9 @@ def start_physics_warmup(main_window, all_ids=None, fill_grating=False):
     )
     main_window._physics_warm_thread = warm_thread
     warm_thread.start()
+
+    if fill_grating:
+        maybe_fill_grating_cache(main_window, _all_ids)
 
 
 def load_vision_directory(main_window):
