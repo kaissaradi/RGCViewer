@@ -37,6 +37,7 @@ from .rf_map_widget import RFMapWidget
 from .trace_stack_widget import TraceStackWidget
 from .view_toggles import PopulationViewToggles
 from ...analysis import feature_catalog
+from ..theme import feature_palette
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow
@@ -89,14 +90,38 @@ _MPL_RC = {
     "font.sans-serif": ["IBM Plex Sans", "Helvetica Neue", "DejaVu Sans"],
     "savefig.facecolor": PALETTE["bg"],
 }
-mpl.rcParams.update(_MPL_RC)
+# Do not write these into global mpl.rcParams. Importing this module used
+# to paint every later matplotlib figure with the dark Feature Extraction
+# palette, including UMAP and export.
+
+
+def apply_feature_mpl_rc(palette=None):
+    pal = palette or PALETTE
+    rc = dict(_MPL_RC)
+    rc.update(
+        {
+            "figure.facecolor": pal["bg"],
+            "axes.facecolor": pal["surface"],
+            "axes.edgecolor": pal["border"],
+            "axes.labelcolor": pal["text_muted"],
+            "axes.titlecolor": pal["text_primary"],
+            "grid.color": pal["grid"],
+            "xtick.color": pal["text_muted"],
+            "ytick.color": pal["text_muted"],
+            "text.color": pal["text_primary"],
+            "savefig.facecolor": pal["bg"],
+        }
+    )
+    return rc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Stylesheet helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-DIALOG_STYLESHEET = f"""
+def dialog_stylesheet(palette=None):
+    p = palette or PALETTE
+    return f"""
 QDialog {{
     background-color: {PALETTE["bg"]};
     color: {PALETTE["text_primary"]};
@@ -248,6 +273,10 @@ QPushButton#ghost_btn:disabled {{
     color: {PALETTE["border"]};
 }}
 """
+
+
+# Keep the old name for anything that still reads the module constant.
+DIALOG_STYLESHEET = dialog_stylesheet()
 
 
 # The selector classes this window is built on now live in live_selectors.py,
@@ -440,6 +469,7 @@ class FeatureExtractionWindow(QDialog):
             f"Initializing FeatureExtractionWindow with {len(cluster_ids)} clusters"
         )
         super().__init__(parent)
+        PALETTE.update(feature_palette(main_window.get_current_colors()))
         self.main_window = main_window
         self.initial_cluster_ids = cluster_ids
         self.cluster_ids: list = []
@@ -489,7 +519,7 @@ class FeatureExtractionWindow(QDialog):
                         min(1050, int(avail.height() * 0.90)))
         else:
             self.resize(1400, 900)
-        self.setStyleSheet(DIALOG_STYLESHEET)
+        self.setStyleSheet(dialog_stylesheet(PALETTE))
 
         pal = self.palette()
         pal.setColor(QPalette.Window, QColor(PALETTE["bg"]))
@@ -909,8 +939,10 @@ class FeatureExtractionWindow(QDialog):
     # ── Canvas ────────────────────────────────────────────────────────────────
 
     def _build_canvas(self):
-        self.fig, self.axes = plt.subplots(2, 3, figsize=(12, 7), dpi=100)
+        with mpl.rc_context(apply_feature_mpl_rc(PALETTE)):
+            self.fig, self.axes = plt.subplots(2, 3, figsize=(12, 7), dpi=100)
         self.fig.set_layout_engine("constrained")
+        self.fig.patch.set_facecolor(PALETTE["bg"])
 
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1686,7 +1718,9 @@ class FeatureExtractionWindow(QDialog):
         self.main_window.data_manager.new_class_id += 1
         from ..callbacks import group_clusters_in_tree
 
-        group_clusters_in_tree(self.main_window, selected_ids, group_name)
+        group_clusters_in_tree(
+            self.main_window, selected_ids, group_name, expand_new=False
+        )
         logger.info(f"Created new group {group_name} with {len(selected_ids)} clusters")
         # ← self.close() removed: window stays open so you can keep selecting
         return group_name

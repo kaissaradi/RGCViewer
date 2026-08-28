@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from qtpy.QtGui import QColor, QPainter, QPen
+from qtpy.QtGui import QColor, QPainter, QPen, QStandardItem
 from qtpy.QtCore import (
     QAbstractTableModel,
     Qt,
@@ -17,6 +17,8 @@ from qtpy.QtWidgets import (
     QStyledItemDelegate,
     QTreeView,
     QStyleOptionViewItem,
+    QToolButton,
+    QSizePolicy,
 )
 
 from ..theme import DARK_COLORS
@@ -131,6 +133,12 @@ class HiddenIdFilterProxyModel(QSortFilterProxyModel):
         self._hidden_ids_fn = hidden_ids_fn
         self._hidden = frozenset()
 
+    def update_colors(self, colors):
+        """Forward theme colors to the source table model."""
+        source = self.sourceModel()
+        if source is not None and hasattr(source, "update_colors"):
+            source.update_colors(colors)
+
     def refresh_hidden(self):
         """Re-read the hidden set; re-filter only if it actually changed."""
         try:
@@ -167,23 +175,67 @@ class MplCanvas(FigureCanvas):
             figsize=(width, height), dpi=dpi, facecolor=DARK_COLORS["bg_panel"]
         )
         super().__init__(self.fig)
+        self._in_paint = False
         self.setCursor(Qt.PointingHandCursor)
         self.mpl_connect("button_press_event", self._on_click)
 
+    def paintEvent(self, event):
+        # FigureCanvasQTAgg.paintEvent may call draw(), which asks Qt to
+        # paint again. Guard so a status-bar update cannot recurse.
+        if self._in_paint:
+            return
+        self._in_paint = True
+        try:
+            super().paintEvent(event)
+        finally:
+            self._in_paint = False
+
     def restyle(self, colors):
         """Updates the canvas background based on the provided color scheme."""
-        self.fig.patch.set_facecolor(colors["bg_panel"])
-        self.draw()
+        from ..theme import apply_plot_theme
+
+        apply_plot_theme(self.fig, colors)
+        self.draw_idle()
+
+    def reset_view(self):
+        """Restore every axes to its autoscale limits (Home)."""
+        for ax in self.fig.axes:
+            ax.relim()
+            ax.autoscale()
+        self.draw_idle()
 
     def _on_click(self, _event):
         """Handle matplotlib mouse click events."""
         self.clicked.emit()
 
 
+def make_nav_toolbar(canvas, parent=None):
+    """Compact matplotlib Home/Pan/Zoom/Save bar used on every plot pane."""
+    from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+
+    bar = NavigationToolbar2QT(canvas, parent)
+    bar.setIconSize(bar.iconSize() * 0.75)
+    bar.setMaximumHeight(28)
+    bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    return bar
+
+
+def make_reset_button(on_reset, parent=None):
+    """Small ↺ control for pyqtgraph panes that have no matplotlib toolbar."""
+    btn = QToolButton(parent)
+    btn.setText("↺")
+    btn.setToolTip("Reset plot view")
+    btn.setAutoRaise(True)
+    btn.setFixedSize(22, 22)
+    btn.clicked.connect(on_reset)
+    return btn
+
+
 class HighlightStatusPandasModel(PandasModel):
     """Optimized model with role-based caching for faster scrolling."""
 
     STATUS_COLORS = {
+        "Good": DARK_COLORS["status_good_text"],
         "Clean": DARK_COLORS["status_good_text"],
         "Edge": DARK_COLORS["status_mua_text"],
         "Duplicate": DARK_COLORS["status_noise_text"],
@@ -203,14 +255,18 @@ class HighlightStatusPandasModel(PandasModel):
         self._background_cache = {}
         self._foreground_cache = {}
         self._display_cache = {}
+        self._colors = dict(DARK_COLORS)
         # Set by MainWindow once the chirp file's repeat count is known.
         self._chirp_qi_trustworthy = True
         self._chirp_n_repeats = None
         self._chirp_min_repeats = None
 
     def update_colors(self, colors):
-        """Updates status colors based on the current theme."""
+        """Updates status and body text colors based on the current theme."""
+        self._colors = dict(colors)
+        text = colors.get("text_primary", DARK_COLORS["text_primary"])
         self.STATUS_COLORS = {
+            "Good": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
             "Clean": colors.get("status_good_text", DARK_COLORS["status_good_text"]),
             "Edge": colors.get("status_mua_text", DARK_COLORS["status_mua_text"]),
             "Duplicate": colors.get(
@@ -220,7 +276,7 @@ class HighlightStatusPandasModel(PandasModel):
             "Unsure": colors.get(
                 "status_unsort_text", DARK_COLORS["status_unsort_text"]
             ),
-            "Original": colors.get("text_primary", DARK_COLORS["text_primary"]),
+            "Original": text,
         }
         self.refresh_view()
 
@@ -341,7 +397,11 @@ class HighlightStatusPandasModel(PandasModel):
                         "Treat these values as unusable, not merely noisy."
                     )
 
+            body = self._colors.get("text_primary", DARK_COLORS["text_primary"])
+
             if "status" not in self._dataframe.columns:
+                if role == Qt.ForegroundRole:
+                    return QColor(body)
                 return value
 
             status_col_idx = self._dataframe.columns.get_loc("status")
@@ -349,13 +409,9 @@ class HighlightStatusPandasModel(PandasModel):
 
             if role == Qt.ForegroundRole:
                 if col_name == "status":
-                    color = self.STATUS_COLORS.get(
-                        status_value, DARK_COLORS["text_primary"]
-                    )
+                    color = self.STATUS_COLORS.get(status_value, body)
                     return QColor(color)
-                return QColor(
-                    self.STATUS_COLORS.get("Original", DARK_COLORS["text_primary"])
-                )
+                return QColor(self.STATUS_COLORS.get("Original", body))
 
             if role == Qt.BackgroundRole:
                 return None
@@ -364,6 +420,232 @@ class HighlightStatusPandasModel(PandasModel):
             logger.exception("HighlightStatusPandasModel.data error")
 
         return value
+
+
+# Tree sidebar: one row is [ID | Spikes | Ch]. Cluster identity lives on
+# column 0 UserRole (int for a cell, None for a folder). TREE_SORT_ROLE is a
+# numeric key so header-click sort does not put "1000" before "999".
+TREE_COL_ID = 0
+TREE_COL_SPIKES = 1
+TREE_COL_CH = 2
+TREE_HEADERS = ("ID", "Spikes", "Ch")
+TREE_SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+TREE_SPIKES_WIDTH = 56
+TREE_CH_WIDTH = 40
+
+
+def format_spike_count(n_spikes) -> str:
+    if n_spikes is None:
+        return "—"
+    try:
+        if isinstance(n_spikes, float) and np.isnan(n_spikes):
+            return "—"
+        return f"{int(n_spikes)}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def format_channel(best_chan) -> str:
+    if best_chan is None:
+        return "—"
+    try:
+        if isinstance(best_chan, float) and np.isnan(best_chan):
+            return "—"
+        ch = int(best_chan)
+    except (TypeError, ValueError):
+        return "—"
+    if ch < 0:
+        return "—"
+    return str(ch)
+
+
+def _sort_int(value):
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return None
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number < 0:
+        return None
+    return number
+
+
+class TreeStandardItem(QStandardItem):
+    """QStandardItem that compares TREE_SORT_ROLE numerically when both sides have it."""
+
+    def __lt__(self, other):
+        if not isinstance(other, QStandardItem):
+            return super().__lt__(other)
+        left = self.data(TREE_SORT_ROLE)
+        right = other.data(TREE_SORT_ROLE)
+        if left is not None and right is not None:
+            try:
+                return left < right
+            except TypeError:
+                pass
+        if left is not None:
+            return False
+        if right is not None:
+            return True
+        return (self.text() or "") < (other.text() or "")
+
+
+def make_group_row(name, child_count=0):
+    """Folder row: name, leaf count, empty Ch. UserRole on col 0 stays None."""
+    name_item = TreeStandardItem(str(name))
+    name_item.setEditable(False)
+    name_item.setDropEnabled(True)
+    font = name_item.font()
+    font.setBold(True)
+    name_item.setFont(font)
+
+    count_item = TreeStandardItem()
+    count_item.setEditable(False)
+    count_item.setDropEnabled(False)
+    count_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    set_count_item(count_item, child_count)
+
+    ch_item = TreeStandardItem("")
+    ch_item.setEditable(False)
+    ch_item.setDropEnabled(False)
+
+    return [name_item, count_item, ch_item]
+
+
+def make_cell_row(cluster_id, n_spikes=None, best_chan=None):
+    """Cell row: ID, spike count, channel. UserRole on col 0 is the cluster id."""
+    cid = int(cluster_id)
+    id_item = TreeStandardItem(str(cid))
+    id_item.setEditable(False)
+    id_item.setDropEnabled(False)
+    id_item.setData(cid, Qt.ItemDataRole.UserRole)
+    id_item.setData(cid, TREE_SORT_ROLE)
+
+    spikes_item = TreeStandardItem(format_spike_count(n_spikes))
+    spikes_item.setEditable(False)
+    spikes_item.setDropEnabled(False)
+    spikes_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    spikes_sort = _sort_int(n_spikes)
+    if spikes_sort is not None:
+        spikes_item.setData(spikes_sort, TREE_SORT_ROLE)
+
+    ch_item = TreeStandardItem(format_channel(best_chan))
+    ch_item.setEditable(False)
+    ch_item.setDropEnabled(False)
+    ch_item.setTextAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    ch_sort = _sort_int(best_chan)
+    if ch_sort is not None:
+        ch_item.setData(ch_sort, TREE_SORT_ROLE)
+
+    return [id_item, spikes_item, ch_item]
+
+
+def set_count_item(count_item, n):
+    try:
+        count = int(n)
+    except (TypeError, ValueError):
+        count = 0
+    text = str(count) if count else ""
+    if count_item.text() != text:
+        count_item.setText(text)
+    if count_item.data(TREE_SORT_ROLE) != count:
+        count_item.setData(count, TREE_SORT_ROLE)
+
+
+def set_channel_item(ch_item, best_chan):
+    text = format_channel(best_chan)
+    if ch_item.text() != text:
+        ch_item.setText(text)
+    ch_sort = _sort_int(best_chan)
+    if ch_item.data(TREE_SORT_ROLE) != ch_sort:
+        ch_item.setData(ch_sort, TREE_SORT_ROLE)
+
+
+def tree_item_from_index(model, index):
+    """Column-0 item for a tree index. Spikes/Ch cells are not identity items."""
+    if model is None or index is None or not index.isValid():
+        return None
+    if index.column() != TREE_COL_ID:
+        index = index.sibling(index.row(), TREE_COL_ID)
+    return model.itemFromIndex(index)
+
+
+def find_cell_item(model, cluster_id):
+    """Column-0 cell item whose UserRole equals *cluster_id*, or None.
+
+    Walks the tree with ``int()`` so a numpy id from the table still matches
+    a Python int stored on the item. ``QStandardItemModel.match`` does not.
+    """
+    if model is None or cluster_id is None:
+        return None
+    try:
+        target = int(cluster_id)
+    except (TypeError, ValueError):
+        return None
+
+    def walk(parent):
+        for row in range(parent.rowCount()):
+            child = parent.child(row, TREE_COL_ID)
+            if child is None:
+                continue
+            cid = child.data(Qt.ItemDataRole.UserRole)
+            if cid is not None:
+                try:
+                    if int(cid) == target:
+                        return child
+                except (TypeError, ValueError):
+                    continue
+            else:
+                found = walk(child)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(model.invisibleRootItem())
+
+
+def count_tree_leaves(item) -> int:
+    """Recursive cell count under a folder (col-0 walk)."""
+    if item is None:
+        return 0
+    total = 0
+    for row in range(item.rowCount()):
+        child = item.child(row, TREE_COL_ID)
+        if child is None:
+            continue
+        if child.data(Qt.ItemDataRole.UserRole) is None:
+            total += count_tree_leaves(child)
+        else:
+            total += 1
+    return total
+
+
+def refresh_tree_group_counts(root_item):
+    """Write leaf counts into every folder's Spikes cell."""
+    if root_item is None:
+        return
+
+    def visit(item):
+        for row in range(item.rowCount()):
+            child = item.child(row, TREE_COL_ID)
+            if child is None:
+                continue
+            if child.data(Qt.ItemDataRole.UserRole) is None:
+                visit(child)
+                count_item = item.child(row, TREE_COL_SPIKES)
+                if count_item is not None:
+                    set_count_item(count_item, count_tree_leaves(child))
+
+    visit(root_item)
 
 
 class ClusterTreeDelegate(QStyledItemDelegate):
@@ -446,10 +728,19 @@ class ClusterTreeDelegate(QStyledItemDelegate):
             painter.drawLine(cx, cy - 3, cx, cy + 3)
 
     def paint(self, painter, option, index):
+        if index.column() != TREE_COL_ID:
+            super().paint(painter, option, index)
+            return
         tree = self._tree
-        row_rect = tree.visualRect(index)
+        # option.rect is already the cell being painted. visualRect() during
+        # paint forces a layout update and Qt logs "Recursive repaint detected"
+        # then QPainter::begin on a null engine.
+        row_rect = QRect(option.rect)
+        if row_rect.left() > 0:
+            row_rect.setLeft(0)
         if row_rect.isValid():
             painter.save()
+            painter.setClipRect(row_rect)
             painter.setRenderHint(QPainter.Antialiasing)
             self._draw_guides(painter, index, row_rect)
             toggle = self._toggle_rect(index, row_rect)
@@ -459,6 +750,13 @@ class ClusterTreeDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
+        if index.column() != TREE_COL_ID:
+            return super().editorEvent(
+                event,
+                model,
+                option if option is not None else QStyleOptionViewItem(),
+                index,
+            )
         if (
             event.type() == QEvent.MouseButtonRelease
             and event.button() == Qt.LeftButton

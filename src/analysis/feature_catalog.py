@@ -12,11 +12,9 @@ to the same ``valid_ids``, so any two can be plotted against each other.
 Two deliberate choices:
 
 *PCA is computed on the same blocks the embedding uses*, via
-``get_raw_feature_blocks``, so a PC shown here is the PC that drove the UMAP —
-including its zero sentinels. A cell with no STA contributes an all-zero
-temporal row and therefore lands at the same point as every other cell with no
-STA. That is a real property of the embedding, not an artefact of this module,
-and hiding it here would make the scatter disagree with the map it explains.
+``get_raw_feature_blocks``. A cell with no STA (or no grating / chirp)
+is left as NaN on that block's PCs, matching ``build_feature_matrix``.
+It does not share a fake point with every other incomplete cell.
 
 *Contrast-response features are opt-in.* They cost an FFT per trial per light
 level — roughly 8 ms per cell per run, so ~30 s for 900 cells across four
@@ -160,25 +158,37 @@ def resolve_panels(catalog, panels=None):
 
 
 def _pca_columns(matrix, n_pcs=N_PCS):
-    """``(scores, explained_variance_ratio, components)`` or None if unusable."""
+    """``(scores, explained_variance_ratio, components)`` or None if unusable.
+
+    PCA is fit only on non-sentinel rows. Sentinel rows stay NaN so a
+    cell with no STA does not sit on the same PC point as every other
+    cell with no STA.
+    """
+    from .analysis_core import non_sentinel_mask
+
     matrix = np.asarray(matrix, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] < 2 or matrix.shape[1] < 2:
         return None
-    if not np.isfinite(matrix).all():
-        matrix = np.nan_to_num(matrix)
-    if np.allclose(matrix.std(axis=0), 0.0):
-        return None  # every row identical: PCA would return zeros or NaN
+    valid = non_sentinel_mask(matrix)
+    n_valid = int(valid.sum())
+    if n_valid < 2:
+        return None
+    valid_mat = matrix[valid]
+    if np.allclose(valid_mat.std(axis=0), 0.0):
+        return None  # every usable row identical: PCA would return zeros or NaN
     try:
         from sklearn.decomposition import PCA
     except ImportError:
         logger.warning("scikit-learn unavailable; PCA features disabled")
         return None
-    n = int(min(n_pcs, matrix.shape[0], matrix.shape[1]))
+    n = int(min(n_pcs, n_valid, valid_mat.shape[1]))
     if n < 1:
         return None
     try:
         pca = PCA(n_components=n)
-        scores = pca.fit_transform(matrix)
+        scores_valid = pca.fit_transform(valid_mat)
+        scores = np.full((matrix.shape[0], n), np.nan, dtype=float)
+        scores[valid] = scores_valid
         return scores, pca.explained_variance_ratio_, pca.components_
     except Exception:
         logger.debug("PCA failed for a feature block", exc_info=True)
@@ -243,7 +253,7 @@ def _add_block_pcs(catalog, label, group, block, key=None, timing=None,
         return
     scores, var_ratio, components = result
     n_zero = int(np.all(np.isclose(np.asarray(block, dtype=float), 0.0), axis=1).sum())
-    note = (f". {n_zero} cells have no data here and share one point"
+    note = (f". {n_zero} cells have no data here and are NaN on this PC"
             if n_zero else "")
     segments = _segments_for(key or "", np.asarray(block).shape[1], timing)
     for i in range(scores.shape[1]):

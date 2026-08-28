@@ -1,10 +1,10 @@
 from __future__ import annotations
 import os
 import threading
+import time
 from pathlib import Path
-from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
-from qtpy.QtCore import QThread, Qt, QTimer, QEventLoop
-from qtpy.QtGui import QStandardItem, QColor
+from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication
+from qtpy.QtCore import QThread, Qt, QTimer
 
 from ..analysis.data_manager import DataManager
 from .workers.workers import (
@@ -15,7 +15,16 @@ from .workers.workers import (
     VisionLoadWorker,
     StimulusAnalysisLoadWorker,
 )
-from .widgets.widgets import HighlightStatusPandasModel
+from .widgets.widgets import (
+    HighlightStatusPandasModel,
+    TREE_COL_SPIKES,
+    TREE_HEADERS,
+    make_cell_row,
+    make_group_row,
+    refresh_tree_group_counts,
+    set_count_item,
+    tree_item_from_index,
+)
 from .panels.population_panel import (
     draw_population_timecourse_panel,
     invalidate_population_caches,
@@ -35,7 +44,42 @@ def _show_load_progress(main_window, msg):
     bar = getattr(main_window, "status_bar", None)
     if bar is not None:
         bar.showMessage(msg)
-    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+        # Only the status bar. processEvents() here re-enters matplotlib
+        # canvas paintEvent and Qt logs "Recursive repaint detected".
+        bar.repaint()
+
+
+def _cache_progress_state(total, std_done, physics_done, expect_physics):
+    """Map cache counters to a 0–100 bar value.
+
+    After Kilosort the UI is already up. Two things still fill in the
+    background: ISI/ACG/FR (``standard_plot_cache``) and, when Vision is
+    coming, ``get_cell_physics``. Those used to share one bar that switched
+    metric the moment ``vision_stas`` appeared — physics was still 0, so the
+    bar jumped back to empty and sat there until standard plots finished.
+
+    First half is spike plots, second half is physics. Vision arriving with
+    physics still at 0 no longer drops the value.
+    """
+    if total <= 0:
+        return 0, True, "Caching spike plots: %p%"
+    std_frac = min(float(std_done) / total, 1.0)
+    phys_frac = min(float(physics_done) / total, 1.0)
+    if expect_physics:
+        val = int(50.0 * std_frac + 50.0 * phys_frac)
+        ready = std_done >= total and physics_done >= total
+        # Physics warmup used to flip this label as soon as one STA
+        # finished, while the remaining minutes were still ACG/ISI.
+        label = (
+            "Caching spike plots: %p%"
+            if std_frac < 1.0
+            else "Pre-computing Physics Cache: %p%"
+        )
+    else:
+        val = int(100.0 * std_frac)
+        ready = std_done >= total
+        label = "Caching spike plots: %p%"
+    return min(val, 100), ready, label
 
 
 def _ensure_cache_progress_timer(main_window):
@@ -71,25 +115,28 @@ def update_cache_progress(main_window):
         return
 
     physics_done = getattr(dm, "_physics_done_count", 0)
-    std_done = len(dm.standard_plot_cache)
-    vision_loaded = bool(getattr(dm, "vision_stas", None))
+    std_done = len(getattr(dm, "standard_plot_cache", {}) or {})
+    expect_physics = bool(getattr(main_window, "_expect_physics", False)) or bool(
+        getattr(dm, "vision_stas", None)
+    )
 
-    # StandardPlotsWorker drives finished_cluster; physics warm-up does not.
-    if vision_loaded:
-        val = int(physics_done / total * 100)
-        ready = physics_done >= total
-    else:
-        val = int(std_done / total * 100)
-        ready = std_done >= total
+    val, ready, label = _cache_progress_state(
+        total, std_done, physics_done, expect_physics
+    )
 
-    main_window.cache_progress.setValue(min(val, 100))
+    bar = main_window.cache_progress
+    # A determinate range is required — the KS-load spinner uses (0, 0).
+    if bar.minimum() == 0 and bar.maximum() == 0:
+        bar.setRange(0, 100)
+    bar.setFormat(label)
+    bar.setValue(val)
 
     if ready and not getattr(main_window, "_cache_save_triggered", False):
         # Marks the warm-up milestone only. closeEvent saves again on exit, so
         # work done after this point is no longer lost.
         main_window._cache_save_triggered = True
         stop_cache_progress_polling(main_window)
-        main_window.cache_progress.hide()
+        bar.hide()
         main_window.status_bar.showMessage(
             "Physics Cache Ready: UMAP and Population panels optimized.", 8000
         )
@@ -272,6 +319,19 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     # 1. Lock UI and Prep DataManager
     main_window.central_widget.setEnabled(False)
     main_window.status_bar.showMessage("Initializing loader...")
+    main_window._expect_physics = False
+    main_window._cache_save_triggered = False
+    # Nothing of this dataset is on screen yet, and no secondary load has
+    # registered. _finalize_dataset_load flips these back when it reveals.
+    main_window._load_phases_pending = set()
+    main_window._dataset_revealed = False
+    main_window._vision_load_succeeded = False
+    main_window._deferred_stimulus_load = False
+    bar = getattr(main_window, "cache_progress", None)
+    if bar is not None:
+        bar.setRange(0, 0)
+        bar.setFormat("Loading dataset...")
+        bar.show()
     main_window.data_manager = DataManager(ks_dir_name, main_window)
     main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
 
@@ -303,6 +363,127 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     main_window.ks_load_thread.start()
 
 
+def _begin_load_phase(main_window, name):
+    """Register a load still owed before the dataset may be shown."""
+    pending = getattr(main_window, "_load_phases_pending", None)
+    if pending is None:
+        pending = main_window._load_phases_pending = set()
+    pending.add(name)
+
+
+def _end_load_phase(main_window, name):
+    """Mark *name* done and reveal the dataset if it was the last one.
+
+    Safe to call twice for the same phase — a worker that fails still has to
+    release its phase, and the failure paths are easier to read if doing so is
+    unconditional.
+    """
+    pending = getattr(main_window, "_load_phases_pending", None)
+    if pending is not None:
+        pending.discard(name)
+    _maybe_finalize_dataset_load(main_window)
+
+
+def _maybe_finalize_dataset_load(main_window):
+    """Reveal the dataset once nothing is outstanding."""
+    if getattr(main_window, "_load_phases_pending", None):
+        return
+    _finalize_dataset_load(main_window)
+
+
+def _finalize_dataset_load(main_window):
+    """Attach every derived column, build the table once, and show the result.
+
+    The single place a freshly opened dataset becomes visible. Everything that
+    used to trail in behind the unlock — the STA quality column, the chirp
+    columns, panel visibility, the UMAP feature gate — happens here instead, in
+    one pass, so the user sees a loading bar and then a finished window rather
+    than a table that keeps rearranging itself for the next eight seconds.
+
+    Also where the background workers start. Holding them until now keeps
+    StandardPlotsWorker's readers off the disk while the Vision and stimulus
+    loads are still streaming, which matters on a network mount: those reads
+    share one link, and overlapping them only makes each slower.
+
+    Runs again, minus the reveal, when Vision is attached by hand to a run that
+    is already open (File ▸ Load Vision). That path adds the same columns and
+    panels, so it needs the same pass; what it must not do is re-unlock a
+    window that is already unlocked or start a second StandardPlotsWorker.
+    """
+    dm = getattr(main_window, "data_manager", None)
+    if dm is None or getattr(dm, "cluster_df", None) is None or dm.cluster_df.empty:
+        return
+    first_reveal = not getattr(main_window, "_dataset_revealed", False)
+    main_window._dataset_revealed = True
+
+    # 1. Every derived column, before the one and only table build.
+    for attach in (
+        "attach_sta_quality_column",
+        "attach_chirp_qi_column",
+        "attach_chirp_onoff_column",
+    ):
+        fn = getattr(dm, attach, None)
+        if fn is None:
+            continue
+        try:
+            fn()
+        except Exception:
+            logger.warning("%s failed during load finalize", attach, exc_info=True)
+
+    if hasattr(main_window, "refresh_table_model"):
+        main_window.refresh_table_model()
+
+    # 2. Panels that depend on what actually loaded.
+    if getattr(dm, "vision_stas", None):
+        main_window.sta_panel.show()
+    else:
+        main_window.sta_panel.hide()
+
+    if hasattr(main_window, "similarity_panel") and getattr(
+        dm, "vision_available", False
+    ):
+        main_window.similarity_panel.on_vision_loaded()
+
+    if hasattr(main_window, "umap_panel"):
+        main_window.umap_panel.refresh_feature_availability()
+
+    # 3. The cache bar, which from here on tracks warm-up rather than loading.
+    if first_reveal:
+        n_clusters = len(dm.cluster_df)
+        std_ready = len(getattr(dm, "standard_plot_cache", {}) or {})
+        phys_ready = int(getattr(dm, "_physics_done_count", 0) or 0)
+        expect_physics = bool(getattr(main_window, "_expect_physics", False))
+        bar = getattr(main_window, "cache_progress", None)
+        if bar is not None:
+            bar.setRange(0, 100)
+            if std_ready >= n_clusters and (
+                not expect_physics or phys_ready >= n_clusters
+            ):
+                # A previous session already wrote the pkls. Do not flash
+                # "Caching spike plots: 0%" over a finished warm-up.
+                bar.hide()
+                main_window._cache_save_triggered = True
+            else:
+                bar.setValue(0)
+                bar.setFormat("Caching spike plots: %p%")
+                bar.show()
+                start_cache_progress_polling(main_window)
+
+        # 4. Hand the window back.
+        main_window.central_widget.setEnabled(True)
+
+        # 5. Background work, now that nothing else competes for the disk.
+        start_worker(main_window)
+
+    if getattr(dm, "vision_eis", None) is not None:
+        dm.precompute_ei_correlations_background()
+    if getattr(main_window, "_vision_load_succeeded", False):
+        start_physics_warmup(main_window)
+
+    if main_window._get_selected_cluster_id() is not None:
+        on_cluster_selection_changed(main_window)
+
+
 def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     """Callback triggered on the UI thread when KilosortLoadWorker finishes."""
     if getattr(main_window, "ks_load_thread", None):
@@ -319,6 +500,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
             main_window._reopening_remembered = False
         main_window.status_bar.showMessage("Loading failed.", 5000)
         main_window.central_widget.setEnabled(True)
+        bar = getattr(main_window, "cache_progress", None)
+        if bar is not None:
+            bar.hide()
+            bar.setRange(0, 100)
         # Deferred, NOT called here. This function runs inside the worker's
         # finished-signal emission, and a modal dialog spins a nested event
         # loop that processes the worker's and thread's pending deleteLater
@@ -335,15 +520,20 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     recent_paths.remember_dataset(ks_dir_name, dat_file)
 
     n_clusters = len(main_window.data_manager.cluster_df)
+    if hasattr(main_window, "refresh_run_meta"):
+        main_window.refresh_run_meta()
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
     # Take "Checking for…" off the bar before tree / UMAP setup. That work
     # used to leave the last check message on screen and look like the
     # check itself was still running.
     main_window.status_bar.showMessage(
         f"Loaded {n_clusters} clusters. Preparing views..."
     )
-    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+    main_window.status_bar.repaint()
 
     # --- GUI UPDATES (Safe because we are back on the main thread) ---
+    _ui_t0 = time.perf_counter()
 
     # 1. Raw Tab Management
     if dat_file is not None:
@@ -354,6 +544,8 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.analysis_tabs.setTabEnabled(
             main_window.analysis_tabs.indexOf(main_window.raw_panel), False
         )
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
 
     # 2. Tree/Table Population
     tree_file_path = os.path.join(ks_dir_name, "cluster_group_refined_tree.json")
@@ -361,19 +553,33 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.data_manager.load_tree_structure(tree_file_path)
     else:
         populate_tree_view(main_window)
+    logger.debug("load-ui tree/table: %.2fs", time.perf_counter() - _ui_t0)
 
-    main_window._update_table_view_duplicate_highlight()
+    _ui_t1 = time.perf_counter()
+    # Tree colours only. The table highlight path rebuilds the whole
+    # model (and used to re-measure every cell) — EI correlations are
+    # not ready yet, so there are no duplicates to mark.
     main_window._update_tree_view_duplicate_highlight()
+    logger.debug("load-ui highlights: %.2fs", time.perf_counter() - _ui_t1)
 
-    # 3. Enable UI & Workers
+    # 3. Note what else is still coming. The UI stays locked until it lands.
+    #
+    # Vision is located during the KS worker; if it found files we will
+    # warm physics after that load. Tell the bar now so it does not flip
+    # from a 0–100 spike-plot scale to a 0–100 physics scale (and jump
+    # back to 0) when vision_stas appears.
+    #
+    # Nothing is revealed here. Kilosort is only the first of three loads, and
+    # unlocking at this point is what made a server run feel broken: the table
+    # appeared, the user started clicking, and then Vision (~8 s) and the
+    # stimulus analyses (~4 s) each arrived later and rebuilt the table under
+    # them. _finalize_dataset_load does the reveal once, when the dataset is
+    # whole. On a local run the difference is invisible — all three finish
+    # inside a second either way.
+    auto_dir_early = getattr(main_window.data_manager, "_auto_vision_dir", None)
+    auto_dataset_early = getattr(main_window.data_manager, "_auto_vision_dataset", None)
+    main_window._expect_physics = bool(auto_dir_early and auto_dataset_early)
     main_window.cache_progress_count = 0
-    main_window.cache_progress.setValue(0)
-    main_window.cache_progress.show()
-    start_cache_progress_polling(main_window)
-
-    # Start the worker — handles signal wiring AND queueing all clusters internally
-    start_worker(main_window)
-    main_window.central_widget.setEnabled(True)
 
     main_window.load_raw_action.setEnabled(True)
     main_window.load_vision_action.setEnabled(True)
@@ -388,16 +594,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
         main_window.rebuild_cache_action.setEnabled(True)
 
     # 4. Handle Vision specific UI updates
-    if main_window.data_manager.vision_stas:
-        main_window.sta_panel.show()
-    else:
-        main_window.sta_panel.hide()
-
-    if (
-        hasattr(main_window, "similarity_panel")
-        and main_window.data_manager.vision_available
-    ):
-        main_window.similarity_panel.on_vision_loaded()
+    #
+    # Panel visibility is settled in _finalize_dataset_load, once Vision has
+    # actually been read — deciding it here can only ever answer "no", since
+    # the Vision worker has not started yet.
 
     # Drop everything the UMAP panel derived from the *previous* preparation
     # and re-gate its feature checkboxes against this one. Both matter here:
@@ -408,7 +608,9 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # files are only globbed here; they load after the UI unlocks, and
     # refresh_feature_availability runs again then.
     if hasattr(main_window, "umap_panel"):
+        _ui_t4 = time.perf_counter()
         main_window.umap_panel.reset_for_new_dataset()
+        logger.debug("load-ui umap reset: %.2fs", time.perf_counter() - _ui_t4)
 
     # 5. Array Transform check
     transform_path = (
@@ -423,14 +625,14 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
             main_window.standard_plots_panel.update_all(cid)
 
     # Auto-start Vision loading if the KS worker found .ei files in the directory.
-    # This runs as a SEPARATE VisionLoadWorker so the UI is already unlocked
-    # and responsive while Vision data streams in the background.
+    # It runs on a SEPARATE VisionLoadWorker, but the UI stays locked until it
+    # and the stimulus load are both done — see _finalize_dataset_load.
     auto_dir = getattr(main_window.data_manager, "_auto_vision_dir", None)
     auto_dataset = getattr(main_window.data_manager, "_auto_vision_dataset", None)
     if auto_dir and auto_dataset:
+        _begin_load_phase(main_window, "vision")
         main_window.status_bar.showMessage(
-            f"Loaded {n_clusters} clusters. Auto-loading Vision data in background...",
-            6000,
+            f"Loaded {n_clusters} clusters. Loading Vision data...", 6000
         )
         # Reuse the existing load_vision_directory plumbing but bypass the dialog
         # VisionLoadWorker is already imported at the top of this module
@@ -457,16 +659,50 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
             f"Successfully loaded {n_clusters} clusters.", 5000
         )
 
-    _start_stimulus_analysis_load(main_window)
+    # Run the stimulus load alongside Vision, or after it on a network mount.
+    #
+    # The two together need ~5.4 s of link time on the lab's CIFS share, but
+    # overlapping them took 11.2 s: they share one saturated 1 GbE link, and
+    # two interleaved streams of seeks slow each other by more than the
+    # concurrency wins back. This is the same effect that makes io_workers 1
+    # over there. On local disk they genuinely overlap, so nothing is deferred.
+    if getattr(main_window.data_manager, "is_network_dataset", False) and (
+        auto_dir and auto_dataset
+    ):
+        # Registered now, launched from _on_vision_loaded. Claiming the phase
+        # up front is what stops the barrier from firing in the gap between
+        # Vision finishing and this worker starting.
+        if _stimulus_load_needed(main_window):
+            _begin_load_phase(main_window, "stimulus")
+            main_window._deferred_stimulus_load = True
+    else:
+        _start_stimulus_analysis_load(main_window)
+
+    # Both loaders have been given the chance to register. If neither did,
+    # Kilosort was the whole dataset and it is already time to reveal it.
+    _maybe_finalize_dataset_load(main_window)
 
 
-def _start_stimulus_analysis_load(main_window):
-    """Unpickle chirp/contrast/grating after the cluster table is already up."""
+def _stimulus_load_needed(main_window):
+    """True when this run has chirp/contrast/grating files worth loading."""
     dm = main_window.data_manager
     cands = getattr(dm, "_analysis_candidates", None) or {}
-    if not any(cands.get(k) for k in ("chirp", "contrast", "grating")):
+    return any(cands.get(k) for k in ("chirp", "contrast", "grating"))
+
+
+def _start_stimulus_analysis_load(main_window, phase_already_claimed=False):
+    """Unpickle chirp/contrast/grating before the dataset is revealed."""
+    if not _stimulus_load_needed(main_window):
+        if phase_already_claimed:
+            # Claimed on the assumption there was work; release it or the
+            # window never opens.
+            _end_load_phase(main_window, "stimulus")
         return
 
+    if not phase_already_claimed:
+        _begin_load_phase(main_window, "stimulus")
+
+    dm = main_window.data_manager
     main_window.analysis_load_thread = QThread()
     main_window.analysis_load_worker = StimulusAnalysisLoadWorker(dm)
     main_window.analysis_load_worker.moveToThread(main_window.analysis_load_thread)
@@ -501,21 +737,15 @@ def _on_stimulus_analyses_loaded(main_window, success, message):
         main_window.status_bar.showMessage(
             f"Stimulus analysis load failed: {message}", 5000
         )
+        # Still owed, even on failure — otherwise the dataset is never revealed
+        # and the window stays locked behind a bar that will not finish.
+        _end_load_phase(main_window, "stimulus")
         return
 
-    dm = main_window.data_manager
-    changed = False
-    if dm.attach_chirp_qi_column():
-        changed = True
-    if dm.attach_chirp_onoff_column():
-        changed = True
-    if changed and hasattr(main_window, "refresh_table_model"):
-        main_window.refresh_table_model()
-    if hasattr(main_window, "umap_panel"):
-        main_window.umap_panel.refresh_feature_availability()
-    if main_window._get_selected_cluster_id() is not None:
-        on_cluster_selection_changed(main_window)
+    # The chirp columns, the UMAP re-gate and the selection refresh are applied
+    # in _finalize_dataset_load, in the same pass as the Vision columns.
     main_window.status_bar.showMessage(message, 4000)
+    _end_load_phase(main_window, "stimulus")
 
 
 def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
@@ -549,7 +779,6 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
 
     # --- Populate tree and tables ---
     populate_tree_view(main_window)
-    main_window._update_table_view_duplicate_highlight()
     main_window._update_tree_view_duplicate_highlight()
 
     # --- Drop the previous dataset's UMAP results ---
@@ -573,6 +802,12 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     # --- Show STA panel if data is available ---
     if main_window.data_manager.vision_stas:
         main_window.sta_panel.show()
+
+    # Vision-native runs never go through the phase barrier — there is only one
+    # load — but mark the dataset shown so a later hand-attached Vision load
+    # takes the refresh path rather than trying to reveal it again.
+    main_window._dataset_revealed = True
+    main_window._vision_load_succeeded = True
 
     # --- Start standard plots background worker ---
     start_worker(main_window)
@@ -624,22 +859,99 @@ def rebuild_physics_cache(main_window):
     # start_worker() resets _cache_save_triggered and re-queues every cluster
     # (the caches it checks are now empty), so the save fires again at the end.
     start_worker(main_window)
-    start_physics_warmup(main_window)
+    start_physics_warmup(main_window, fill_grating=True)
     main_window.status_bar.showMessage("Rebuilding physics cache...", 5000)
 
 
-def start_physics_warmup(main_window, all_ids=None):
-    """Queue the physics warm-up, then chain the grating DS/OS batch after it.
+def maybe_fill_grating_cache(main_window, cluster_ids=None):
+    """Background DSI/OSI for cells that are not already cached.
 
-    Called once per dataset load and again by the Rebuild Physics Cache
-    action. Both Vision-load paths used to carry byte-identical copies of
-    this chain (complete with a leftover ``REPLACE the _warm_physics block``
-    editing note); they now share this one, so the rebuild path cannot drift
-    from the load path.
+    Started with physics warm-up so DS/OS is part of the same cache pass,
+    not a second wait after it. Untuned cells skip the permutation test,
+    so this is cheap relative to the old 1000-shuffle full sweep.
+    """
+    dm = getattr(main_window, "data_manager", None)
+    if dm is None or getattr(dm, "cluster_df", None) is None:
+        return
+    if cluster_ids is None:
+        try:
+            cluster_ids = dm.cluster_df["cluster_id"].astype(int).tolist()
+        except Exception:
+            return
+    missing = dm.grating_ids_needing_compute(cluster_ids)
+    if not missing:
+        return
+    existing = getattr(main_window, "_grating_batch_thread", None)
+    if existing is not None and existing.isRunning():
+        return
+    _start_grating_batch(main_window, missing)
+
+
+def _start_grating_batch(main_window, cluster_ids):
+    """Run GratingBatchWorker for *cluster_ids* and persist when it finishes."""
+    from .workers.workers import GratingBatchWorker
+
+    ids = [int(c) for c in cluster_ids]
+    if not ids:
+        return
+
+    def _on_progress(done, total):
+        main_window.status_bar.showMessage(
+            f"Computing grating DS/OS tuning... ({done}/{total})"
+        )
+
+    thread = QThread()
+    worker = GratingBatchWorker(main_window.data_manager, ids)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+
+    def _on_batch_finished():
+        if getattr(main_window, "_grating_batch_thread", None) is not thread:
+            return
+        main_window.status_bar.showMessage(
+            "Grating DS/OS tuning computed for all clusters.", 4000
+        )
+        dm = getattr(main_window, "data_manager", None)
+        if dm is not None:
+            dm.save_standard_plot_cache()
+        if getattr(main_window, "population_view_enabled", False):
+            canvas = getattr(main_window, "pop_mosaic_canvas", None)
+            if canvas is not None and hasattr(canvas, "_pop_plot_state"):
+                try:
+                    del canvas._pop_plot_state
+                except Exception:
+                    canvas._pop_plot_state = {}
+            # Defer so this does not nest a matplotlib draw inside a
+            # selection/paint that is already running.
+            QTimer.singleShot(0, main_window._draw_population_panel_initial)
+        thread.quit()
+        thread.wait(2000)
+        try:
+            worker.deleteLater()
+            thread.deleteLater()
+        except RuntimeError:
+            pass
+        if getattr(main_window, "_grating_batch_thread", None) is thread:
+            main_window._grating_batch_thread = None
+            main_window._grating_batch_worker = None
+
+    worker.progress.connect(_on_progress)
+    worker.finished.connect(_on_batch_finished)
+    main_window._grating_batch_thread = thread
+    main_window._grating_batch_worker = worker
+    thread.start()
+
+
+def start_physics_warmup(main_window, all_ids=None, fill_grating=True):
+    """Queue physics warm-up and, by default, grating DS/OS in parallel.
+
+    Called once per dataset load and again by Rebuild Physics Cache.
+    Grating used to wait until physics finished, so the DS/OS pass felt
+    like a second load. Both read from RAM (spikes / raw grating trials)
+    so they can run at the same time. ``fill_grating=False`` skips DS/OS.
 
     Nothing here computes on the GUI thread: ``_warm_physics`` runs on a
-    plain daemon thread and hops back via ``physics_warm_done`` before any
-    QThread is started (AGENTS.md Law 2).
+    daemon thread. Grating uses a QThread started here (GUI thread).
     """
     if all_ids is None:
         all_ids = (
@@ -647,86 +959,13 @@ def start_physics_warmup(main_window, all_ids=None):
         )
     _all_ids = all_ids
 
-    def _start_grating_batch():
-        # Batch-precompute grating DSI/OSI for every cluster so the DS/OS
-        # population views (probe map, RF-plot markers) reflect the whole
-        # dataset immediately rather than only clusters the user happens
-        # to have opened individually. This deliberately overrides
-        # GratingComputeWorker's documented "only compute on demand"
-        # design — an accepted tradeoff (startup time vs. complete
-        # population views) made explicitly for this feature, not an
-        # oversight of that design note.
-        #
-        # Runs on a real QThread + GratingBatchWorker (see workers.py),
-        # NOT a plain threading.Thread — its progress/finished signals
-        # need to safely reach GUI-thread code (status bar text, a
-        # matplotlib redraw), and only a real QThread with Qt's
-        # signal/slot queuing guarantees that reliably across
-        # platforms. A bare Python thread has no Qt event loop, so
-        # QTimer.singleShot() from inside one is not reliable (Qt
-        # requires timers to be started on the thread they fire on),
-        # and calling widget methods (e.g. status_bar.showMessage)
-        # directly from a non-GUI thread is unsafe regardless.
-        from .workers.workers import GratingBatchWorker
-
-        main_window._grating_batch_thread = QThread()
-        main_window._grating_batch_worker = GratingBatchWorker(
-            main_window.data_manager, _all_ids
-        )
-        main_window._grating_batch_worker.moveToThread(
-            main_window._grating_batch_thread
-        )
-        main_window._grating_batch_thread.started.connect(
-            main_window._grating_batch_worker.run
-        )
-
-        def _on_progress(done, total):
-            main_window.status_bar.showMessage(
-                f"Computing grating DS/OS tuning... ({done}/{total})"
-            )
-
-        def _on_batch_finished(thread=main_window._grating_batch_thread,
-                               worker=main_window._grating_batch_worker):
-            # A newer load may have retired this pair. Do not quit/delete
-            # whatever now sits on the attributes.
-            if getattr(main_window, "_grating_batch_thread", None) is not thread:
-                return
-            main_window.status_bar.showMessage(
-                "Grating DS/OS tuning computed for all clusters.", 4000
-            )
-            # _draw_population_panel_initial (not redraw_population_
-            # panels directly) because it also redraws the Population
-            # Receptive Fields plot, which now carries the DS/OS
-            # markers — redraw_population_panels alone omits that plot.
-            if getattr(main_window, "population_view_enabled", False):
-                main_window._draw_population_panel_initial()
-            thread.quit()
-            thread.wait(2000)
-            try:
-                worker.deleteLater()
-                thread.deleteLater()
-            except RuntimeError:
-                pass
-            if getattr(main_window, "_grating_batch_thread", None) is thread:
-                main_window._grating_batch_thread = None
-                main_window._grating_batch_worker = None
-
-        main_window._grating_batch_worker.progress.connect(_on_progress)
-        main_window._grating_batch_worker.finished.connect(_on_batch_finished)
-        main_window._grating_batch_thread.start()
-
     def _on_physics_warm_done():
         # Self-disconnect so repeated Vision loads in one session don't
-        # stack duplicate connections — same idiom as
-        # _on_standard_plots_done just below.
+        # stack duplicate connections.
         try:
             main_window.physics_warm_done.disconnect(_on_physics_warm_done)
         except (RuntimeError, TypeError):
             pass
-        if getattr(main_window, "_physics_warm_stop", None) is not None:
-            if main_window._physics_warm_stop.is_set():
-                return
-        _start_grating_batch()
 
     main_window.physics_warm_done.connect(_on_physics_warm_done)
 
@@ -740,43 +979,25 @@ def start_physics_warmup(main_window, all_ids=None):
     def _warm_physics():
         if warm_stop.is_set():
             return
-        dm_for_warm.ensure_physics_cache(
-            _all_ids, max_workers=1, stop_event=warm_stop
-        )
+        # max_workers unset: the DataManager picks it from where the run
+        # lives — 4 locally, 1 on a network mount (storage.io_workers).
+        dm_for_warm.ensure_physics_cache(_all_ids, stop_event=warm_stop)
         if warm_stop.is_set():
             return
-        # Chain the grating batch after physics warm-up completes.
-        # _warm_physics itself runs on a plain threading.Thread (see
-        # below) — that's fine for ensure_physics_cache, which does no
-        # Qt/widget work of its own — but starting a QThread must
-        # happen from a thread with a Qt event loop for its signals to
-        # be delivered correctly, so hop back onto the GUI thread via a
-        # Qt-native mechanism (Signal, not QTimer.singleShot) rather
-        # than starting the QThread directly from this bare thread.
         main_window.physics_warm_done.emit()
 
-    def _on_standard_plots_done():
-        # Disconnect immediately so it only fires once
-        try:
-            main_window.standard_plots_worker.all_done.disconnect(
-                _on_standard_plots_done
-            )
-        except RuntimeError:
-            pass
+    # Start now. Waiting for StandardPlotsWorker.all_done used to reset the
+    # bar to 0 and, if that signal had already fired (empty queue), skip
+    # physics entirely. get_cell_physics shares get_standard_plot_data's
+    # per-cell lock, so the two workers do not recompute the same ACG.
+    warm_thread = threading.Thread(
+        target=_warm_physics, daemon=True, name="physics-warm"
+    )
+    main_window._physics_warm_thread = warm_thread
+    warm_thread.start()
 
-        # StandardPlotsWorker has finished — feature_cache has all ACGs.
-        # Now physics warm-up only needs to do STA seeks, no redundant ACG work.
-        main_window.cache_progress_count = 0
-        main_window.cache_progress.setValue(0)
-        main_window.cache_progress.show()
-        start_cache_progress_polling(main_window)
-        warm_thread = threading.Thread(
-            target=_warm_physics, daemon=True, name="physics-warm"
-        )
-        main_window._physics_warm_thread = warm_thread
-        warm_thread.start()
-
-    main_window.standard_plots_worker.all_done.connect(_on_standard_plots_done)
+    if fill_grating:
+        maybe_fill_grating_cache(main_window, _all_ids)
 
 
 def load_vision_directory(main_window):
@@ -864,7 +1085,15 @@ def _on_vision_loaded(main_window, success, message, is_partial):
         main_window.vision_load_worker.deleteLater()
         main_window.vision_load_worker = None
 
-    main_window.central_widget.setEnabled(True)
+    # No unlock here. During an ordinary open this runs while the load is still
+    # in progress; _finalize_dataset_load hands the window back once every
+    # phase is in. A hand-attached Vision load reaches that same function with
+    # the window already unlocked, so nothing is owed either way.
+    main_window._vision_load_succeeded = bool(success)
+    if hasattr(main_window, "refresh_run_meta"):
+        main_window.refresh_run_meta()
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
 
     if success and not is_partial:
         invalidate_population_caches()
@@ -882,44 +1111,33 @@ def _on_vision_loaded(main_window, success, message, is_partial):
     else:
         QMessageBox.critical(main_window, "Vision Loading Error", message)
         main_window.status_bar.showMessage("Vision loading failed.", 5000)
+        main_window._expect_physics = False
+        update_cache_progress(main_window)
 
-    # Show STA panel if data is now available
-    if main_window.data_manager.vision_stas:
-        main_window.sta_panel.show()
-        # Surface STA quality as a sortable column, and check that the .sta
-        # actually belongs to this sort — a stale one silently attaches
-        # receptive fields to the wrong units.
-        if main_window.data_manager.attach_sta_quality_column():
-            main_window.refresh_table_model()
-        if not main_window.data_manager.sta_ids_consistent:
-            QMessageBox.warning(
-                main_window,
-                "STA file does not match this sort",
-                main_window.data_manager.sta_consistency_message
-                + "\n\nThe STA panel, the RF mosaic and the temporal STA "
-                  "features in the UMAP are all affected. Spike-derived "
-                  "analyses (chirp, grating, contrast) are not.",
-            )
+    # The STA panel, the sta_snr column, the EI precompute and the physics
+    # warm-up all happen in _finalize_dataset_load now, together with the chirp
+    # columns from the stimulus load. Doing them here meant two table rebuilds
+    # seconds apart on a slow mount, each one dropping the user's selection.
+    #
+    # No provenance dialog on this path either. Partial overlap between the
+    # .sta id set and the sort is the normal case, not a stale file: the noise
+    # run is sorted on its own and simply does not yield an STA for every unit.
+    # 20260715A/data007-010 is typical — 678 of 731 .sta cells match, and the
+    # leftovers are cells without a usable STA. Raising a box for that trained
+    # the user to click through a dialog on every single open, and a modal one
+    # here would additionally stall the warm-up (a nested event loop blocks
+    # start_physics_warmup, which is what drives _physics_done_count to
+    # completion — and with it the save_standard_plot_cache that makes the
+    # *next* open a warm one).
 
-    # BUG-6 fix: kick off EI correlation precompute on a background thread
-    # so it's ready before the user opens the similarity panel.
-    # If a pickle cache exists this returns almost instantly; otherwise it
-    # runs the heavy computation without ever touching the UI thread.
-    if success and main_window.data_manager.vision_eis is not None:
-        main_window.data_manager.precompute_ei_correlations_background()
-        main_window.status_bar.showMessage(
-            "Vision loaded. Computing EI correlations in background...", 4000
-        )
+    # On a network mount the stimulus load waits for this one so the two do not
+    # interleave over the same link. Launched before the phase below is
+    # released: the barrier must never see an empty pending set in between.
+    if getattr(main_window, "_deferred_stimulus_load", False):
+        main_window._deferred_stimulus_load = False
+        _start_stimulus_analysis_load(main_window, phase_already_claimed=True)
 
-    # Now that Vision STA data is loaded, compute get_cell_physics for all
-    # clusters. The StandardPlotsWorker deliberately skips this so it can
-    # never produce stale timecourse=None entries before Vision is ready.
-    if success:
-        start_physics_warmup(main_window)
-
-    # Trigger a refresh of the currently selected cluster to show new data
-    if main_window._get_selected_cluster_id() is not None:
-        on_cluster_selection_changed(main_window)
+    _end_load_phase(main_window, "vision")
 
 
 def redraw_population_panels(main_window: MainWindow, subset=None):
@@ -959,8 +1177,9 @@ def on_cluster_selection_changed(main_window: MainWindow):
         if main_window.view_stack.currentIndex() == 0:  # Tree View
             selection = main_window.tree_view.selectionModel().selectedIndexes()
             if selection:
-                index = selection[0]
-                item = main_window.tree_model.itemFromIndex(index)
+                item = tree_item_from_index(
+                    main_window.tree_model, selection[0]
+                )
 
                 # Check if it is a group (groups store None in UserRole)
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:
@@ -1194,6 +1413,19 @@ def start_worker(main_window: MainWindow):
         update_cache_progress(main_window)
 
 
+def _cell_row_from_record(record):
+    """Build an ID / Spikes / Ch row from a DataFrame row or namedtuple."""
+    if hasattr(record, "_asdict"):
+        cluster_id = record.cluster_id
+        n_spikes = getattr(record, "n_spikes", None)
+        best_chan = getattr(record, "best_chan", None)
+    else:
+        cluster_id = record["cluster_id"]
+        n_spikes = record["n_spikes"] if "n_spikes" in record.index else None
+        best_chan = record["best_chan"] if "best_chan" in record.index else None
+    return make_cell_row(cluster_id, n_spikes, best_chan)
+
+
 def populate_tree_view(main_window: MainWindow, df=None):
     """
     Builds the tree and table from the cluster data.
@@ -1213,6 +1445,7 @@ def populate_tree_view(main_window: MainWindow, df=None):
     main_window.tree_view.setUpdatesEnabled(False)
     model = main_window.tree_model
     model.clear()  # Clear any previous data
+    model.setHorizontalHeaderLabels(list(TREE_HEADERS))
 
     # Use a copy for tree construction to ensure we have KSLabel without warning
     df_tree = df.copy()
@@ -1223,60 +1456,35 @@ def populate_tree_view(main_window: MainWindow, df=None):
     df_tree["KSLabel_str"] = df_tree["KSLabel"].astype(str)
     unique_labels = sorted(df_tree["KSLabel_str"].unique())
 
-    # Pre-fetch icons and font to avoid redundant Qt calls in the loop
-    dir_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-    file_icon = main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-
     # Create top-level nodes for each unique KSLabel
     groups = {}
-    group_cell_items = {}  # To store lists of items for batch append
+    group_cell_rows = {}
 
     for label in unique_labels:
-        group_item = QStandardItem(label)
-        group_item.setEditable(False)
-        group_item.setDropEnabled(True)  # Can drop cells into it
+        group_row = make_group_row(label, 0)
+        groups[label] = group_row
+        group_cell_rows[label] = []
 
-        # Style group items differently from cells
-        font = group_item.font()
-        font.setBold(True)
-        group_item.setFont(font)
-
-        # Set different background color for groups
-        group_item.setBackground(QColor("#3C3C3C"))
-        group_item.setIcon(dir_icon)
-
-        groups[label] = group_item
-        group_cell_items[label] = []  # Initialize list for batching
-
-    # Add each cluster as a child item to its group
-    # itertuples is significantly faster than iterrows
     for row in df_tree.itertuples():
-        cluster_id = row.cluster_id
         label = row.KSLabel_str
+        if label not in group_cell_rows:
+            continue
+        group_cell_rows[label].append(
+            make_cell_row(
+                row.cluster_id,
+                getattr(row, "n_spikes", None),
+                getattr(row, "best_chan", None),
+            )
+        )
 
-        # The text displayed will be e.g., "Cluster 123 (n=456 spikes)"
-        n_spikes = getattr(row, "n_spikes", "?")
-        item_text = f"Cluster {cluster_id} (n={n_spikes})"
-        cell_item = QStandardItem(item_text)
-        cell_item.setEditable(False)
-        cell_item.setIcon(file_icon)
-
-        # IMPORTANT: Store the actual cluster ID in the item's data role.
-        cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-        # Prevent dropping items onto cells
-        cell_item.setDropEnabled(False)
-
-        if label in group_cell_items:
-            group_cell_items[label].append(cell_item)
-
-    # Now add all populated groups to the model in one pass
     for label in unique_labels:
-        group_item = groups[label]
-        # Batch append items to the group
-        if group_cell_items[label]:
-            group_item.appendRows(group_cell_items[label])
-        model.appendRow(group_item)
+        group_row = groups[label]
+        group_item = group_row[0]
+        cell_rows = group_cell_rows[label]
+        for cell_row in cell_rows:
+            group_item.appendRow(cell_row)
+        set_count_item(group_row[TREE_COL_SPIKES], len(cell_rows))
+        model.appendRow(group_row)
 
     main_window.setup_tree_model(model)
     main_window.tree_view.collapseAll()
@@ -1285,30 +1493,15 @@ def populate_tree_view(main_window: MainWindow, df=None):
 
 def add_new_group(main_window, name: str, parent_item=None):
     """Adds a new group, safely nesting it at the top of the selected folder or root."""
-    from qtpy.QtWidgets import QApplication, QStyle
-    from qtpy.QtGui import QStandardItem, QColor
-    from qtpy.QtCore import Qt
-
-    item = QStandardItem(name)
-    item.setEditable(False)
-    item.setDropEnabled(True)
-
-    font = item.font()
-    font.setBold(True)
-    item.setFont(font)
-    item.setBackground(QColor("#3C3C3C"))
-
-    app = QApplication.instance()
-    if app:
-        item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+    group_row = make_group_row(name, 0)
 
     # If a valid folder was clicked, insert inside it at the top
     if parent_item is not None and parent_item.data(Qt.ItemDataRole.UserRole) is None:
-        parent_item.insertRow(0, item)
+        parent_item.insertRow(0, group_row)
         main_window.tree_view.expand(parent_item.index())
     else:
         # Safe insertion at the absolute root of the tree
-        main_window.tree_model.invisibleRootItem().insertRow(0, item)
+        main_window.tree_model.invisibleRootItem().insertRow(0, group_row)
 
 
 def delete_group(main_window, item):
@@ -1407,10 +1600,14 @@ def flatten_group(main_window, item):
         df.loc[df["cluster_id"].isin(cluster_ids), "KSLabel"] = item.text()
 
 
-def group_clusters_in_tree(main_window, cluster_ids, group_name):
+def group_clusters_in_tree(main_window, cluster_ids, group_name, expand_new=True):
     """
     Dynamically groups selected clusters into a new folder exactly where they are,
     without destroying the rest of the tree. Safe against numpy/Qt type issues.
+
+    ``expand_new`` is True for a hand-made folder so the user sees the cells
+    land. Feature Extraction Nc* groups pass False so the new folder stays
+    collapsed.
     """
     model = main_window.tree_model
 
@@ -1452,21 +1649,11 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
         parent_item = model.invisibleRootItem()
 
     # 3. Create the new folder item
-    group_item = QStandardItem(group_name)
-    group_item.setEditable(False)
-    group_item.setDropEnabled(True)
-
-    font = group_item.font()
-    font.setBold(True)
-    group_item.setFont(font)
-    group_item.setBackground(QColor("#3C3C3C"))
-
-    app = QApplication.instance()
-    if app:
-        group_item.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+    group_row = make_group_row(group_name, 0)
+    group_item = group_row[0]
 
     # 4. Insert the new folder at the TOP of the parent (Row 0)
-    parent_item.insertRow(0, group_item)
+    parent_item.insertRow(0, group_row)
 
     # 5. Move the clusters into the new folder safely
     for item in items_to_move:
@@ -1483,10 +1670,14 @@ def group_clusters_in_tree(main_window, cluster_ids, group_name):
     df = main_window.data_manager.cluster_df
     df.loc[df["cluster_id"].isin(list(target_ids)), "KSLabel"] = group_name
 
-    # 7. Expand only the new folder to show the user it workedload_vision_directory
-    main_window.tree_view.expand(group_item.index())
+    # Parent stays open so the new folder is visible in the tree. The folder
+    # itself opens only when the caller wants the cells in view.
     if hasattr(parent_item, "index"):
         main_window.tree_view.expand(parent_item.index())
+    if expand_new:
+        main_window.tree_view.expand(group_item.index())
+    else:
+        main_window.tree_view.collapse(group_item.index())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1647,22 +1838,9 @@ def get_or_create_trash(main_window):
             if child.text() == TRASH_GROUP_NAME:
                 return child
 
-    trash = QStandardItem(TRASH_GROUP_NAME)
-    trash.setEditable(False)
-    trash.setDropEnabled(True)
-
-    font = trash.font()
-    font.setBold(True)
-    trash.setFont(font)
-    # Muted red so discarded units read as set-aside at a glance.
-    trash.setBackground(QColor("#4A2C2C"))
-
-    app = QApplication.instance()
-    if app:
-        trash.setIcon(app.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-
-    root.appendRow(trash)
-    return trash
+    trash_row = make_group_row(TRASH_GROUP_NAME, 0)
+    root.appendRow(trash_row)
+    return trash_row[0]
 
 
 def find_trash(main_window):
@@ -1937,29 +2115,9 @@ def load_classification_file(main_window: MainWindow):
                         break
 
                 if found_item is None:
-                    # Create new group item
-                    group_item = QStandardItem(part)
-                    group_item.setEditable(False)
-                    group_item.setDropEnabled(True)
-
-                    # Style group items differently from cells
-                    font = group_item.font()
-                    font.setBold(True)
-                    group_item.setFont(font)
-
-                    # Set different background color for groups
-                    # Dark gray background for groups
-                    group_item.setBackground(QColor("#3C3C3C"))
-
-                    # Add folder icon for groups
-                    group_item.setIcon(
-                        main_window.style().standardIcon(
-                            QStyle.StandardPixmap.SP_DirIcon
-                        )
-                    )
-
-                    current_parent.appendRow(group_item)
-                    current_parent = group_item
+                    group_row = make_group_row(part, 0)
+                    current_parent.appendRow(group_row)
+                    current_parent = group_row[0]
                 else:
                     current_parent = found_item
 
@@ -1972,72 +2130,21 @@ def load_classification_file(main_window: MainWindow):
                     df.loc[df["cluster_id"] == cluster_id, "KSLabel"] = leaf_name
 
                     cluster_info = df[df["cluster_id"] == cluster_id].iloc[0]
-
-                    # Create cluster item with n_spikes and ISI info
-                    item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
-                    cell_item = QStandardItem(item_text)
-                    cell_item.setEditable(False)
-
-                    # Add file icon for cells
-                    cell_item.setIcon(
-                        main_window.style().standardIcon(
-                            QStyle.StandardPixmap.SP_FileIcon
-                        )
-                    )
-
-                    # Store the cluster ID in the item's data role
-                    cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-                    # Prevent dropping items onto cells
-                    cell_item.setDropEnabled(False)
-
-                    current_parent.appendRow(cell_item)
+                    current_parent.appendRow(_cell_row_from_record(cluster_info))
 
         # Add unclassified clusters under an 'Unclassified' group
         if unclassified_cluster_ids:
-            unclassified_group = QStandardItem("Unclassified")
-            unclassified_group.setEditable(False)
-            unclassified_group.setDropEnabled(True)
-
-            # Style group items differently from cells
-            font = unclassified_group.font()
-            font.setBold(True)
-            unclassified_group.setFont(font)
-
-            # Set different background color for groups
-            unclassified_group.setBackground(
-                QColor("#3C3C3C")
-            )  # Dark gray background for groups
-
-            # Add folder icon for groups
-            unclassified_group.setIcon(
-                main_window.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-            )
-
-            main_window.tree_model.appendRow(unclassified_group)
+            unclassified_row = make_group_row("Unclassified", 0)
+            unclassified_group = unclassified_row[0]
+            main_window.tree_model.appendRow(unclassified_row)
 
             for cluster_id in unclassified_cluster_ids:
                 cluster_info = main_window.data_manager.cluster_df[
                     main_window.data_manager.cluster_df["cluster_id"] == cluster_id
                 ].iloc[0]
+                unclassified_group.appendRow(_cell_row_from_record(cluster_info))
 
-                # Create cluster item with n_spikes and ISI info
-                item_text = f"Cluster {cluster_id} (n={cluster_info['n_spikes']}, ISI={cluster_info['isi_violations_pct']:.2f}%)"
-                cell_item = QStandardItem(item_text)
-                cell_item.setEditable(False)
-
-                # Add file icon for cells
-                cell_item.setIcon(
-                    main_window.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-                )
-
-                # Store the cluster ID in the item's data role
-                cell_item.setData(cluster_id, Qt.ItemDataRole.UserRole)
-
-                # Prevent dropping items onto cells
-                cell_item.setDropEnabled(False)
-
-                unclassified_group.appendRow(cell_item)
+        refresh_tree_group_counts(main_window.tree_model.invisibleRootItem())
 
         # Set up the tree model and expand all
         main_window.setup_tree_model(main_window.tree_model)

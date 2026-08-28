@@ -32,6 +32,7 @@ from mpl_toolkits.mplot3d import Axes3D, art3d, proj3d  # noqa: F401
 import logging
 
 from ..theme import resolve_theme_colors
+from ..widgets.widgets import make_nav_toolbar
 from ..workers.workers import UMAPWorker, ClusterWorker
 from .live_selectors import (
     _axes_ready,
@@ -45,6 +46,11 @@ from .view_toggles import PopulationViewToggles
 from ...analysis.constants import (
     DEFAULT_MIN_STA_STD,
     DEFAULT_MAX_RF_AREA,
+    DEFAULT_USE_TEMPORAL,
+    DEFAULT_USE_ACG,
+    DEFAULT_USE_RF_DIAMETER,
+    DEFAULT_USE_GRATING_DSOS,
+    DEFAULT_USE_CHIRP,
     DEFAULT_WEIGHT_TEMPORAL,
     DEFAULT_WEIGHT_ACG,
     DEFAULT_WEIGHT_RF_DIAMETER,
@@ -78,6 +84,7 @@ class UMAPPanel(QWidget):
         self._blit_bg = None
         self._defer_composite = False
         self._building = False
+        self._in_draw = False
         self._selection = np.empty(0, dtype=int)
         self._selection_mode = "lasso"
         self._rect_selector = None
@@ -96,6 +103,7 @@ class UMAPPanel(QWidget):
         self._umap_colors = {
             "accent": colors["accent"],
             "accent_positive": colors["accent_positive"],
+            "accent_text": colors.get("accent_text", "#ffffff"),
             "bg_panel": colors["bg_panel"],
         }
 
@@ -176,8 +184,16 @@ class UMAPPanel(QWidget):
         side_layout.addWidget(self.side_splitter, stretch=1)
         side_layout.addWidget(self._build_selection_panel(colors))
 
+        plot_col = QWidget()
+        plot_col_layout = QVBoxLayout(plot_col)
+        plot_col_layout.setContentsMargins(0, 0, 0, 0)
+        plot_col_layout.setSpacing(0)
+        plot_col_layout.addWidget(self.canvas, stretch=1)
+        self.plot_toolbar = make_nav_toolbar(self.canvas, plot_col)
+        plot_col_layout.addWidget(self.plot_toolbar)
+
         self.plot_splitter = QSplitter(Qt.Horizontal)
-        self.plot_splitter.addWidget(self.canvas)
+        self.plot_splitter.addWidget(plot_col)
         self.plot_splitter.addWidget(side)
         self.plot_splitter.setStretchFactor(0, 3)
         self.plot_splitter.setStretchFactor(1, 1)
@@ -260,13 +276,16 @@ class UMAPPanel(QWidget):
         self.run_btn = QPushButton("Run UMAP (2D)")
         self.run_btn.clicked.connect(self.run_umap)
         self.run_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent']}; font-weight: bold;"
+            f"background-color: {self._umap_colors['accent']}; "
+            f"color: {self._umap_colors['accent_text']}; font-weight: bold; "
+            f"border-color: {self._umap_colors['accent']};"
         )
 
         self.run_3d_btn = QPushButton("Run UMAP (3D)")
         self.run_3d_btn.clicked.connect(self.run_umap_3d)
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {self._umap_colors['accent_positive']}; font-weight: bold;"
+            f"background-color: {self._umap_colors['accent_positive']}; "
+            f"color: {self._umap_colors['accent_text']}; font-weight: bold;"
         )
 
         self.color_combo = QComboBox()
@@ -389,31 +408,48 @@ class UMAPPanel(QWidget):
         # only columns (UMAP scatter coloring/hover), just not read by the
         # embedding anymore.
         features_info = [
-            ("Temporal STA", "use_temporal", "w_temporal", DEFAULT_WEIGHT_TEMPORAL),
-            ("ACG (Autocorrelogram)", "use_acg", "w_acg", DEFAULT_WEIGHT_ACG),
+            (
+                "Temporal STA",
+                "use_temporal",
+                "w_temporal",
+                DEFAULT_WEIGHT_TEMPORAL,
+                DEFAULT_USE_TEMPORAL,
+            ),
+            (
+                "ACG (Autocorrelogram)",
+                "use_acg",
+                "w_acg",
+                DEFAULT_WEIGHT_ACG,
+                DEFAULT_USE_ACG,
+            ),
             (
                 "RF Diameter (long + short)",
                 "use_rf_diameter",
                 "w_rf_diameter",
                 DEFAULT_WEIGHT_RF_DIAMETER,
+                DEFAULT_USE_RF_DIAMETER,
             ),
             (
                 "Grating DS/OS (tuning shape)",
                 "use_grating_dsos",
                 "w_grating_dsos",
                 DEFAULT_WEIGHT_GRATING_DSOS,
+                DEFAULT_USE_GRATING_DSOS,
             ),
             (
                 "Chirp PSTH (response shape)",
                 "use_chirp",
                 "w_chirp",
                 DEFAULT_WEIGHT_CHIRP,
+                DEFAULT_USE_CHIRP,
             ),
         ]
 
-        for idx, (label, use_key, w_key, default_w) in enumerate(features_info):
+        for idx, (label, use_key, w_key, default_w, default_on) in enumerate(
+            features_info
+        ):
             chk = QCheckBox(label)
-            chk.setChecked(True)
+            chk.setChecked(default_on)
 
             # Slider (0-100 internal range) + read-only numeric readout,
             # replacing the old bare QDoubleSpinBox. Qt's QSlider is
@@ -444,6 +480,8 @@ class UMAPPanel(QWidget):
             # Connect checkbox to enable/disable the slider + readout
             chk.toggled.connect(slider.setEnabled)
             chk.toggled.connect(value_label.setEnabled)
+            slider.setEnabled(default_on)
+            value_label.setEnabled(default_on)
 
             # Store widget references — get_feature_config() reads
             # slider.value()/10.0 rather than spin.value() directly now.
@@ -543,9 +581,13 @@ class UMAPPanel(QWidget):
             return
         chk, slider, _w_key, value_label = entry
         chk.setEnabled(enabled)
-        chk.setChecked(enabled)
-        slider.setEnabled(enabled)
-        value_label.setEnabled(enabled)
+        # Availability is not a default-on. Chirp/grating start unchecked
+        # even when a file is present; only grey the row out when missing.
+        if not enabled:
+            chk.setChecked(False)
+        live = enabled and chk.isChecked()
+        slider.setEnabled(live)
+        value_label.setEnabled(live)
         chk.setToolTip("" if enabled else disabled_tooltip)
 
     def get_feature_config(self):
@@ -568,24 +610,43 @@ class UMAPPanel(QWidget):
         Qt defers geometry computation for widgets inside QTabWidget until they
         are first shown. On the initial visit the first paint can fire before
         the layout pass has committed sizes, causing the two toolbar rows to
-        overlap. singleShot(0) defers the layout activation until after the
-        event loop processes the show, guaranteeing geometry is committed
-        before first paint.
+        overlap. The first-show catch-up is the same path as a later visit
+        (STA and back), so the buttons land at their final height immediately.
         """
         super().showEvent(event)
-        QTimer.singleShot(0, self._refresh_layout)
-        QTimer.singleShot(50, self._refresh_layout)
+        self._schedule_layout()
         # Catch up on any tree selection that landed while this tab was hidden
         # (see highlight_cells). Deferred past the layout pass so the blit
         # background is snapshotted at the final geometry.
         if self._pending_highlight is not None and self.embedding is not None:
             QTimer.singleShot(60, lambda: self._highlight(self._pending_highlight))
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_layout()
+
+    def _schedule_layout(self):
+        if getattr(self, "_layout_pending", False):
+            return
+        self._layout_pending = True
+        QTimer.singleShot(0, self._refresh_layout)
+
     def _refresh_layout(self):
-        self.controls_widget.adjustSize()
-        hint_h = self.controls_widget.sizeHint().height()
+        self._layout_pending = False
+        w = getattr(self, "controls_widget", None)
+        if w is None:
+            return
+        # Unlock any stale first-show height before measuring.
+        w.setMinimumHeight(0)
+        w.setMaximumHeight(16777215)
+        if w.layout() is not None:
+            w.layout().invalidate()
+            w.layout().activate()
+        w.adjustSize()
+        self.layout.activate()
+        hint_h = max(w.sizeHint().height(), w.minimumSizeHint().height())
         if hint_h > 0:
-            self.controls_widget.setMinimumHeight(hint_h)
+            w.setFixedHeight(hint_h)
         self.layout.activate()
         self.updateGeometry()
 
@@ -794,6 +855,8 @@ class UMAPPanel(QWidget):
                         extract_cids_recursively(child)
 
             for index in selected_indexes:
+                if index.column() != 0:
+                    continue
                 item = model.itemFromIndex(index)
                 if item:
                     extract_cids_recursively(item)
@@ -1053,7 +1116,7 @@ class UMAPPanel(QWidget):
         for name, cols in blocks.items():
             # Column variance already carries the weight, so summing it is the
             # block's real share of distance without re-deriving the sliders.
-            energy[name] = float(np.nansum(matrix[:, cols].var(axis=0)))
+            energy[name] = float(np.nansum(np.nanvar(matrix[:, cols], axis=0)))
         total_energy = sum(energy.values()) or 1.0
 
         # --- what actually tracks this axis ---
@@ -1062,10 +1125,10 @@ class UMAPPanel(QWidget):
         corrs = []
         for i, lab in enumerate(labels):
             col = matrix[:, i]
-            if np.allclose(col, col[0]):
+            if not np.isfinite(col).any() or np.nanstd(col) == 0:
                 continue
             try:
-                rho = spearmanr(col, coord).statistic
+                rho = spearmanr(col, coord, nan_policy="omit").statistic
             except Exception:
                 continue
             if np.isfinite(rho):
@@ -1435,16 +1498,20 @@ class UMAPPanel(QWidget):
 
         # Update button colors
         self.run_btn.setStyleSheet(
-            f"background-color: {colors['accent']}; font-weight: bold;"
+            f"background-color: {colors['accent']}; "
+            f"color: {colors.get('accent_text', '#ffffff')}; font-weight: bold; "
+            f"border-color: {colors['accent']};"
         )
         self.run_3d_btn.setStyleSheet(
-            f"background-color: {colors['accent_positive']}; font-weight: bold;"
+            f"background-color: {colors['accent_positive']}; "
+            f"color: {colors.get('accent_text', '#ffffff')}; font-weight: bold;"
         )
 
         # Update stored colors
         self._umap_colors = {
             "accent": colors["accent"],
             "accent_positive": colors["accent_positive"],
+            "accent_text": colors.get("accent_text", "#ffffff"),
             "bg_panel": colors["bg_panel"],
         }
 
@@ -1993,23 +2060,14 @@ class UMAPPanel(QWidget):
         self._lasso_poly.set_visible(True)
         self._composite()
 
-    def _composite(self):
-        """The single painter for this canvas.
+    def _stamp_overlay(self):
+        """Draw animated layers onto the current renderer, without blit.
 
-        Restore the clean background, then stamp the animated layers back on in
-        a fixed order: selected points, the frozen lasso outline, then whatever
-        the live selector is drawing. Because every repaint goes through here,
-        no layer can wipe another.
+        Must not call canvas.draw / draw_idle / blit — those re-enter the
+        Qt paint and log ``QWidget::repaint: Recursive repaint detected``.
         """
-        if self._building or self._defer_composite:
+        if self.ax is None:
             return
-        if self.is_3d or self._blit_bg is None:
-            # 3D repaints wholesale on every rotation, so there is no stable
-            # background to cache. draw_idle re-enters _on_canvas_draw.
-            self.canvas.draw_idle()
-            return
-
-        self.canvas.restore_region(self._blit_bg)
         if self._overlay_artist is not None:
             self.ax.draw_artist(self._overlay_artist)
         if self._lasso_poly is not None and self._lasso_poly.get_visible():
@@ -2020,15 +2078,43 @@ class UMAPPanel(QWidget):
             for artist in sel.artists:
                 if artist.get_visible() and artist.axes is not None:
                     artist.axes.draw_artist(artist)
+
+    def _composite(self):
+        """The single painter for this canvas.
+
+        Restore the clean background, then stamp the animated layers back on in
+        a fixed order: selected points, the frozen lasso outline, then whatever
+        the live selector is drawing. Because every repaint goes through here,
+        no layer can wipe another.
+        """
+        if self._building or self._defer_composite or self._in_draw:
+            return
+        if self.is_3d or self._blit_bg is None:
+            # 3D has no stable blit cache (the axes redraw on every rotation).
+            # A missing 2D snapshot means a draw_event is still pending —
+            # _on_canvas_draw will stamp the overlay then. Do not draw() here:
+            # that re-enters paint and Qt rejects the nested QPainter.
+            return
+
+        self.canvas.restore_region(self._blit_bg)
+        self._stamp_overlay()
         self.canvas.blit(self.fig.bbox)
 
     def _on_canvas_draw(self, _event):
-        """Cache the freshly rendered background, then repaint the live layers."""
+        """Cache the freshly rendered background, then stamp live layers.
+
+        Overlay artists are animated, so they were left out of this draw.
+        draw_artist onto the active renderer; do not blit (nested paint).
+        """
         if self._building or self.is_3d:
             self._blit_bg = None
             return
-        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
-        self._composite()
+        self._in_draw = True
+        try:
+            self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+            self._stamp_overlay()
+        finally:
+            self._in_draw = False
 
     def resizeEvent(self, event):
         """Invalidate the blit cache; the following draw_event re-snapshots it."""

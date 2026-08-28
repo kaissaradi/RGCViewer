@@ -11,6 +11,7 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
 from . import cache_persistence
+from . import storage
 from . import vision_integration
 from .constants import (
     ISI_REFRACTORY_PERIOD_MS,
@@ -84,6 +85,127 @@ def _load_array(path, mmap_mode):
         if mmap_mode == "r":
             arr.flags.writeable = False
         return arr
+
+
+# Cluster IDs are small integers (a few hundred to a few thousand). A counting
+# sort of 27 M of them is ~0.15 s; numpy's stable mergesort is ~3 s and was
+# paid on every open, warm cache or not. Numba is already in the env as a
+# umap/hdbscan dependency. If it is missing, fall back to mergesort.
+_COUNTING_ARGSORT = None
+try:
+    from numba import njit as _njit
+
+    @_njit(cache=True)
+    def _counting_argsort(x, mn, n_bins):
+        n = x.size
+        counts = np.zeros(n_bins, dtype=np.int64)
+        for i in range(n):
+            counts[x[i] - mn] += 1
+        cursor = np.empty(n_bins, dtype=np.int64)
+        acc = 0
+        for b in range(n_bins):
+            cursor[b] = acc
+            acc += counts[b]
+        order = np.empty(n, dtype=np.int64)
+        for i in range(n):
+            v = x[i] - mn
+            pos = cursor[v]
+            order[pos] = i
+            cursor[v] = pos + 1
+        return order, counts
+
+    _COUNTING_ARGSORT = _counting_argsort
+except Exception:  # pragma: no cover - numba optional
+    _COUNTING_ARGSORT = None
+
+# Counting sort allocates one slot per ID in [min, max]. Above this span the
+# histogram is larger than the input and mergesort is the safer default.
+_COUNTING_SORT_MAX_SPAN = 2_000_000
+
+
+def _stable_groupby_order(ids):
+    """Stable argsort of integer cluster IDs (recording order within each ID).
+
+    Counting sort when the ID span is small; mergesort otherwise. Matches
+    ``np.argsort(ids, kind="mergesort")``.
+    """
+    ids = np.asanyarray(ids).ravel()
+    if ids.size == 0:
+        return np.empty(0, dtype=np.int64)
+    mn = int(ids.min())
+    mx = int(ids.max())
+    span = mx - mn + 1
+    if (
+        _COUNTING_ARGSORT is not None
+        and span > 0
+        and span <= _COUNTING_SORT_MAX_SPAN
+    ):
+        order, _hist = _COUNTING_ARGSORT(ids, mn, span)
+        return order
+    return np.argsort(ids, kind="mergesort")
+
+
+def _group_spike_clusters(ids):
+    """Stable group-by of cluster IDs: order, unique IDs, starts, counts.
+
+    ``order`` is a stable argsort. Unique IDs and counts come from the
+    counting-sort histogram so the caller does not have to gather
+    ``ids[order]`` just to split the groups.
+    """
+    ids = np.asanyarray(ids).ravel()
+    if ids.size == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, ids, empty, empty
+    mn = int(ids.min())
+    mx = int(ids.max())
+    span = mx - mn + 1
+    if (
+        _COUNTING_ARGSORT is not None
+        and span > 0
+        and span <= _COUNTING_SORT_MAX_SPAN
+    ):
+        order, hist = _COUNTING_ARGSORT(ids, mn, span)
+        occupied = np.flatnonzero(hist)
+        unique_cls = (occupied + mn).astype(ids.dtype, copy=False)
+        counts = hist[occupied]
+        starts = np.zeros(occupied.size, dtype=np.int64)
+        if occupied.size:
+            np.cumsum(counts[:-1], out=starts[1:])
+        return order, unique_cls, starts, counts
+    order = np.argsort(ids, kind="mergesort")
+    unique_cls, starts, counts = _runs_from_sorted(ids[order])
+    return order, unique_cls, starts, counts
+
+
+def _runs_from_sorted(sorted_ids):
+    """Unique values, start indices, and counts of an already-sorted ID array.
+
+    ``np.unique`` always re-sorts. After a stable group-by the IDs are already
+    grouped, so a linear scan is enough.
+    """
+    sorted_ids = np.asanyarray(sorted_ids).ravel()
+    if sorted_ids.size == 0:
+        empty_i = np.empty(0, dtype=np.int64)
+        return sorted_ids, empty_i, empty_i
+    change = np.empty(sorted_ids.size, dtype=bool)
+    change[0] = True
+    change[1:] = sorted_ids[1:] != sorted_ids[:-1]
+    starts = np.flatnonzero(change)
+    counts = np.diff(np.append(starts, sorted_ids.size))
+    return sorted_ids[starts], starts, counts
+
+
+def _crc32_bytes(arr):
+    """Byte view of *arr* for ``zlib.crc32`` without copying a contig memmap.
+
+    ``np.ascontiguousarray`` on a 100 MB spike file used to force a full
+    anonymous copy just to fingerprint the cache. Mapped ``.npy`` files are
+    already C-contiguous.
+    """
+    a = np.asanyarray(arr)
+    if not a.flags["C_CONTIGUOUS"]:
+        a = np.ascontiguousarray(a)
+    return memoryview(a).cast("B")
 
 
 def get_channel_template_mappings(templates: np.ndarray) -> dict:
@@ -272,6 +394,22 @@ class DataManager(QObject):
         # on a timeout. It is called inside load_kilosort_data() instead,
         # which runs on a background QThread.
 
+        # How many threads may read this dataset at once. One when it lives on
+        # a network mount: see storage.io_workers — over CIFS the extra readers
+        # add no throughput at all (wall time is flat from 1 to 8 threads) and
+        # multiply each individual read's latency, which is what pushes the
+        # STA timeouts within reach. Decided once here, from the run's own
+        # path, so every worker agrees.
+        self.io_workers = storage.io_workers(self.kilosort_dir, local_default=4)
+        self.is_network_dataset = self.io_workers == 1 and storage.is_network_path(
+            self.kilosort_dir
+        )
+        if self.is_network_dataset:
+            logger.info(
+                "%s is on a network mount; reading single-threaded.",
+                self.kilosort_dir,
+            )
+
         # Set by close() so teardown is safe to repeat, and so a caller can
         # tell a released DataManager from a live one.
         self._closed = False
@@ -442,6 +580,16 @@ class DataManager(QObject):
         logger.debug(
             "Successfully updated cluster_df with duplicates on the Main Thread."
         )
+        # The table model keeps a display cache. Invalidate it here — do not
+        # rebuild the model (that re-measures every column).
+        mw = getattr(self, "main_window", None)
+        if mw is not None:
+            model = getattr(mw, "main_cluster_model", None)
+            if model is not None and hasattr(model, "refresh_view"):
+                model.refresh_view()
+            tree_fn = getattr(mw, "_update_tree_view_duplicate_highlight", None)
+            if callable(tree_fn):
+                tree_fn()
 
     def _save_pickle_with_fallback(self, data, path):
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
@@ -698,21 +846,50 @@ class DataManager(QObject):
                 self.cluster_info = pd.read_csv(group_path, sep="\t")
             else:
                 self.info_path = None
-                # _unique_ids/_counts computed once below — reuse here
-                self.cluster_info = None  # filled after the single np.unique call
+                self.cluster_info = None  # filled after the grouping pass
 
-            # --- single np.unique scan — reused everywhere below ----------------
-            # Previously called 3 separate times (lines ~487, ~501, ~504).
-            # np.unique on a multi-million element array is O(N log N); doing it
-            # once and threading the results through saves 2 full sort passes.
-            _unique_ids, _counts = np.unique(self.spike_clusters, return_counts=True)
+            # params.py sets sampling_rate, which the ISI cache key includes.
+            # Must run before _load_isi_cache() or every open misses the cache
+            # and re-gathers 200 MB of spike times.
+            try:
+                self._load_kilosort_params()
+            except Exception:
+                logger.debug(
+                    "Failed to load kilosort params (non-fatal).", exc_info=True
+                )
 
-            # Fill in the fallback cluster_info now that we have _unique_ids
+            # --- one stable group-by: indices, unique IDs, counts ---------------
+            # Do not np.unique or np.argsort the full spike_clusters here.
+            # unique+mergesort on 27 M IDs is ~3 s every open. Counting sort
+            # plus the histogram is the same grouping without a second scan.
+            logger.debug("Building cluster index mapping...")
+            order, unique_cls, split_idxs, counts = _group_spike_clusters(
+                self.spike_clusters
+            )
+
+            # The ISI percentages are the only consumer of spike times (and
+            # cluster IDs) in cluster order. A cache hit skips both gathers.
+            self._cached_isi_pct = self._load_isi_cache()
+            if self._cached_isi_pct is None:
+                self._spk_sorted_cls = self.spike_clusters[order]
+                self._spk_sorted_t = self.spike_times[order]
+            else:
+                self._spk_sorted_cls = None
+                self._spk_sorted_t = None
+
+            self._spk_unique_cls = unique_cls
+            self._spk_unique_counts = counts
+            grouped_indices = np.split(order, split_idxs[1:])
+            self.cluster_spike_indices = {
+                int(cid): idxs for cid, idxs in zip(unique_cls, grouped_indices)
+            }
+
+            # Fill in the fallback cluster_info now that we have unique_cls
             if self.cluster_info is None:
                 self.cluster_info = pd.DataFrame(
                     {
-                        "cluster_id": _unique_ids.astype(int),
-                        "group": ["unsorted"] * len(_unique_ids),
+                        "cluster_id": unique_cls.astype(int),
+                        "group": ["unsorted"] * len(unique_cls),
                     }
                 )
 
@@ -730,11 +907,11 @@ class DataManager(QObject):
                         .values
                     )
             else:
-                cluster_ids = _unique_ids.astype(int)
+                cluster_ids = unique_cls.astype(int)
                 status_vals = np.array(["unsorted"] * len(cluster_ids), dtype=object)
 
             counts_map = dict(
-                zip(_unique_ids.astype(int).tolist(), _counts.astype(int).tolist())
+                zip(unique_cls.astype(int).tolist(), counts.astype(int).tolist())
             )
             n_spikes = np.array(
                 [int(counts_map.get(int(cid), 0)) for cid in cluster_ids], dtype=int
@@ -772,14 +949,7 @@ class DataManager(QObject):
                 self.channel_to_templates = {}
                 self.template_to_channels = {}
 
-            # --- load params and similarity -------------------------------------
-            try:
-                self._load_kilosort_params()
-            except Exception:
-                logger.debug(
-                    "Failed to load kilosort params (non-fatal).", exc_info=True
-                )
-
+            # --- load similarity (params already loaded above) -------------------
             try:
                 self._load_kilosort_similarity()
             except Exception:
@@ -791,35 +961,6 @@ class DataManager(QObject):
             # NOT loaded here. They are loaded at the end of build_cluster_dataframe(),
             # after cluster_df has been finalized, so stale keys from a previous
             # session can be pruned against the real cluster population.
-
-            # --- Build O(1) spike index lookup + cache sort order for reuse ---
-            logger.debug("Building cluster index mapping...")
-            order = np.argsort(self.spike_clusters, kind="mergesort")
-            sorted_cls = self.spike_clusters[order]
-
-            # The ISI percentages are the only consumer of spike times in
-            # cluster order, so when they come from the cache the gather below
-            # is 160 MB of copying for nothing. The argsort itself still has to
-            # happen — cluster_spike_indices needs it.
-            self._cached_isi_pct = self._load_isi_cache()
-            sorted_t = None if self._cached_isi_pct is not None else self.spike_times[order]
-
-            self._spk_sorted_cls = sorted_cls
-            self._spk_sorted_t = sorted_t
-            _, split_idxs = np.unique(sorted_cls, return_index=True)
-            grouped_indices = np.split(order, split_idxs[1:])
-            unique_cls = sorted_cls[split_idxs]
-
-            self.cluster_spike_indices = {
-                int(cid): idxs for cid, idxs in zip(unique_cls, grouped_indices)
-            }
-
-            # _unique_ids / _counts already computed above — no repeat scan needed.
-            # unique_cls is derived from sorted_cls which covers the same set,
-            # so we reuse _counts directly (order matches since both come from
-            # the same np.unique on spike_clusters).
-            self._spk_unique_cls = unique_cls
-            self._spk_unique_counts = _counts
 
             return True, "Successfully loaded Kilosort data."
 
@@ -1221,9 +1362,9 @@ class DataManager(QObject):
                 for part in (
                     1,  # key format version
                     sc.size,
-                    zlib.crc32(np.ascontiguousarray(sc)),
+                    zlib.crc32(_crc32_bytes(sc)),
                     st.size,
-                    zlib.crc32(np.ascontiguousarray(st)),
+                    zlib.crc32(_crc32_bytes(st)),
                     float(self.sampling_rate),
                     float(ISI_REFRACTORY_PERIOD_MS),
                 )
@@ -1961,6 +2102,16 @@ class DataManager(QObject):
                 if v is not None
             }
 
+        def _grating_on_disk_count(path):
+            if not os.path.exists(path):
+                return 0
+            try:
+                with open(path, "rb") as f:
+                    payload = pickle.load(f)
+                return len(cache_persistence.load_versioned_entries(payload))
+            except Exception:
+                return 0
+
         def _save():
             try:
                 self._save_pickle_with_fallback(snapshot, save_path)
@@ -1973,7 +2124,17 @@ class DataManager(QObject):
                         cache_persistence.add_version(feature_snapshot),
                         feature_save_path,
                     )
-                if grating_snapshot or not os.path.exists(grating_save_path):
+                # The physics-ready save used to fire with 0–1 grating cells
+                # and replace a 720-cell DS/OS file. Never shrink what is
+                # already on disk.
+                if grating_snapshot and (
+                    len(grating_snapshot) >= _grating_on_disk_count(grating_save_path)
+                ):
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(grating_snapshot),
+                        grating_save_path,
+                    )
+                elif not grating_snapshot and not os.path.exists(grating_save_path):
                     self._save_pickle_with_fallback(
                         cache_persistence.add_version(grating_snapshot),
                         grating_save_path,
@@ -2118,9 +2279,8 @@ class DataManager(QObject):
     def _load_grating_cache_from_disk(self):
         """Restore the on-demand grating DS/OS results, or ``{}`` if unusable.
 
-        Each entry costs an FFT plus a 1000-shuffle permutation test per
-        condition, so re-running the sweep over ~900 cells is the heavy second
-        pass users see at every launch. Keys are Kilosort cluster ids; stale
+        Each entry is an FFT plus a shuffle test only for conditions that
+        could pass the DS/OS slider. Keys are Kilosort cluster ids; stale
         ones are pruned against cluster_df by build_cluster_dataframe's caller
         path in the same way the other caches are.
         """
@@ -2145,6 +2305,9 @@ class DataManager(QObject):
             valid_ids = set(cluster_df["cluster_id"].astype(int).tolist())
 
         restored = {}
+        stale_n = 0
+        from . import grating_calc
+
         for k, v in cache.items():
             if v is None:
                 continue
@@ -2154,7 +2317,32 @@ class DataManager(QObject):
                 continue
             if valid_ids is not None and key not in valid_ids:
                 continue
+            if grating_calc.grating_entry_needs_recompute(v):
+                stale_n += 1
+                continue
             restored[key] = v
+
+        if stale_n:
+            logger.info(
+                "Dropped %d grating cache entries whose DSOS/SF tags do not "
+                "match the directions that were actually run; they will be "
+                "recomputed",
+                stale_n,
+            )
+            try:
+                if restored:
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(restored),
+                        str(pkl),
+                    )
+                elif pkl.exists():
+                    pkl.unlink()
+            except OSError:
+                logger.warning(
+                    "Could not rewrite grating_computed_cache.pkl after "
+                    "dropping stale DSOS entries",
+                    exc_info=True,
+                )
 
         if restored:
             logger.debug("Restored grating_computed_cache (%d cells)", len(restored))
@@ -2202,11 +2390,70 @@ class DataManager(QObject):
         logger.info("Physics caches cleared (deleted: %s)", removed or "none")
         return removed
 
-    def get_cell_physics(self, cluster_id):
+    def _sta_source_available(self, cluster_id):
+        """True if this run or the reference bridge can supply an STA product.
+
+        ``vid in vision_stas`` does not read the cube (LazySTADict.__contains__).
+        Params RedTimeCourse is the other current-run source. A stafit alone
+        is not enough — extraction can still leave timecourse=None, and that
+        must not look like a fillable miss on every later call.
+        """
+        vid = self.get_vision_id_for_cluster(cluster_id)
+        stas = self._optional_attr("vision_stas")
+        if stas and vid in stas:
+            return True
+        params = self._optional_attr("vision_params")
+        if params is not None:
+            try:
+                if params.get_data_for_cell(vid, "RedTimeCourse") is not None:
+                    return True
+            except Exception:
+                pass
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is not None and bridge.has_match(vid):
+            return bool(bridge.has_sta(vid) or bridge.has_rf(vid))
+        return False
+
+    def _physics_entry_is_fresh(self, cluster_id, entry):
+        """A cache hit is valid unless Vision arrived after a None-timecourse write.
+
+        Old pickles and the pre-Vision warm-up both store
+        ``{_computed: True, timecourse: None}``. Once an STA source exists,
+        recompute once. ``_sta_checked`` marks that this source was already
+        tried, so a genuine no-STA cell does not loop.
+        """
+        if not entry or not entry.get("_computed"):
+            return False
+        # A timed-out placeholder is not a result. It carries _computed only so
+        # the progress bar and UMAP gate could move past it; treating it as a
+        # hit would make the zeros stick for the rest of the session.
+        if entry.get("_timed_out"):
+            return False
+        if entry.get("timecourse") is not None:
+            return True
+        if not self._sta_source_available(cluster_id):
+            return True
+        return bool(entry.get("_sta_checked"))
+
+    def _write_acg_into_feature_cache(self, cluster_id, acg_norm):
+        """Store ACG on the feature row, including already-_computed entries."""
+        cluster_id = int(cluster_id)
+        with self._feature_lock:
+            existing = self.feature_cache.get(cluster_id)
+            if existing is None:
+                self.feature_cache[cluster_id] = {"acg": acg_norm}
+            else:
+                existing["acg"] = acg_norm
+
+    def get_cell_physics(self, cluster_id, allow_std_compute=True):
         """
         Single Source of Truth for a cell's physical metrics.
         Assembles pre-calculated Vision data and caches it into a flat,
         instantly accessible dictionary to prevent redundant UI processing loops.
+
+        ``allow_std_compute=False`` skips the ACG/ISI pass. The load-time
+        physics sweep uses that so it does not re-do StandardPlotsWorker
+        one cell at a time.
         """
         # Ensure thread safety for background loading
         if not hasattr(self, "_feature_lock"):
@@ -2218,7 +2465,7 @@ class DataManager(QObject):
         # 1. Fast path: check feature cache under lock.
         with self._feature_lock:
             cached = self.feature_cache.get(cluster_id)
-            if cached is not None and cached.get("_computed"):
+            if self._physics_entry_is_fresh(cluster_id, cached):
                 return cached
 
         # 2. Per-cell in-flight lock to prevent redundant computation
@@ -2231,7 +2478,7 @@ class DataManager(QObject):
             # 3. Re-check cache now that we hold the per-cell lock (double-check idiom)
             with self._feature_lock:
                 cached = self.feature_cache.get(cluster_id)
-                if cached is not None and cached.get("_computed"):
+                if self._physics_entry_is_fresh(cluster_id, cached):
                     return cached
 
             # --- Everything below stays inside cell_lock so a second thread that
@@ -2242,7 +2489,7 @@ class DataManager(QObject):
                 _partial = self.feature_cache.get(cluster_id, {})
                 acg_norm = _partial.get("acg")
 
-            if acg_norm is None:
+            if acg_norm is None and allow_std_compute:
                 std_data = self.get_standard_plot_data(cluster_id)
                 acg_norm = std_data.get("acg_norm") if std_data else None
 
@@ -2253,62 +2500,86 @@ class DataManager(QObject):
             rf_short_diameter = 0.0
             time_to_peak = 0
 
-            vid = (
-                cluster_id if getattr(self, "is_vision_only", False) else cluster_id + 1
-            )
-            if self.vision_stas and vid in self.vision_stas:
-                sta_data = self.vision_stas[vid]
-                stafit = None
+            vid = self.get_vision_id_for_cluster(cluster_id)
+            stas = self._optional_attr("vision_stas")
+            params = self._optional_attr("vision_params")
+            stafit = None
+            tc_from_current = False
+            rf_from_current = False
 
-                # Geometry (Extracting from Vision's pre-computed Gaussian fits)
-                try:
-                    if self.vision_params:
-                        stafit = self.vision_params.get_stafit_for_cell(vid)
-                        if stafit:
-                            rf_area = np.pi * stafit.std_x * stafit.std_y
-                            if stafit.std_x > 0:
-                                ellipticity = stafit.std_y / stafit.std_x
-                            # Long/short axis diameters (not just area+ratio):
-                            # *2 matches the convention already used when
-                            # drawing RF ellipses elsewhere (population_panel.py
-                            # uses std_x*2/std_y*2 as ellipse width/height).
-                            # max/min rather than x/y directly, since the
-                            # fit's x/y axis assignment is arbitrary relative
-                            # to which axis is actually longer — without this,
-                            # "long diameter" could silently mean std_x for one
-                            # cell and std_y for another.
-                            axis_a = stafit.std_x * 2
-                            axis_b = stafit.std_y * 2
-                            rf_long_diameter = max(axis_a, axis_b)
-                            rf_short_diameter = min(axis_a, axis_b)
-                except Exception:
-                    logger.debug(
-                        "Failed to extract STA geometry for cluster %s",
-                        cluster_id,
-                        exc_info=True,
+            # Geometry comes from Vision params, not from the STA movie.
+            try:
+                if params is not None:
+                    stafit = params.get_stafit_for_cell(vid)
+                    if stafit:
+                        rf_area = np.pi * stafit.std_x * stafit.std_y
+                        if stafit.std_x > 0:
+                            ellipticity = stafit.std_y / stafit.std_x
+                        # Long/short axis diameters (not just area+ratio):
+                        # *2 matches the convention already used when
+                        # drawing RF ellipses elsewhere (population_panel.py
+                        # uses std_x*2/std_y*2 as ellipse width/height).
+                        # max/min rather than x/y directly, since the
+                        # fit's x/y axis assignment is arbitrary relative
+                        # to which axis is actually longer — without this,
+                        # "long diameter" could silently mean std_x for one
+                        # cell and std_y for another.
+                        axis_a = stafit.std_x * 2
+                        axis_b = stafit.std_y * 2
+                        rf_long_diameter = max(axis_a, axis_b)
+                        rf_short_diameter = min(axis_a, axis_b)
+                        rf_from_current = True
+            except Exception:
+                logger.debug(
+                    "Failed to extract STA geometry for cluster %s",
+                    cluster_id,
+                    exc_info=True,
+                )
+
+            # Timecourse: params first. Indexing vision_stas[vid] reads the
+            # full STA cube from disk (LazySTADict). Skip that when
+            # Red/Green/BlueTimeCourse already exist.
+            try:
+                if params is not None:
+                    _time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        None, stafit, params, vid
                     )
-
-                # Timecourse (Pulls pre-computed 1D arrays from Vision params)
-                try:
-                    time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                        sta_data, stafit, self.vision_params, vid
-                    )
-
                     if tc_matrix is not None and tc_matrix.size > 0:
                         energies = np.sum(tc_matrix**2, axis=0)
                         dom_idx = np.argmax(energies)
                         dom_trace = tc_matrix[:, dom_idx]
-
                         abs_max = np.max(np.abs(dom_trace))
-                        if abs_max > 0:
-                            timecourse = dom_trace / abs_max
-                        else:
-                            timecourse = dom_trace
-
+                        timecourse = (
+                            dom_trace / abs_max if abs_max > 0 else dom_trace
+                        )
                         time_to_peak = int(np.argmax(np.abs(timecourse)))
+                        tc_from_current = True
+            except Exception:
+                logger.debug(
+                    "Failed to extract STA timecourse from params for cluster %s",
+                    cluster_id,
+                    exc_info=True,
+                )
+
+            if timecourse is None and stas and vid in stas:
+                try:
+                    sta_data = stas[vid]
+                    _time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                        sta_data, stafit, params, vid
+                    )
+                    if tc_matrix is not None and tc_matrix.size > 0:
+                        energies = np.sum(tc_matrix**2, axis=0)
+                        dom_idx = np.argmax(energies)
+                        dom_trace = tc_matrix[:, dom_idx]
+                        abs_max = np.max(np.abs(dom_trace))
+                        timecourse = (
+                            dom_trace / abs_max if abs_max > 0 else dom_trace
+                        )
+                        time_to_peak = int(np.argmax(np.abs(timecourse)))
+                        tc_from_current = True
                 except Exception:
                     logger.debug(
-                        "Failed to extract STA timecourse for cluster %s",
+                        "Failed to extract STA timecourse from cube for cluster %s",
                         cluster_id,
                         exc_info=True,
                     )
@@ -2316,7 +2587,14 @@ class DataManager(QObject):
             # --- Fallback: borrow STA/RF from reference bridge ---
             # Mapping keys are Vision IDs. Params timecourse lookup MUST use
             # the reference Vision ID (not current vid) — Law 1 on ref table.
-            elif self.reference_bridge and self.reference_bridge.has_match(vid):
+            # Only when this run has no STA for the cell (same as the old
+            # elif vision_stas branch).
+            if (
+                timecourse is None
+                and not (stas and vid in stas)
+                and self._optional_attr("reference_bridge")
+                and self.reference_bridge.has_match(vid)
+            ):
                 bridge = self.reference_bridge
                 ref_id = bridge.get_reference_id(vid)
                 sta_data = bridge.get_sta(vid) if bridge.has_sta(vid) else None
@@ -2364,9 +2642,6 @@ class DataManager(QObject):
                         )
 
             # Provenance: which source supplied each STA-derived field
-            used_current_sta = bool(
-                self.vision_stas and vid in self.vision_stas
-            )
             provenance = {
                 "timecourse": None,
                 "rf_geometry": None,
@@ -2374,30 +2649,30 @@ class DataManager(QObject):
                 "grating": None,
             }
             if timecourse is not None:
-                provenance["timecourse"] = "current" if used_current_sta else "reference"
+                provenance["timecourse"] = "current" if tc_from_current else "reference"
             if rf_area and float(rf_area) > 0:
-                provenance["rf_geometry"] = (
-                    "current" if used_current_sta else "reference"
-                )
+                provenance["rf_geometry"] = "current" if rf_from_current else "reference"
 
             # Match metadata for this cell (UI id space)
             match_status = ""
             match_confidence = 0.0
             reference_id = None
-            caveat = getattr(self, "match_caveats", {}).get(int(cluster_id))
+            caveat = (self._optional_attr("match_caveats") or {}).get(int(cluster_id))
+            bridge = self._optional_attr("reference_bridge")
             if caveat is not None:
                 match_status = caveat.status or ""
                 match_confidence = float(caveat.confidence or 0.0)
                 reference_id = caveat.reference_id
                 caveat.provenance["timecourse"] = provenance["timecourse"]
                 caveat.provenance["rf_geometry"] = provenance["rf_geometry"]
-            elif self.reference_bridge and self.reference_bridge.has_match(vid):
-                match_status = self.reference_bridge.get_status(vid)
-                match_confidence = self.reference_bridge.get_confidence(vid)
-                reference_id = self.reference_bridge.get_reference_id(vid)
+            elif bridge is not None and bridge.has_match(vid):
+                match_status = bridge.get_status(vid)
+                match_confidence = bridge.get_confidence(vid)
+                reference_id = bridge.get_reference_id(vid)
 
             metrics = {
                 "_computed": True,
+                "_sta_checked": self._sta_source_available(cluster_id),
                 "acg": acg_norm,
                 "timecourse": timecourse,
                 "rf_area": rf_area,
@@ -2525,16 +2800,27 @@ class DataManager(QObject):
 
         return feature_matrix, valid_ids, metadata
 
-    def ensure_physics_cache(self, cluster_ids, max_workers=1, stop_event=None):
+    def ensure_physics_cache(self, cluster_ids, max_workers=None, stop_event=None):
         """
         Guarantee that all cluster_ids have a fully-computed feature_cache entry
         (_computed == True) before returning.
+
+        ``max_workers=None`` uses this dataset's ``io_workers``, which is 1 for
+        a run on a network mount. Pass a number only to override that.
         """
+        if max_workers is None:
+            # __dict__, not getattr: a half-built DataManager (tests use
+            # __new__ to skip __init__) raises from QObject's attribute
+            # machinery before any default can apply.
+            max_workers = self.__dict__.get("io_workers", 4)
+        max_workers = max(1, int(max_workers))
         with self._feature_lock:
             missing = [
                 int(cid)
                 for cid in cluster_ids
-                if not self.feature_cache.get(int(cid), {}).get("_computed")
+                if not self._physics_entry_is_fresh(
+                    int(cid), self.feature_cache.get(int(cid))
+                )
             ]
 
         if not missing:
@@ -2554,7 +2840,10 @@ class DataManager(QObject):
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(self.get_cell_physics, cid): cid for cid in missing
+                executor.submit(
+                    self.get_cell_physics, cid, False
+                ): cid
+                for cid in missing
             }
             for future in as_completed(futures):
                 if stop_event is not None and stop_event.is_set():
@@ -2568,16 +2857,26 @@ class DataManager(QObject):
                     future.cancel()
                     logger.warning(
                         "ensure_physics_cache: timed out after %ds for cluster %d; "
-                        "writing empty entry so UMAP gate can pass.",
+                        "using a session-only placeholder so the UMAP gate can pass.",
                         _CELL_TIMEOUT_S,
                         cid,
                     )
                     # Write a minimal _computed entry so valid_cached count advances
                     # and the UMAP "Please wait" gate doesn't block forever.
+                    #
+                    # _timed_out keeps that concession inside this session.
+                    # cache_persistence.filter_computed_entries drops the row on
+                    # save and _physics_entry_is_fresh refuses it as a hit, so the
+                    # zeros below never reach feature_cache.pkl and the cell is
+                    # recomputed rather than remembered as a flat, featureless
+                    # unit. Without the flag a single slow read — the sort of
+                    # thing a busy network mount produces on its own — silently
+                    # became a permanent wrong answer for that cell.
                     with self._feature_lock:
                         if not self.feature_cache.get(cid, {}).get("_computed"):
                             self.feature_cache[cid] = {
                                 "_computed": True,
+                                "_timed_out": True,
                                 "acg": None,
                                 "timecourse": None,
                                 "rf_area": 0.0,
@@ -2705,9 +3004,8 @@ class DataManager(QObject):
 
             # Timecourse — must copy to prevent np.roll from mutating cache.
             # timecourse=None means no STA was available for this cell; use a
-            # zero-length sentinel so the cell still contributes ACG + scalars.
-            # build_feature_matrix detects all-zero tc_mat and skips the
-            # temporal PCA block rather than producing NaN components.
+            # zero-length sentinel. build_feature_matrix fits temporal PCA
+            # only on real rows and leaves this cell as NaN on those PCs.
             tc = phys.get("timecourse")
             if tc is not None:
                 tc = np.array(tc, dtype=np.float64).copy()
@@ -3056,13 +3354,9 @@ class DataManager(QObject):
             data["acg_norm"] = acg_norm
 
             # Write ACG into feature_cache immediately so get_cell_physics()
-            # does not need to recompute it. Partial entry — no _computed key.
-            with self._feature_lock:
-                existing = self.feature_cache.get(cluster_id)
-                if existing is None:
-                    self.feature_cache[cluster_id] = {"acg": acg_norm}
-                elif not existing.get("_computed"):
-                    existing["acg"] = acg_norm
+            # does not need to recompute it. Also fill a row physics already
+            # marked _computed (warmup skips the ACG pass).
+            self._write_acg_into_feature_cache(cluster_id, acg_norm)
 
         # --- Firing rate & amplitude over time ---
         if spikes_sec.size > 0:
@@ -4781,14 +5075,13 @@ class DataManager(QObject):
         return float(np.abs(v).max() / rms)
 
     def check_sta_consistency(self):
-        """Does the .sta describe the cells in this sort?
+        """How much of the .sta maps onto this sort.
 
-        Returns ``(ok, message)``. The decisive check is the id sets: an STA
-        for a cell the sort does not contain can only mean the STA file was
-        written against an earlier version of that sort. This is not
-        hypothetical — 20260715A/data007-010 ships an .sta holding 53 cells
-        absent from its own .neurons, and its receptive fields are attached
-        to the wrong units as a result.
+        Returns ``(ok, message)``, where ``ok`` means every .sta id has a unit.
+        Partial coverage is normal and harmless: the noise run does not yield a
+        usable STA for every unit, so ids on either side going unmatched is
+        expected. Callers should treat a False here as coverage information to
+        log — not as a reason to warn the user or block anything.
         """
         if not self.vision_stas or self.cluster_df is None:
             return True, ""
@@ -4806,10 +5099,8 @@ class DataManager(QObject):
         orphan = sta_ids - vision_ids
         if orphan:
             return False, (
-                f"{len(orphan)} of {len(sta_ids)} cells in the .sta do not exist "
-                f"in this sort. The STA file predates the spike sort, so "
-                f"receptive fields are attached to the wrong units. Read STAs "
-                f"from the noise run's own folder instead."
+                f"{len(orphan)} of {len(sta_ids)} cells in the .sta have no unit "
+                f"in this sort and are ignored; {len(sta_ids & vision_ids)} match."
             )
         return True, ""
 
@@ -4937,7 +5228,10 @@ class DataManager(QObject):
         self.sta_ids_consistent = ok
         self.sta_consistency_message = msg
         if not ok:
-            logger.warning("STA provenance: %s", msg)
+            # Informational, not a warning. Cells present in the .sta but not
+            # in the sort are the ordinary result of the noise run yielding no
+            # usable STA for some units — not evidence of a stale file.
+            logger.info("STA coverage: %s", msg)
 
         fingerprint = self._sta_snr_fingerprint()
         cached = self._load_sta_snr_cache(fingerprint)
@@ -5170,6 +5464,16 @@ class DataManager(QObject):
             analyzed = None
             raw = None
             for p in candidates:
+                # Combined/analyzed names sort first (priority 0). Once we
+                # already have a raw file, remaining candidates are the same
+                # or worse — do not unpickle another 80 MB looking for an
+                # analyzed file that is not there.
+                if (
+                    analyzed is None
+                    and raw is not None
+                    and self._grating_candidate_priority(p) > 0
+                ):
+                    break
                 mdic = self._load_npy_dict(p)
                 if not isinstance(mdic, dict):
                     continue
@@ -5262,6 +5566,28 @@ class DataManager(QObject):
                     conditions.add(k)
         return sorted(conditions)
 
+    def grating_ids_needing_compute(self, cluster_ids):
+        """Cluster IDs that still need a raw-file DSI/OSI sweep.
+
+        Empty when the run is already analyzed, has no raw trials, or every
+        id is already in ``grating_computed_cache``. The load path uses this
+        to skip the 720-cell permutation batch on a warm open.
+        """
+        if getattr(self, "grating_status", "missing") != "raw_only":
+            return []
+        if getattr(self, "grating_raw_data", None) is None:
+            return []
+        cache = getattr(self, "grating_computed_cache", None) or {}
+        from . import grating_calc
+
+        needed = []
+        for cid in cluster_ids:
+            key = int(cid)
+            entry = cache.get(key)
+            if entry is None or grating_calc.grating_entry_needs_recompute(entry):
+                needed.append(key)
+        return needed
+
     def get_grating_data_for_cluster(self, cluster_id):
         """
         Tier 1-safe dict lookup ONLY — never computes. Checks the
@@ -5278,8 +5604,15 @@ class DataManager(QObject):
             return self.grating_data.get(cluster_id)
 
         if self.grating_status == "raw_only":
+            from . import grating_calc
+
             with self._grating_cache_lock:
-                return self.grating_computed_cache.get(cluster_id)
+                entry = self.grating_computed_cache.get(cluster_id)
+            if entry is not None and grating_calc.grating_entry_needs_recompute(
+                entry
+            ):
+                return None
+            return entry
 
         return None
 
@@ -5289,9 +5622,8 @@ class DataManager(QObject):
     def compute_grating_data_for_cluster(self, cluster_id):
         """
         Runs grating_calc.compute_grating_response() for one cluster and
-        caches the result. Expensive (FFT + 1000-shuffle permutation test
-        per DSOS condition) — must only be called from a background thread
-        (GratingComputeWorker.run()), never from the main/GUI thread.
+        caches the result. Must only be called from a background thread
+        (GratingComputeWorker / GratingBatchWorker), never the GUI thread.
         """
         cluster_id = int(cluster_id)
         if self.grating_raw_data is None:
@@ -5312,7 +5644,7 @@ class DataManager(QObject):
 
     def get_vision_id_for_cluster(self, cluster_id: int) -> int:
         """Translate UI cluster_id → Vision file key, respecting is_vision_only."""
-        if getattr(self, "is_vision_only", False):
+        if self._optional_attr("is_vision_only", False):
             return int(cluster_id)
         return int(cluster_id) + 1
 
@@ -5324,7 +5656,7 @@ class DataManager(QObject):
         must come through here rather than subtracting one by hand — the offset
         does not apply in vision-only mode and getting it wrong is silent.
         """
-        if getattr(self, "is_vision_only", False):
+        if self._optional_attr("is_vision_only", False):
             return int(vision_id)
         return int(vision_id) - 1
 

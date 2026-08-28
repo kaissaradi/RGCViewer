@@ -1,11 +1,13 @@
 from qtpy.QtCore import QObject, QThread, Signal
 from collections import deque
-from ...analysis import analysis_core
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from ...analysis import analysis_core, grating_calc
 import numpy as np
 import pandas as pd
 import sklearn.cluster
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -101,7 +103,9 @@ class KilosortLoadWorker(QObject):
     def run(self):
         try:
             self.progress.emit("Loading Kilosort files...")
+            _t_ks = time.perf_counter()
             success, message = self.dm.load_kilosort_data()
+            logger.debug("load-ks load_kilosort_data: %.2fs", time.perf_counter() - _t_ks)
             if not success:
                 self.finished.emit(False, message)
                 return
@@ -110,7 +114,9 @@ class KilosortLoadWorker(QObject):
                 self.dm.set_dat_path(Path(self.dat_file))
 
             self.progress.emit("Building cluster dataframe (this may take a moment)...")
+            _t = time.perf_counter()
             self.dm.build_cluster_dataframe()
+            logger.debug("load-ks build_cluster_dataframe: %.2fs", time.perf_counter() - _t)
 
             # --- SYNCHRONOUS VISION LOADING ---
             ks_dir = Path(self.ks_dir_name)
@@ -454,27 +460,41 @@ class StandardPlotsWorker(QObject):
         if hasattr(self.data_manager, "load_persisted_caches"):
             self.data_manager.load_persisted_caches()
 
+        # One reader on a network dataset (DataManager.io_workers): the fan-out
+        # below is pure loss over CIFS, where it only queues each read behind
+        # the others. Local runs keep the 4.
+        workers = max(1, int(getattr(self.data_manager, "io_workers", 4) or 4))
         while self.is_running:
-            if self.queue:
-                self._all_done_emitted = False  # ← reset if new work arrives
-                cluster_id = self.queue.popleft()
-                try:
-                    self.data_manager.get_standard_plot_data(cluster_id)
-                except Exception as e:
-                    # Added missing logger call for test verification
-                    logger.error(
-                        f"Failed to compute standard plots for cluster {cluster_id}"
-                    )
-                    self.error.emit(
-                        f"Background precompute failed for cluster {cluster_id}: {str(e)}"
-                    )
-                finally:
-                    self.finished_cluster.emit(int(cluster_id))
-                    QThread.msleep(20)
+            batch = []
+            while self.queue and len(batch) < workers:
+                batch.append(self.queue.popleft())
+            if batch:
+                self._all_done_emitted = False
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(
+                            self.data_manager.get_standard_plot_data, cid
+                        ): cid
+                        for cid in batch
+                    }
+                    for fut in as_completed(futures):
+                        cluster_id = futures[fut]
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            logger.error(
+                                "Failed to compute standard plots for cluster %s",
+                                cluster_id,
+                            )
+                            self.error.emit(
+                                f"Background precompute failed for cluster {cluster_id}: {str(e)}"
+                            )
+                        finally:
+                            self.finished_cluster.emit(int(cluster_id))
             else:
-                if not self._all_done_emitted:  # ← NEW
-                    self.all_done.emit()  # ← NEW
-                    self._all_done_emitted = True  # ← NEW
+                if not self._all_done_emitted:
+                    self.all_done.emit()
+                    self._all_done_emitted = True
                 QThread.msleep(100)
 
     def add_to_queue(self, cluster_id, high_priority=False):
@@ -497,10 +517,10 @@ class GratingComputeWorker(QObject):
     One-shot DSI/OSI compute for a single cluster, from raw grating data.
 
     Deliberately NOT a persistent queue-worker like StandardPlotsWorker.
-    Grating DSI/OSI (FFT + 1000-shuffle permutation test per condition) is
-    only ever needed for clusters the user actually views — batch
-    precomputing all ~900 clusters at dataset-load time would be wasted
-    work for the vast majority never opened in a session. Spawned on demand
+    Grating DSI/OSI (FFT + shuffle test per condition that could pass the
+    DS/OS slider) is also batch-filled at load. This worker is the
+    on-demand path for a cell the user opens before that batch lands.
+    Spawned on demand
     by GratingPanel with its own throwaway QThread; caches into
     DataManager.grating_computed_cache so repeat views of the same cluster
     don't recompute.
@@ -523,6 +543,10 @@ class GratingComputeWorker(QObject):
                     f"No grating trials for cluster {self.cluster_id}",
                 )
             else:
+                try:
+                    self.dm.save_standard_plot_cache()
+                except Exception:
+                    logger.debug("grating cache save skipped", exc_info=True)
                 self.finished.emit(self.cluster_id, True, "")
         except Exception as e:
             logger.exception(
@@ -533,30 +557,13 @@ class GratingComputeWorker(QObject):
 
 class GratingBatchWorker(QObject):
     """
-    One-time, sequential DSI/OSI compute for every cluster in the dataset,
-    run once at startup (chained after physics-cache warm-up) so
-    population-level DS/OS views (probe map, RF-plot markers) reflect the
-    whole dataset immediately, rather than only clusters the user has
-    individually opened in GratingPanel.
+    DSI/OSI compute for every cluster still missing from the cache.
 
-    This intentionally overrides the "don't batch-precompute" design
-    documented on GratingComputeWorker above — that tradeoff (startup time
-    vs. complete population views without manual per-cluster visits) was a
-    deliberate choice, not an oversight; see the ADR-style justification in
-    callbacks.py's _on_vision_loaded where this is wired up.
+    Started with physics warm-up (not after it). Raw grating trials are
+    already in RAM, so this is CPU-bound and can fan out across cores.
+    Untuned cells skip the permutation test inside grating_calc.
 
-    Runs on a real QThread (not a plain threading.Thread) specifically so
-    its `progress`/`finished` signals reliably marshal back onto the GUI
-    thread via Qt's normal cross-thread signal/slot queuing — this is
-    NOT interchangeable with QTimer.singleShot() called from a bare Python
-    thread, which requires the calling thread to already have a running
-    Qt event loop and is not reliable cross-platform (confirmed broken on
-    Windows in practice; Qt's own docs state a QTimer must be started on
-    the thread that has the event loop it needs to fire on).
-
-    Sequential by design (one cluster at a time, not a worker pool) — see
-    _on_vision_loaded for the reasoning: this can take a while for a large
-    dataset, which is an accepted, deliberate tradeoff.
+    Runs on a QThread so progress/finished marshal onto the GUI thread.
     """
 
     progress = Signal(int, int)  # (done_count, total_count)
@@ -573,25 +580,45 @@ class GratingBatchWorker(QObject):
         self._stop_requested = True
 
     def run(self):
-        total = len(self.cluster_ids)
-        for i, cid in enumerate(self.cluster_ids):
-            if self._stop_requested:
-                break
-            # Unlocked membership check: worst case under a race with a
-            # concurrent GratingPanel-triggered single-cluster compute is a
-            # harmless redundant recompute for that one cluster — the
-            # actual cache write in compute_grating_data_for_cluster is
-            # properly locked, so this can't corrupt the shared cache.
-            if cid in self.dm.grating_computed_cache:
+        needed = []
+        for cid in self.cluster_ids:
+            cached = self.dm.grating_computed_cache.get(cid)
+            if cached is not None and not grating_calc.grating_entry_needs_recompute(
+                cached
+            ):
                 continue
+            needed.append(cid)
+        total = len(needed)
+        if total == 0:
+            self.finished.emit()
+            return
+
+        workers = min(8, os.cpu_count() or 4)
+        done = 0
+
+        def _one(cid):
+            if self._stop_requested:
+                return
             try:
                 self.dm.compute_grating_data_for_cluster(cid)
             except Exception:
                 logger.exception(
                     "GratingBatchWorker failed for cluster %s; skipping.", cid
                 )
-            if i % 25 == 0 or i == total - 1:
-                self.progress.emit(i + 1, total)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_one, cid) for cid in needed]
+            for fut in as_completed(futures):
+                if self._stop_requested:
+                    break
+                done += 1
+                if done % 25 == 0 or done == total:
+                    self.progress.emit(done, total)
+                if done == total or done % 100 == 0:
+                    try:
+                        self.dm.save_standard_plot_cache()
+                    except Exception:
+                        logger.debug("grating cache save skipped", exc_info=True)
         self.finished.emit()
 
 
@@ -700,18 +727,49 @@ class UMAPWorker(QObject):
             matrix, col_labels = analysis_core.build_feature_matrix(
                 raw_blocks, self.feature_config
             )
+            n_before = len(valid_ids)
+            matrix, valid_ids, discarded_ids, raw_blocks = (
+                analysis_core.drop_empty_feature_rows(
+                    matrix, valid_ids, discarded_ids, raw_blocks
+                )
+            )
+            n_dropped = n_before - len(valid_ids)
+            if n_dropped:
+                self.progress.emit(
+                    f"Skipping {n_dropped} cells with none of the selected features..."
+                )
+            if len(valid_ids) == 0:
+                self.error.emit(
+                    "No cells have any of the selected features."
+                )
+                return
 
             self.progress.emit(f"Running UMAP on {len(valid_ids)} cells...")
-            reducer = umap.UMAP(
-                n_neighbors=min(15, len(valid_ids) - 1),
-                min_dist=0.1,
-                metric="euclidean",
-                low_memory=True,
-                n_jobs=-1,
-                n_components=self.n_components,
-                verbose=False,
-            )
-            embedding = reducer.fit_transform(matrix)
+            n_neighbors = min(15, max(len(valid_ids) - 1, 1))
+            if np.isfinite(matrix).all():
+                reducer = umap.UMAP(
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="euclidean",
+                    low_memory=True,
+                    n_jobs=-1,
+                    n_components=self.n_components,
+                    verbose=False,
+                )
+                embedding = reducer.fit_transform(matrix)
+            else:
+                # Missing STA / RF / stimulus blocks are NaN. Compare cells
+                # only on the features both have; do not use sklearn's
+                # nan_euclidean scale-up (structured missingness, not MCAR).
+                dist = analysis_core.observed_euclidean_distances(matrix)
+                reducer = umap.UMAP(
+                    n_neighbors=n_neighbors,
+                    min_dist=0.1,
+                    metric="precomputed",
+                    n_components=self.n_components,
+                    verbose=False,
+                )
+                embedding = reducer.fit_transform(dist)
 
             # Reconstruct the metadata DataFrame
             meta_df = pd.DataFrame(index=range(len(valid_ids)))

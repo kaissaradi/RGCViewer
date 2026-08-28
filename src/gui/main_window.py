@@ -24,6 +24,9 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QShortcut,
     QSlider,
+    QToolButton,
+    QSizePolicy,
+    QTabBar,
 )
 from qtpy.QtCore import (
     Qt,
@@ -44,10 +47,25 @@ from .widgets.widgets import (
     CustomTableView,
     ClusterTreeDelegate,
     PandasModel,
+    TREE_CH_WIDTH,
+    TREE_COL_CH,
+    TREE_COL_ID,
+    TREE_HEADERS,
+    TREE_SPIKES_WIDTH,
+    refresh_tree_group_counts,
+    find_cell_item,
+    set_channel_item,
+    tree_item_from_index,
+    make_nav_toolbar,
 )
 from . import callbacks
 from . import plot_export
-from .panels.population_panel import draw_population_rfs_plot, rf_vision_id_at
+from .panels.population_panel import (
+    draw_population_rfs_plot,
+    pop_canvas_can_hot_swap,
+    population_group_plots_cached,
+    rf_vision_id_at,
+)
 from .panels.similarity_panel import SimilarityPanel
 from .panels.waveforms_panel import WaveformPanel
 from .panels.standard_plots_panel import StandardPlotsPanel
@@ -62,11 +80,14 @@ from .shortcuts import KeyForwarder
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
+    APP_NAME,
     DARK_COLORS,
     PANEL_PADDING,
     CTRL_SPACING,
     ROW_HEIGHT,
+    UI_FONT_FAMILY,
     configure_pyqtgraph_theme,
+    format_run_meta,
     get_theme_colors,
 )
 
@@ -96,7 +117,7 @@ class MainWindow(QMainWindow):
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
         self.setWindowTitle("RGC Viewer")
-        self.setGeometry(50, 50, 1800, 1000)
+        self._place_window()
 
         # --- Application State ---
         self.theme = "dark"
@@ -114,6 +135,7 @@ class MainWindow(QMainWindow):
         # NEW: standard-plots (ISI/ACG/FR) worker
         self.standard_worker_thread = None
         self.standard_plots_worker = None
+        self._expect_physics = False
 
         # Additional thread references for proper cleanup
         self.ks_load_thread = None
@@ -127,7 +149,7 @@ class MainWindow(QMainWindow):
         # --- Current STA View ---
         self.current_sta_view = "rf"  # Default to RF plot
         self._is_syncing = False
-        self.last_left_width = 450
+        self.last_left_width = 280
         self.sidebar_collapsed = False
         self.feature_worker_thread = None
         self.population_view_enabled = False
@@ -224,15 +246,27 @@ class MainWindow(QMainWindow):
             )
             view.scrollTo(index)
 
+    def _place_window(self):
+        """Open at 1800×1000, but never larger than the usable screen."""
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        if screen is None:
+            self.setGeometry(50, 50, 1800, 1000)
+            return
+        avail = screen.availableGeometry()
+        width = min(1800, avail.width())
+        height = min(1000, avail.height())
+        self.setGeometry(avail.x(), avail.y(), width, height)
+
     def _setup_style(self, colors):
-        self.setFont(QFont("Inter", 11))
+        self.setFont(QFont("Helvetica Neue", 11))
 
         self.setStyleSheet(f"""
             /* ── Base ───────────────────────────── */
             QWidget {{
                 color: {colors['text_primary']};
                 background-color: {colors['bg_base']};
-                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-family: {UI_FONT_FAMILY};
                 font-size: 12px;
             }}
             QMainWindow, QDialog {{
@@ -241,13 +275,13 @@ class MainWindow(QMainWindow):
 
             /* ── Splitter handles ────────────────── */
             QSplitter::handle {{
-                background: {colors['border_subtle']};
+                background: {colors['border_default']};
             }}
             QSplitter::handle:horizontal {{
-                width: 5px;
+                width: 4px;
             }}
             QSplitter::handle:vertical {{
-                height: 5px;
+                height: 4px;
             }}
             QSplitter::handle:horizontal:hover,
             QSplitter::handle:vertical:hover {{
@@ -261,24 +295,25 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 gridline-color: transparent;
                 border: none;
-                selection-background-color: {colors['selection_bg']};
-                selection-color: {colors['text_primary']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             QTableView::item {{
                 border-bottom: 1px solid {colors['border_subtle']};
-                padding: 0 8px;
+                padding: 2px 10px;
             }}
             QTableView::item:selected {{
-                background-color: {colors['selection_bg']};
+                background-color: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QHeaderView::section {{
                 background-color: {colors['bg_panel']};
-                color: {colors['text_tertiary']};
-                padding: 4px 8px;
+                color: {colors['text_secondary']};
+                padding: 6px 10px;
                 border: none;
                 border-bottom: 1px solid {colors['border_default']};
                 font-size: 10px;
-                font-weight: 500;
+                font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
             }}
@@ -293,10 +328,10 @@ class MainWindow(QMainWindow):
             /* ── Buttons ─────────────────────────── */
             QPushButton {{
                 background-color: transparent;
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 color: {colors['text_secondary']};
-                padding: 4px 10px;
-                border-radius: 5px;
+                padding: 5px 12px;
+                border-radius: 4px;
                 font-size: 12px;
             }}
             QPushButton:hover {{
@@ -308,50 +343,111 @@ class MainWindow(QMainWindow):
                 background-color: {colors['bg_elevated']};
             }}
             QPushButton:checked {{
-                background-color: {colors['status_unsort_bg']};
+                background-color: {colors['accent']};
                 border-color: {colors['accent']};
-                color: {colors['accent_hover']};
+                color: {colors['accent_text']};
             }}
             QPushButton:disabled {{
                 color: {colors['text_disabled']};
                 border-color: {colors['border_subtle']};
             }}
 
-            /* ── Tabs ────────────────────────────── */
+            /* ── Tabs (Swiss header pills) ───────── */
             QTabWidget::pane {{
                 border: none;
-                border-top: 1px solid {colors['border_subtle']};
+                top: 0;
+            }}
+            QTabBar {{
+                background: transparent;
+                border: none;
             }}
             QTabBar::tab {{
                 color: {colors['text_secondary']};
                 background: transparent;
-                padding: 6px 16px;
+                padding: 5px 10px;
                 font-size: 12px;
-                border-bottom: 2px solid transparent;
+                font-weight: 500;
+                border: none;
+                border-radius: 3px;
                 margin-right: 2px;
-                min-width: 40px;
+                min-width: 44px;
             }}
             QTabBar::tab:selected {{
-                color: {colors['text_primary']};
-                border-bottom: 2px solid {colors['accent_hover']};
+                background: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QTabBar::tab:hover:!selected {{
                 color: {colors['text_primary']};
-                background: {colors['bg_surface']};
+                background: {colors['bg_elevated']};
+            }}
+            QTabBar::tab:disabled {{
+                color: {colors['text_disabled']};
             }}
             QTabBar::scroller {{
                 width: 24px;
             }}
 
+            /* ── Swiss app header ────────────────── */
+            QWidget#appTopbar {{
+                background-color: {colors['bg_panel']};
+                border: none;
+                border-bottom: 1px solid {colors['border_default']};
+            }}
+            QWidget#appTopbar QLabel#brandDot {{
+                background-color: {colors['accent']};
+                border-radius: 1px;
+                min-width: 8px;
+                max-width: 8px;
+                min-height: 8px;
+                max-height: 8px;
+            }}
+            QWidget#appTopbar QLabel#brandLabel {{
+                color: {colors['accent']};
+                font-weight: 700;
+                font-size: 13px;
+                letter-spacing: 1px;
+                background: transparent;
+            }}
+            QWidget#appTopbar QLabel#runMeta {{
+                color: {colors['text_secondary']};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QWidget#appTopbar QToolButton,
+            QWidget#appTopbar QPushButton {{
+                height: 26px;
+                padding: 0 10px;
+                border-radius: 3px;
+                border: 1px solid {colors['border_default']};
+                background: {colors['bg_panel']};
+                color: {colors['text_secondary']};
+                font-size: 11px;
+                font-weight: 500;
+            }}
+            QWidget#appTopbar QToolButton:hover,
+            QWidget#appTopbar QPushButton:hover {{
+                border-color: {colors['border_strong']};
+                color: {colors['text_primary']};
+            }}
+            QWidget#appTopbar QPushButton:checked {{
+                background: {colors['accent']};
+                border-color: {colors['accent']};
+                color: {colors['accent_text']};
+            }}
+            QWidget#leftRail {{
+                background-color: {colors['bg_panel']};
+                border-right: 1px solid {colors['border_default']};
+            }}
+
             /* ── Inputs ──────────────────────────── */
             QComboBox {{
                 background-color: {colors['bg_panel']};
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 border-radius: 4px;
-                padding: 3px 8px;
+                padding: 4px 10px;
                 color: {colors['text_primary']};
                 font-size: 12px;
-                min-height: 22px;
+                min-height: 24px;
             }}
             QComboBox:hover {{ border-color: {colors['border_strong']}; }}
             QComboBox::drop-down {{
@@ -366,9 +462,9 @@ class MainWindow(QMainWindow):
             }}
             QDoubleSpinBox, QSpinBox {{
                 background-color: {colors['bg_panel']};
-                border: 0.5px solid {colors['border_default']};
+                border: 1px solid {colors['border_default']};
                 border-radius: 4px;
-                padding: 3px 6px;
+                padding: 4px 8px;
                 color: {colors['text_primary']};
                 font-size: 12px;
             }}
@@ -405,8 +501,59 @@ class MainWindow(QMainWindow):
 
             /* ── Labels ──────────────────────────── */
             QLabel {{
-                color: {colors['text_secondary']};
+                color: {colors['text_primary']};
                 font-size: 12px;
+            }}
+
+            /* ── Group boxes ─────────────────────── */
+            QGroupBox {{
+                color: {colors['text_primary']};
+                border: 1px solid {colors['border_default']};
+                border-radius: 3px;
+                margin-top: 12px;
+                padding-top: 8px;
+                font-size: 12px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: {colors['text_tertiary']};
+            }}
+
+            /* ── Line edits ──────────────────────── */
+            QLineEdit {{
+                background-color: {colors['bg_panel']};
+                border: 1px solid {colors['border_default']};
+                border-radius: 4px;
+                padding: 4px 10px;
+                color: {colors['text_primary']};
+                font-size: 12px;
+                min-height: 24px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['border_focus']};
+            }}
+            QLineEdit::placeholder {{
+                color: {colors['text_tertiary']};
+            }}
+
+            /* ── Plot toolbars ───────────────────── */
+            QToolBar {{
+                background: {colors['bg_panel']};
+                border: none;
+                spacing: 2px;
+                padding: 0;
+            }}
+            QToolButton {{
+                background: transparent;
+                color: {colors['text_secondary']};
+                border: none;
+                padding: 2px;
+            }}
+            QToolButton:hover {{
+                background: {colors['bg_elevated']};
+                color: {colors['text_primary']};
             }}
 
             /* ── Scrollbars ──────────────────────── */
@@ -443,7 +590,8 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 border: none;
                 alternate-background-color: {colors['bg_surface']};
-                selection-background-color: {colors['selection_bg']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             /* Tree item colors handled on tree_view + ClusterTreeDelegate */
 
@@ -451,9 +599,10 @@ class MainWindow(QMainWindow):
             QStatusBar {{
                 color: {colors['text_tertiary']};
                 font-size: 11px;
-                border-top: 0.5px solid {colors['border_subtle']};
+                border-top: 1px solid {colors['border_subtle']};
                 background: {colors['bg_base']};
-                padding: 2px 8px;
+                padding: 2px 10px;
+                min-height: 26px;
             }}
 
             /* ── Menu bar ────────────────────────── */
@@ -494,18 +643,169 @@ class MainWindow(QMainWindow):
 
             /* ── Tooltip ─────────────────────────── */
             QToolTip {{
-                background-color: {colors['bg_surface']};
+                background-color: {colors['bg_tooltip']};
                 border: 0.5px solid {colors['border_default']};
-                color: {colors['text_primary']};
+                color: {colors['text_tooltip']};
                 font-size: 11px;
                 padding: 4px 8px;
-                border-radius: 4px;
+                border-radius: 3px;
             }}
         """)
 
     def get_current_colors(self):
         """Returns the color dictionary for the current theme."""
         return get_theme_colors(self.theme)
+
+    def _build_topbar(self):
+        """Swiss 40px header: brand, run meta, view tabs, File/Array, actions."""
+        colors = self.get_current_colors()
+        bar = QWidget()
+        bar.setObjectName("appTopbar")
+        bar.setFixedHeight(40)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(10)
+
+        brand = QWidget()
+        brand_layout = QHBoxLayout(brand)
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(6)
+        self.brand_dot = QLabel()
+        self.brand_dot.setObjectName("brandDot")
+        self.brand_dot.setFixedSize(8, 8)
+        self.brand_label = QLabel(APP_NAME)
+        self.brand_label.setObjectName("brandLabel")
+        brand_layout.addWidget(self.brand_dot)
+        brand_layout.addWidget(self.brand_label)
+        layout.addWidget(brand)
+
+        self.run_meta_label = QLabel("No run loaded")
+        self.run_meta_label.setObjectName("runMeta")
+        self.run_meta_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.run_meta_label.setMinimumWidth(80)
+        self.run_meta_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        layout.addWidget(self.run_meta_label)
+
+        self.app_tab_bar = QTabBar()
+        self.app_tab_bar.setObjectName("appTabBar")
+        self.app_tab_bar.setExpanding(False)
+        self.app_tab_bar.setDocumentMode(True)
+        self.app_tab_bar.setDrawBase(False)
+        self.app_tab_bar.setUsesScrollButtons(True)
+        self.app_tab_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.app_tab_bar.currentChanged.connect(self._on_header_tab_changed)
+        layout.addWidget(self.app_tab_bar, 1)
+
+        self.file_btn = QToolButton()
+        self.file_btn.setText("File")
+        self.file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.file_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        layout.addWidget(self.file_btn)
+
+        self.array_btn = QToolButton()
+        self.array_btn.setText("Array")
+        self.array_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.array_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        layout.addWidget(self.array_btn)
+
+        self.open_run_btn = QPushButton("Open run")
+        self.open_run_btn.setToolTip("Load a Kilosort directory")
+        self.open_run_btn.clicked.connect(lambda: self.load_directory())
+        layout.addWidget(self.open_run_btn)
+
+        self.theme_btn = QPushButton("Light" if self.theme == "dark" else "Dark")
+        self.theme_btn.setToolTip("Toggle light / dark mode")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        layout.addWidget(self.theme_btn)
+
+        self.pop_view_btn = QPushButton("Population")
+        self.pop_view_btn.setCheckable(True)
+        self.pop_view_btn.setToolTip("Show the population context pane")
+        self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
+        layout.addWidget(self.pop_view_btn)
+
+        self.topbar = bar
+        self.setMenuWidget(bar)
+        self._style_topbar_actions(colors)
+
+    def _style_topbar_actions(self, colors):
+        if hasattr(self, "theme_btn"):
+            self.theme_btn.setText("Light" if self.theme == "dark" else "Dark")
+        if hasattr(self, "pop_view_btn"):
+            self.pop_view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 11px;
+                    padding: 0 10px;
+                    border: 1px solid {colors['border_default']};
+                    border-radius: 3px;
+                    color: {colors['text_secondary']};
+                    background: {colors['bg_panel']};
+                }}
+                QPushButton:checked {{
+                    background: {colors['accent']};
+                    border-color: {colors['accent']};
+                    color: {colors['accent_text']};
+                }}
+                QPushButton:hover:!checked {{
+                    border-color: {colors['border_strong']};
+                    color: {colors['text_primary']};
+                }}
+            """)
+
+    def _on_header_tab_changed(self, index):
+        if not hasattr(self, "analysis_tabs"):
+            return
+        if self.analysis_tabs.currentIndex() != index:
+            self.analysis_tabs.setCurrentIndex(index)
+
+    def _sync_header_tab(self, index):
+        bar = getattr(self, "app_tab_bar", None)
+        if bar is None:
+            return
+        if bar.currentIndex() != index:
+            bar.blockSignals(True)
+            bar.setCurrentIndex(index)
+            bar.blockSignals(False)
+
+    def sync_header_tab_enabled(self):
+        """Copy QTabWidget enabled flags onto the header tab strip."""
+        bar = getattr(self, "app_tab_bar", None)
+        tabs = getattr(self, "analysis_tabs", None)
+        if bar is None or tabs is None:
+            return
+        for i in range(min(bar.count(), tabs.count())):
+            bar.setTabEnabled(i, tabs.isTabEnabled(i))
+
+    def refresh_run_meta(self):
+        """Update the header breadcrumb from the loaded DataManager."""
+        label = getattr(self, "run_meta_label", None)
+        if label is None:
+            return
+        dm = self.data_manager
+        if dm is None:
+            label.setText(format_run_meta(None, None, None, 0))
+            return
+        ks = getattr(dm, "kilosort_dir", None)
+        sorter = ks.name if ks is not None else ""
+        n = 0
+        try:
+            n = len(dm.cluster_df)
+        except Exception:
+            n = 0
+        label.setText(
+            format_run_meta(
+                getattr(dm, "exp_name", "") or "",
+                getattr(dm, "datafile_name", "") or "",
+                sorter,
+                n,
+            )
+        )
 
     def toggle_theme(self):
         """Toggles between light and dark themes."""
@@ -523,6 +823,7 @@ class MainWindow(QMainWindow):
         panels = [
             self.standard_plots_panel,
             self.chirp_panel,
+            self.contrast_panel,
             self.grating_panel,
             self.ei_panel,
             self.waveforms_panel,
@@ -569,42 +870,19 @@ class MainWindow(QMainWindow):
 
     def _apply_theme_widget_styles(self, colors):
         """Refresh inline styles that cannot be fully expressed in global QSS."""
+        ghost = f"""
+            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+            QPushButton:hover {{ color: {colors['text_primary']}; }}
+        """
         if hasattr(self, "reset_button"):
-            self.reset_button.setStyleSheet(f"""
-                QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
-                QPushButton:hover {{ color: {colors['text_primary']}; }}
-            """)
+            self.reset_button.setStyleSheet(ghost)
+        if hasattr(self, "collapse_all_btn"):
+            self.collapse_all_btn.setStyleSheet(ghost)
 
-        if hasattr(self, "pop_view_btn"):
-            self.pop_view_btn.setStyleSheet(f"""
-                QPushButton {{
-                    font-size: 11px;
-                    padding: 0 10px;
-                    border: 0.5px solid {colors['border_default']};
-                    border-radius: 5px;
-                    color: {colors['text_secondary']};
-                    background: transparent;
-                }}
-                QPushButton:checked {{
-                    background: {colors['status_unsort_bg']};
-                    border-color: {colors['accent']};
-                    color: {colors['accent_hover']};
-                }}
-                QPushButton:hover:!checked {{
-                    background: {colors['bg_surface']};
-                    color: {colors['text_primary']};
-                }}
-            """)
+        self._style_topbar_actions(colors)
 
         if hasattr(self, "pop_expand_btn"):
-            bg = (
-                colors["accent_positive"]
-                if self.pop_expand_btn.isChecked()
-                else colors["accent"]
-            )
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {bg}; padding: 4px 10px;"
-            )
+            self._style_pop_expand_btn(colors)
 
         if hasattr(self, "pop_tc_label"):
             self.pop_tc_label.setStyleSheet(
@@ -626,22 +904,32 @@ class MainWindow(QMainWindow):
                 color: {colors['text_primary']};
                 border: none;
                 alternate-background-color: {colors['bg_surface']};
-                selection-background-color: {colors['selection_bg']};
+                selection-background-color: {colors['accent']};
+                selection-color: {colors['accent_text']};
             }}
             QTreeView::item {{
                 color: {colors['text_primary']};
-                padding: 2px 0;
+                padding: 3px 0;
             }}
             QTreeView::item:hover {{
                 background: {colors['bg_surface']};
             }}
             QTreeView::item:selected {{
-                background: {colors['selection_bg']};
+                background: {colors['accent']};
+                color: {colors['accent_text']};
             }}
             QTreeView::branch {{
                 background: transparent;
                 border: none;
                 image: none;
+            }}
+            QHeaderView::section {{
+                background-color: {colors['bg_panel']};
+                color: {colors['text_tertiary']};
+                border: none;
+                border-bottom: 1px solid {colors['border_subtle']};
+                padding: 4px 8px;
+                font-size: 10px;
             }}
         """)
         if hasattr(self, "_cluster_tree_delegate"):
@@ -656,15 +944,28 @@ class MainWindow(QMainWindow):
         group_bg = QColor(colors["bg_elevated"])
         group_fg = QColor(colors["text_primary"])
         cell_fg = QColor(colors["text_primary"])
+        secondary = QColor(colors["text_secondary"])
 
-        def visit(item):
+        def paint_row(item):
             is_group = item.data(Qt.ItemDataRole.UserRole) is None
             item.setForeground(group_fg if is_group else cell_fg)
-            if is_group:
-                item.setBackground(group_bg)
-            else:
-                item.setBackground(QColor(colors["bg_panel"]))
+            item.setBackground(group_bg if is_group else QColor(colors["bg_panel"]))
+            model = item.model()
+            if model is None:
+                return
+            idx = item.index()
+            for col in range(1, model.columnCount()):
+                sib = model.itemFromIndex(idx.sibling(idx.row(), col))
+                if sib is None:
+                    continue
+                if is_group:
+                    sib.setBackground(group_bg)
+                    sib.setForeground(secondary)
+                else:
+                    sib.setForeground(secondary)
 
+        def visit(item):
+            paint_row(item)
             for row in range(item.rowCount()):
                 child = item.child(row)
                 if child is not None:
@@ -696,10 +997,7 @@ class MainWindow(QMainWindow):
         if self.population_view_enabled:
             # Quick check if we can hot-swap (check if canvas already has state)
             canvas = self.pop_mosaic_canvas
-            can_hot_swap = (
-                hasattr(canvas, "_pop_plot_state")
-                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
-            )
+            can_hot_swap = pop_canvas_can_hot_swap(canvas)
             if can_hot_swap:
                 # Fast update - update existing ellipse geometry only
                 try:
@@ -793,6 +1091,7 @@ class MainWindow(QMainWindow):
         if "cluster_id" not in dm.cluster_df.columns:
             return
 
+        refresh_tree_group_counts(self.tree_model.invisibleRootItem())
         mapping = callbacks.build_cluster_group_map(self)
         values = [mapping.get(int(c), "") for c in dm.cluster_df["cluster_id"]]
         col = callbacks.GROUP_COLUMN
@@ -949,11 +1248,17 @@ class MainWindow(QMainWindow):
 
         Only the active panel is updated.
         """
+        current_panel = self.analysis_tabs.widget(index)
+        # Hidden tabs skip layout until first show. Force the UMAP toolbar
+        # to commit sizes on every visit so the first open matches STA-and-back.
+        if current_panel is self.umap_panel and hasattr(
+            self.umap_panel, "_schedule_layout"
+        ):
+            self.umap_panel._schedule_layout()
+
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is None:
             return
-
-        current_panel = self.analysis_tabs.widget(index)
 
         if current_panel == self.standard_plots_panel:
             # Only compute standard plots when this tab is actually visible
@@ -992,10 +1297,7 @@ class MainWindow(QMainWindow):
         # Only when hot-swap wasn't possible in Tier 1
         if self.population_view_enabled:
             canvas = self.pop_mosaic_canvas
-            can_hot_swap = (
-                hasattr(canvas, "_pop_plot_state")
-                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
-            )
+            can_hot_swap = pop_canvas_can_hot_swap(canvas)
             if not can_hot_swap:
                 # Full rebuild needed - do it in Tier 2
                 try:
@@ -1007,17 +1309,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Tier 2 Pop Split rebuild failed: {e}")
 
-            # Always keep the Average Timecourse & ACG panels live when a cell
-            # is selected.  These panels are normally only drawn in
-            # _process_folder_selection(), so navigating between individual
-            # cells inside a group leaves them blank.  Calling
-            # redraw_population_panels() here (with the subset derived from the
-            # selected cell's parent folder) fixes that.  The method uses the
-            # _group_timecourse_cache / _group_acg_cache, so same-group
-            # navigation is an O(1) cache hit.
+            # Keep Average Timecourse & ACG live when a cell is selected.
+            # Those plots show the parent folder, not the cell. Same-group
+            # scroll after the first draw is a cache hit; skip the matplotlib
+            # rebuild so chirp-tab scroll does not redraw them every time.
             try:
                 subset = self._get_pop_subset_ids()
-                callbacks.redraw_population_panels(self, subset=subset)
+                if not population_group_plots_cached(subset):
+                    callbacks.redraw_population_panels(self, subset=subset)
             except Exception as e:
                 logger.error(
                     f"Failed to update population panels on cell selection: {e}"
@@ -1071,12 +1370,17 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
+        self._build_topbar()
+
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         main_layout = QHBoxLayout(self.central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # --- Left Pane ---
         self.left_pane = QWidget()
+        self.left_pane.setObjectName("leftRail")
         left_pane_layout = QHBoxLayout(self.left_pane)
         left_pane_layout.setContentsMargins(0, 0, 0, 0)
         left_pane_layout.setSpacing(0)
@@ -1097,7 +1401,7 @@ class MainWindow(QMainWindow):
 
         self.filter_all_btn = QPushButton("All")
         self.filter_all_btn.setCheckable(True)
-        self.filter_all_btn.setFixedHeight(26)
+        self.filter_all_btn.setFixedHeight(28)
         self.filter_all_btn.setChecked(True)
         self.filter_all_btn.setStyleSheet("border-radius: 5px;")
 
@@ -1111,23 +1415,29 @@ class MainWindow(QMainWindow):
 
         for btn in (self.table_view_button, self.tree_view_button):
             btn.setCheckable(True)
-            btn.setFixedHeight(26)
-        self.table_view_button.setChecked(True)
+            btn.setFixedHeight(28)
+        self.tree_view_button.setChecked(True)
 
-        # Reset as ghost link
+        ghost = f"""
+            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
+            QPushButton:hover {{ color: {colors['text_primary']}; }}
+        """
+        self.collapse_all_btn = QPushButton("⊟")
+        self.collapse_all_btn.setToolTip("Collapse all folders")
+        self.collapse_all_btn.setFixedSize(26, 26)
+        self.collapse_all_btn.setStyleSheet(ghost)
+
         self.reset_button = QPushButton("↺")
         self.reset_button.setToolTip("Reset View")
         self.reset_button.setFixedSize(26, 26)
-        self.reset_button.setStyleSheet(f"""
-            QPushButton {{ border: none; color: {colors['text_tertiary']}; font-size: 14px; }}
-            QPushButton:hover {{ color: {colors['text_primary']}; }}
-        """)
+        self.reset_button.setStyleSheet(ghost)
 
         top_ctrl_layout.addWidget(self.filter_all_btn)
         top_ctrl_layout.addSpacing(8)
         top_ctrl_layout.addWidget(self.table_view_button)
         top_ctrl_layout.addWidget(self.tree_view_button)
         top_ctrl_layout.addStretch()
+        top_ctrl_layout.addWidget(self.collapse_all_btn)
         top_ctrl_layout.addWidget(self.reset_button)
 
         # --- View Stack (Tree and Table) ---
@@ -1135,11 +1445,12 @@ class MainWindow(QMainWindow):
 
         # Tree View
         self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setHeaderHidden(False)
         self.tree_view.setRootIsDecorated(True)
-        self.tree_view.setIndentation(24)
+        self.tree_view.setIndentation(16)
         self.tree_view.setAnimated(True)
         self.tree_view.setUniformRowHeights(True)
+        self.tree_view.setAlternatingRowColors(True)
         self._cluster_tree_delegate = ClusterTreeDelegate(
             self.tree_view, self.get_current_colors()
         )
@@ -1154,6 +1465,9 @@ class MainWindow(QMainWindow):
         # row under the cursor.
         self.tree_view.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.tree_view.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
@@ -1194,16 +1508,16 @@ class MainWindow(QMainWindow):
 
         self.view_stack.addWidget(self.tree_view)
         self.view_stack.addWidget(self.table_view)
-        # Default to table view
-        self.view_stack.setCurrentIndex(1)
+        # Default to tree — grouping is the daily path
+        self.view_stack.setCurrentIndex(0)
 
         left_content_layout.addLayout(top_ctrl_layout)
 
         # --- Sidebar Search Bar ---
         self.cluster_search_bar = QLineEdit()
-        self.cluster_search_bar.setPlaceholderText("Search clusters...")
+        self.cluster_search_bar.setPlaceholderText("Search cells, groups…")
         self.cluster_search_bar.setClearButtonEnabled(True)
-        self.cluster_search_bar.setFixedHeight(28)
+        self.cluster_search_bar.setFixedHeight(30)
         self.cluster_search_bar.textChanged.connect(self._filter_sidebar)
         left_content_layout.addWidget(self.cluster_search_bar)
 
@@ -1237,42 +1551,18 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # Create Tab Widget
+        # Create Tab Widget. The visible tab strip lives in the Swiss header.
         self.analysis_tabs = QTabWidget()
+        self.analysis_tabs.setDocumentMode(True)
         self.analysis_tabs.tabBar().setUsesScrollButtons(True)
         self.analysis_tabs.tabBar().setElideMode(Qt.ElideNone)
-
-        # Replace corner widget checkbox with a compact icon button:
-        self.pop_view_btn = QPushButton("⊞  Population")
-        self.pop_view_btn.setCheckable(True)
-        self.pop_view_btn.setFixedHeight(28)
-        self.pop_view_btn.setStyleSheet(f"""
-                QPushButton {{
-                    font-size: 11px;
-                    padding: 0 10px;
-                    border: 0.5px solid {colors['border_default']};
-                border-radius: 5px;
-                    color: {colors['text_secondary']};
-                    background: transparent;
-                }}
-                QPushButton:checked {{
-                    background: {colors['status_unsort_bg']};
-                    border-color: {colors['accent']};
-                    color: {colors['accent_hover']};
-                }}
-                QPushButton:hover:!checked {{
-                    background: {colors['bg_surface']};
-                    color: {colors['text_primary']};
-                }}
-        """)
-        self.pop_view_btn.toggled.connect(self.toggle_population_split_view)
-        self.analysis_tabs.setCornerWidget(self.pop_view_btn, Qt.TopRightCorner)
+        self.analysis_tabs.tabBar().hide()
 
         # --- NEW: population context widget (right side) ---
         self.pop_context_widget = QWidget()
         pop_layout = QVBoxLayout(self.pop_context_widget)
-        pop_layout.setContentsMargins(4, 4, 4, 4)
-        pop_layout.setSpacing(6)
+        pop_layout.setContentsMargins(8, 8, 8, 8)
+        pop_layout.setSpacing(8)
 
         # Top Control Bar (with Expand Button)
         pop_ctrl_layout = QHBoxLayout()
@@ -1282,12 +1572,10 @@ class MainWindow(QMainWindow):
         pop_ctrl_layout.addWidget(self.pop_show_ids_checkbox)
 
         # DS/OS classification threshold slider. Controls how strong DSI/OSI
-        # must be (after already passing grating_calc's significance/
-        # amplitude gate — this does NOT loosen that gate, only how
-        # strongly-tuned a cell must be to get drawn as DS/OS) — see
-        # population_panel.py's _best_dsos_condition. Range 0.1-0.9 in
-        # integer-slider units of 0.01 (Qt's QSlider is integer-only);
-        # default 0.3 matches grating_calc.DSI_THRESHOLD/OSI_THRESHOLD.
+        # must be (after already passing the shuffle p-value gate). Range
+        # 0.1-0.9 in integer-slider units of 0.01; default 0.3 matches
+        # grating_calc.DSI_THRESHOLD/OSI_THRESHOLD. Among conditions that
+        # pass, the strongest response is used — see select_best_dsos_condition.
         self.dsos_threshold = 0.3
         pop_ctrl_layout.addWidget(QLabel("DS/OS threshold:"))
         self.pop_dsos_threshold_slider = QSlider(Qt.Horizontal)
@@ -1295,7 +1583,8 @@ class MainWindow(QMainWindow):
         self.pop_dsos_threshold_slider.setValue(30)
         self.pop_dsos_threshold_slider.setFixedWidth(100)
         self.pop_dsos_threshold_slider.setToolTip(
-            "How strong DSI/OSI must be to count as DS/OS (0.10-0.90)"
+            "How strong DSI/OSI must be to count as DS/OS (0.10–0.90). "
+            "Each cell uses its strongest (bar width, TF) that passes."
         )
         pop_ctrl_layout.addWidget(self.pop_dsos_threshold_slider)
         self.pop_dsos_threshold_label = QLabel("0.30")
@@ -1309,9 +1598,7 @@ class MainWindow(QMainWindow):
         self.pop_expand_btn.setToolTip("Toggle Full Screen Population View")
         self.pop_expand_btn.setCheckable(True)
         self.pop_expand_btn.clicked.connect(self.toggle_population_fullscreen)
-        self.pop_expand_btn.setStyleSheet(
-            f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
-        )
+        self._style_pop_expand_btn(colors)
         pop_ctrl_layout.addStretch()
         pop_ctrl_layout.addWidget(self.pop_expand_btn)
         pop_layout.addLayout(pop_ctrl_layout)
@@ -1404,6 +1691,10 @@ class MainWindow(QMainWindow):
         tc_layout.addLayout(tc_hdr)
         self.pop_timecourse_canvas = MplCanvas(width=6, height=2, dpi=100)
         tc_layout.addWidget(self.pop_timecourse_canvas)
+        self.pop_tc_toolbar = make_nav_toolbar(
+            self.pop_timecourse_canvas, self.pop_timecourse_widget
+        )
+        tc_layout.addWidget(self.pop_tc_toolbar)
         self.pop_master_splitter.addWidget(self.pop_timecourse_widget)
 
         # 3. ACG Panel
@@ -1422,6 +1713,10 @@ class MainWindow(QMainWindow):
         acg_layout.addLayout(acg_hdr)
         self.pop_acg_canvas = MplCanvas(width=6, height=2, dpi=100)
         acg_layout.addWidget(self.pop_acg_canvas)
+        self.pop_acg_toolbar = make_nav_toolbar(
+            self.pop_acg_canvas, self.pop_acg_widget
+        )
+        acg_layout.addWidget(self.pop_acg_toolbar)
         self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
         # Standalone "DS/OS Probe Map" panel removed — DS/OS is now shown
@@ -1469,12 +1764,16 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")
         self.analysis_tabs.addTab(self.waveforms_panel, "Waveforms")
         self.analysis_tabs.addTab(self.raw_panel, "Raw")
+        for i in range(self.analysis_tabs.count()):
+            self.app_tab_bar.addTab(self.analysis_tabs.tabText(i))
+        self.analysis_tabs.currentChanged.connect(self._sync_header_tab)
 
         # --- Main Splitter and Layout ---
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.left_pane)
         self.main_splitter.addWidget(right_pane)
-        self.main_splitter.setSizes([220, 1800 - 220])
+        self.main_splitter.setSizes([280, 1800 - 280])
+        self.last_left_width = 280
         self.main_splitter.setStretchFactor(0, 0)  # Left panel doesn't stretch
         self.main_splitter.setStretchFactor(1, 1)  # Right panel takes remaining space
         self.main_splitter.setHandleWidth(5)
@@ -1494,9 +1793,9 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.cache_progress)
         self.cache_progress_count = 0
 
-        # --- Menu Bar ---
-        menu = self.menuBar()
-        file_menu = menu.addMenu("&File")
+        # --- Menus live on the Swiss header, not a native menu bar ---
+        file_menu = QMenu("&File", self)
+        self.file_btn.setMenu(file_menu)
 
         load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
 
@@ -1531,15 +1830,11 @@ class MainWindow(QMainWindow):
         self.rebuild_cache_action.setEnabled(False)
 
         # --- Array Menu ---
-        array_menu = menu.addMenu("&Array")
+        array_menu = QMenu("&Array", self)
+        self.array_btn.setMenu(array_menu)
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
         self.calibrate_array_action.setEnabled(False)  # Enabled after data loads
         self.calibrate_array_action.triggered.connect(self._open_array_calibration)
-
-        # --- View Menu ---
-        view_menu = menu.addMenu("&View")
-        self.toggle_theme_action = view_menu.addAction("Toggle Light/Dark Mode")
-        self.toggle_theme_action.triggered.connect(self.toggle_theme)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -1560,6 +1855,7 @@ class MainWindow(QMainWindow):
         self.tree_view_button.clicked.connect(lambda: self._switch_left_view(0))
         self.table_view_button.clicked.connect(lambda: self._switch_left_view(1))
 
+        self.collapse_all_btn.clicked.connect(self.collapse_tree)
         self.reset_button.clicked.connect(self.reset_views)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
@@ -1612,6 +1908,9 @@ class MainWindow(QMainWindow):
             self.right_splitter.setSizes([left_size, right_size])
 
             QTimer.singleShot(0, self._draw_population_panel_initial)
+            # Warm-up already starts this; this catches a pane opened before
+            # that batch finished or a cache that was still filling.
+            callbacks.maybe_fill_grating_cache(self)
         else:
             # hide it
             self.pop_context_widget.hide()
@@ -1664,6 +1963,13 @@ class MainWindow(QMainWindow):
         """
         self.dsos_threshold = slider_value / 100.0
         self.pop_dsos_threshold_label.setText(f"{self.dsos_threshold:.2f}")
+
+        # The grating panel label used to stay at the 0.3 default until the
+        # user re-clicked the cell. Refresh it if a cluster is already up.
+        gp = getattr(self, "grating_panel", None)
+        cid = getattr(gp, "_current_cluster_id", None) if gp is not None else None
+        if gp is not None and cid is not None:
+            gp.update_all(cid)
 
         if hasattr(self, "pop_mosaic_canvas"):
             if hasattr(self.pop_mosaic_canvas, "_pop_plot_state"):
@@ -1806,14 +2112,16 @@ class MainWindow(QMainWindow):
             index = self.tree_view.currentIndex()
             if not index.isValid() or not selection_model.isSelected(index):
                 index = selection_model.selectedIndexes()[0]
-            item = self.tree_model.itemFromIndex(index)
+            item = tree_item_from_index(self.tree_model, index)
             if item is None:
                 return None
 
             # Only leaf nodes (cells) have a cluster ID stored. Groups will
             # return None.
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
-            return cluster_id
+            if cluster_id is None:
+                return None
+            return int(cluster_id)
 
         # Case 2: Table View is active
         elif current_view_index == 1:
@@ -1838,7 +2146,10 @@ class MainWindow(QMainWindow):
             else:
                 # Bare model (no proxy), use the row directly
                 cluster_id = model._dataframe.iloc[selected_row]["cluster_id"]
-            return cluster_id
+            try:
+                return int(cluster_id)
+            except (TypeError, ValueError):
+                return None
 
         return None
 
@@ -2108,31 +2419,21 @@ class MainWindow(QMainWindow):
         if cluster_id is None and self.view_stack.currentIndex() == 0:
             selection = self.tree_view.selectionModel().selectedIndexes()
             if selection:
-                index = selection[0]
-                item = self.tree_model.itemFromIndex(index)
+                item = tree_item_from_index(self.tree_model, selection[0])
                 if item and item.data(Qt.ItemDataRole.UserRole) is None:  # It's a group
                     return self._get_group_cluster_ids(item)
 
-        # Case 2: A single cell is selected. Find its immediate parent folder.
+        # Case 2: A cell is selected (tree or table). Population is the
+        # innermost tree folder that cell sits in — not KSLabel, not the
+        # whole run. Table mode uses the same walk; Qt match misses numpy ids.
         if cluster_id is not None:
-            # Always trust the Tree Model first, as it perfectly reflects nested folders
-            model = self.tree_model
-            matches = model.match(
-                model.index(0, 0),
-                Qt.ItemDataRole.UserRole,
-                cluster_id,
-                1,
-                Qt.MatchExactly | Qt.MatchRecursive,
-            )
-
-            if matches:
-                item = model.itemFromIndex(matches[0])
-                parent_item = item.parent()
-                if parent_item is None:
-                    parent_item = model.invisibleRootItem()
-                return self._get_group_cluster_ids(parent_item)
-
-            return [cluster_id]  # Fallback
+            item = find_cell_item(self.tree_model, cluster_id)
+            if item is None:
+                return [int(cluster_id)]
+            parent_item = item.parent()
+            if parent_item is None or parent_item is self.tree_model.invisibleRootItem():
+                return [int(cluster_id)]
+            return self._get_group_cluster_ids(parent_item)
 
         return []
 
@@ -2265,7 +2566,34 @@ class MainWindow(QMainWindow):
             self._apply_default_column_order(header, df_cols, col_index)
             self._table_columns_initialized = True
 
-        self.table_view.resizeColumnsToContents()
+        self._resize_table_columns_fast()
+
+    def _resize_table_columns_fast(self, sample_rows=24):
+        """Size columns from the header and a small row sample.
+
+        ``QTableView.resizeColumnsToContents`` asks the model for every
+        cell. On a 300+ cluster run that is several thousand pandas
+        lookups and a multi-second hitch on the GUI thread after
+        Kilosort has already finished.
+        """
+        view = self.table_view
+        model = view.model()
+        if model is None:
+            return
+        fm = view.fontMetrics()
+        n_rows = min(int(model.rowCount()), int(sample_rows))
+        pad = 20
+        max_w = 240
+        min_w = 36
+        for col in range(int(model.columnCount())):
+            header = model.headerData(col, Qt.Horizontal, Qt.DisplayRole)
+            width = fm.horizontalAdvance(str(header if header is not None else "")) + pad
+            for row in range(n_rows):
+                text = model.data(model.index(row, col), Qt.DisplayRole)
+                if text is None:
+                    continue
+                width = max(width, fm.horizontalAdvance(str(text)) + pad)
+            view.setColumnWidth(col, max(min_w, min(width, max_w)))
 
     def _apply_default_column_order(self, header, df_cols, col_index):
         """Apply the desired default visual column order. Called only once."""
@@ -2318,6 +2646,15 @@ class MainWindow(QMainWindow):
         # by *column name* — the rebuild can change column indices.
         old_sort_col = None
         old_sort_order = Qt.AscendingOrder
+        # Capture the selected cell so the rebuild does not steal it. Installing
+        # a new proxy hands the view a fresh QItemSelectionModel, which drops the
+        # selection outright — so a background column arriving (sta_snr, chirp_qi)
+        # would yank the user off the cluster they were looking at and blank the
+        # detail panels. On a local run both columns land within ~0.4 s, before
+        # anyone has clicked, so this never showed; on a server run they land
+        # seconds apart, well into the session, and it looked like the app
+        # losing its place at random.
+        old_selected_cid = self._selected_table_cluster_id()
         old_view_model = self.table_view.model()
         if old_view_model is not None:
             # Unwrap proxy if present
@@ -2426,11 +2763,164 @@ class MainWindow(QMainWindow):
                 new_col_index[old_sort_col], old_sort_order
             )
 
-        self.table_view.resizeColumnsToContents()
+        # Put the user back on the row they were on, after the sort is applied
+        # so the row number is the final one.
+        if old_selected_cid is not None:
+            self._select_table_cluster_id(old_selected_cid)
+
+        self._resize_table_columns_fast()
+        self._refresh_tree_channels()
+
+    def _selected_table_cluster_id(self):
+        """cluster_id selected in the table, or None.
+
+        Reads the table directly rather than going through
+        ``_get_selected_cluster_id``, which answers for whichever view is on
+        top: the table's selection has to be preserved across a rebuild even
+        while the tree is the visible view.
+        """
+        model = self.table_view.model()
+        selection_model = self.table_view.selectionModel()
+        if model is None or selection_model is None:
+            return None
+        index = self.table_view.currentIndex()
+        if not index.isValid():
+            indexes = selection_model.selectedIndexes()
+            if not indexes:
+                return None
+            index = indexes[0]
+        source = model.sourceModel() if hasattr(model, "mapToSource") else model
+        row = (
+            model.mapToSource(model.index(index.row(), 0)).row()
+            if hasattr(model, "mapToSource")
+            else index.row()
+        )
+        df = getattr(source, "_dataframe", None)
+        if df is None or row < 0 or row >= len(df):
+            return None
+        try:
+            return int(df.iloc[row]["cluster_id"])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _select_table_cluster_id(self, cluster_id):
+        """Reselect *cluster_id* in the table, scrolling it back into view.
+
+        A no-op when the cell is not in the rebuilt model — it may be filtered
+        out by the search bar or sitting in Trash, and forcing a selection then
+        would be its own surprise.
+        """
+        model = self.table_view.model()
+        if model is None or self.main_cluster_model is None:
+            return
+        df = getattr(self.main_cluster_model, "_dataframe", None)
+        if df is None or "cluster_id" not in df.columns:
+            return
+        target = int(cluster_id)
+        source_row = None
+        for row, value in enumerate(df["cluster_id"].to_numpy()):
+            try:
+                if int(value) == target:
+                    source_row = row
+                    break
+            except (TypeError, ValueError):
+                continue
+        if source_row is None:
+            return
+        source_index = self.main_cluster_model.index(int(source_row), 0)
+        view_index = (
+            model.mapFromSource(source_index)
+            if hasattr(model, "mapFromSource")
+            else source_index
+        )
+        if not view_index.isValid():
+            return
+        selection_model = self.table_view.selectionModel()
+        if selection_model is None:
+            return
+        self.table_view.setCurrentIndex(view_index)
+        selection_model.select(
+            view_index,
+            QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+        )
+        self.table_view.scrollTo(view_index, QAbstractItemView.EnsureVisible)
+
+    def _refresh_tree_channels(self):
+        """Write best_chan into tree column 2 without rebuilding the tree."""
+        dm = self.data_manager
+        if dm is None or dm.cluster_df is None or "best_chan" not in dm.cluster_df.columns:
+            return
+        model = self.tree_model
+        if model is None:
+            return
+        chan_map = dict(
+            zip(
+                dm.cluster_df["cluster_id"].astype(int),
+                dm.cluster_df["best_chan"],
+            )
+        )
+
+        def visit(parent):
+            for row in range(parent.rowCount()):
+                item = parent.child(row, TREE_COL_ID)
+                if item is None:
+                    continue
+                cid = item.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    ch_item = parent.child(row, TREE_COL_CH)
+                    if ch_item is not None:
+                        set_channel_item(ch_item, chan_map.get(int(cid)))
+                if item.hasChildren():
+                    visit(item)
+
+        visit(model.invisibleRootItem())
+
+    def _configure_tree_columns(self):
+        model = self.tree_view.model()
+        if model is None:
+            return
+        if model.columnCount() < 3:
+            model.setColumnCount(3)
+        model.setHorizontalHeaderLabels(list(TREE_HEADERS))
+        header = self.tree_view.header()
+        header.setVisible(True)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, TREE_SPIKES_WIDTH)
+        header.resizeSection(2, TREE_CH_WIDTH)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        # Manual sort on header click. setSortingEnabled(True) re-sorts on
+        # every insert and fights drag-and-drop.
+        self.tree_view.setSortingEnabled(False)
+        if not getattr(self, "_tree_header_sort_wired", False):
+            header.sectionClicked.connect(self._on_tree_header_clicked)
+            self._tree_header_sort_wired = True
+            self._tree_sort_section = -1
+            self._tree_sort_order = Qt.SortOrder.AscendingOrder
+
+    def _on_tree_header_clicked(self, section):
+        header = self.tree_view.header()
+        if getattr(self, "_tree_sort_section", -1) == section:
+            order = (
+                Qt.SortOrder.DescendingOrder
+                if self._tree_sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            order = Qt.SortOrder.AscendingOrder
+        self._tree_sort_section = section
+        self._tree_sort_order = order
+        header.setSortIndicator(section, order)
+        if self.tree_model is not None:
+            self.tree_model.sort(section, order)
 
     def setup_tree_model(self, model):
         """Sets up the tree view model and connects the selection changed signal."""
         self.tree_view.setModel(model)
+        self._configure_tree_columns()
         self._apply_tree_item_theme(self.get_current_colors())
         try:
             self.tree_view.selectionModel().selectionChanged.disconnect(
@@ -2517,20 +3007,23 @@ class MainWindow(QMainWindow):
             child = parent_item.child(row)
             index = self.tree_model.indexFromItem(child)
 
-            if child.rowCount() == 0:
-                # Leaf node: match against display text
-                visible = (not query) or (query in child.text().lower())
-                self.tree_view.setRowHidden(index.row(), index.parent(), not visible)
-                if visible:
-                    any_visible = True
-            else:
-                # Group node: recurse first, then decide own visibility
+            if callbacks.is_group_item(child):
                 child_matched = self._apply_tree_filter_recursive(child, query)
                 self.tree_view.setRowHidden(
                     index.row(), index.parent(), not child_matched
                 )
                 if child_matched:
                     self.tree_view.setExpanded(index, True)
+                    any_visible = True
+            else:
+                texts = [child.text().lower()]
+                for col in (1, 2):
+                    sib = parent_item.child(row, col)
+                    if sib is not None:
+                        texts.append(sib.text().lower())
+                visible = (not query) or any(query in text for text in texts)
+                self.tree_view.setRowHidden(index.row(), index.parent(), not visible)
+                if visible:
                     any_visible = True
 
         return any_visible
@@ -2621,7 +3114,9 @@ class MainWindow(QMainWindow):
                 if matches:
                     index = matches[0]
                     self.tree_view.selectionModel().select(
-                        index, QItemSelectionModel.ClearAndSelect
+                        index,
+                        QItemSelectionModel.ClearAndSelect
+                        | QItemSelectionModel.Rows,
                     )
                     self.tree_view.scrollTo(
                         index, QAbstractItemView.ScrollHint.PositionAtCenter
@@ -2702,6 +3197,10 @@ class MainWindow(QMainWindow):
     def apply_good_filter(self):
         callbacks.apply_good_filter(self)
 
+    def collapse_tree(self):
+        if getattr(self, "tree_view", None) is not None:
+            self.tree_view.collapseAll()
+
     def reset_views(self):
         callbacks.reset_views(self)
 
@@ -2748,7 +3247,7 @@ class MainWindow(QMainWindow):
 
     def open_tree_context_menu(self, position):
         index = self.tree_view.indexAt(position)
-        item = self.tree_model.itemFromIndex(index)
+        item = tree_item_from_index(self.tree_model, index)
         if not item:
             return
 
@@ -2953,6 +3452,21 @@ class MainWindow(QMainWindow):
         self._update_sidebar_toggle_btn()
         self._animate_splitter_sizes(target_left)
 
+    def _style_pop_expand_btn(self, colors):
+        """Outline by default; fill only when the population pane is expanded."""
+        if self.pop_expand_btn.isChecked():
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: 600; background-color: {colors['accent_positive']}; "
+                f"color: {colors['accent_text']}; border: 1px solid {colors['accent_positive']}; "
+                f"padding: 5px 12px;"
+            )
+        else:
+            self.pop_expand_btn.setStyleSheet(
+                f"font-weight: 600; background-color: transparent; "
+                f"color: {colors['text_secondary']}; "
+                f"border: 1px solid {colors['border_default']}; padding: 5px 12px;"
+            )
+
     def toggle_population_fullscreen(self, checked):
         """Toggles the Population panel to take up 100% of the right pane."""
         colors = self.get_current_colors()
@@ -2960,9 +3474,6 @@ class MainWindow(QMainWindow):
             # Full screen mode: Collapse the main tabs completely
             self.right_splitter.setSizes([0, 1000])
             self.pop_expand_btn.setText("🗗 Restore")
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {colors['accent_positive']}; padding: 4px 10px;"
-            )
         else:
             # Restore mode: 75/25 split
             total = sum(self.right_splitter.sizes()) or 1400
@@ -2970,9 +3481,7 @@ class MainWindow(QMainWindow):
             right_size = total - left_size
             self.right_splitter.setSizes([left_size, right_size])
             self.pop_expand_btn.setText("⛶ Full Screen")
-            self.pop_expand_btn.setStyleSheet(
-                f"font-weight: bold; background-color: {colors['accent']}; padding: 4px 10px;"
-            )
+        self._style_pop_expand_btn(colors)
 
     def closeEvent(self, event):
         """Handles the window close event."""

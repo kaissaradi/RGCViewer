@@ -1,10 +1,10 @@
-# RGCViewer (Axolotl)
+# RGCViewer (Encore)
 
 RGCViewer is a PyQt desktop application. Use it to inspect spike-sorted
 multi-electrode array recordings from mouse retina and to assign units to
 retinal ganglion cell (RGC) types.
 
-The internal name is Axolotl. The repository name is RGCViewer.
+The internal name is Encore. The repository name is RGCViewer.
 
 ## Quick install
 
@@ -108,8 +108,11 @@ A run is a folder such as:
 Example: `20260721A/kilosort25/data006/`.
 
 The folder must contain Vision files (`.neurons`, and usually `.ei`, `.params`).
-Kilosort files may sit in `ksfiles/`. Stimulus analyses are precomputed
-`.npy` files in the same folder. The application does not create those files.
+Kilosort files may sit in `ksfiles/`. Stimulus files are `.npy` in the same
+folder. Chirp is precomputed. Grating may be a raw
+`spike_times_by_trial` + `trial_parameters` file (`*Grating*.npy` or
+`*DSOS*.npy`). The GUI then computes DSI/OSI for each `(bar width, TF)`
+that was actually run and stores `grating_computed_cache.pkl`.
 
 ## Documents
 
@@ -118,7 +121,6 @@ Read documents in this order:
 1. This file — install and start
 2. `CLAUDE.md` — experiment, files, analysis traps
 3. `docs/AGENTS.md` — developer rules
-4. `HANDOFF.md` — current work state
-5. `docs/PLAN.md` — fragile zones and open defects
+4. `docs/PLAN.md` — pickup, fragile zones, open defects
 
 The document map is `docs/README.md`.

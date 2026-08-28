@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..theme import resolve_theme_colors
+from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
 from ..workers.workers import GratingComputeWorker
 from ...analysis import grating_calc
 
@@ -36,6 +36,50 @@ _CONDITION_COLORS = [
 ]
 _SHADOW_ALPHA = 70  # 0-255, applied to non-best condition traces
 _BEST_ALPHA = 255
+
+
+# 3x3 compass: 0° right, 90° top. Center (1,1) stays empty.
+_COMPASS_CELLS = {
+    0: (1, 2),
+    45: (0, 2),
+    90: (0, 1),
+    135: (0, 0),
+    180: (1, 0),
+    225: (2, 0),
+    270: (2, 1),
+    315: (2, 2),
+}
+
+
+def assign_directions_to_compass(directions_deg):
+    """One PSTH per compass cell. 12×30° gratings used to collide on corners."""
+    dirs = np.asarray(directions_deg, dtype=float)
+    if dirs.size == 0:
+        return []
+    compass = np.array(list(_COMPASS_CELLS.keys()), dtype=float)
+    claimed = {}
+    for d in dirs:
+        nearest = compass[np.argmin(np.abs(((compass - d + 180.0) % 360.0) - 180.0))]
+        cell = _COMPASS_CELLS[int(nearest)]
+        dist = abs(((nearest - d + 180.0) % 360.0) - 180.0)
+        prev = claimed.get(cell)
+        if prev is None or dist < prev[1]:
+            claimed[cell] = (float(d), dist)
+    return [(cell, pair[0]) for cell, pair in claimed.items()]
+
+
+def select_dsos_for_display(data, dsos_threshold=None):
+    """Classify one cluster with the same threshold the population slider uses.
+
+    ``None`` keeps grating_calc's module default (0.3). A float from
+    ``MainWindow.dsos_threshold`` is applied to both DSI and OSI.
+    """
+    if dsos_threshold is None:
+        return grating_calc.select_best_dsos_condition(data)
+    threshold = float(dsos_threshold)
+    return grating_calc.select_best_dsos_condition(
+        data, dsi_threshold=threshold, osi_threshold=threshold
+    )
 
 
 class GratingPanel(QWidget):
@@ -77,7 +121,8 @@ class GratingPanel(QWidget):
         # ---------------------------------------------------------
         data_page = QWidget()
         data_layout = QVBoxLayout(data_page)
-        data_layout.setContentsMargins(4, 4, 4, 4)
+        data_layout.setContentsMargins(8, 8, 8, 8)
+        data_layout.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel(
@@ -199,16 +244,9 @@ class GratingPanel(QWidget):
             colors = resolve_theme_colors(self.main_window.get_current_colors())
         else:
             colors = resolve_theme_colors(colors)
+        apply_plot_theme(plot_widget, colors)
         plot_item = plot_widget.getPlotItem()
-        plot_widget.setBackground(colors["bg_panel"])
-        plot_item.getAxis("bottom").setPen(pg.mkPen(colors["border_default"]))
-        plot_item.getAxis("left").setPen(pg.mkPen(colors["border_default"]))
-        plot_item.getAxis("bottom").setTextPen(pg.mkPen(colors["text_secondary"]))
-        plot_item.getAxis("left").setTextPen(pg.mkPen(colors["text_secondary"]))
-        plot_item.showAxis("top", False)
-        plot_item.showAxis("right", False)
-        plot_item.showGrid(x=True, y=True, alpha=0.08)
-        plot_item.setContentsMargins(8, 8, 8, 8)
+        plot_item.showGrid(x=True, y=True, alpha=plot_grid_alpha(colors))
 
     def restyle_plots(self, colors):
         colors = resolve_theme_colors(colors)
@@ -217,9 +255,15 @@ class GratingPanel(QWidget):
         self._style_plot(self.sf_plot, colors)
         self.psth_grid_widget.setBackground(colors["bg_panel"])
         self._polar_pref_line.setPen(
-            pg.mkPen(colors.get("plot_compare", "r"), width=2, style=Qt.DashLine)
+            pg.mkPen(
+                colors.get("plot_compare", "r"),
+                width=plot_stroke(colors),
+                style=Qt.DashLine,
+            )
         )
-        self._sf_curve.setPen(pg.mkPen(colors.get("plot_overlay", "c"), width=2))
+        self._sf_curve.setPen(
+            pg.mkPen(colors.get("plot_overlay", "c"), width=plot_stroke(colors))
+        )
         if self._current_cluster_id is not None:
             self.update_all(self._current_cluster_id)
 
@@ -364,7 +408,11 @@ class GratingPanel(QWidget):
         # gets drawn (overlay, histogram, PSTH grid) so the person can look
         # at the real response and judge for themselves; only the stats
         # label reflects "not significant."
-        selection = grating_calc.select_best_dsos_condition(data)
+        # The population DS/OS slider writes MainWindow.dsos_threshold.
+        # Passing it here is what makes that slider change this label.
+        selection = select_dsos_for_display(
+            data, getattr(self.main_window, "dsos_threshold", None)
+        )
 
         if selection is None:
             # No dsos conditions at all — genuinely nothing to plot.
@@ -416,14 +464,14 @@ class GratingPanel(QWidget):
         self._render_hist(dsos_conditions, display_cond, data)
 
         display_entry = data[display_cond]
-        bw, tf = display_cond
+        cond_label = grating_calc.format_condition_label(display_cond, display_entry)
         pref_angle = pref_dir if classification == "DS" else pref_ori
         if classification == "none":
             label = "[not significant]"
         else:
             label = f"[{classification}]"
         self.stats_label.setText(
-            f"{label}  Shown: bw={bw:g} tf={tf:g}Hz   "
+            f"{label}  Shown: {cond_label}   "
             f"DSI: {self._fmt(dsi)} (p={self._fmt(dsi_p, 3)})   "
             f"OSI: {self._fmt(osi)} (p={self._fmt(osi_p, 3)})   "
             f"Pref. {'dir' if classification == 'DS' else 'ori'}: {self._fmt(pref_angle, 0)}°"
@@ -434,13 +482,13 @@ class GratingPanel(QWidget):
         parts = []
         for i, cond in enumerate(conditions):
             color = _CONDITION_COLORS[i % len(_CONDITION_COLORS)]
-            bw, tf = cond
+            cond_label = grating_calc.format_condition_label(cond, data.get(cond))
             is_best = cond == best_cond
             weight = "bold" if is_best else "normal"
             marker = "●" if is_best else "○"
             parts.append(
                 f"<span style='color:{color}; font-weight:{weight};'>"
-                f"{marker} bw={bw:g} tf={tf:g}Hz</span>"
+                f"{marker} {cond_label}</span>"
             )
         self.legend_label.setText("&nbsp;&nbsp;".join(parts))
 
@@ -683,30 +731,10 @@ class GratingPanel(QWidget):
                 np.argmin(np.abs(((directions_deg - pref_dir_deg + 180) % 360) - 180))
             )
 
-        # Map each direction onto a 3x3 compass grid cell by angle.
-        # 0 deg -> right-center, 90 -> top-center, 180 -> left-center, etc.
-        # (row, col), row 0 = top, col 0 = left, center cell (1,1) unused.
-        compass_cells = {
-            0: (1, 2),
-            45: (0, 2),
-            90: (0, 1),
-            135: (0, 0),
-            180: (1, 0),
-            225: (2, 0),
-            270: (2, 1),
-            315: (2, 2),
-        }
-
-        def _nearest_cell(deg):
-            keys = np.array(list(compass_cells.keys()))
-            nearest = keys[np.argmin(np.abs(((keys - deg + 180) % 360) - 180))]
-            return compass_cells[nearest]
-
-        order = np.argsort(directions_deg)
-        for i in order:
-            d = directions_deg[i]
+        dir_to_idx = {float(d): i for i, d in enumerate(directions_deg)}
+        for (row, col), d in assign_directions_to_compass(directions_deg):
             rate = np.asarray(psth_by_dir.get(d, []), dtype=float)
-            row, col = _nearest_cell(d)
+            i = dir_to_idx.get(float(d))
 
             plot_item = self.psth_grid_widget.addPlot(row=row, col=col)
             plot_item.hideAxis("bottom")

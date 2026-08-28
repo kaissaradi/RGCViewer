@@ -29,11 +29,22 @@ def filter_computed_entries(feature_cache: Dict[Any, Any]) -> Dict[Any, Any]:
 
     A row is complete when ``get_cell_physics`` finished it and set
     ``_computed``. Partial rows (ACG-only) are dropped so they never reach disk.
+
+    Rows flagged ``_timed_out`` are dropped too, and that flag is the whole
+    reason this function is not just a ``_computed`` test. When a cell's STA
+    read blows its deadline, ``ensure_physics_cache`` still writes a row —
+    ``_computed`` set, physics zeroed — so the progress bar and the UMAP gate
+    can move on instead of hanging on one slow cell. That placeholder is fine
+    in RAM for one session and *ruinous* on disk: it is indistinguishable from
+    a real result, so persisting it bakes ``rf_area=0.0, ellipticity=0.0,
+    time_to_peak=0`` into the run's feature_cache.pkl and every later session
+    reads those zeros back as truth. Keeping it out of the pickle means a
+    timed-out cell is simply recomputed next time.
     """
     return {
         k: v
         for k, v in feature_cache.items()
-        if isinstance(v, dict) and v.get("_computed")
+        if isinstance(v, dict) and v.get("_computed") and not v.get("_timed_out")
     }
 
 

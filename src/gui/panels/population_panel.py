@@ -12,7 +12,15 @@ from matplotlib.patches import Ellipse, FancyArrowPatch
 from matplotlib.collections import LineCollection, EllipseCollection
 from qtpy.QtGui import QColor
 
-from ..theme import DARK_COLORS
+from ..theme import (
+    DARK_COLORS,
+    is_light_theme,
+    plot_ensemble_alpha,
+    plot_field,
+    plot_rf_target_alpha,
+    plot_stroke,
+    resolve_theme_colors,
+)
 from ...analysis import grating_calc
 
 # Set matplotlib logging level to WARNING to suppress font debug messages
@@ -35,6 +43,18 @@ def invalidate_population_caches():
     _group_fr_cache.clear()
     _rf_background_cache.clear()
     _rf_background_cache_order.clear()
+
+
+def population_group_plots_cached(subset_ids):
+    """True when this folder's timecourse and ACG plots are already in RAM.
+
+    Cell-to-cell scroll inside a group used to call both draw functions on
+    every selection. Those plots show the group, not the selected cell.
+    """
+    if not subset_ids:
+        return False
+    key = frozenset(subset_ids)
+    return key in _group_timecourse_cache and key in _group_acg_cache
 
 
 def _first_plot_artist(plot_result):
@@ -203,7 +223,7 @@ def rf_vision_id_at(ax, x, y, tolerance_px=_RF_CLICK_TOLERANCE_PX):
 def _apply_rf_axes_style(ax, colors, title=None):
     if title:
         ax.set_title(title, color=colors["text_primary"])
-    ax.set_facecolor(colors["bg_panel"])
+    ax.set_facecolor(plot_field(colors))
     ax.set_aspect("equal", adjustable="box")
     ax.tick_params(colors=colors["text_secondary"])
     for spine in ax.spines.values():
@@ -283,12 +303,12 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             subset_ids = []
 
     canvas = main_window.pop_timecourse_canvas
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     # Early exit: nothing selected
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -322,7 +342,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -390,7 +410,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax = state["ax"]
 
         # Check if theme changed (background color mismatch)
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         # ax.get_facecolor() returns RGBA tuple, need to unpack it
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
@@ -426,9 +446,9 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
         # Full Rebuild
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
         # 1. Zero Line
         ax.axhline(
@@ -440,21 +460,23 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             zorder=1,
         )
 
-        # 2. Shadow Traces — bolder/more opaque so individual outliers are
-        # actually visible, not nearly-invisible at alpha=0.15.
+        # 2. Ensemble: a blue wash so the black mean can be read.
         shadow_lines = LineCollection(
-            segments, color=colors["accent"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors.get("plot_ensemble", colors["plot_shadow"]),
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=plot_ensemble_alpha(colors),
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
 
-        # 3. Mean Trace — thinned so it reads as a reference line rather than
-        # a solid band that paints over the traces underneath it.
+        # 3. Mean trace — heavier in light mode so it sits on white.
         mean_line = _first_plot_artist(
             ax.plot(
                 t_axis,
                 mean_tc,
                 color=colors["plot_mean"],
-                linewidth=1.6,
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )
@@ -510,6 +532,77 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
     )
 
 
+def pop_canvas_can_hot_swap(canvas):
+    """True when the mosaic already has a live axes we can reuse.
+
+    ``_pop_plot_state`` is a dict or absent — never ``None``. A None
+    sentinel made ``hasattr`` true and ``.get`` throw on the next click.
+    """
+    state = getattr(canvas, "_pop_plot_state", None)
+    if not isinstance(state, dict):
+        return False
+    ax = state.get("ax")
+    fig = getattr(canvas, "fig", None)
+    if ax is None or fig is None:
+        return False
+    return ax in getattr(fig, "axes", [])
+
+
+def _draw_polar_population_canvas(
+    canvas, main_window, subset_cell_ids, colors, current_subset_hash, state
+):
+    """Preferred-direction polar when there are no STA RFs to hang arrows on."""
+    rows = list(_iter_dsos_population(main_window, subset_cell_ids))
+    can_reuse = (
+        state is not None
+        and state.get("mode") == "polar"
+        and state.get("subset_hash") == current_subset_hash
+        and state.get("colors") == colors
+        and state.get("ax") in getattr(canvas.fig, "axes", [])
+    )
+    if can_reuse:
+        return
+
+    canvas.fig.clear()
+    canvas.fig.set_facecolor(plot_field(colors))
+    ax = None
+    if rows:
+        ax = canvas.fig.add_subplot(111)
+        _draw_preferred_orientation_polar(
+            ax,
+            rows,
+            colors,
+            show_ids=_show_population_ids(main_window),
+        )
+    else:
+        dm = main_window.data_manager
+        grating_on = bool(
+            getattr(dm, "grating_available", False)
+            or getattr(dm, "grating_status", "") in ("ok", "raw_only")
+        )
+        msg = (
+            "No DS/OS cells yet — still computing, or none pass the threshold"
+            if grating_on
+            else "No Vision parameters available"
+        )
+        canvas.fig.text(
+            0.5,
+            0.5,
+            msg,
+            ha="center",
+            va="center",
+            color=colors["text_secondary"],
+        )
+    canvas._pop_plot_state = {
+        "subset_hash": current_subset_hash,
+        "highlight_artist": None,
+        "ax": ax,
+        "colors": colors,
+        "mode": "polar",
+    }
+    canvas.draw_idle()
+
+
 def draw_population_rfs_plot(
     main_window, selected_cell_id=None, subset_cell_ids=None, canvas=None
 ):
@@ -531,7 +624,7 @@ def draw_population_rfs_plot(
         except Exception:
             pass
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
     dm = main_window.data_manager
     vision_params = dm.vision_params
     bridge = getattr(dm, "reference_bridge", None)
@@ -543,37 +636,36 @@ def draw_population_rfs_plot(
         f"subset={len(subset_cell_ids) if subset_cell_ids else None}"
     )
 
-    if not vision_params and not has_borrowed_rfs:
-        canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
-        canvas.fig.text(
-            0.5,
-            0.5,
-            "No Vision parameters available",
-            ha="center",
-            va="center",
-            color=colors["text_secondary"],
-        )
-        canvas.draw_idle()
-        return
-
     current_subset_tuple = (
         tuple(sorted(subset_cell_ids)) if subset_cell_ids is not None else "ALL"
     )
     current_subset_hash = hash(current_subset_tuple)
+    state = getattr(canvas, "_pop_plot_state", None)
+    if not isinstance(state, dict):
+        state = None
+
+    if not vision_params and not has_borrowed_rfs:
+        _draw_polar_population_canvas(
+            canvas,
+            main_window,
+            subset_cell_ids,
+            colors,
+            current_subset_hash,
+            state,
+        )
+        return
 
     # Check if theme changed
     theme_changed = False
-    if hasattr(canvas, "_pop_plot_state"):
-        stored_colors = canvas._pop_plot_state.get("colors")
-        if stored_colors != colors:
-            theme_changed = True
+    if state is not None and state.get("colors") != colors:
+        theme_changed = True
 
     can_hot_swap = (
         not theme_changed
-        and hasattr(canvas, "_pop_plot_state")
-        and canvas._pop_plot_state["subset_hash"] == current_subset_hash
-        and canvas._pop_plot_state["ax"] in canvas.fig.axes
+        and state is not None
+        and state.get("mode") != "polar"
+        and state.get("subset_hash") == current_subset_hash
+        and state.get("ax") in canvas.fig.axes
     )
 
     if can_hot_swap:
@@ -585,28 +677,15 @@ def draw_population_rfs_plot(
             highlight_patch, main_window.data_manager, selected_cell_id
         )
 
-        # DS/OS markers are NEVER part of the hot-swap/cache fast paths —
-        # see _draw_dsos_markers' docstring for why. Clear any markers this
-        # ax already has (from a previous call) and redraw fresh every
-        # time, so grating data that landed since the last redraw (e.g.
-        # the startup batch-compute finishing) is always reflected, not
-        # just when something else happens to also change the cache key.
-        _clear_dsos_artists(ax)
-        _draw_dsos_markers(
-            ax,
-            vision_params,
-            main_window,
-            sta_height=main_window.data_manager.vision_sta_height,
-            subset_cell_ids=subset_cell_ids,
-            colors=colors,
-        )
-
+        # Selection hot-swap only moves the highlight. Rebuilding DS/OS
+        # markers (and adding a polar inset) here nested a matplotlib
+        # draw inside Qt's paint and triggered recursive repaint.
         canvas.draw_idle()
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
         show_ids = _show_population_ids(main_window)
         cache_entry = _rf_background_cache.get(current_subset_hash)
 
@@ -636,15 +715,17 @@ def draw_population_rfs_plot(
             colors=colors,
         )
 
-        highlight_rgb = QColor(colors["plot_highlight"]).getRgbF()[:3]
+        highlight_hex = colors.get("plot_peak", colors["plot_highlight"])
+        highlight_rgb = QColor(highlight_hex).getRgbF()[:3]
+        highlight_fill = 0.55 if is_light_theme(colors) else 0.48
         highlight_patch = Ellipse(
             xy=(0, 0),
             width=1,
             height=1,
             angle=0,
-            edgecolor=colors["plot_highlight"],
-            facecolor=(*highlight_rgb, 0.42),
-            lw=1.75,
+            edgecolor=colors["plot_line"],
+            facecolor=(*highlight_rgb, highlight_fill),
+            lw=plot_stroke(colors, "thick"),
             zorder=10,
             visible=False,
         )
@@ -783,7 +864,12 @@ def _tight_limits(ellipses, frac_margin=0.05):
 def plot_population_rfs_background(
     ax, vision_params, main_window, sta_height, subset_cell_ids, colors
 ):
-    """Draw native RF ellipses plus dashed borrowed RFs from ReferenceBridge."""
+    """Draw RF ellipses for the selected folder, plus dashed borrowed RFs.
+
+    Only the selected subset is drawn. Other groups are not shown as a
+    shadow / background layer in the RF mosaic.
+    """
+    colors = resolve_theme_colors(colors)
     ax.clear()
     show_labels = main_window.pop_show_ids_checkbox.isChecked()
     dm = main_window.data_manager
@@ -827,15 +913,10 @@ def plot_population_rfs_background(
     # subset_cell_ids are UI/Kilosort ids → Vision ids
     if subset_cell_ids is not None and len(subset_cell_ids) > 0:
         subset_vision_ids = {_vision_id(cid) for cid in subset_cell_ids}
-        universe = native_ids | set(borrowed_map.keys())
-        has_subset = len(universe) > 0 and len(subset_vision_ids) < len(universe)
     else:
         subset_vision_ids = native_ids | set(borrowed_map.keys())
-        has_subset = False
 
-    bg_ellipses = []
     target_ellipses = []
-    borrowed_bg = []
     borrowed_target = []
     native_drawn = set()
     # (vision_id, cx, cy, width, height, angle_deg) for every ellipse actually
@@ -860,6 +941,8 @@ def plot_population_rfs_background(
 
     if vision_params is not None:
         for cell_id in native_ids:
+            if cell_id not in subset_vision_ids:
+                continue
             try:
                 stafit = vision_params.get_stafit_for_cell(cell_id)
             except Exception:
@@ -889,15 +972,15 @@ def plot_population_rfs_background(
             )
             native_drawn.add(cell_id)
             hit_entries.append((cell_id,) + entry)
-            if cell_id in subset_vision_ids:
-                target_ellipses.append(entry)
-                _label(stafit.center_x, adjusted_y, cell_id)
-            else:
-                bg_ellipses.append(entry)
+            target_ellipses.append(entry)
+            _label(stafit.center_x, adjusted_y, cell_id)
 
-    # Borrowed only when native RF is missing for that Vision id
+    # Borrowed only when native RF is missing for that Vision id, and only
+    # for cells in the selected folder.
     for vision_id, params in borrowed_map.items():
         if vision_id in native_drawn:
+            continue
+        if vision_id not in subset_vision_ids:
             continue
         cx = params["x0"]
         cy = params["y0"]
@@ -911,32 +994,19 @@ def plot_population_rfs_background(
         adjusted_y = sta_height - cy if sta_height is not None else cy
         entry = (cx, adjusted_y, sx * 2, sy * 2, np.degrees(rot))
         hit_entries.append((vision_id,) + entry)
-        if vision_id in subset_vision_ids:
-            borrowed_target.append(entry)
-            _label(cx, adjusted_y, vision_id)
-        else:
-            borrowed_bg.append(entry)
+        borrowed_target.append(entry)
+        _label(cx, adjusted_y, vision_id)
 
-    is_light = colors.get("bg_panel", "").upper() in ("#FFFFFF", "#FAFAFA", "#F8F9FA")
-    bg_edgecolor = (
-        colors.get("text_tertiary", "#ADB5BD")
-        if is_light
-        else colors.get("border_subtle", "#2E3038")
-    )
-    bg_alpha = 0.35 if is_light else 0.15
-
-    bg_coll = _build_ellipse_collection(
-        bg_ellipses, edgecolor=bg_edgecolor, alpha=bg_alpha, lw=0.75, zorder=1
-    )
-    if bg_coll is not None:
-        ax.add_collection(bg_coll)
-        bg_coll.set_offset_transform(ax.transData)
+    is_light = is_light_theme(colors)
+    target_color = colors.get("plot_scatter", colors.get("plot_highlight", "#0d47a1"))
+    target_alpha = plot_rf_target_alpha(colors)
+    target_lw = 1.8 if is_light else 1.25
 
     target_coll = _build_ellipse_collection(
         target_ellipses,
-        edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.55,
-        lw=1.0,
+        edgecolor=target_color,
+        alpha=target_alpha,
+        lw=target_lw,
         zorder=2,
     )
     if target_coll is not None:
@@ -944,23 +1014,11 @@ def plot_population_rfs_background(
         target_coll.set_offset_transform(ax.transData)
 
     # Spec D1: dashed + slightly lower alpha for borrowed ellipses
-    borrowed_bg_coll = _build_ellipse_collection(
-        borrowed_bg,
-        edgecolor=bg_edgecolor,
-        alpha=max(0.2, bg_alpha * 0.85),
-        lw=0.75,
-        zorder=1,
-    )
-    if borrowed_bg_coll is not None:
-        borrowed_bg_coll.set_linestyle("--")
-        ax.add_collection(borrowed_bg_coll)
-        borrowed_bg_coll.set_offset_transform(ax.transData)
-
     borrowed_target_coll = _build_ellipse_collection(
         borrowed_target,
-        edgecolor=colors.get("plot_highlight", "#00FFFF"),
-        alpha=0.40,
-        lw=1.0,
+        edgecolor=target_color,
+        alpha=max(0.70, target_alpha * 0.85),
+        lw=target_lw,
         zorder=2,
     )
     if borrowed_target_coll is not None:
@@ -968,11 +1026,7 @@ def plot_population_rfs_background(
         ax.add_collection(borrowed_target_coll)
         borrowed_target_coll.set_offset_transform(ax.transData)
 
-    zoom_ellipses = (
-        target_ellipses + borrowed_target
-        if (has_subset and (target_ellipses or borrowed_target))
-        else (target_ellipses + bg_ellipses + borrowed_target + borrowed_bg)
-    )
+    zoom_ellipses = target_ellipses + borrowed_target
     limits = _tight_limits(zoom_ellipses, frac_margin=0.05)
     if limits is not None:
         ax.set_xlim(limits[0], limits[1])
@@ -981,13 +1035,183 @@ def plot_population_rfs_background(
     set_rf_hit_entries(ax, hit_entries)
 
     n_target = len(target_ellipses) + len(borrowed_target)
-    n_borrowed = len(borrowed_target) + len(borrowed_bg)
+    n_borrowed = len(borrowed_target)
     title = f"Population Receptive Fields (n={n_target}"
     if n_borrowed:
         title += f", {n_borrowed} borrowed"
     title += ")"
     _apply_rf_axes_style(ax, colors, title=title)
 
+
+
+DSOS_POLAR_INSET_LABEL = "dsos_polar_inset"
+
+
+def _remove_axes_with_label(fig, label):
+    if fig is None:
+        return
+    for extra in list(fig.axes):
+        if extra.get_label() == label:
+            extra.remove()
+
+
+def _iter_dsos_population(main_window, subset_cell_ids):
+    """DS/OS-classified cells in the current subset. Does not need STAs."""
+    dm = getattr(main_window, "data_manager", None)
+    if dm is None:
+        return
+    cids = None
+    if isinstance(subset_cell_ids, (list, tuple, set, np.ndarray)) and len(
+        subset_cell_ids
+    ) > 0:
+        try:
+            cids = [int(c) for c in subset_cell_ids]
+        except Exception:
+            cids = None
+    if cids is None:
+        df = getattr(dm, "cluster_df", None)
+        try:
+            arr = np.asarray(df["cluster_id"], dtype=int).reshape(-1)
+            cids = [int(c) for c in arr.tolist()]
+        except Exception:
+            return
+    threshold = getattr(main_window, "dsos_threshold", None)
+    kwargs = {}
+    if threshold is not None:
+        kwargs["dsi_threshold"] = float(threshold)
+        kwargs["osi_threshold"] = float(threshold)
+    get = getattr(dm, "get_grating_data_for_cluster", None)
+    if not callable(get):
+        return
+    for cid in cids:
+        try:
+            entry = get(int(cid))
+        except Exception:
+            continue
+        if not isinstance(entry, dict) or not entry:
+            continue
+        sel = grating_calc.select_best_dsos_condition(entry, **kwargs)
+        if sel is None or sel.get("classification") not in ("DS", "OS"):
+            continue
+        yield int(cid), sel
+
+
+def _draw_preferred_orientation_polar(
+    ax, rows, colors, show_ids=False, title=None
+):
+    """Arrows (DS) and bars (OS) from the origin. No RF / white-noise needed."""
+    colors = resolve_theme_colors(colors)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlim(-1.25, 1.25)
+    ax.set_ylim(-1.25, 1.25)
+    ax.axhline(0, color=colors["border_subtle"], lw=0.6, zorder=0)
+    ax.axvline(0, color=colors["border_subtle"], lw=0.6, zorder=0)
+    ring = np.linspace(0, 2 * np.pi, 120)
+    ax.plot(
+        np.cos(ring),
+        np.sin(ring),
+        color=colors["border_subtle"],
+        lw=0.8,
+        zorder=0,
+    )
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_facecolor(plot_field(colors))
+
+    ds_color = colors.get("plot_compare", "#E03131")
+    os_color = colors.get("plot_overlay", "#1971C2")
+    os_lines = []
+    n_ds = 0
+    n_os = 0
+    label_ok = bool(show_ids) and len(rows) <= 60
+
+    for cid, sel in rows:
+        cls = sel.get("classification")
+        if cls == "DS":
+            ang = sel.get("preferred_direction_deg", np.nan)
+            mag = abs(sel.get("DSI", np.nan))
+            if not np.isfinite(ang) or not np.isfinite(mag):
+                continue
+            mag = float(np.clip(mag, 0.08, 1.0))
+            th = np.deg2rad(float(ang))
+            x, y = mag * np.cos(th), mag * np.sin(th)
+            ax.add_patch(
+                FancyArrowPatch(
+                    (0, 0),
+                    (x, y),
+                    arrowstyle="-|>",
+                    mutation_scale=11,
+                    color=ds_color,
+                    lw=1.2,
+                    alpha=0.75,
+                    zorder=3,
+                )
+            )
+            n_ds += 1
+            if label_ok:
+                ax.text(
+                    x * 1.14,
+                    y * 1.14,
+                    str(cid),
+                    fontsize=6,
+                    ha="center",
+                    va="center",
+                    color=colors.get("text_secondary", "#9B9DA6"),
+                    alpha=0.85,
+                )
+        elif cls == "OS":
+            ang = sel.get("preferred_orientation_deg", np.nan)
+            mag = abs(sel.get("OSI", np.nan))
+            if not np.isfinite(ang) or not np.isfinite(mag):
+                continue
+            mag = float(np.clip(mag, 0.08, 1.0))
+            th = np.deg2rad(float(ang))
+            dx, dy = mag * np.cos(th), mag * np.sin(th)
+            os_lines.append([(-dx, -dy), (dx, dy)])
+            n_os += 1
+            if label_ok:
+                ax.text(
+                    dx * 1.14,
+                    dy * 1.14,
+                    str(cid),
+                    fontsize=6,
+                    ha="center",
+                    va="center",
+                    color=colors.get("text_secondary", "#9B9DA6"),
+                    alpha=0.85,
+                )
+
+    if os_lines:
+        ax.add_collection(
+            LineCollection(
+                os_lines, colors=os_color, linewidths=1.4, alpha=0.75, zorder=2
+            )
+        )
+
+    if title is None:
+        title = f"Preferred dir / ori  ({n_ds} DS, {n_os} OS)"
+    ax.set_title(title, color=colors["text_primary"], fontsize=9)
+    ax.text(
+        1.08,
+        0.0,
+        "0°",
+        fontsize=7,
+        color=colors["text_secondary"],
+        ha="left",
+        va="center",
+    )
+    ax.text(
+        0.0,
+        1.08,
+        "90°",
+        fontsize=7,
+        color=colors["text_secondary"],
+        ha="center",
+        va="bottom",
+    )
+    return n_ds, n_os
 
 
 def _clear_dsos_artists(ax):
@@ -1012,6 +1236,7 @@ def _clear_dsos_artists(ax):
     legend = ax.get_legend()
     if legend is not None:
         legend.remove()
+    _remove_axes_with_label(getattr(ax, "figure", None), DSOS_POLAR_INSET_LABEL)
 
 
 def _draw_dsos_markers(
@@ -1040,85 +1265,83 @@ def _draw_dsos_markers(
     """
     dm = main_window.data_manager
     is_vision_only = getattr(dm, "is_vision_only", False)
+    rows = list(_iter_dsos_population(main_window, subset_cell_ids))
+    n_ds = sum(1 for _cid, sel in rows if sel.get("classification") == "DS")
+    n_os = sum(1 for _cid, sel in rows if sel.get("classification") == "OS")
+    bridge = getattr(dm, "reference_bridge", None)
 
-    # Only draw markers for cells whose RF ellipse is actually plotted —
-    # i.e. the current subset — NOT every cell in the array. Previously
-    # this iterated all_cell_ids regardless of subset, so when a small
-    # subset was selected (e.g. one cluster, n=1), DS/OS arrows still
-    # appeared for every classified cell across the whole array, floating
-    # with no RF ellipse beneath them. This mirrors plot_population_rfs_
-    # background's own subset translation (Kilosort IDs -> Vision IDs).
-    all_cell_ids = set(vision_params.get_cell_ids())
-    if subset_cell_ids is not None and len(subset_cell_ids) > 0:
-        subset_vision_ids = {
-            dm.get_vision_id_for_cluster(cid) for cid in subset_cell_ids
-        }
-        cell_ids_to_draw = all_cell_ids & subset_vision_ids
-    else:
-        # No subset -> whole population (matches background behavior).
-        cell_ids_to_draw = all_cell_ids
+    def _rf_anchor(vision_id):
+        if vision_params is not None:
+            try:
+                stafit = vision_params.get_stafit_for_cell(vision_id)
+            except Exception:
+                stafit = None
+            if stafit is not None:
+                fit_vals = (
+                    stafit.center_x,
+                    stafit.center_y,
+                    stafit.std_x,
+                    stafit.std_y,
+                    stafit.rot,
+                )
+                if (
+                    all(np.isfinite(v) for v in fit_vals)
+                    and stafit.std_x > 0
+                    and stafit.std_y > 0
+                ):
+                    y = (
+                        sta_height - stafit.center_y
+                        if sta_height is not None
+                        else stafit.center_y
+                    )
+                    return (
+                        stafit.center_x,
+                        y,
+                        max(stafit.std_x, stafit.std_y) * 1.5,
+                    )
+        if bridge is not None:
+            try:
+                params = bridge.get_rf_ellipse_params(vision_id)
+            except Exception:
+                params = None
+            if params is not None:
+                sx, sy = params.get("std_x"), params.get("std_y")
+                cx, cy = params.get("x0"), params.get("y0")
+                if (
+                    sx
+                    and sy
+                    and sx > 0
+                    and sy > 0
+                    and all(np.isfinite(v) for v in (cx, cy, sx, sy))
+                ):
+                    y = sta_height - cy if sta_height is not None else cy
+                    return (cx, y, max(sx, sy) * 1.5)
+        return None
 
     ds_lines = []  # each: [(x0,y0), (x1,y1)] arrow shaft; heads drawn separately
     os_lines = []  # each: [(x0,y0), (x1,y1)] double-ended tick
 
-    for cell_id in cell_ids_to_draw:
-        try:
-            stafit = vision_params.get_stafit_for_cell(cell_id)
-        except KeyError:
-            continue
-
-        fit_vals = (
-            stafit.center_x,
-            stafit.center_y,
-            stafit.std_x,
-            stafit.std_y,
-            stafit.rot,
+    for cluster_id, sel in rows:
+        vid = (
+            cluster_id
+            if is_vision_only
+            else dm.get_vision_id_for_cluster(cluster_id)
         )
-        if not all(np.isfinite(v) for v in fit_vals):
+        anchor = _rf_anchor(vid)
+        if anchor is None:
             continue
-        if stafit.std_x <= 0 or stafit.std_y <= 0:
-            continue
-
-        adjusted_y = (
-            sta_height - stafit.center_y if sta_height is not None else stafit.center_y
-        )
-
-        # Sized off this cell's own RF so it scales sensibly across cells
-        # with very different RF sizes, rather than one fixed pixel length.
-        marker_len = max(stafit.std_x, stafit.std_y) * 1.5
-        cluster_id = cell_id if is_vision_only else cell_id - 1
-        grating_entry = dm.get_grating_data_for_cluster(cluster_id)
-        # dsos_threshold: user-adjustable via the population panel's DS/OS
-        # threshold slider (MainWindow.dsos_threshold). getattr default
-        # matches grating_calc's own DSI_THRESHOLD/OSI_THRESHOLD default —
-        # this only changes what counts as "strongly enough tuned to call
-        # DS/OS," not the underlying significance/amplitude gate.
-        threshold = getattr(main_window, "dsos_threshold", None)
-        stats = (
-            _best_dsos_condition(
-                grating_entry, dsi_threshold=threshold, osi_threshold=threshold
-            )
-            if grating_entry
-            else None
-        )
-        if stats is None:
-            continue
-        dsi, osi, pref_dir, pref_ori, classification = stats
-        if classification == "DS" and not np.isnan(pref_dir):
+        cx, cy, marker_len = anchor
+        classification = sel.get("classification")
+        pref_dir = sel.get("preferred_direction_deg", np.nan)
+        pref_ori = sel.get("preferred_orientation_deg", np.nan)
+        if classification == "DS" and np.isfinite(pref_dir):
             theta = np.deg2rad(pref_dir)
             dx, dy = np.cos(theta) * marker_len, np.sin(theta) * marker_len
-            ds_lines.append(
-                [(stafit.center_x, adjusted_y), (stafit.center_x + dx, adjusted_y + dy)]
-            )
-        elif classification == "OS" and not np.isnan(pref_ori):
+            ds_lines.append([(cx, cy), (cx + dx, cy + dy)])
+        elif classification == "OS" and np.isfinite(pref_ori):
             theta = np.deg2rad(pref_ori)
             dx, dy = np.cos(theta) * marker_len * 0.6, np.sin(theta) * marker_len * 0.6
-            os_lines.append(
-                [
-                    (stafit.center_x - dx, adjusted_y - dy),
-                    (stafit.center_x + dx, adjusted_y + dy),
-                ]
-            )
+            os_lines.append([(cx - dx, cy - dy), (cx + dx, cy + dy)])
 
     # DS: short arrow along preferred_direction_deg. OS: short double-ended
     # tick along preferred_orientation_deg (axis, not a single direction —
@@ -1153,6 +1376,34 @@ def _draw_dsos_markers(
     # ticks (OS) are drawn directly on the RF plot above; the legend box
     # was redundant and duplicated on redraws.
 
+    if n_ds or n_os:
+        base = (ax.get_title() or "").split("  ·  ")[0]
+        if base:
+            ax.set_title(
+                f"{base}  ·  {n_ds} DS, {n_os} OS",
+                color=colors.get("text_primary", "#F0F0F2"),
+            )
+        fig = getattr(ax, "figure", None)
+        if fig is not None and rows:
+            inset = None
+            for extra in list(fig.axes):
+                if extra.get_label() == DSOS_POLAR_INSET_LABEL:
+                    inset = extra
+                    break
+            if inset is None:
+                inset = fig.add_axes(
+                    [0.68, 0.62, 0.30, 0.35], label=DSOS_POLAR_INSET_LABEL
+                )
+            else:
+                inset.clear()
+            _draw_preferred_orientation_polar(
+                inset,
+                rows,
+                colors,
+                show_ids=_show_population_ids(main_window),
+                title="DS/OS",
+            )
+
 
 def plot_rich_ei(
     fig,
@@ -1168,11 +1419,12 @@ def plot_rich_ei(
     """
     if colors is None:
         colors = DARK_COLORS
+    colors = resolve_theme_colors(colors)
 
     fig.clear()
-    fig.set_facecolor(colors["bg_panel"])
+    fig.set_facecolor(plot_field(colors))
     ax = fig.add_subplot(111)
-    ax.set_facecolor(colors["bg_panel"])
+    ax.set_facecolor(plot_field(colors))
 
     if median_ei is not None and channel_positions is not None:
         max_amplitudes = np.max(np.abs(median_ei), axis=1)
@@ -1227,7 +1479,7 @@ def plot_rich_ei(
                         ax.add_patch(circle)
                     ax.legend(
                         loc="upper right",
-                        facecolor=colors["bg_panel"],
+                        facecolor=plot_field(colors),
                         labelcolor=colors["text_primary"],
                     )
         else:
@@ -1270,11 +1522,11 @@ def draw_population_acg_panel(main_window, subset_ids=None):
     if canvas is None:
         return
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -1318,7 +1570,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -1371,7 +1623,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         state = canvas._acg_state
         ax = state["ax"]
 
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         # ax.get_facecolor() returns RGBA tuple, need to unpack it
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
@@ -1396,9 +1648,9 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
         ax.axhline(
             0,
@@ -1418,15 +1670,19 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         )
 
         shadow_lines = LineCollection(
-            segments, color=colors["plot_acg"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors.get("plot_ensemble", colors["plot_acg"]),
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=plot_ensemble_alpha(colors),
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
         mean_line = _first_plot_artist(
             ax.plot(
                 t_axis,
                 mean_acg,
-                color=colors["plot_compare"],
-                linewidth=1.6,
+                color=colors["plot_mean"],
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )
@@ -1472,11 +1728,11 @@ def draw_population_fr_panel(main_window, subset_ids=None):
     if canvas is None:
         return
 
-    colors = main_window.get_current_colors()
+    colors = resolve_theme_colors(main_window.get_current_colors())
 
     if not subset_ids:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         canvas.fig.text(
             0.5,
             0.5,
@@ -1521,7 +1777,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 
         if not traces:
             canvas.fig.clear()
-            canvas.fig.set_facecolor(colors["bg_panel"])
+            canvas.fig.set_facecolor(plot_field(colors))
             canvas.fig.text(
                 0.5,
                 0.5,
@@ -1560,7 +1816,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         state = canvas._fr_state
         ax = state["ax"]
 
-        current_facecolor = QColor(colors["bg_panel"]).name().lower()
+        current_facecolor = QColor(plot_field(colors)).name().lower()
         facecolor_tuple = ax.get_facecolor()
         stored_facecolor = (
             QColor.fromRgbF(
@@ -1584,20 +1840,24 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         ax.set_ylim(y_bottom, y_top)
     else:
         canvas.fig.clear()
-        canvas.fig.set_facecolor(colors["bg_panel"])
+        canvas.fig.set_facecolor(plot_field(colors))
         ax = canvas.fig.add_subplot(111)
-        ax.set_facecolor(colors["bg_panel"])
+        ax.set_facecolor(plot_field(colors))
 
         shadow_lines = LineCollection(
-            segments, color=colors["plot_fr"], linewidth=1.0, alpha=0.35, zorder=2
+            segments,
+            color=colors.get("plot_ensemble", colors["plot_fr"]),
+            linewidth=plot_stroke(colors, "thin"),
+            alpha=plot_ensemble_alpha(colors),
+            zorder=2,
         )
         ax.add_collection(shadow_lines)
         mean_line = _first_plot_artist(
             ax.plot(
                 t_axis,
                 mean_fr,
-                color=colors["plot_compare"],
-                linewidth=1.6,
+                color=colors["plot_mean"],
+                linewidth=plot_stroke(colors),
                 alpha=0.95,
                 zorder=4,
             )
@@ -1635,18 +1895,14 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 def _best_dsos_condition(grating_entry, dsi_threshold=None, osi_threshold=None):
     """
     Delegates to grating_calc.select_best_dsos_condition — the single
-    shared, gated selector used by both the DS/OS probe map and
-    GratingPanel. See select_best_dsos_condition's docstring for why raw
-    max(|DSI|) (the old approach here) was wrong: amplitude-blind,
-    significance-blind selection let a near-silent, noisy condition
-    outrank a real, strong response.
+    shared selector used by the RF overlay, the preferred-orientation
+    polar, and GratingPanel. That function classifies each (bar width, TF)
+    that ran, then picks the strongest significant response so a noisy
+    high-DSI condition cannot hide a real DS/OS run at another SF/TF.
 
     dsi_threshold/osi_threshold: optional override for how strong DSI/OSI
-    must be (after already passing the significance/amplitude gate — this
-    does NOT loosen that gate) to count as DS/OS. None uses grating_calc's
-    module-level default (DSI_THRESHOLD/OSI_THRESHOLD = 0.3). Driven by
-    the population panel's DS/OS threshold slider — see
-    MainWindow.dsos_threshold.
+    must be (after the shuffle p-value gate) to count as DS/OS. None uses
+    grating_calc's default (0.3). Driven by the population DS/OS slider.
 
     Returns (dsi, osi, pref_dir_deg, pref_ori_deg, classification) where
     classification is 'DS' | 'OS' | 'none', or None if this cluster has no

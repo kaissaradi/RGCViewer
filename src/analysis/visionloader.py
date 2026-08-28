@@ -39,6 +39,23 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Seek-table cache for .ei files. Guarded like the geometry deps below so this
+# reader still works standalone; without it every open just rescans, which is
+# what it did before the cache existed.
+try:
+    from . import ei_index_cache
+except Exception:  # pragma: no cover - reader used outside the package
+    class _NoIndexCache:
+        @staticmethod
+        def load(_ei_path):
+            return None
+
+        @staticmethod
+        def save(_ei_path, _offsets, _nspikes):
+            return False
+
+    ei_index_cache = _NoIndexCache()
+
 # --- external geometry deps (unchanged; not byte decoders) ------------------
 try:
     import src.analysis.electrode_map as elmap
@@ -467,6 +484,20 @@ class EIReader:
         self.num_bytes_per_ei = (2 * N_BYTES_32BIT * self.n_samples_per_ei
                                  * self.n_payload_channels)
 
+        # The seek table, from cache when one matches this exact .ei file.
+        #
+        # Building it means one 8-byte read per record, and records are a whole
+        # EI apart (~825 KB), so it is ~700 scattered reads over 600 MB. Free on
+        # a local disk; over CIFS each is an SMB round trip at ~9 ms and the
+        # scan alone was 6.5 s of a 19.5 s open. See ei_index_cache — the table
+        # is ~25 KB and depends on nothing but this file.
+        cached = ei_index_cache.load(ei_path)
+        if cached is not None:
+            self.cell_id_to_offset, self.cell_id_to_nspikes = cached
+            logger.debug("EIReader: seek table for %s came from cache (%d cells)",
+                         ei_path, len(self.cell_id_to_offset))
+            return
+
         self.cell_id_to_offset = {}
         self.cell_id_to_nspikes = {}
         step = self.num_bytes_per_ei + N_BYTES_32BIT * 2
@@ -486,6 +517,13 @@ class EIReader:
                 "EIReader: dropped %d implausible cell ids from %s "
                 "(wrong stride or corrupt file); kept %d",
                 n_dropped, ei_path, len(self.cell_id_to_offset),
+            )
+
+        # Only a clean scan is worth keeping. A file that produced dropped ids
+        # was misread — caching that would make one bad guess permanent.
+        if not n_dropped:
+            ei_index_cache.save(
+                ei_path, self.cell_id_to_offset, self.cell_id_to_nspikes
             )
 
     def get_ei_for_cell_id(self, cell_id: int) -> EIContainer:
