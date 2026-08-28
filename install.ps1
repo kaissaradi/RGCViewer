@@ -29,9 +29,11 @@ Info "Using $PythonVer"
 if (Test-Path (Join-Path $InstallDir ".git")) {
     Info "Updating existing installation in $InstallDir"
     git -C $InstallDir pull --ff-only
+    if ($LASTEXITCODE -ne 0) { Fail "git pull failed in $InstallDir." }
 } else {
     Info "Cloning Encore into $InstallDir"
     git clone $Repo $InstallDir
+    if ($LASTEXITCODE -ne 0) { Fail "git clone failed. Is git installed and the network reachable?" }
 }
 
 # --- virtual environment ----------------------------------------------------
@@ -39,13 +41,35 @@ $Venv = Join-Path $InstallDir ".venv"
 if (-not (Test-Path $Venv)) {
     Info "Creating virtual environment"
     & $PythonCmd -m venv $Venv
+    if ($LASTEXITCODE -ne 0) { Fail "Could not create a virtual environment at $Venv." }
 }
 
 $VenvPython = Join-Path $Venv "Scripts\python.exe"
 
 Info "Installing dependencies (this may take a few minutes on first run)"
 & $VenvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { Fail "Failed to upgrade pip." }
+
 & $VenvPython -m pip install -e $InstallDir
+if ($LASTEXITCODE -ne 0) { Fail "Dependency installation failed. Scroll up for the pip error." }
+
+# --- verify Qt bindings -----------------------------------------------------
+# qtpy reports a generic QtBindingsNotFoundError when the binding is missing OR
+# when its DLLs fail to load, so check the binding directly for a useful error.
+& $VenvPython -c "import PyQt6.QtCore" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    & $VenvPython -c "import PyQt6.QtCore"
+    Write-Host ""
+    Fail @"
+PyQt6 could not be imported, so Encore will not start.
+
+  * 'DLL load failed' -> install the Microsoft Visual C++ Redistributable:
+        https://aka.ms/vs/17/release/vc_redist.x64.exe
+  * 'No module named PyQt6' -> your Python version may have no PyQt6 wheel.
+        $PythonVer is in use; Python 3.10-3.13 are known to work.
+"@
+}
 
 # --- create launcher shim ---------------------------------------------------
 if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
