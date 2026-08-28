@@ -3,13 +3,18 @@ import argparse
 import logging
 
 
-from qt_bootstrap import prefer_bundled_qt
+from qt_bootstrap import prefer_bundled_qt, explain_qt_import_failure
 
 prefer_bundled_qt()
 
-from qtpy.QtCore import QCoreApplication, Qt
-from qtpy.QtGui import QSurfaceFormat
-from qtpy.QtWidgets import QApplication
+try:
+    from qtpy.QtCore import QCoreApplication, Qt
+    from qtpy.QtGui import QSurfaceFormat
+    from qtpy.QtWidgets import QApplication
+except ImportError:
+    # qtpy masks the real reason a binding would not load; show it.
+    explain_qt_import_failure()
+    raise
 from src.gui.main_window import MainWindow
 
 def setup_logging(debug_mode):

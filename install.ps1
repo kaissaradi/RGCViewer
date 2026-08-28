@@ -59,8 +59,13 @@ if ($LASTEXITCODE -ne 0) { Fail "Dependency installation failed. Scroll up for t
 # through qt_bootstrap, the same way the app does, or a conda Qt on PATH will
 # fail this check even though Encore itself would start fine.
 Push-Location $InstallDir
-$QtCheck = & $VenvPython -c "import qt_bootstrap as b; b.prefer_bundled_qt(); import PyQt6.QtCore" 2>&1
+# stderr from a native command becomes a terminating error under
+# $ErrorActionPreference = "Stop", so relax it while we capture the output.
+$PrevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$QtCheck = (& $VenvPython -c "import qt_bootstrap as b; b.prefer_bundled_qt(); import PyQt6.QtCore" 2>&1 | Out-String)
 $QtOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $PrevEAP
 Pop-Location
 
 if (-not $QtOk) {
