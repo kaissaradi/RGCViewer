@@ -6,46 +6,32 @@ retinal ganglion cell (RGC) types.
 
 The internal name is Axolotl. The repository name is RGCViewer.
 
-## Requirements
+## Quick install
 
-- Conda environment name: `rgcviewer`
-- Python 3.10
-- Qt through `qtpy` (PyQt5)
+Requires **Python 3.10+** and **git**.
 
-## Install
-
-1. Clone the repository.
-2. Create the environment:
+**macOS / Linux:**
 
 ```bash
-conda create --name rgcviewer python=3.10
-conda activate rgcviewer
-pip install -r requirements.txt
+curl -fsSL https://raw.githubusercontent.com/kaissaradi/RGCViewer/main/install.sh | bash
 ```
 
-3. For tests, also install:
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/kaissaradi/RGCViewer/main/install.ps1 | iex
+```
+
+This clones the repo to `~/.rgcviewer`, creates a virtual environment,
+installs all dependencies, and adds the `rgcviewer` command to your PATH.
+
+Run again to update an existing install.
+
+### After install
 
 ```bash
-pip install -r requirements-dev.txt
+rgcviewer
 ```
-
-## Start the application
-
-1. Activate the environment:
-
-```bash
-conda activate rgcviewer
-```
-
-2. Start from the repository root:
-
-```bash
-python main.py
-```
-
-The window opens empty. Use **File → Open** to load a run.
-
-Optional arguments:
 
 | Argument | Effect |
 |---|---|
@@ -53,8 +39,63 @@ Optional arguments:
 | `--kilosort-dir PATH` | Load this run at start |
 | `--dat-file PATH` | Attach a raw `.bin` / `.dat` file for the Raw tab |
 
-The application does **not** reopen the last run at start. File dialogs still
-open in the last folder you used.
+### Uninstall
+
+```bash
+rm -rf ~/.rgcviewer ~/.local/bin/rgcviewer
+```
+
+On Windows:
+
+```powershell
+Remove-Item -Recurse -Force $HOME\.rgcviewer, $HOME\.local\bin\rgcviewer.*
+```
+
+## Developer setup
+
+If you prefer to manage your own environment (or need to run tests):
+
+```bash
+git clone https://github.com/kaissaradi/RGCViewer.git
+cd RGCViewer
+python -m venv .venv
+# macOS / Linux
+source .venv/bin/activate
+# Windows
+.venv\Scripts\activate
+
+pip install -e .
+```
+
+### Running tests
+
+Install dev dependencies first:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Unit tests:
+
+```bash
+python -m pytest tests/unit/ -v
+```
+
+Full suite (slow; some tests need lab mounts):
+
+```bash
+python -m pytest tests/ -v
+```
+
+## Start without installing
+
+You can also run directly from the repo without `pip install`:
+
+```bash
+python main.py
+```
+
+The window opens empty. Use **File → Open** to load a run.
 
 ## Load a run
 
@@ -69,22 +110,6 @@ Example: `20260721A/kilosort25/data006/`.
 The folder must contain Vision files (`.neurons`, and usually `.ei`, `.params`).
 Kilosort files may sit in `ksfiles/`. Stimulus analyses are precomputed
 `.npy` files in the same folder. The application does not create those files.
-
-## Tests
-
-Run tests in the `rgcviewer` environment. The base environment does not have
-`pytest`.
-
-```bash
-conda activate rgcviewer
-python -m pytest tests/unit/ -v
-```
-
-Full suite (slow; some tests need lab mounts):
-
-```bash
-python -m pytest tests/ -v
-```
 
 ## Documents
 
