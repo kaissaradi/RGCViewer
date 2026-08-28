@@ -48,8 +48,8 @@ if [ ! -d "$VENV" ]; then
 fi
 
 info "Installing dependencies (this may take a few minutes on first run)"
-"$VENV/bin/pip" install --upgrade pip -q
-"$VENV/bin/pip" install -e "$INSTALL_DIR" -q
+"$VENV/bin/pip" install --upgrade pip
+"$VENV/bin/pip" install -e "$INSTALL_DIR"
 
 # --- create launcher shim --------------------------------------------------
 mkdir -p "$BIN_DIR"
