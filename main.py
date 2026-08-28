@@ -11,8 +11,9 @@ try:
     from qtpy.QtCore import QCoreApplication, Qt
     from qtpy.QtGui import QSurfaceFormat
     from qtpy.QtWidgets import QApplication
-except ImportError:
-    # qtpy masks the real reason a binding would not load; show it.
+except Exception:
+    # qtpy masks the real reason a binding would not load; show it. Catch
+    # broadly -- QtBindingsNotFoundError has not always subclassed ImportError.
     explain_qt_import_failure()
     raise
 from src.gui.main_window import MainWindow
