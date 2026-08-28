@@ -166,7 +166,7 @@ class MainWindow(QMainWindow):
         # selection timer for debouncing rapid selections
         self.selection_timer = QTimer(self)
         self.selection_timer.setSingleShot(True)
-        self.selection_timer.setInterval(25)  # 25ms - minimal delay for responsive feel
+        self.selection_timer.setInterval(150)
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
 
@@ -981,8 +981,8 @@ class MainWindow(QMainWindow):
         """
         Receives a selection event.
 
-        TIER 1 (Immediate): Updates lightweight plots (RF, Standard Plots, Cached EI).
-        TIER 2 (Debounced): Starts timer for heavy tasks.
+        TIER 1 (Immediate): Blit-only overlays (UMAP, pop-RF highlight).
+        TIER 2 (Debounced 150ms): Panel redraws (EI, standard plots, etc.).
         """
         self._pending_cluster_id = cluster_id
 
@@ -1009,23 +1009,6 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Tier 1 Pop Split update failed: {e}")
             # If can't hot-swap, defer to Tier 2 for full rebuild
-
-        # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
-        # Standard plots are updated only in _draw_plots to prevent redundant redraws
-
-        # 3. Electrical Image (EI) - Only if cached
-        has_cached_ei = False
-        if self.data_manager:
-            if hasattr(self.data_manager, "has_cached_ei"):
-                has_cached_ei = self.data_manager.has_cached_ei(cluster_id)
-            elif hasattr(self.data_manager, "ei_cache"):
-                has_cached_ei = cluster_id in self.data_manager.ei_cache
-
-        if self.ei_panel.isVisible() and has_cached_ei:
-            try:
-                self.ei_panel.update_ei([cluster_id])
-            except Exception as e:
-                logger.error(f"Tier 1 EI update failed: {e}")
 
         # --- TIER 2: HEAVY LIFTING (Queued) ---
         # Start/Restart the timer.
