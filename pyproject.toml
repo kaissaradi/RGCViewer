@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgcviewer"
+version = "0.1.0"
+description = "Retinal Ganglion Cell Viewer – inspect spike-sorted MEA recordings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "scipy",
+    "PyQt6",
+    "pyqtgraph",
+    "QtPy",
+    "torch",
+    "umap-learn",
+    "hdbscan",
+]
+
+[project.scripts]
+rgcviewer = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
