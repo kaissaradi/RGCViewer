@@ -41,12 +41,11 @@ if (-not (Test-Path $Venv)) {
     & $PythonCmd -m venv $Venv
 }
 
-$VenvPip    = Join-Path $Venv "Scripts\pip.exe"
 $VenvPython = Join-Path $Venv "Scripts\python.exe"
 
 Info "Installing dependencies (this may take a few minutes on first run)"
-& $VenvPip install --upgrade pip -q
-& $VenvPip install -e $InstallDir -q
+& $VenvPython -m pip install --upgrade pip -q
+& $VenvPython -m pip install -e $InstallDir -q
 
 # --- create launcher shim ---------------------------------------------------
 if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
