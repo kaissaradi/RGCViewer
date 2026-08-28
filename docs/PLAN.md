@@ -98,7 +98,7 @@ The full suite still has older failures. Do not mark them skipped.
 | `_pop_plot_state = None` plus nested mosaic draw | `AttributeError` and recursive QWidget repaint on cluster click | Fixed 2026-08-24. State is a dict or absent. Highlight-only hot-swap. |
 | `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Fixed 2026-08-12. Params timecourse first. Cube only on a miss. |
 | `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Fixed 2026-08-12. Skip when the group timecourse and ACG caches already hold the subset. First visit of a group still draws. |
-| Older pytest failures | Suite is not a clean gate | Open. Do not skip. `test_raw_feature_blocks` now matches the prefilter and scalar-column contracts. `test_gui_polish` still ERRORs: `qtbot` is missing because `pytest-qt` is not installed in `rgcviewer` (it is listed in `requirements-dev.txt`). |
+| Older pytest failures | Suite is not a clean gate | Open. Do not skip. `test_raw_feature_blocks` now matches the prefilter and scalar-column contracts. `test_gui_polish` still ERRORs: `qtbot` is missing because `pytest-qt` is not installed in `encore` (it is listed in `requirements-dev.txt`). |
 
 ## 4. Expected messages (not defects)
 
@@ -130,7 +130,7 @@ Do not start these unless the user asks.
 ## 6. Commands
 
 ```bash
-conda activate rgcviewer
+conda activate encore
 python main.py
 python -m pytest tests/unit/ -v
 python -m pytest tests/unit/test_live_selectors.py tests/unit/test_vision_load_robustness.py tests/unit/test_ei_panel_view.py -v

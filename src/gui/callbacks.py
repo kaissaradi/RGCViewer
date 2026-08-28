@@ -333,7 +333,7 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
         bar.setFormat("Loading dataset...")
         bar.show()
     main_window.data_manager = DataManager(ks_dir_name, main_window)
-    main_window.setWindowTitle(f"RGC Viewer - {ks_dir_name}")
+    main_window.setWindowTitle(f"Encore - {ks_dir_name}")
 
     # 2. Setup Thread and Worker
     main_window.ks_load_thread = QThread()
@@ -1028,7 +1028,7 @@ def load_vision_directory(main_window):
         main_window.data_manager = DataManager(vision_dir_name, main_window)
         main_window.data_manager.is_vision_only = True
         main_window.setWindowTitle(
-            f"RGC Viewer - {Path(vision_dir_name).name} (Vision Native)"
+            f"Encore - {Path(vision_dir_name).name} (Vision Native)"
         )
 
         from .workers.workers import StandaloneVisionWorker
@@ -1247,7 +1247,7 @@ def handle_refinement_results(
     main_window.save_action.setEnabled(True)
     if hasattr(main_window, 'map_reference_action'):
         main_window.map_reference_action.setEnabled(True)
-    main_window.setWindowTitle("*RGC Viewer (unsaved changes)")
+    main_window.setWindowTitle("*Encore (unsaved changes)")
     main_window.refine_thread.quit()
     main_window.refine_thread.wait()
 

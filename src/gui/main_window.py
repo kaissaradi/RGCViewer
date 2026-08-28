@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
-        self.setWindowTitle("RGC Viewer")
+        self.setWindowTitle("Encore")
         self._place_window()
 
         # --- Application State ---
@@ -160,7 +160,7 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
         self.status_bar.showMessage(
-            "Welcome to RGC Viewer. Please load a Kilosort directory to begin."
+            "Welcome to Encore. Please load a Kilosort directory to begin."
         )
 
         # selection timer for debouncing rapid selections

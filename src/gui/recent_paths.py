@@ -25,8 +25,8 @@ __all__ = [
     "remember_dataset", "last_dataset", "forget_dataset",
 ]
 
-_ORG = "RGCViewer"
-_APP = "RGCViewer"
+_ORG = "Encore"
+_APP = "Encore"
 _GLOBAL_KEY = "paths/_last"
 # The dataset itself, not just a dialog's starting folder — this is what lets
 # the app reopen where you left off instead of asking every launch.

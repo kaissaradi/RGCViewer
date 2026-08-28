@@ -1157,7 +1157,7 @@ We have implemented several critical optimizations in the `fix/physics-cache-uni
 During a test run on real data (`/media/kais/Kais/data/sorted/20260501A/chunk1/kilosort2.5`), with zero screen interaction, the physics cache and standard plots cache warm-up reached ~68% progress before the process was **"killed"** and closed by the OS.
 
 #### 1. Why did the process get killed?
-This is a textbook **Out-Of-Memory (OOM) Kill** by the Linux kernel. The kernel detected that the RGCViewer process exceeded the available system RAM and terminated it.
+This is a textbook **Out-Of-Memory (OOM) Kill** by the Linux kernel. The kernel detected that the Encore process exceeded the available system RAM and terminated it.
 - **Redundant Raw NumPy Arrays in Cache (The Main Culprit):**
   The `_compute_standard_plots()` helper packs a massive dict of results, including:
   - `spikes`: The raw array of all spike times in samples (typically `int64` or `uint64`).

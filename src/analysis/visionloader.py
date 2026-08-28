@@ -9,7 +9,7 @@ reinterpret, which NumPy does with typed dtypes ('>i4', '>f4', '>f8').
 Because the old extensions were *scalar* loops, the vectorized versions
 here are generally faster, not slower.
 
-Public API is a drop-in for the subset used by RGCViewer / data_manager:
+Public API is a drop-in for the subset used by Encore / data_manager:
 
     GlobalsFileReader      .get_electrode_map() -> (positions[N,2], disconnected_set)
     EIReader               .get_all_eis_by_cell_id(), .get_ei_for_cell_id(),

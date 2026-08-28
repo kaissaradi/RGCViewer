@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo       = "https://github.com/kaissaradi/RGCViewer.git"
-$InstallDir = if ($env:RGCVIEWER_HOME) { $env:RGCVIEWER_HOME } else { Join-Path $env:USERPROFILE ".rgcviewer" }
+$InstallDir = if ($env:ENCORE_HOME) { $env:ENCORE_HOME } else { Join-Path $env:USERPROFILE ".encore" }
 $BinDir     = Join-Path $env:USERPROFILE ".local\bin"
 $MinPython  = [version]"3.10"
 
@@ -30,7 +30,7 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
     Info "Updating existing installation in $InstallDir"
     git -C $InstallDir pull --ff-only
 } else {
-    Info "Cloning RGCViewer into $InstallDir"
+    Info "Cloning Encore into $InstallDir"
     git clone $Repo $InstallDir
 }
 
@@ -50,13 +50,12 @@ Info "Installing dependencies (this may take a few minutes on first run)"
 # --- create launcher shim ---------------------------------------------------
 if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
 
-$ShimPath = Join-Path $BinDir "rgcviewer.cmd"
-$VenvExe  = Join-Path $Venv "Scripts\rgcviewer.exe"
+$ShimPath = Join-Path $BinDir "encore.cmd"
+$VenvExe  = Join-Path $Venv "Scripts\encore.exe"
 
 Set-Content -Path $ShimPath -Value "@echo off`r`n`"$VenvExe`" %*" -Encoding ASCII
 
-# Also create a ps1 wrapper for PowerShell users
-$Ps1Path = Join-Path $BinDir "rgcviewer.ps1"
+$Ps1Path = Join-Path $BinDir "encore.ps1"
 Set-Content -Path $Ps1Path -Value "& `"$VenvExe`" @args" -Encoding UTF8
 
 # --- PATH advice -------------------------------------------------------------
@@ -68,12 +67,12 @@ if ($UserPath -notlike "*$BinDir*") {
     Warn "Restart your terminal for PATH changes to take effect."
 }
 
-Info "RGCViewer installed! Run it with:"
+Info "Encore installed! Run it with:"
 Write-Host ""
-Write-Host "    rgcviewer"
+Write-Host "    encore"
 Write-Host ""
 Write-Host "  Options:"
-Write-Host "    rgcviewer --debug"
-Write-Host "    rgcviewer --kilosort-dir C:\path\to\run"
-Write-Host "    rgcviewer --dat-file C:\path\to\raw.dat"
+Write-Host "    encore --debug"
+Write-Host "    encore --kilosort-dir C:\path\to\run"
+Write-Host "    encore --dat-file C:\path\to\raw.dat"
 Write-Host ""

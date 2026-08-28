@@ -1,4 +1,4 @@
-# SPEC.md — RGCViewer Spec Template
+# SPEC.md — Encore Spec Template
 
 > Copy this file to `docs/specs/your_feature_name.md` before filling it out.
 > Every section is required. If a section does not apply, write N/A and state why.
@@ -219,7 +219,7 @@ File: `tests/integration/test_[feature_name].py`
 
 Tool: `pytest-mpl`
 Baseline location: `tests/baseline_images/[feature_name]/`
-Generate with: `conda run -n rgcviewer python -m pytest --mpl-generate-path tests/baseline_images/ tests/`
+Generate with: `conda run -n encore python -m pytest --mpl-generate-path tests/baseline_images/ tests/`
 
 ---
 

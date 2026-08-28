@@ -1,5 +1,5 @@
 """
-STA Panel — spike-triggered average viewer for RGCViewer.
+STA Panel — spike-triggered average viewer for Encore.
 
 Layout
 ──────

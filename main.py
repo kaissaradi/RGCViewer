@@ -22,7 +22,7 @@ def setup_logging(debug_mode):
         logging.getLogger('OpenGL').setLevel(logging.CRITICAL)
 
 def main():
-    parser = argparse.ArgumentParser(description="RGC Viewer - Retinal Ganglion Cell Analysis Tool")
+    parser = argparse.ArgumentParser(description="Encore - Retinal Ganglion Cell Analysis Tool")
     parser.add_argument('--debug', action='store_true', help="Enable debug logging to console")
     parser.add_argument('--kilosort-dir', default=None,
                         help="Open this Kilosort directory instead of the last one used")

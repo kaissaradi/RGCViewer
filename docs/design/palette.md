@@ -78,5 +78,4 @@ The Swiss header is a 40px `setMenuWidget` strip, not a native menu bar:
 
 `[■ ENCORE]  20251015A / chunk20 / kilosort4 · 312 cells    Standard STA …    [File] [Array] [Open run] [Light] [Population]`
 
-Brand mark is an 8px blue square + `ENCORE` in Bauhaus blue. Window title stays
-`RGC Viewer`.
+Brand mark is an 8px blue square + `ENCORE` in Bauhaus blue.

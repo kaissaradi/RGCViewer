@@ -1,10 +1,8 @@
-# RGCViewer (Encore)
+# Encore
 
-RGCViewer is a PyQt desktop application. Use it to inspect spike-sorted
+Encore is a PyQt desktop application. Use it to inspect spike-sorted
 multi-electrode array recordings from mouse retina and to assign units to
 retinal ganglion cell (RGC) types.
-
-The internal name is Encore. The repository name is RGCViewer.
 
 ## Quick install
 
@@ -22,15 +20,15 @@ curl -fsSL https://raw.githubusercontent.com/kaissaradi/RGCViewer/main/install.s
 irm https://raw.githubusercontent.com/kaissaradi/RGCViewer/main/install.ps1 | iex
 ```
 
-This clones the repo to `~/.rgcviewer`, creates a virtual environment,
-installs all dependencies, and adds the `rgcviewer` command to your PATH.
+This clones the repo to `~/.encore`, creates a virtual environment,
+installs all dependencies, and adds the `encore` command to your PATH.
 
 Run again to update an existing install.
 
 ### After install
 
 ```bash
-rgcviewer
+encore
 ```
 
 | Argument | Effect |
@@ -42,13 +40,13 @@ rgcviewer
 ### Uninstall
 
 ```bash
-rm -rf ~/.rgcviewer ~/.local/bin/rgcviewer
+rm -rf ~/.encore ~/.local/bin/encore
 ```
 
 On Windows:
 
 ```powershell
-Remove-Item -Recurse -Force $HOME\.rgcviewer, $HOME\.local\bin\rgcviewer.*
+Remove-Item -Recurse -Force $HOME\.encore, $HOME\.local\bin\encore.*
 ```
 
 ## Developer setup

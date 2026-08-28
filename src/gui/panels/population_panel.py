@@ -1,5 +1,5 @@
 """
-Population Panel for RGC Viewer
+Population Panel for Encore
 
 This module contains population plotting functions that were previously in the plotting module.
 """

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO="https://github.com/kaissaradi/RGCViewer.git"
-INSTALL_DIR="${RGCVIEWER_HOME:-$HOME/.rgcviewer}"
-BIN_DIR="${RGCVIEWER_BIN:-$HOME/.local/bin}"
+INSTALL_DIR="${ENCORE_HOME:-$HOME/.encore}"
+BIN_DIR="${ENCORE_BIN:-$HOME/.local/bin}"
 MIN_PYTHON="3.10"
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -36,7 +36,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     info "Updating existing installation in $INSTALL_DIR"
     git -C "$INSTALL_DIR" pull --ff-only
 else
-    info "Cloning RGCViewer into $INSTALL_DIR"
+    info "Cloning Encore into $INSTALL_DIR"
     git clone "$REPO" "$INSTALL_DIR"
 fi
 
@@ -53,13 +53,12 @@ info "Installing dependencies (this may take a few minutes on first run)"
 
 # --- create launcher shim --------------------------------------------------
 mkdir -p "$BIN_DIR"
-SHIM="$BIN_DIR/rgcviewer"
+SHIM="$BIN_DIR/encore"
 
 cat > "$SHIM" << 'LAUNCHER'
 #!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
-INSTALL_DIR="${RGCVIEWER_HOME:-$HOME/.rgcviewer}"
-exec "$INSTALL_DIR/.venv/bin/rgcviewer" "$@"
+INSTALL_DIR="${ENCORE_HOME:-$HOME/.encore}"
+exec "$INSTALL_DIR/.venv/bin/encore" "$@"
 LAUNCHER
 chmod +x "$SHIM"
 
@@ -80,12 +79,12 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
     echo ""
 fi
 
-info "RGCViewer installed! Run it with:"
+info "Encore installed! Run it with:"
 echo ""
-echo "    rgcviewer"
+echo "    encore"
 echo ""
 echo "  Options:"
-echo "    rgcviewer --debug"
-echo "    rgcviewer --kilosort-dir /path/to/run"
-echo "    rgcviewer --dat-file /path/to/raw.dat"
+echo "    encore --debug"
+echo "    encore --kilosort-dir /path/to/run"
+echo "    encore --dat-file /path/to/raw.dat"
 echo ""

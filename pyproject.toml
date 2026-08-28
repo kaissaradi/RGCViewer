@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rgcviewer"
+name = "encore"
 version = "0.1.0"
-description = "Retinal Ganglion Cell Viewer – inspect spike-sorted MEA recordings"
+description = "Encore – inspect spike-sorted MEA recordings"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rgcviewer = "main:main"
+encore = "main:main"
 
 [tool.setuptools]
 py-modules = ["main"]

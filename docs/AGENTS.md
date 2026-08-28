@@ -6,7 +6,7 @@ Reading order: `README.md` → `CLAUDE.md` → this file → `docs/PLAN.md`
 (pickup, fragile zones, open defects). Then write the failing test.
 Then implement.
 
-RGCViewer is a PyQt5 / pyqtgraph desktop GUI. A scientist uses it to inspect
+Encore is a PyQt5 / pyqtgraph desktop GUI. A scientist uses it to inspect
 spike-sorted retinal ganglion cell (RGC) recordings and to assign clusters
 to types.
 
@@ -18,7 +18,7 @@ Two ID spaces exist in a hybrid dataset:
 
 `DataManager.is_vision_only` is `True` only when no Kilosort data was loaded.
 
-Start the app with `python main.py` from environment `rgcviewer`. The window
+Start the app with `python main.py` from environment `encore`. The window
 opens empty. Do not reopen the last run at start.
 
 ---
@@ -307,44 +307,44 @@ Do not use `real_data_manager` to verify math. It may already have a warm cache.
 # --- TESTING ---
 
 # Full test suite (always run before pushing)
-conda run -n rgcviewer python -m pytest tests/ -v
+conda run -n encore python -m pytest tests/ -v
 
 # Fast unit tests only (no real data, no Qt)
-conda run -n rgcviewer python -m pytest tests/unit/ -v
+conda run -n encore python -m pytest tests/unit/ -v
 
 # Single test function
-conda run -n rgcviewer python -m pytest tests/unit/test_autocorrelation.py::test_acg_includes_late_spike_trains -v
+conda run -n encore python -m pytest tests/unit/test_autocorrelation.py::test_acg_includes_late_spike_trains -v
 
 # Tests matching a keyword
-conda run -n rgcviewer python -m pytest tests/ -k "cache" -v
+conda run -n encore python -m pytest tests/ -k "cache" -v
 
 # With print output visible
-conda run -n rgcviewer python -m pytest tests/ -s -v
+conda run -n encore python -m pytest tests/ -s -v
 
 # Stop after first failure
-conda run -n rgcviewer python -m pytest tests/ -x -v
+conda run -n encore python -m pytest tests/ -x -v
 
 # --- VISUAL REGRESSION ---
 
 # Generate new baselines (run once after intentional visual change)
-conda run -n rgcviewer python -m pytest --mpl-generate-path tests/baseline_images/ tests/
+conda run -n encore python -m pytest --mpl-generate-path tests/baseline_images/ tests/
 
 # Compare against baselines
-conda run -n rgcviewer python -m pytest --mpl tests/
+conda run -n encore python -m pytest --mpl tests/
 
 # --- APP ---
 
 # Launch the application (empty window; File → Open loads a run)
-conda run -n rgcviewer python main.py
-# or, after `conda activate rgcviewer`:
+conda run -n encore python main.py
+# or, after `conda activate encore`:
 python main.py --debug
 
 # Check installed packages
-conda run -n rgcviewer pip list | grep -E "pyqtgraph|hdbscan|visionloader|qtpy"
+conda run -n encore pip list | grep -E "pyqtgraph|hdbscan|visionloader|qtpy"
 
 # --- ENVIRONMENT SETUP (if environment needs rebuilding) ---
 conda env create -f environment.yml
-conda activate rgcviewer
+conda activate encore
 ```
 
 **Real data paths:**
@@ -371,7 +371,7 @@ git add src/analysis/data_manager.py tests/unit/test_feature.py
 git commit -m "fix(data_manager): apply +1 offset when translating cluster_id to vision_id"
 
 # Run tests before every push — no exceptions
-conda run -n rgcviewer python -m pytest tests/ -v
+conda run -n encore python -m pytest tests/ -v
 git push -u origin feat/your-feature-name
 ```
 

@@ -24,7 +24,7 @@ are explicitly excluded and listed under Out Of Scope.
 
 ## User Story
 
-"As a scientist using RGCViewer on large Vision/Kilosort datasets, I want
+"As a scientist using Encore on large Vision/Kilosort datasets, I want
 dataset loading, similarity lookup, and physics cache computation to avoid
 crashes, redundant work, and UI stalls so that I can safely inspect cells
 without restarting the app."
@@ -132,13 +132,13 @@ redundant parallel computation for the same cluster.
 
 ```bash
 # Fast — unit only
-conda run -n rgcviewer python -m pytest tests/unit/test_critical_production_bugs.py tests/unit/test_data_manager_cache.py -v
+conda run -n encore python -m pytest tests/unit/test_critical_production_bugs.py tests/unit/test_data_manager_cache.py -v
 
 # Full suite before pushing
-conda run -n rgcviewer python -m pytest tests/ -v
+conda run -n encore python -m pytest tests/ -v
 
 # GUI sanity (if mounted)
-conda run -n rgcviewer python -m pytest tests/integration/test_gui_sanity.py -v
+conda run -n encore python -m pytest tests/integration/test_gui_sanity.py -v
 ```
 
 ---

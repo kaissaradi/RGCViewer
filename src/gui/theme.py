@@ -1,4 +1,4 @@
-"""Semantic color palettes and shared UI constants for RGCViewer.
+"""Semantic color palettes and shared UI constants for Encore.
 
 Canonical Bauhaus tokens live in ``PALETTE_LIGHT`` / ``PALETTE_DARK``.
 Do not invent extra primaries. Ink is warm black (``#1B1B1B``), never
@@ -10,7 +10,7 @@ those eight tokens so QSS and ``restyle_plots`` keep stable names.
 
 import pyqtgraph as pg
 
-# Product mark in the Swiss header. Window title stays "RGC Viewer".
+# Product mark in the Swiss header.
 APP_NAME = "ENCORE"
 
 # Locked 2026-08-12. These eight names are the only primaries.

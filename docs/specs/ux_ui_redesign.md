@@ -511,7 +511,7 @@ Baseline location: `tests/baseline_images/ux_ui_redesign/`
 
 Generate with:
 ```bash
-conda run -n rgcviewer python -m pytest --mpl-generate-path tests/baseline_images/ tests/integration/test_plot_theming.py -v
+conda run -n encore python -m pytest --mpl-generate-path tests/baseline_images/ tests/integration/test_plot_theming.py -v
 ```
 
 ---
