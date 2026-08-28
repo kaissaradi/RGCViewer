@@ -55,16 +55,23 @@ if ($LASTEXITCODE -ne 0) { Fail "Dependency installation failed. Scroll up for t
 
 # --- verify Qt bindings -----------------------------------------------------
 # qtpy reports a generic QtBindingsNotFoundError when the binding is missing OR
-# when its DLLs fail to load, so check the binding directly for a useful error.
-& $VenvPython -c "import PyQt6.QtCore" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
+# when its DLLs fail to load, so import PyQt6 directly for a useful error. Go
+# through qt_bootstrap, the same way the app does, or a conda Qt on PATH will
+# fail this check even though Encore itself would start fine.
+Push-Location $InstallDir
+$QtCheck = & $VenvPython -c "import qt_bootstrap as b; b.prefer_bundled_qt(); import PyQt6.QtCore" 2>&1
+$QtOk = ($LASTEXITCODE -eq 0)
+Pop-Location
+
+if (-not $QtOk) {
     Write-Host ""
-    & $VenvPython -c "import PyQt6.QtCore"
-    Write-Host ""
+    Write-Host ($QtCheck | Out-String)
     Fail @"
 PyQt6 could not be imported, so Encore will not start.
 
-  * 'DLL load failed' -> install the Microsoft Visual C++ Redistributable:
+  * 'DLL load failed' -> another Qt6 on your system is shadowing PyQt6's own.
+        Try launching Encore from a plain PowerShell window rather than an
+        Anaconda one, or install the Microsoft Visual C++ Redistributable:
         https://aka.ms/vs/17/release/vc_redist.x64.exe
   * 'No module named PyQt6' -> your Python version may have no PyQt6 wheel.
         $PythonVer is in use; Python 3.10-3.13 are known to work.

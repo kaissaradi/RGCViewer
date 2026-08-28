@@ -27,7 +27,7 @@ dependencies = [
 encore = "main:main"
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "qt_bootstrap"]
 
 [tool.setuptools.packages.find]
 include = ["src*"]
