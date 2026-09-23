@@ -135,7 +135,7 @@ def test_locked_palette_tokens():
         "yellow": "#F5C842",
         "blue": "#4A82D6",
     }
-    assert APP_NAME == "AXOLOTL"
+    assert APP_NAME == "ENCORE"
 
 
 def test_semantic_roles_map_onto_locked_palette():
@@ -144,7 +144,7 @@ def test_semantic_roles_map_onto_locked_palette():
     assert LIGHT_COLORS["text_primary"] == PALETTE_LIGHT["ink"]
     assert LIGHT_COLORS["text_secondary"] == PALETTE_LIGHT["muted"]
     assert LIGHT_COLORS["border_default"] == PALETTE_LIGHT["rule"]
-    assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["red"]
+    assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["blue"]
     assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
     assert LIGHT_COLORS["plot_acg"] == PALETTE_LIGHT["blue"]
     assert LIGHT_COLORS["plot_line"] == PALETTE_LIGHT["ink"]
@@ -160,13 +160,15 @@ def test_ink_is_warm_black_never_pure_black():
     assert LIGHT_COLORS["text_primary"] == "#1B1B1B"
 
 
-def test_accent_is_palette_red_and_readable():
-    assert LIGHT_COLORS["accent"] == "#C8322B"
-    assert DARK_COLORS["accent"] == "#C43A32"
+def test_accent_is_palette_blue_and_readable():
+    assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["blue"]
+    assert DARK_COLORS["accent"] == "#1B4E9B"
     assert LIGHT_COLORS["accent"].lower() != "#e30613"
     assert DARK_COLORS["accent"].lower() != "#e30613"
     assert contrast_ratio(DARK_COLORS["accent_text"], DARK_COLORS["accent"]) >= 4.5
     assert contrast_ratio(LIGHT_COLORS["accent_text"], LIGHT_COLORS["accent"]) >= 4.5
+    assert contrast_ratio(DARK_COLORS["accent_text"], DARK_COLORS["accent_hover"]) >= 4.5
+    assert contrast_ratio(LIGHT_COLORS["accent_text"], LIGHT_COLORS["accent_hover"]) >= 4.5
 
 
 def test_light_and_dark_plot_roles_are_designed_separately():

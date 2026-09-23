@@ -464,14 +464,14 @@ class GratingPanel(QWidget):
         self._render_hist(dsos_conditions, display_cond, data)
 
         display_entry = data[display_cond]
-        bw, tf = display_cond
+        cond_label = grating_calc.format_condition_label(display_cond, display_entry)
         pref_angle = pref_dir if classification == "DS" else pref_ori
         if classification == "none":
             label = "[not significant]"
         else:
             label = f"[{classification}]"
         self.stats_label.setText(
-            f"{label}  Shown: bw={bw:g} tf={tf:g}Hz   "
+            f"{label}  Shown: {cond_label}   "
             f"DSI: {self._fmt(dsi)} (p={self._fmt(dsi_p, 3)})   "
             f"OSI: {self._fmt(osi)} (p={self._fmt(osi_p, 3)})   "
             f"Pref. {'dir' if classification == 'DS' else 'ori'}: {self._fmt(pref_angle, 0)}°"
@@ -482,13 +482,13 @@ class GratingPanel(QWidget):
         parts = []
         for i, cond in enumerate(conditions):
             color = _CONDITION_COLORS[i % len(_CONDITION_COLORS)]
-            bw, tf = cond
+            cond_label = grating_calc.format_condition_label(cond, data.get(cond))
             is_best = cond == best_cond
             weight = "bold" if is_best else "normal"
             marker = "●" if is_best else "○"
             parts.append(
                 f"<span style='color:{color}; font-weight:{weight};'>"
-                f"{marker} bw={bw:g} tf={tf:g}Hz</span>"
+                f"{marker} {cond_label}</span>"
             )
         self.legend_label.setText("&nbsp;&nbsp;".join(parts))
 

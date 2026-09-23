@@ -211,6 +211,121 @@ def test_worker_keeps_cells_with_no_sta():
     assert np.isfinite(embedding).all()
 
 
+def test_worker_drops_cells_with_none_of_the_selected_features():
+    """RF-diameter-only: no-fit rows leave the embedding instead of gluing it."""
+    n = 12
+    cluster_df = pd.DataFrame(
+        {"cluster_id": list(range(n)), "KSLabel": ["good"] * n}
+    )
+    rng = np.random.RandomState(0)
+    rf_long = np.linspace(10.0, 40.0, n)
+    rf_short = rf_long * 0.5
+    empty = [1, 5, 9]
+    rf_long[empty] = 0.0
+    rf_short[empty] = 0.0
+    raw_blocks = {
+        "temporal": rng.randn(n, 20),
+        "acg": rng.randn(n, 50),
+        "scalars": pd.DataFrame(
+            {
+                "rf_long_diameter": rf_long,
+                "rf_short_diameter": rf_short,
+                "firing_rate": np.ones(n),
+                "isi_violations": np.zeros(n),
+                "time_to_peak": np.ones(n),
+                "rf_area": rf_long * rf_short,
+                "ellipticity": np.ones(n),
+            }
+        ),
+    }
+    dm = MockDataManager(
+        cluster_df, raw_blocks, valid_ids=list(range(n)), discarded_ids=[]
+    )
+    worker = UMAPWorker(
+        dm,
+        selected_cluster_ids=list(range(n)),
+        n_components=2,
+        feature_config={
+            "use_temporal": False,
+            "use_acg": False,
+            "use_rf_diameter": True,
+            "w_rf_diameter": 10.0,
+            "use_grating_dsos": False,
+            "use_chirp": False,
+        },
+        filter_config={"min_sta_std": 1e-5, "max_rf_area": 300.0},
+    )
+    finished_args = []
+    errors = []
+    worker.finished.connect(lambda *args: finished_args.append(args))
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors
+    embedding, matrix, valid_ids, discarded_ids, meta_df = finished_args[0][:5]
+    assert valid_ids == [i for i in range(n) if i not in empty]
+    assert discarded_ids == empty
+    assert embedding.shape == (n - len(empty), 2)
+    assert np.isfinite(matrix).all()
+    assert list(meta_df["cluster_id"]) == valid_ids
+
+
+def test_worker_uses_euclidean_when_selected_block_is_complete(mocker):
+    """A complete STA-only matrix must not take the precomputed-distance path."""
+    captured = {}
+
+    class _FakeUMAP:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def fit_transform(self, X):
+            return np.column_stack([np.arange(len(X), dtype=float), np.zeros(len(X))])
+
+    mocker.patch("umap.UMAP", _FakeUMAP)
+
+    n = 8
+    cluster_df = pd.DataFrame(
+        {"cluster_id": list(range(n)), "KSLabel": ["good"] * n}
+    )
+    rng = np.random.RandomState(1)
+    raw_blocks = {
+        "temporal": rng.randn(n, 20),
+        "acg": rng.randn(n, 50),
+        "scalars": pd.DataFrame(
+            {
+                "rf_long_diameter": np.linspace(8.0, 20.0, n),
+                "rf_short_diameter": np.linspace(4.0, 10.0, n),
+                "firing_rate": np.ones(n),
+                "isi_violations": np.zeros(n),
+                "time_to_peak": np.ones(n),
+                "rf_area": np.ones(n) * 10.0,
+                "ellipticity": np.ones(n),
+            }
+        ),
+    }
+    dm = MockDataManager(
+        cluster_df, raw_blocks, valid_ids=list(range(n)), discarded_ids=[]
+    )
+    worker = UMAPWorker(
+        dm,
+        selected_cluster_ids=list(range(n)),
+        n_components=2,
+        feature_config={
+            "use_temporal": True,
+            "w_temporal": 10.0,
+            "use_acg": False,
+            "use_rf_diameter": False,
+            "use_grating_dsos": False,
+            "use_chirp": False,
+        },
+        filter_config={"min_sta_std": 1e-5, "max_rf_area": 300.0},
+    )
+    errors = []
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors
+    assert captured.get("metric") == "euclidean"
+
+
 def test_cluster_worker_uses_highd_matrix():
     """ClusterWorker labels every row of the array it is given."""
     matrix = np.random.randn(10, 8)

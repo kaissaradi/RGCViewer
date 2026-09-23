@@ -15,6 +15,7 @@ from src.analysis.analysis_core import (
     build_feature_matrix,
     non_sentinel_mask,
     observed_euclidean_distances,
+    drop_empty_feature_rows,
 )
 
 
@@ -578,9 +579,82 @@ class TestObservedEuclidean:
         # They are not glued to each other.
         assert dist[2, 3] > dist[2, 0]
 
+    def test_no_shared_features_are_not_identical(self):
+        """Complementary missingness is not distance 0.
+
+        A cell with only STA and a cell with only RF share no coordinates.
+        Treating that as identity turns them into hubs and collapses UMAP
+        into a circle when the user runs one feature at a time.
+        """
+        X = np.array(
+            [
+                [1.0, np.nan],
+                [np.nan, 1.0],
+                [2.0, np.nan],
+            ]
+        )
+        dist = observed_euclidean_distances(X)
+        assert dist[0, 2] == pytest.approx(1.0)
+        assert dist[0, 1] > 0.0
+        assert dist[0, 1] >= dist[0, 2]
+        np.testing.assert_array_equal(np.diag(dist), 0.0)
+
+    def test_all_nan_row_is_not_zero_distance_to_everyone(self):
+        """An empty row must not become a neighbour of every cell."""
+        X = np.array(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [np.nan, np.nan],
+            ]
+        )
+        dist = observed_euclidean_distances(X)
+        assert dist[0, 1] == pytest.approx(np.sqrt(2.0))
+        assert dist[2, 0] > 0.0
+        assert dist[2, 1] > 0.0
+        assert dist[2, 2] == 0.0
+
     def test_non_sentinel_mask(self):
         m = np.vstack([np.ones((2, 4)), np.zeros((2, 4))])
         np.testing.assert_array_equal(non_sentinel_mask(m), [True, True, False, False])
+
+
+class TestDropEmptyFeatureRows:
+    def test_keeps_complete_matrix(self):
+        matrix = np.arange(8, dtype=float).reshape(4, 2)
+        raw = {
+            "temporal": np.ones((4, 3)),
+            "scalars": pd.DataFrame({"rf_long_diameter": [1.0, 2.0, 3.0, 4.0]}),
+        }
+        out, ids, discarded, blocks = drop_empty_feature_rows(
+            matrix, [10, 11, 12, 13], [], raw
+        )
+        np.testing.assert_array_equal(out, matrix)
+        assert ids == [10, 11, 12, 13]
+        assert discarded == []
+        assert blocks["temporal"].shape == (4, 3)
+
+    def test_moves_all_nan_rows_to_discarded(self):
+        matrix = np.array(
+            [
+                [1.0, 2.0],
+                [np.nan, np.nan],
+                [3.0, 4.0],
+                [np.nan, np.nan],
+            ]
+        )
+        raw = {
+            "temporal": np.arange(8, dtype=float).reshape(4, 2),
+            "scalars": pd.DataFrame({"rf_long_diameter": [10.0, 0.0, 20.0, 0.0]}),
+        }
+        out, ids, discarded, blocks = drop_empty_feature_rows(
+            matrix, [0, 1, 2, 3], [99], raw
+        )
+        np.testing.assert_array_equal(out, [[1.0, 2.0], [3.0, 4.0]])
+        assert ids == [0, 2]
+        assert discarded == [99, 1, 3]
+        np.testing.assert_array_equal(blocks["temporal"], [[0.0, 1.0], [4.0, 5.0]])
+        assert list(blocks["scalars"]["rf_long_diameter"]) == [10.0, 20.0]
 
 
 class TestDefaultFeatureFlags:

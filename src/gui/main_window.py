@@ -62,6 +62,7 @@ from . import callbacks
 from . import plot_export
 from .panels.population_panel import (
     draw_population_rfs_plot,
+    pop_canvas_can_hot_swap,
     population_group_plots_cached,
     rf_vision_id_at,
 )
@@ -115,7 +116,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
-        self.setWindowTitle("RGC Viewer")
+        self.setWindowTitle("Encore")
         self._place_window()
 
         # --- Application State ---
@@ -159,13 +160,13 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.central_widget.setEnabled(False)
         self.status_bar.showMessage(
-            "Welcome to RGC Viewer. Please load a Kilosort directory to begin."
+            "Welcome to Encore. Please load a Kilosort directory to begin."
         )
 
         # selection timer for debouncing rapid selections
         self.selection_timer = QTimer(self)
         self.selection_timer.setSingleShot(True)
-        self.selection_timer.setInterval(25)  # 25ms - minimal delay for responsive feel
+        self.selection_timer.setInterval(150)
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
 
@@ -980,8 +981,8 @@ class MainWindow(QMainWindow):
         """
         Receives a selection event.
 
-        TIER 1 (Immediate): Updates lightweight plots (RF, Standard Plots, Cached EI).
-        TIER 2 (Debounced): Starts timer for heavy tasks.
+        TIER 1 (Immediate): Blit-only overlays (UMAP, pop-RF highlight).
+        TIER 2 (Debounced 150ms): Panel redraws (EI, standard plots, etc.).
         """
         self._pending_cluster_id = cluster_id
 
@@ -996,10 +997,7 @@ class MainWindow(QMainWindow):
         if self.population_view_enabled:
             # Quick check if we can hot-swap (check if canvas already has state)
             canvas = self.pop_mosaic_canvas
-            can_hot_swap = (
-                hasattr(canvas, "_pop_plot_state")
-                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
-            )
+            can_hot_swap = pop_canvas_can_hot_swap(canvas)
             if can_hot_swap:
                 # Fast update - update existing ellipse geometry only
                 try:
@@ -1011,23 +1009,6 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Tier 1 Pop Split update failed: {e}")
             # If can't hot-swap, defer to Tier 2 for full rebuild
-
-        # 2. Standard Plots Panel (ACG, ISI, Firing Rate) - handled in _draw_plots to avoid duplicate updates
-        # Standard plots are updated only in _draw_plots to prevent redundant redraws
-
-        # 3. Electrical Image (EI) - Only if cached
-        has_cached_ei = False
-        if self.data_manager:
-            if hasattr(self.data_manager, "has_cached_ei"):
-                has_cached_ei = self.data_manager.has_cached_ei(cluster_id)
-            elif hasattr(self.data_manager, "ei_cache"):
-                has_cached_ei = cluster_id in self.data_manager.ei_cache
-
-        if self.ei_panel.isVisible() and has_cached_ei:
-            try:
-                self.ei_panel.update_ei([cluster_id])
-            except Exception as e:
-                logger.error(f"Tier 1 EI update failed: {e}")
 
         # --- TIER 2: HEAVY LIFTING (Queued) ---
         # Start/Restart the timer.
@@ -1299,10 +1280,7 @@ class MainWindow(QMainWindow):
         # Only when hot-swap wasn't possible in Tier 1
         if self.population_view_enabled:
             canvas = self.pop_mosaic_canvas
-            can_hot_swap = (
-                hasattr(canvas, "_pop_plot_state")
-                and canvas._pop_plot_state.get("ax") in canvas.fig.axes
-            )
+            can_hot_swap = pop_canvas_can_hot_swap(canvas)
             if not can_hot_swap:
                 # Full rebuild needed - do it in Tier 2
                 try:
@@ -1577,12 +1555,10 @@ class MainWindow(QMainWindow):
         pop_ctrl_layout.addWidget(self.pop_show_ids_checkbox)
 
         # DS/OS classification threshold slider. Controls how strong DSI/OSI
-        # must be (after already passing grating_calc's significance/
-        # amplitude gate — this does NOT loosen that gate, only how
-        # strongly-tuned a cell must be to get drawn as DS/OS) — see
-        # population_panel.py's _best_dsos_condition. Range 0.1-0.9 in
-        # integer-slider units of 0.01 (Qt's QSlider is integer-only);
-        # default 0.3 matches grating_calc.DSI_THRESHOLD/OSI_THRESHOLD.
+        # must be (after already passing the shuffle p-value gate). Range
+        # 0.1-0.9 in integer-slider units of 0.01; default 0.3 matches
+        # grating_calc.DSI_THRESHOLD/OSI_THRESHOLD. Among conditions that
+        # pass, the strongest response is used — see select_best_dsos_condition.
         self.dsos_threshold = 0.3
         pop_ctrl_layout.addWidget(QLabel("DS/OS threshold:"))
         self.pop_dsos_threshold_slider = QSlider(Qt.Horizontal)
@@ -1590,7 +1566,8 @@ class MainWindow(QMainWindow):
         self.pop_dsos_threshold_slider.setValue(30)
         self.pop_dsos_threshold_slider.setFixedWidth(100)
         self.pop_dsos_threshold_slider.setToolTip(
-            "How strong DSI/OSI must be to count as DS/OS (0.10-0.90)"
+            "How strong DSI/OSI must be to count as DS/OS (0.10–0.90). "
+            "Each cell uses its strongest (bar width, TF) that passes."
         )
         pop_ctrl_layout.addWidget(self.pop_dsos_threshold_slider)
         self.pop_dsos_threshold_label = QLabel("0.30")
@@ -1914,8 +1891,8 @@ class MainWindow(QMainWindow):
             self.right_splitter.setSizes([left_size, right_size])
 
             QTimer.singleShot(0, self._draw_population_panel_initial)
-            # Fill missing DS/OS in the background only when this view is on.
-            # Opening a run no longer sweeps every cell.
+            # Warm-up already starts this; this catches a pane opened before
+            # that batch finished or a cache that was still filling.
             callbacks.maybe_fill_grating_cache(self)
         else:
             # hide it

@@ -2279,9 +2279,8 @@ class DataManager(QObject):
     def _load_grating_cache_from_disk(self):
         """Restore the on-demand grating DS/OS results, or ``{}`` if unusable.
 
-        Each entry costs an FFT plus a 1000-shuffle permutation test per
-        condition, so re-running the sweep over ~900 cells is the heavy second
-        pass users see at every launch. Keys are Kilosort cluster ids; stale
+        Each entry is an FFT plus a shuffle test only for conditions that
+        could pass the DS/OS slider. Keys are Kilosort cluster ids; stale
         ones are pruned against cluster_df by build_cluster_dataframe's caller
         path in the same way the other caches are.
         """
@@ -2306,6 +2305,9 @@ class DataManager(QObject):
             valid_ids = set(cluster_df["cluster_id"].astype(int).tolist())
 
         restored = {}
+        stale_n = 0
+        from . import grating_calc
+
         for k, v in cache.items():
             if v is None:
                 continue
@@ -2315,7 +2317,32 @@ class DataManager(QObject):
                 continue
             if valid_ids is not None and key not in valid_ids:
                 continue
+            if grating_calc.grating_entry_needs_recompute(v):
+                stale_n += 1
+                continue
             restored[key] = v
+
+        if stale_n:
+            logger.info(
+                "Dropped %d grating cache entries whose DSOS/SF tags do not "
+                "match the directions that were actually run; they will be "
+                "recomputed",
+                stale_n,
+            )
+            try:
+                if restored:
+                    self._save_pickle_with_fallback(
+                        cache_persistence.add_version(restored),
+                        str(pkl),
+                    )
+                elif pkl.exists():
+                    pkl.unlink()
+            except OSError:
+                logger.warning(
+                    "Could not rewrite grating_computed_cache.pkl after "
+                    "dropping stale DSOS entries",
+                    exc_info=True,
+                )
 
         if restored:
             logger.debug("Restored grating_computed_cache (%d cells)", len(restored))
@@ -5551,10 +5578,13 @@ class DataManager(QObject):
         if getattr(self, "grating_raw_data", None) is None:
             return []
         cache = getattr(self, "grating_computed_cache", None) or {}
+        from . import grating_calc
+
         needed = []
         for cid in cluster_ids:
             key = int(cid)
-            if cache.get(key) is None:
+            entry = cache.get(key)
+            if entry is None or grating_calc.grating_entry_needs_recompute(entry):
                 needed.append(key)
         return needed
 
@@ -5574,8 +5604,15 @@ class DataManager(QObject):
             return self.grating_data.get(cluster_id)
 
         if self.grating_status == "raw_only":
+            from . import grating_calc
+
             with self._grating_cache_lock:
-                return self.grating_computed_cache.get(cluster_id)
+                entry = self.grating_computed_cache.get(cluster_id)
+            if entry is not None and grating_calc.grating_entry_needs_recompute(
+                entry
+            ):
+                return None
+            return entry
 
         return None
 
@@ -5585,9 +5622,8 @@ class DataManager(QObject):
     def compute_grating_data_for_cluster(self, cluster_id):
         """
         Runs grating_calc.compute_grating_response() for one cluster and
-        caches the result. Expensive (FFT + 1000-shuffle permutation test
-        per DSOS condition) — must only be called from a background thread
-        (GratingComputeWorker.run()), never from the main/GUI thread.
+        caches the result. Must only be called from a background thread
+        (GratingComputeWorker / GratingBatchWorker), never the GUI thread.
         """
         cluster_id = int(cluster_id)
         if self.grating_raw_data is None:

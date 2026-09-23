@@ -495,6 +495,10 @@ class StandardPlotsPanel(QWidget):
             self.grid_plot.addItem(self._array_bg_image)
 
         try:
+            template = None
+            pos = None
+            _from_ei = False
+
             if (
                 hasattr(dm, "templates")
                 and dm.templates is not None
@@ -502,6 +506,21 @@ class StandardPlotsPanel(QWidget):
             ):
                 template = dm.templates[cluster_id]
                 pos = np.array(dm.channel_positions)
+            elif (
+                getattr(dm, "vision_eis", None) is not None
+                and dm.channel_positions is not None
+            ):
+                vid = dm.get_vision_id_for_cluster(cluster_id)
+                ei_container = dm.vision_eis.get(vid)
+                if ei_container is not None:
+                    template = ei_container.ei.T
+                    pos = np.array(dm.channel_positions)
+                    n_ch = min(template.shape[1], len(pos))
+                    template = template[:, :n_ch]
+                    pos = pos[:n_ch]
+                    _from_ei = True
+
+            if template is not None and pos is not None:
 
                 # --- Dynamic Stretch: 1.0 (true physical) for Image, 1.5 (distorted) for traces ---
                 x_scale = 1.0 if current_mode == "Array Image" else 1.5
@@ -621,7 +640,7 @@ class StandardPlotsPanel(QWidget):
                 except Exception:
                     pass
 
-                if selected_similar and hasattr(sim_panel, "similarity_model"):
+                if selected_similar and hasattr(sim_panel, "similarity_model") and not _from_ei:
                     sim_model = sim_panel.similarity_model
                     if sim_model and hasattr(sim_model, "_dataframe"):
                         for idx in selected_similar[:3]:

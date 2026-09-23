@@ -1,7 +1,7 @@
 """
 GUI package initialization.
 
-This package provides the graphical user interface for the RGC viewer.
+This package provides the graphical user interface for Encore.
 """
 
 from .main_window import MainWindow

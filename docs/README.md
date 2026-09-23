@@ -21,6 +21,8 @@ history unless `docs/PLAN.md` names one as active.
 | `ux_ui_redesign.md` | Parked design. Not the current work. |
 | `vision_standalone.md` | Partial. Missing `.sta` / `.params` no longer crash. |
 | `cross_run_stimulus_bridge.md` | Implemented. Lab acceptance is open. |
+| `grating_dsos_flexible_conditions.md` | Done. Actual `(bw, tf)` grouping, best-run pick, population polar, parallel grating batch. |
+| `grating_panel_spec.md` | Done. Original panel. Constants superseded by the spec above. |
 | Other files in `docs/specs/` | Done or superseded. Do not reopen unless asked. |
 
 ## Writing rules

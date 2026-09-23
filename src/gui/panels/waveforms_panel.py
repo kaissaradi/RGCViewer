@@ -1,5 +1,5 @@
 """
-waveforms_panel.py  —  RGC Viewer Waveform & Isolation Panel
+waveforms_panel.py  —  Encore Waveform & Isolation Panel
 =============================================================
 Architecture
 ------------

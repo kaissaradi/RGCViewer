@@ -5,9 +5,19 @@
 | Field | Value |
 |---|---|
 | **Date created** | 2026-07-01 |
+| **Last updated** | 2026-08-25 |
 | **Branch** | `feat/grating-panel` |
 | **Author** | Kais |
-| **Spec status** | Draft |
+| **Spec status** | Done. Current grouping, ranking, batch, and population polar: `grating_dsos_flexible_conditions.md`. |
+
+The numbers below are the original design. Do not copy them into new code.
+
+| Original | Current |
+|---|---|
+| `min_directions_for_dsos=8` | `MIN_DIRECTIONS_FOR_DSOS = 4` |
+| `n_shuffles=1000` | `N_SHUFFLES = 200` |
+| On-demand only; do not batch at load | `GratingBatchWorker` starts with physics warm-up |
+| Assume a typical 12-dir × 2 TF × 2 bar-width grid | Plot the `(bw, tf, orientation)` combinations that ran |
 
 ---
 
@@ -15,7 +25,7 @@
 
 **Symptom:** Grating-run output (direction/orientation selectivity, and
 sometimes a coarse bar-width/SF sweep mixed into the same file) has no
-visualization in RGCViewer. Protocol is variable — typically 12 directions x
+visualization in Encore. Protocol is variable — typically 12 directions x
 2 temporal frequencies x 2 bar widths, but this is not fixed and sometimes
 includes extra coarse-direction bar-width conditions in the same recording.
 
@@ -47,7 +57,7 @@ raw file (`kilosort2_5_GratingDSOS.npy`) that a grating-named `.npy` can be
 either raw (pre-analysis) or analyzed, and analyzed files may or may not
 carry a `_combined` suffix depending on which script produced them.
 
-**Since only the raw npy is guaranteed to exist, RGCViewer needs its own
+**Since only the raw npy is guaranteed to exist, Encore needs its own
 DSI/OSI calculation path** — it can no longer assume an offline analysis
 script has already run. This is a real change from chirp: chirp is always
 precomputed offline; grating sometimes will be, sometimes won't.
@@ -274,7 +284,7 @@ new case is the one place this panel spawns a worker, unlike chirp.
 ## Block 8 — Out of Scope
 
 - Does not run `combined_grating_analysis.py`, `dsos_analysis.py`, or
-  `sf_tuning_analysis.py` from inside RGCViewer — offline-only, same as chirp.
+  `sf_tuning_analysis.py` from inside Encore — offline-only, same as chirp.
 - Does not support analyzed files with a schema other than
   `combined_grating_analysis.py`'s (e.g. a standalone `dsos_analysis.py`
   output with a flat-CSV-style shape) — flagged in Block 7, not handled in v1.

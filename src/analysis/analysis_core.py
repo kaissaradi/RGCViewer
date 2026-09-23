@@ -12,6 +12,8 @@ import logging
 from scipy.signal import peak_widths
 from scipy.ndimage import gaussian_filter1d
 
+from . import rf_geometry
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -230,11 +232,15 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
         source = "recalculated"
         r, g, b = sta_data.red, sta_data.green, sta_data.blue
 
-        if stafit:
-            cx = int(stafit.center_x)
-            cy = int(stafit.center_y)
-            sx = int(max(1, stafit.std_x))
-            sy = int(max(1, stafit.std_y))
+        fit = rf_geometry.rf_fit_from_stafit(
+            stafit, getattr(vision_params, "runtimemovie_params", None))
+        if fit is not None:
+            # Vision's y0 points up; the STA array's first axis is rows, and
+            # x0 = col + 0.5, H - y0 = row + 0.5 (see rf_geometry).
+            cx = int(np.floor(fit.x0))
+            cy = int(np.floor(r.shape[0] - fit.y0))
+            sx = int(max(1, fit.std_x))
+            sy = int(max(1, fit.std_y))
             x0, x1 = max(0, cx - sx), min(r.shape[1], cx + sx + 1)
             y0, y1 = max(0, cy - sy), min(r.shape[0], cy + sy + 1)
             red_tc = np.mean(r[y0:y1, x0:x1], axis=(0, 1))
@@ -707,6 +713,11 @@ def observed_euclidean_distances(X):
     is structured (no STA, no RF fit), not MCAR, and the scale-up would
     push incomplete cells to the periphery instead of sitting them next to
     cells that share the features they do have.
+
+    Pairs that share *no* finite coordinates are not distance 0 (that
+    made empty rows hubs of the kNN graph and collapsed UMAP into a
+    blob). They get the diameter of the compared pairs, so they stay
+    farther than any pair that actually overlapped.
     """
     X = np.asarray(X, dtype=np.float64)
     if X.ndim != 2:
@@ -724,7 +735,54 @@ def observed_euclidean_distances(X):
         dist_sq += np.where(both, diff * diff, 0.0)
     np.fill_diagonal(dist_sq, 0.0)
     np.maximum(dist_sq, 0.0, out=dist_sq)
-    return np.sqrt(dist_sq)
+    dist = np.sqrt(dist_sq)
+
+    n_shared = mask.astype(np.int32, copy=False) @ mask.T
+    no_overlap = n_shared == 0
+    np.fill_diagonal(no_overlap, False)
+    if np.any(no_overlap):
+        overlap = ~no_overlap
+        np.fill_diagonal(overlap, False)
+        if np.any(overlap):
+            fallback = float(np.max(dist[overlap]))
+            if fallback <= 0.0:
+                fallback = 1.0
+        else:
+            fallback = 1.0
+        dist[no_overlap] = fallback
+    return dist
+
+
+def drop_empty_feature_rows(matrix, valid_ids, discarded_ids, raw_blocks):
+    """Remove rows that are NaN in every selected feature.
+
+    Those cells have none of the blocks the user turned on, so
+    :func:`observed_euclidean_distances` has nothing to compare them on.
+    Leaving them in made every pairwise distance 0 and glued the UMAP
+    into a circle. They are appended to *discarded_ids*.
+    """
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if matrix.ndim != 2:
+        raise ValueError("matrix must be 2-D")
+    n = matrix.shape[0]
+    valid_ids = list(valid_ids)
+    discarded_ids = list(discarded_ids)
+    if n == 0:
+        return matrix, valid_ids, discarded_ids, raw_blocks
+    has_feature = np.isfinite(matrix).any(axis=1)
+    if np.all(has_feature):
+        return matrix, valid_ids, discarded_ids, raw_blocks
+    keep = np.flatnonzero(has_feature)
+    dropped = [valid_ids[i] for i, ok in enumerate(has_feature) if not ok]
+    kept_ids = [valid_ids[i] for i in keep]
+    sliced = {}
+    for key, val in raw_blocks.items():
+        if key == "scalars":
+            sliced[key] = val.iloc[keep].reset_index(drop=True)
+        else:
+            arr = np.asarray(val)
+            sliced[key] = arr[keep] if arr.shape[0] == n else arr
+    return matrix[keep], kept_ids, discarded_ids + dropped, sliced
 
 
 def _pca_block_valid_rows(matrix, n_comp_max, weight, label_prefix):
@@ -1026,5 +1084,6 @@ __all__ = [
     "apply_prefilter",
     "non_sentinel_mask",
     "observed_euclidean_distances",
+    "drop_empty_feature_rows",
     "build_feature_matrix",
 ]

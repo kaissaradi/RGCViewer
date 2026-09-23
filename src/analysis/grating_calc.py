@@ -1,25 +1,26 @@
 """
 grating_calc.py
 
-Single-cluster DSI/OSI + bar-width tuning computation, ported from
-combined_grating_analysis.py's per-file batch logic (f1_amplitude,
-vector_sum_index, shuffle_pvalue — copied verbatim, not reimplemented, so
-GUI-computed results match what the offline script would produce).
+Single-cluster DSI/OSI + bar-width tuning from a raw grating npy
+(spike_times_by_trial + trial_parameters). Math is the same as
+combined_grating_analysis.py (f1_amplitude, vector_sum_index,
+shuffle_pvalue).
 
-Also provides select_best_dsos_condition (gated DS/OS classification for
-GratingPanel and the population RF-plot markers) and
-pooled_direction_tuning_curve (a shape-preserving, peak-weighted-pooled
-tuning curve across all dsos conditions, used as a UMAP feature — see
-GRATING_PCA_COMPONENTS in constants.py — instead of collapsing tuning shape
-down to the DSI/OSI scalars, which can't distinguish differently-shaped
-curves that happen to share a DSI/OSI value).
+Conditions are the (barWidth, temporalFrequency) pairs that actually ran.
+A pair with MIN_DIRECTIONS_FOR_DSOS (4) or more unique orientations is
+DSOS. Fewer orientations is SF. Do not assume a 12-dir crossed grid.
 
-Used when only a raw grating .npy (spike_times_by_trial + trial_parameters)
-is on disk and no precomputed analyzed file exists. Scoped to run for ONE
-cluster at a time — this is what makes it cheap enough to run synchronously
-inside a background worker per cluster-selection, instead of needing to
-batch-precompute the whole dataset (890 clusters x N conditions x 1000
-shuffles) at load time.
+select_best_dsos_condition classifies each DSOS pair, then picks the
+strongest significant response. GratingPanel, the population RF overlay,
+and the preferred-orientation polar all use that pick.
+
+pooled_direction_tuning_curve is a peak-weighted shape across every DSOS
+pair. UMAP uses that curve (GRATING_PCA_COMPONENTS), not the DSI/OSI
+scalars.
+
+N_SHUFFLES is 200. Conditions with |DSI| and |OSI| both below
+SHUFFLE_INDEX_FLOOR skip the permutation test. GratingBatchWorker fills
+the cache in parallel with physics warm-up.
 """
 
 from collections import defaultdict
@@ -27,9 +28,18 @@ from collections import defaultdict
 import numpy as np
 
 PSTH_BIN_MS = 5.0
-N_SHUFFLES = 1000
+# 200 shuffles resolves p to 0.005, enough for a 0.05 gate. 1000 was the
+# offline-script default and is why a 700-cell batch felt like it hung.
+N_SHUFFLES = 200
 RNG_SEED = 0
-MIN_DIRECTIONS_FOR_DSOS = 8
+# Population slider floor is 0.10. Below that, p-values are never consulted,
+# so the permutation test is skipped and p is stored as 1.0.
+SHUFFLE_INDEX_FLOOR = 0.10
+# Vector-sum DSI/OSI is defined for a circular set of directions. Four
+# is the usual minimum (every 90°). One- or two-direction bar-width
+# sweeps stay SF. Do not assume 12 directions or a crossed bw×TF grid —
+# use however many orientations were actually presented at each (bw, tf).
+MIN_DIRECTIONS_FOR_DSOS = 4
 
 POOLED_CURVE_N_BINS = 12  # direction-bin count for pooled_direction_tuning_
 # curve's output — a module constant (not just
@@ -49,9 +59,11 @@ POOLED_CURVE_N_BINS = 12  # direction-bin count for pooled_direction_tuning_
 # response. Gate on both a minimum response amplitude AND a significance
 # test before ranking by |DSI|/|OSI|, so "best" means "reliable," not just
 # "numerically largest."
-MIN_RESPONSE_HZ = (
-    2.0  # peak-condition response floor (Hz-equivalent for f1/delta metrics)
-)
+# Amplitude is used to RANK conditions (pick the run where the cell
+# actually responded), not to veto membership. A 2 Hz floor was dropping
+# sparse but significantly tuned DS/OS cells. Callers can still pass a
+# positive min_response_hz to restore a floor.
+MIN_RESPONSE_HZ = 0.0
 ALPHA = 0.05  # shuffle-test significance threshold
 DSI_THRESHOLD = 0.3  # DS classification cutoff, applied AFTER gating
 OSI_THRESHOLD = 0.3  # OS classification cutoff, applied AFTER gating
@@ -171,6 +183,86 @@ def direction_psth(spike_times_by_direction_ms, window, bin_ms=50.0):
     return t, rate
 
 
+def group_grating_conditions(
+    trial_parameters, min_directions_for_dsos=MIN_DIRECTIONS_FOR_DSOS
+):
+    """Partition trials by the (barWidth, temporalFrequency) pairs that ran.
+
+    No assumed grid: a (bw, tf) with enough unique orientations is DSOS
+    (DSI/OSI + polar); fewer orientations is SF (bar-width tuning). Four
+    directions is enough for a vector-sum index; a 1-dir bar-width sweep
+    stays SF.
+
+    Returns a list of dicts with ``key``, ``condition_type``, ``directions``,
+    ``idx_by_dir``.
+    """
+    if not trial_parameters:
+        return []
+
+    conditions = sorted(
+        set(
+            (float(t["barWidth"]), float(t["temporalFrequency"]))
+            for t in trial_parameters
+        )
+    )
+    groups = []
+    for bw, tf in conditions:
+        idx_by_dir = defaultdict(list)
+        for i, t in enumerate(trial_parameters):
+            if float(t["barWidth"]) == bw and float(t["temporalFrequency"]) == tf:
+                idx_by_dir[float(t["orientation"])].append(i)
+        directions = sorted(idx_by_dir)
+        typ = "dsos" if len(directions) >= min_directions_for_dsos else "sf"
+        groups.append(
+            {
+                "key": (bw, tf),
+                "condition_type": typ,
+                "directions": directions,
+                "idx_by_dir": idx_by_dir,
+            }
+        )
+    return groups
+
+
+def grating_entry_needs_recompute(
+    entry, min_directions_for_dsos=MIN_DIRECTIONS_FOR_DSOS
+):
+    """True when a persisted result's DSOS/SF tags don't match the data.
+
+    Dummy cache rows without per-condition tuples (used by persistence
+    tests) are left alone.
+    """
+    if not isinstance(entry, dict):
+        return False
+    conds = [
+        v
+        for k, v in entry.items()
+        if isinstance(k, tuple) and isinstance(v, dict)
+    ]
+    if not conds:
+        return False
+    for v in conds:
+        dirs = v.get("directions_deg")
+        n = 0 if dirs is None else len(np.asarray(dirs))
+        should_be_dsos = n >= min_directions_for_dsos
+        is_dsos = v.get("condition_type") == "dsos"
+        if should_be_dsos != is_dsos:
+            return True
+    return False
+
+
+def format_condition_label(cond, entry=None):
+    """Legend / stats text: the (bw, tf) that ran, plus how many directions."""
+    bw, tf = cond
+    label = f"bw={bw:g} tf={tf:g}Hz"
+    dirs = (entry or {}).get("directions_deg")
+    if dirs is not None:
+        n = len(np.asarray(dirs))
+        if n:
+            label += f" ({n:g} dir)"
+    return label
+
+
 def compute_grating_response(
     cluster_id,
     spike_times_by_trial,
@@ -183,6 +275,10 @@ def compute_grating_response(
     """
     Compute DSI/OSI (or bar-width tuning point) for ONE cluster, across
     every (barWidth, temporalFrequency) condition present in the raw file.
+
+    Uses the (bw, tf, orientation) combinations that were actually run —
+    see :func:`group_grating_conditions`. F1 is taken at each trial's own
+    temporal frequency.
 
     Returns the same per-condition dict shape combined_grating_analysis.py
     produces for results[cluster_id], so panel rendering code doesn't need
@@ -216,41 +312,31 @@ def compute_grating_response(
     stim_time_ms = trial_parameters[0]["stimTime"]
     stim_window = (pre_time_ms, pre_time_ms + stim_time_ms)
 
-    conditions = sorted(
-        set((t["barWidth"], t["temporalFrequency"]) for t in trial_parameters)
+    groups = group_grating_conditions(
+        trial_parameters, min_directions_for_dsos=min_directions_for_dsos
     )
-    dirs_by_condition = {}
-    for bw, tf in conditions:
-        dirs_here = sorted(
-            set(
-                t["orientation"]
-                for t in trial_parameters
-                if t["barWidth"] == bw and t["temporalFrequency"] == tf
-            )
-        )
-        dirs_by_condition[(bw, tf)] = dirs_here
-
-    condition_type = {
-        cond: ("dsos" if len(dirs) >= min_directions_for_dsos else "sf")
-        for cond, dirs in dirs_by_condition.items()
-    }
+    condition_type = {g["key"]: g["condition_type"] for g in groups}
 
     result = {}
-    for bw, tf in conditions:
-        local_dirs = dirs_by_condition[(bw, tf)]
-        typ = condition_type[(bw, tf)]
-
-        idx_by_dir = defaultdict(list)
-        for i, t in enumerate(trial_parameters):
-            if t["barWidth"] == bw and t["temporalFrequency"] == tf:
-                idx_by_dir[t["orientation"]].append(i)
+    for group in groups:
+        bw, tf = group["key"]
+        local_dirs = group["directions"]
+        typ = group["condition_type"]
+        idx_by_dir = group["idx_by_dir"]
 
         trial_resp_by_dir = {}
         for direction in local_dirs:
             idxs = idx_by_dir[direction]
             if response_metric == "f1":
                 resp = np.array(
-                    [f1_amplitude(trials[i], stim_window, tf) for i in idxs]
+                    [
+                        f1_amplitude(
+                            trials[i],
+                            stim_window,
+                            float(trial_parameters[i]["temporalFrequency"]),
+                        )
+                        for i in idxs
+                    ]
                 )
             else:
                 baseline = np.array(
@@ -296,20 +382,30 @@ def compute_grating_response(
             osi, pref_ori = vector_sum_index(
                 np.array(local_dirs), mean_resp, harmonic=2
             )
-            dsi_p = shuffle_pvalue(
-                local_dirs,
-                trial_resp_by_dir,
-                harmonic=1,
-                n_shuffles=n_shuffles,
-                rng=rng,
+            # Most cells are untuned. The shuffle is the expensive step and
+            # is only consumed when |DSI| or |OSI| could pass the slider.
+            need_shuffle = n_shuffles > 0 and (
+                (np.isfinite(dsi) and abs(dsi) >= SHUFFLE_INDEX_FLOOR)
+                or (np.isfinite(osi) and abs(osi) >= SHUFFLE_INDEX_FLOOR)
             )
-            osi_p = shuffle_pvalue(
-                local_dirs,
-                trial_resp_by_dir,
-                harmonic=2,
-                n_shuffles=n_shuffles,
-                rng=rng,
-            )
+            if need_shuffle:
+                dsi_p = shuffle_pvalue(
+                    local_dirs,
+                    trial_resp_by_dir,
+                    harmonic=1,
+                    n_shuffles=n_shuffles,
+                    rng=rng,
+                )
+                osi_p = shuffle_pvalue(
+                    local_dirs,
+                    trial_resp_by_dir,
+                    harmonic=2,
+                    n_shuffles=n_shuffles,
+                    rng=rng,
+                )
+            else:
+                dsi_p = 1.0
+                osi_p = 1.0
 
             # peak_rate_hz: real evoked firing rate (Hz), independent of
             # response_metric ('f1' amplitude / 'delta' aren't in Hz units
@@ -319,16 +415,15 @@ def compute_grating_response(
             # with a handful of noisy spikes can't out-rank a condition
             # with a real, strong response just because its DSI happens
             # to be numerically higher.
+            group_idxs = [i for idxs in idx_by_dir.values() for i in idxs]
             peak_rate_hz = (
                 np.nanmax(
                     [
                         firing_rate_in_window(trials[i], stim_window)
-                        for i in range(len(trials))
-                        if trial_parameters[i]["barWidth"] == bw
-                        and trial_parameters[i]["temporalFrequency"] == tf
+                        for i in group_idxs
                     ]
                 )
-                if local_dirs
+                if group_idxs
                 else np.nan
             )
 
@@ -373,8 +468,8 @@ def compute_grating_response(
         for j, bw in enumerate(sf_bar_widths):
             vals = [
                 result[(bw2, tf)]["bw_tuning_point"]
-                for (bw2, tf) in conditions
-                if bw2 == bw and condition_type[(bw2, tf)] == "sf"
+                for (bw2, tf), typ in condition_type.items()
+                if bw2 == bw and typ == "sf"
             ]
             if vals:
                 curve[j] = np.nanmean(vals)
@@ -382,6 +477,62 @@ def compute_grating_response(
         result["sf_tuning_curve"] = curve
 
     return result
+
+
+def condition_amplitude(entry):
+    """How strongly this (bw, tf) actually drove the cell.
+
+    Prefer peak of the trial-averaged tuning curve (F1 / mean_response) —
+    that is the same metric DSI/OSI were computed from. Fall back to
+    peak_rate_hz when the curve is missing (legacy analyzed files).
+    """
+    resp = entry.get("mean_response")
+    if resp is not None:
+        arr = np.asarray(resp, dtype=float)
+        if arr.size:
+            peak = np.nanmax(arr)
+            if np.isfinite(peak) and peak > 0:
+                return float(peak)
+    rate = entry.get("peak_rate_hz", np.nan)
+    if np.isfinite(rate) and rate > 0:
+        return float(rate)
+    return 0.0
+
+
+def _pvalue_passes(entry, key, alpha):
+    """Shuffle p < alpha. Missing p (legacy files) does not veto."""
+    pval = entry.get(key, np.nan)
+    if not np.isfinite(pval):
+        return True
+    return pval < alpha
+
+
+def _none_dsos_selection():
+    return {
+        "condition": None,
+        "classification": "none",
+        "DSI": np.nan,
+        "OSI": np.nan,
+        "preferred_direction_deg": np.nan,
+        "preferred_orientation_deg": np.nan,
+        "DSI_pvalue": np.nan,
+        "OSI_pvalue": np.nan,
+        "peak_rate_hz": np.nan,
+    }
+
+
+def _selection_from_entry(cond, classification, entry):
+    return {
+        "condition": cond,
+        "classification": classification,
+        "DSI": entry.get("DSI", np.nan),
+        "OSI": entry.get("OSI", np.nan),
+        "preferred_direction_deg": entry.get("preferred_direction_deg", np.nan),
+        "preferred_orientation_deg": entry.get("preferred_orientation_deg", np.nan),
+        "DSI_pvalue": entry.get("DSI_pvalue", np.nan),
+        "OSI_pvalue": entry.get("OSI_pvalue", np.nan),
+        "peak_rate_hz": entry.get("peak_rate_hz", np.nan),
+    }
 
 
 def select_best_dsos_condition(
@@ -393,31 +544,22 @@ def select_best_dsos_condition(
 ):
     """
     Picks the single 'best' (barWidth, temporalFrequency) condition and a
-    DS/OS classification for one cluster, replacing the old max(|DSI|)
-    selection used independently (and inconsistently) in GratingPanel and
-    the population DS/OS probe map.
+    DS/OS classification for one cluster.
 
     `data` is the per-cluster dict returned by compute_grating_response
     (or the equivalent pre-analyzed-file entry) — i.e. data[cluster_id].
 
-    Selection logic, in order:
-      1. GATE: a condition is only eligible if peak_rate_hz > min_response_hz
-         AND its relevant p-value < alpha. This is the actual bug fix — the
-         old code ranked by raw |DSI| with no amplitude or significance
-         floor, so a near-silent condition with a few spikes that landed in
-         one direction by chance could out-rank a condition with a real,
-         strong, time-locked response.
-      2. CLASSIFY: DS takes priority over OS, matching the reference
-         notebook's convention (DSI > threshold => DS, regardless of OSI;
-         only cells that clear the OSI bar *without* clearing the DSI bar
-         are called OS). A single-lobed tuning curve mathematically pushes
-         up both DSI and OSI together, so DSI-first is the standard/non-
-         arbitrary way to split them, rather than comparing DSI vs OSI
-         head-to-head (they're different harmonics and not on a shared
-         scale — see harmonic=1 vs harmonic=2 in vector_sum_index).
-      3. RANK: among gated conditions of the winning class (DS or OS),
-         pick the highest |DSI| (or |OSI| for OS) — same idea as before,
-         just restricted to conditions that already passed the gate.
+    Per (bw, tf) that was actually run:
+      1. GATE: shuffle p-value < alpha (missing p does not veto). A
+         positive min_response_hz, if the caller sets one, is an extra
+         amplitude floor; the default is 0 so sparse cells are not dropped.
+      2. CLASSIFY that condition: DS if |DSI| > dsi_threshold (DSI-first
+         at the same condition, because a single lobe lifts both
+         harmonics); else OS if |OSI| > osi_threshold.
+      3. RANK across conditions: pick the classified condition with the
+         strongest response (peak of mean_response). A noisy high-DSI
+         run at 2 Hz must not beat a real DS/OS run at 20 Hz, and a weak
+         DS at one bar width must not hide a strong OS at another.
 
     Returns a dict:
         {
@@ -439,81 +581,37 @@ def select_best_dsos_condition(
     if not dsos_conditions:
         return None
 
-    def _passes_gate(entry, pvalue_key):
-        # NOTE: pre-analyzed files loaded from disk (combined_grating_
-        # analysis.py output, predating this gate) won't have
-        # 'peak_rate_hz' in their per-condition dict. That's a schema gap,
-        # not a "this condition is weak" signal — but np.isfinite(nan) is
-        # False either way, so it fails the gate and this cluster reports
-        # classification='none' until re-run through compute_grating_
-        # response. This is intentionally conservative (silently passing
-        # ungated legacy data through would reintroduce the exact bug this
-        # function exists to fix) but it does mean old analyzed files go
-        # dark on first load — flag this to the user rather than treating
-        # it as a quiet edge case.
-        peak_hz = entry.get("peak_rate_hz", np.nan)
-        pval = entry.get(pvalue_key, np.nan)
-        if not np.isfinite(peak_hz) or peak_hz <= min_response_hz:
-            return False
-        if not np.isfinite(pval) or pval >= alpha:
-            return False
-        return True
+    classified = []
+    for cond in dsos_conditions:
+        entry = data[cond]
+        amp = condition_amplitude(entry)
+        if min_response_hz > 0 and amp <= min_response_hz:
+            continue
+        dsi = entry.get("DSI", np.nan)
+        osi = entry.get("OSI", np.nan)
+        is_ds = (
+            _pvalue_passes(entry, "DSI_pvalue", alpha)
+            and np.isfinite(dsi)
+            and abs(dsi) > dsi_threshold
+        )
+        is_os = (
+            _pvalue_passes(entry, "OSI_pvalue", alpha)
+            and np.isfinite(osi)
+            and abs(osi) > osi_threshold
+        )
+        if is_ds:
+            classified.append((cond, "DS", amp, abs(dsi)))
+        elif is_os:
+            classified.append((cond, "OS", amp, abs(osi)))
 
-    ds_candidates = [c for c in dsos_conditions if _passes_gate(data[c], "DSI_pvalue")]
-    os_candidates = [c for c in dsos_conditions if _passes_gate(data[c], "OSI_pvalue")]
+    if not classified:
+        return _none_dsos_selection()
 
-    def _abs_or_neg1(val):
-        return abs(val) if np.isfinite(val) else -1.0
-
-    best_ds = (
-        max(ds_candidates, key=lambda c: _abs_or_neg1(data[c].get("DSI", np.nan)))
-        if ds_candidates
-        else None
+    # Strongest response wins. Tie-break: DS before OS, then larger index.
+    best_cond, best_cls, _amp, _idx = max(
+        classified, key=lambda item: (item[2], 1 if item[1] == "DS" else 0, item[3])
     )
-    if best_ds is not None and abs(data[best_ds].get("DSI", 0.0)) > dsi_threshold:
-        entry = data[best_ds]
-        return {
-            "condition": best_ds,
-            "classification": "DS",
-            "DSI": entry.get("DSI", np.nan),
-            "OSI": entry.get("OSI", np.nan),
-            "preferred_direction_deg": entry.get("preferred_direction_deg", np.nan),
-            "preferred_orientation_deg": entry.get("preferred_orientation_deg", np.nan),
-            "DSI_pvalue": entry.get("DSI_pvalue", np.nan),
-            "OSI_pvalue": entry.get("OSI_pvalue", np.nan),
-            "peak_rate_hz": entry.get("peak_rate_hz", np.nan),
-        }
-
-    best_os = (
-        max(os_candidates, key=lambda c: _abs_or_neg1(data[c].get("OSI", np.nan)))
-        if os_candidates
-        else None
-    )
-    if best_os is not None and abs(data[best_os].get("OSI", 0.0)) > osi_threshold:
-        entry = data[best_os]
-        return {
-            "condition": best_os,
-            "classification": "OS",
-            "DSI": entry.get("DSI", np.nan),
-            "OSI": entry.get("OSI", np.nan),
-            "preferred_direction_deg": entry.get("preferred_direction_deg", np.nan),
-            "preferred_orientation_deg": entry.get("preferred_orientation_deg", np.nan),
-            "DSI_pvalue": entry.get("DSI_pvalue", np.nan),
-            "OSI_pvalue": entry.get("OSI_pvalue", np.nan),
-            "peak_rate_hz": entry.get("peak_rate_hz", np.nan),
-        }
-
-    return {
-        "condition": None,
-        "classification": "none",
-        "DSI": np.nan,
-        "OSI": np.nan,
-        "preferred_direction_deg": np.nan,
-        "preferred_orientation_deg": np.nan,
-        "DSI_pvalue": np.nan,
-        "OSI_pvalue": np.nan,
-        "peak_rate_hz": np.nan,
-    }
+    return _selection_from_entry(best_cond, best_cls, data[best_cond])
 
 
 def pooled_direction_tuning_curve(data, n_bins=POOLED_CURVE_N_BINS):

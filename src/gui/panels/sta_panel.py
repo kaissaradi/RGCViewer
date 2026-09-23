@@ -1,5 +1,5 @@
 """
-STA Panel — spike-triggered average viewer for RGCViewer.
+STA Panel — spike-triggered average viewer for Encore.
 
 Layout
 ──────
@@ -24,6 +24,7 @@ from qtpy.QtWidgets import (
 )
 
 from ...analysis import analysis_core
+from ...analysis import rf_geometry
 from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,7 @@ class STAPanel(QWidget):
         self.current_sta_data       = None
         self.current_sta_cluster_id = None
         self.current_stafit         = None
+        self._rf_params_table       = None
         self.sta_animation_timer    = None
 
         # ── cached metrics (set by _load_sta_data, read by all draw methods) ─
@@ -465,6 +467,7 @@ class STAPanel(QWidget):
         n_frames = sta_data.red.shape[2]
         self.current_sta_data       = sta_data
         self.current_stafit         = stafit
+        self._rf_params_table       = dm.vision_params
         self.current_sta_cluster_id = cluster_id
         self.total_sta_frames       = n_frames
         self._current_metrics       = metrics
@@ -520,20 +523,20 @@ class STAPanel(QWidget):
             self.rf_center_item.setData([], [])
             return
 
+        fit = rf_geometry.rf_fit_from_stafit(
+            stafit, getattr(self._rf_params_table, 'runtimemovie_params', None))
+        if fit is None:
+            self.rf_ellipse_item.setData([], [])
+            self.rf_center_item.setData([], [])
+            return
+
+        # The ViewBox is invertY(True) and ImageItem pixel i spans [i, i+1],
+        # so this is rf_geometry's image frame with edges on integers. The
+        # sign of the angle used to be negated here, which mirrored every
+        # ellipse about the horizontal (see rf_geometry's docstring).
         height = self.current_sta_data.red.shape[0]
-        cx, cy = stafit.center_x, stafit.center_y
-        sx, sy = getattr(stafit, 'std_x', 1), getattr(stafit, 'std_y', 1)
-        angle  = getattr(stafit, 'angle', getattr(stafit, 'orientation', 0))
-
-        # Flip Y to match invertY(True) on the ViewBox
-        cx_p = cx + 0.5
-        cy_p = (height - cy) - 0.5
-        ar   = -np.radians(angle)
-
-        t   = np.linspace(0, 2 * np.pi, 120)
-        cos_t, sin_t = np.cos(t), np.sin(t)
-        x_el = cx_p + sx * cos_t * np.cos(ar) - sy * sin_t * np.sin(ar)
-        y_el = cy_p + sx * cos_t * np.sin(ar) + sy * sin_t * np.cos(ar)
+        cx_p, cy_p, w, h, ang = rf_geometry.image_ellipse(fit, height)
+        x_el, y_el = rf_geometry.ellipse_outline(cx_p, cy_p, w, h, ang)
 
         self.rf_ellipse_item.setData(x_el, y_el)
         self.rf_center_item.setData([cx_p], [cy_p])
@@ -555,6 +558,8 @@ class STAPanel(QWidget):
         no recomputation here.
         """
         fig    = self.temporal_filter_canvas.fig
+        if self.temporal_filter_canvas.width() < 2 or self.temporal_filter_canvas.height() < 2:
+            return
         colors = self.main_window.get_current_colors()
         fig.clear()
 
@@ -587,6 +592,14 @@ class STAPanel(QWidget):
 
         dom_color   = _CH_COLORS[dom_idx]
 
+        if len(time_axis) < 2:
+            ax.text(0.5, 0.5, "Insufficient STA data",
+                    transform=ax.transAxes,
+                    ha='center', va='center',
+                    color=colors.get('text_secondary', '#888'), fontsize=11)
+            self.temporal_filter_canvas.draw()
+            return
+
         # ── ghost traces (other channels, un-normalised, re-scaled) ───────────
         if raw_tc.shape[1] == 3:
             abs_max = np.max(np.abs(raw_tc))
@@ -607,6 +620,10 @@ class STAPanel(QWidget):
                 color=dom_color, linewidth=2.0, zorder=3, solid_capstyle='round')
         ax.fill_between(time_axis, norm_trace, 0,
                         color=dom_color, alpha=0.10, zorder=2)
+
+        y_abs = max(np.max(np.abs(norm_trace)), 0.05)
+        ax.set_xlim(time_axis[0], time_axis[-1])
+        ax.set_ylim(-y_abs * 1.30, y_abs * 1.30)
 
         # ── FWHM bracket ──────────────────────────────────────────────────────
         import math
@@ -665,10 +682,6 @@ class STAPanel(QWidget):
                 ha='right', va='bottom',
                 color=colors.get('text_secondary', '#888'),
                 fontsize=7, alpha=0.6, zorder=7)
-
-        # ── axis limits ───────────────────────────────────────────────────────
-        y_abs = max(np.max(np.abs(norm_trace)), 0.05)
-        ax.set_ylim(-y_abs * 1.30, y_abs * 1.30)
 
         ax.set_xlabel("Time before spike (ms)",
                       color=colors.get('text_secondary', '#888'), fontsize=9)

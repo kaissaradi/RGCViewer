@@ -1,7 +1,7 @@
 """
 cross_run_matcher.py
 ====================
-Cross-run neuron identity matching for RGCViewer.
+Cross-run neuron identity matching for Encore.
 
 Matches neurons between two independent Kilosort sorts of the same retina/MEA
 by comparing Electrical Images (EIs), with fallback to Kilosort templates and
