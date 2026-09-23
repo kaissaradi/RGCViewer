@@ -1009,9 +1009,6 @@ def plot_population_rfs_background(
         lw=target_lw,
         zorder=2,
     )
-    if target_coll is not None:
-        ax.add_collection(target_coll)
-        target_coll.set_offset_transform(ax.transData)
 
     # Spec D1: dashed + slightly lower alpha for borrowed ellipses
     borrowed_target_coll = _build_ellipse_collection(
@@ -1023,14 +1020,20 @@ def plot_population_rfs_background(
     )
     if borrowed_target_coll is not None:
         borrowed_target_coll.set_linestyle("--")
-        ax.add_collection(borrowed_target_coll)
-        borrowed_target_coll.set_offset_transform(ax.transData)
 
+    # Set axes limits before adding collections so transData is invertible.
     zoom_ellipses = target_ellipses + borrowed_target
     limits = _tight_limits(zoom_ellipses, frac_margin=0.05)
     if limits is not None:
         ax.set_xlim(limits[0], limits[1])
         ax.set_ylim(limits[2], limits[3])
+
+    if target_coll is not None:
+        ax.add_collection(target_coll)
+        target_coll.set_offset_transform(ax.transData)
+    if borrowed_target_coll is not None:
+        ax.add_collection(borrowed_target_coll)
+        borrowed_target_coll.set_offset_transform(ax.transData)
 
     set_rf_hit_entries(ax, hit_entries)
 
