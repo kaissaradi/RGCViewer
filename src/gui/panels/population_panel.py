@@ -12,6 +12,8 @@ from matplotlib.patches import Ellipse, FancyArrowPatch
 from matplotlib.collections import LineCollection, EllipseCollection
 from qtpy.QtGui import QColor
 
+from ...analysis import rf_geometry
+
 from ..theme import (
     DARK_COLORS,
     is_light_theme,
@@ -752,56 +754,24 @@ def _update_highlight_patch(patch, data_manager, cell_id):
 
     vision_id = data_manager.get_vision_id_for_cluster(cell_id)
     vision_params = data_manager.vision_params
-    sta_height = data_manager.vision_sta_height
 
     try:
-        stafit = None
-        if vision_params is not None:
-            try:
-                stafit = vision_params.get_stafit_for_cell(vision_id)
-            except Exception:
-                stafit = None
-
-        if stafit is not None:
-            fit_ok = all(
-                np.isfinite(v)
-                for v in (
-                    stafit.center_x,
-                    stafit.center_y,
-                    stafit.std_x,
-                    stafit.std_y,
-                    stafit.rot,
-                )
-            ) and stafit.std_x > 0 and stafit.std_y > 0
-            if fit_ok:
-                adjusted_y = (
-                    sta_height - stafit.center_y
-                    if sta_height is not None
-                    else stafit.center_y
-                )
-                patch.center = (stafit.center_x, adjusted_y)
-                patch.width = 2 * stafit.std_x
-                patch.height = 2 * stafit.std_y
-                patch.angle = np.rad2deg(stafit.rot)
-                patch.set_visible(True)
-                return
-
-        # Fill-gap: borrowed RF from reference bridge
-        bridge = getattr(data_manager, "reference_bridge", None)
-        if bridge is not None:
-            params = bridge.get_rf_ellipse_params(vision_id)
-            if params is not None:
-                adjusted_y = (
-                    sta_height - params["y0"]
-                    if sta_height is not None
-                    else params["y0"]
-                )
-                patch.center = (params["x0"], adjusted_y)
-                patch.width = 2 * params["std_x"]
-                patch.height = 2 * params["std_y"]
-                patch.angle = np.rad2deg(params["angle"])
-                patch.set_visible(True)
-                return
+        # Same frame as plot_population_rfs_background: Vision's own y-up
+        # frame on ascending axes (see analysis/rf_geometry.py).
+        fit = rf_geometry.raw_rf_fit(vision_params, vision_id)
+        if fit is None:
+            bridge = getattr(data_manager, "reference_bridge", None)
+            if bridge is not None:
+                fit = rf_geometry.rf_fit_from_params(
+                    bridge.get_rf_ellipse_params(vision_id))
+        if fit is not None:
+            cx, cy, w, h, ang = rf_geometry.mosaic_ellipse(fit)
+            patch.center = (cx, cy)
+            patch.width = w
+            patch.height = h
+            patch.angle = ang
+            patch.set_visible(True)
+            return
 
         patch.set_visible(False)
     except Exception as e:
@@ -943,37 +913,14 @@ def plot_population_rfs_background(
         for cell_id in native_ids:
             if cell_id not in subset_vision_ids:
                 continue
-            try:
-                stafit = vision_params.get_stafit_for_cell(cell_id)
-            except Exception:
+            fit = rf_geometry.raw_rf_fit(vision_params, cell_id)
+            if fit is None:
                 continue
-            fit_vals = (
-                stafit.center_x,
-                stafit.center_y,
-                stafit.std_x,
-                stafit.std_y,
-                stafit.rot,
-            )
-            if not all(np.isfinite(v) for v in fit_vals):
-                continue
-            if stafit.std_x <= 0 or stafit.std_y <= 0:
-                continue
-            adjusted_y = (
-                sta_height - stafit.center_y
-                if sta_height is not None
-                else stafit.center_y
-            )
-            entry = (
-                stafit.center_x,
-                adjusted_y,
-                stafit.std_x * 2,
-                stafit.std_y * 2,
-                np.degrees(stafit.rot),
-            )
+            entry = rf_geometry.mosaic_ellipse(fit)
             native_drawn.add(cell_id)
             hit_entries.append((cell_id,) + entry)
             target_ellipses.append(entry)
-            _label(stafit.center_x, adjusted_y, cell_id)
+            _label(entry[0], entry[1], cell_id)
 
     # Borrowed only when native RF is missing for that Vision id, and only
     # for cells in the selected folder.
@@ -982,20 +929,13 @@ def plot_population_rfs_background(
             continue
         if vision_id not in subset_vision_ids:
             continue
-        cx = params["x0"]
-        cy = params["y0"]
-        sx = params["std_x"]
-        sy = params["std_y"]
-        rot = params["angle"]
-        if not all(np.isfinite(v) for v in (cx, cy, sx, sy, rot)):
+        fit = rf_geometry.rf_fit_from_params(params)
+        if fit is None:
             continue
-        if sx <= 0 or sy <= 0:
-            continue
-        adjusted_y = sta_height - cy if sta_height is not None else cy
-        entry = (cx, adjusted_y, sx * 2, sy * 2, np.degrees(rot))
+        entry = rf_geometry.mosaic_ellipse(fit)
         hit_entries.append((vision_id,) + entry)
         borrowed_target.append(entry)
-        _label(cx, adjusted_y, vision_id)
+        _label(entry[0], entry[1], vision_id)
 
     is_light = is_light_theme(colors)
     target_color = colors.get("plot_scatter", colors.get("plot_highlight", "#0d47a1"))
@@ -1274,52 +1214,18 @@ def _draw_dsos_markers(
     bridge = getattr(dm, "reference_bridge", None)
 
     def _rf_anchor(vision_id):
-        if vision_params is not None:
+        # The mosaic's frame (rf_geometry.mosaic_ellipse): Vision's y-up
+        # centre, so the arrow sits on the ellipse it belongs to.
+        fit = rf_geometry.raw_rf_fit(vision_params, vision_id)
+        if fit is None and bridge is not None:
             try:
-                stafit = vision_params.get_stafit_for_cell(vision_id)
+                fit = rf_geometry.rf_fit_from_params(
+                    bridge.get_rf_ellipse_params(vision_id))
             except Exception:
-                stafit = None
-            if stafit is not None:
-                fit_vals = (
-                    stafit.center_x,
-                    stafit.center_y,
-                    stafit.std_x,
-                    stafit.std_y,
-                    stafit.rot,
-                )
-                if (
-                    all(np.isfinite(v) for v in fit_vals)
-                    and stafit.std_x > 0
-                    and stafit.std_y > 0
-                ):
-                    y = (
-                        sta_height - stafit.center_y
-                        if sta_height is not None
-                        else stafit.center_y
-                    )
-                    return (
-                        stafit.center_x,
-                        y,
-                        max(stafit.std_x, stafit.std_y) * 1.5,
-                    )
-        if bridge is not None:
-            try:
-                params = bridge.get_rf_ellipse_params(vision_id)
-            except Exception:
-                params = None
-            if params is not None:
-                sx, sy = params.get("std_x"), params.get("std_y")
-                cx, cy = params.get("x0"), params.get("y0")
-                if (
-                    sx
-                    and sy
-                    and sx > 0
-                    and sy > 0
-                    and all(np.isfinite(v) for v in (cx, cy, sx, sy))
-                ):
-                    y = sta_height - cy if sta_height is not None else cy
-                    return (cx, y, max(sx, sy) * 1.5)
-        return None
+                fit = None
+        if fit is None:
+            return None
+        return (fit.x0, fit.y0, max(fit.std_x, fit.std_y) * 1.5)
 
     ds_lines = []  # each: [(x0,y0), (x1,y1)] arrow shaft; heads drawn separately
     os_lines = []  # each: [(x0,y0), (x1,y1)] double-ended tick

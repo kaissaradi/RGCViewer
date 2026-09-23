@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from . import rf_geometry
+
 logger = logging.getLogger(__name__)
 
 
@@ -415,31 +417,30 @@ class ReferenceBridge:
             pass
         return None
 
+    def get_rf_fit(self, current_vision_id: int):
+        """The reference run's stored RF fit (y-up, radians) or None.
+
+        Read through rf_geometry so the centre is in Vision's stored frame
+        whatever the reference table was loaded with.
+        """
+        ref_id = self._mapping.get(int(current_vision_id))
+        if ref_id is None or self._ref_params is None:
+            return None
+        return rf_geometry.raw_rf_fit(self._ref_params, ref_id)
+
     def get_rf_ellipse_params(self, current_vision_id: int):
         """
         RF ellipse params for population overlay.
 
-        Returns dict: x0, y0, std_x, std_y, angle (radians, Vision rot)
-        or None.
+        Returns dict: x0, y0 (Vision's stored y-up frame), std_x, std_y,
+        angle (radians, Vision Theta) or None. Draw it with
+        rf_geometry.mosaic_ellipse / image_ellipse, not by hand.
         """
-        stafit = self.get_stafit(current_vision_id)
-        if stafit is None:
+        fit = self.get_rf_fit(current_vision_id)
+        if fit is None:
             return None
-        try:
-            rot = getattr(stafit, "rot", getattr(stafit, "angle", 0.0))
-            params = {
-                "x0": stafit.center_x,
-                "y0": stafit.center_y,
-                "std_x": stafit.std_x,
-                "std_y": stafit.std_y,
-                "angle": rot,
-            }
-            if all(np.isfinite(v) for v in params.values()):
-                if params["std_x"] > 0 and params["std_y"] > 0:
-                    return params
-        except (AttributeError, TypeError):
-            pass
-        return None
+        return {"x0": fit.x0, "y0": fit.y0, "std_x": fit.std_x,
+                "std_y": fit.std_y, "angle": fit.theta}
 
     def get_ei(self, current_vision_id: int):
         ref_id = self._mapping.get(int(current_vision_id))

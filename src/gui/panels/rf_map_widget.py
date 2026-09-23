@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QVBoxLayout, QLabel, QWidget, QSizePolicy
 
+from ...analysis import rf_geometry
 from .live_selectors import PopulationSelectionMixin
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,9 @@ def collect_rf_ellipses(data_manager, cluster_ids) -> dict:
 
     Cells with no usable Gaussian fit are simply absent from the result, so the
     caller can tell "not selected" from "has no RF". Geometry matches what the
-    population panel draws: full diameters (``std * 2``), degrees, and the same
-    ``sta_height - y`` flip so this map is in the same frame as the main mosaic.
+    population panel draws: rf_geometry.mosaic_ellipse, i.e. full diameters,
+    degrees, in Vision's own y-up frame on ascending axes (it used to flip y
+    to rows while keeping the axes ascending, which drew the map upside down).
 
     Falls back to a reference-run RF (via ReferenceBridge) when the current run
     has no fit for a cell, mirroring plot_population_rfs_background.
@@ -60,7 +62,6 @@ def collect_rf_ellipses(data_manager, cluster_ids) -> dict:
         return out
 
     vision_params = getattr(dm, "vision_params", None)
-    sta_height = getattr(dm, "vision_sta_height", None)
     is_vision_only = bool(getattr(dm, "is_vision_only", False))
 
     borrowed = {}
@@ -84,17 +85,6 @@ def collect_rf_ellipses(data_manager, cluster_ids) -> dict:
                 pass
         return int(cid) if is_vision_only else int(cid) + 1
 
-    def _flip(y):
-        return sta_height - y if sta_height is not None else y
-
-    def _entry(cx, cy, sx, sy, rot):
-        if not all(np.isfinite(v) for v in (cx, cy, sx, sy, rot)):
-            return None
-        if sx <= 0 or sy <= 0:
-            return None
-        return (float(cx), float(_flip(cy)), float(sx * 2), float(sy * 2),
-                float(np.degrees(rot)))
-
     for cid in cluster_ids:
         try:
             cid_int = int(cid)
@@ -103,22 +93,11 @@ def collect_rf_ellipses(data_manager, cluster_ids) -> dict:
         vid = _vision_id(cid_int)
         entry = None
 
-        if vision_params is not None:
-            try:
-                fit = vision_params.get_stafit_for_cell(vid)
-            except Exception:
-                fit = None
-            if fit is not None:
-                entry = _entry(
-                    fit.center_x, fit.center_y, fit.std_x, fit.std_y, fit.rot
-                )
-
-        if entry is None and vid in borrowed:
-            p = borrowed[vid]
-            try:
-                entry = _entry(p["x0"], p["y0"], p["std_x"], p["std_y"], p["angle"])
-            except (KeyError, TypeError):
-                entry = None
+        fit = rf_geometry.raw_rf_fit(vision_params, vid)
+        if fit is None and vid in borrowed:
+            fit = rf_geometry.rf_fit_from_params(borrowed[vid])
+        if fit is not None:
+            entry = tuple(float(v) for v in rf_geometry.mosaic_ellipse(fit))
 
         if entry is not None:
             out[cid_int] = entry

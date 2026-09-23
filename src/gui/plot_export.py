@@ -58,6 +58,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..analysis import analysis_core
+from ..analysis import rf_geometry
 from . import recent_paths
 from .panels.rf_map_widget import collect_rf_ellipses
 
@@ -442,31 +443,27 @@ def figure_sta(dm, cluster_id, group_name):
 
     fig = _new_figure(3.6, 3.4)
     ax = fig.add_subplot(111)
-    # origin='upper' puts array row 0 at the top, which is the frame the
-    # stafit centre coordinates are expressed in — so the ellipse needs no
-    # flip here, unlike the pyqtgraph panel with its inverted ViewBox.
+    # origin='upper': row 0 at the top and pixel i centred on integer i, so
+    # this is rf_geometry's image frame with centres on integers. The old
+    # code drew get_stafit_for_cell's y-up centre on this row-down image and
+    # negated the angle, so the ellipse was mirrored and misplaced.
     ax.imshow(frame, origin="upper", interpolation="nearest")
 
-    if stafit is not None:
-        # STAFit.rot is radians (visionloader.STAFit), and get_stafit_for_cell
-        # has already flipped center_y into array-row space — the same frame
-        # get_sta_timecourse_data indexes with, and the frame imshow draws in
-        # under origin='upper'. Only the rotation needs adjusting: y runs
-        # downward here, so a positive mathematical angle reads as clockwise.
-        angle_deg = np.degrees(float(getattr(stafit, "rot", 0.0) or 0.0))
+    fit = rf_geometry.rf_fit_from_stafit(
+        stafit, getattr(dm.vision_params, "runtimemovie_params", None))
+    if fit is not None:
+        cx, cy, w, h, ang = rf_geometry.image_ellipse(
+            fit, frame.shape[0], pixel_centres_on_integers=True)
         ax.add_patch(
             Ellipse(
-                (float(stafit.center_x), float(stafit.center_y)),
-                width=2.0 * float(getattr(stafit, "std_x", 1.0)),
-                height=2.0 * float(getattr(stafit, "std_y", 1.0)),
-                angle=-angle_deg,
+                (cx, cy), width=w, height=h, angle=ang,
                 fill=False,
                 edgecolor="#f0c040",
                 linewidth=1.4,
             )
         )
         ax.plot(
-            [float(stafit.center_x)], [float(stafit.center_y)],
+            [cx], [cy],
             marker="+", color="#f0c040", markersize=6, markeredgewidth=1.2,
         )
 

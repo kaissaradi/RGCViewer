@@ -24,6 +24,7 @@ from qtpy.QtWidgets import (
 )
 
 from ...analysis import analysis_core
+from ...analysis import rf_geometry
 from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,7 @@ class STAPanel(QWidget):
         self.current_sta_data       = None
         self.current_sta_cluster_id = None
         self.current_stafit         = None
+        self._rf_params_table       = None
         self.sta_animation_timer    = None
 
         # ── cached metrics (set by _load_sta_data, read by all draw methods) ─
@@ -465,6 +467,7 @@ class STAPanel(QWidget):
         n_frames = sta_data.red.shape[2]
         self.current_sta_data       = sta_data
         self.current_stafit         = stafit
+        self._rf_params_table       = dm.vision_params
         self.current_sta_cluster_id = cluster_id
         self.total_sta_frames       = n_frames
         self._current_metrics       = metrics
@@ -520,20 +523,20 @@ class STAPanel(QWidget):
             self.rf_center_item.setData([], [])
             return
 
+        fit = rf_geometry.rf_fit_from_stafit(
+            stafit, getattr(self._rf_params_table, 'runtimemovie_params', None))
+        if fit is None:
+            self.rf_ellipse_item.setData([], [])
+            self.rf_center_item.setData([], [])
+            return
+
+        # The ViewBox is invertY(True) and ImageItem pixel i spans [i, i+1],
+        # so this is rf_geometry's image frame with edges on integers. The
+        # sign of the angle used to be negated here, which mirrored every
+        # ellipse about the horizontal (see rf_geometry's docstring).
         height = self.current_sta_data.red.shape[0]
-        cx, cy = stafit.center_x, stafit.center_y
-        sx, sy = getattr(stafit, 'std_x', 1), getattr(stafit, 'std_y', 1)
-        rot = getattr(stafit, 'rot', 0)
-
-        # Flip Y to match invertY(True) on the ViewBox
-        cx_p = cx + 0.5
-        cy_p = (height - cy) - 0.5
-        ar   = -rot
-
-        t   = np.linspace(0, 2 * np.pi, 120)
-        cos_t, sin_t = np.cos(t), np.sin(t)
-        x_el = cx_p + sx * cos_t * np.cos(ar) - sy * sin_t * np.sin(ar)
-        y_el = cy_p + sx * cos_t * np.sin(ar) + sy * sin_t * np.cos(ar)
+        cx_p, cy_p, w, h, ang = rf_geometry.image_ellipse(fit, height)
+        x_el, y_el = rf_geometry.ellipse_outline(cx_p, cy_p, w, h, ang)
 
         self.rf_ellipse_item.setData(x_el, y_el)
         self.rf_center_item.setData([cx_p], [cy_p])

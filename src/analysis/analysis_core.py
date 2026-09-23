@@ -12,6 +12,8 @@ import logging
 from scipy.signal import peak_widths
 from scipy.ndimage import gaussian_filter1d
 
+from . import rf_geometry
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -230,11 +232,15 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
         source = "recalculated"
         r, g, b = sta_data.red, sta_data.green, sta_data.blue
 
-        if stafit:
-            cx = int(stafit.center_x)
-            cy = int(stafit.center_y)
-            sx = int(max(1, stafit.std_x))
-            sy = int(max(1, stafit.std_y))
+        fit = rf_geometry.rf_fit_from_stafit(
+            stafit, getattr(vision_params, "runtimemovie_params", None))
+        if fit is not None:
+            # Vision's y0 points up; the STA array's first axis is rows, and
+            # x0 = col + 0.5, H - y0 = row + 0.5 (see rf_geometry).
+            cx = int(np.floor(fit.x0))
+            cy = int(np.floor(r.shape[0] - fit.y0))
+            sx = int(max(1, fit.std_x))
+            sy = int(max(1, fit.std_y))
             x0, x1 = max(0, cx - sx), min(r.shape[1], cx + sx + 1)
             y0, y1 = max(0, cy - sy), min(r.shape[0], cy + sy + 1)
             red_tc = np.mean(r[y0:y1, x0:x1], axis=(0, 1))

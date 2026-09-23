@@ -113,13 +113,15 @@ def test_axis_limits_contain_all_ellipses():
     # are not required to sit inside the axes.
     for cell_id in (1, 2, 3):
         stafit = cells[cell_id]
-        adj_y = 100 - stafit.center_y
         assert xlim[0] <= stafit.center_x <= xlim[1], f"Cell {cell_id} center_x outside xlim"
-        assert ylim[0] <= adj_y <= ylim[1], f"Cell {cell_id} center_y outside ylim"
+        assert ylim[0] <= stafit.center_y <= ylim[1], f"Cell {cell_id} center_y outside ylim"
 
 
-def test_y_flip_applied_to_all_ellipses():
-    """AC2: Plotted y-coordinate is sta_height - center_y."""
+def test_mosaic_uses_vision_y_up_frame():
+    """AC2 (revised 2026-09-23): the mosaic plots Vision's stored y-up centre
+    on ascending axes, and the angle is -Theta in degrees (analysis/
+    rf_geometry.py). Plotting sta_height - y on ascending axes drew the mosaic
+    upside down relative to the STA view."""
     invalidate_population_caches()
     cells, vp = _make_vision_params(6)
     mw = _make_mock_main_window(vp)
@@ -142,13 +144,19 @@ def test_y_flip_applied_to_all_ellipses():
     # Only the selected folder (kilosort 0,1,2 → vision 1,2,3) is drawn.
     assert len(all_offsets) == 3
 
+    all_angles = []
+    for coll in ax.collections:
+        if isinstance(coll, EllipseCollection):
+            all_angles.extend(np.degrees(coll._angles))
+
     for cell_id in (1, 2, 3):
         stafit = cells[cell_id]
         expected_x = stafit.center_x
-        expected_y = 100 - stafit.center_y
+        expected_y = stafit.center_y
         found = False
-        for ox, oy in all_offsets:
+        for (ox, oy), ang in zip(all_offsets, all_angles):
             if np.isclose(ox, expected_x) and np.isclose(oy, expected_y):
+                assert np.isclose(ang, -np.degrees(stafit.rot))
                 found = True
                 break
         assert found, f"Cell {cell_id} center {(expected_x, expected_y)} not found in plotted offsets"
@@ -156,7 +164,7 @@ def test_y_flip_applied_to_all_ellipses():
     for cell_id in (4, 5, 6):
         stafit = cells[cell_id]
         expected_x = stafit.center_x
-        expected_y = 100 - stafit.center_y
+        expected_y = stafit.center_y
         for ox, oy in all_offsets:
             assert not (
                 np.isclose(ox, expected_x) and np.isclose(oy, expected_y)
@@ -164,7 +172,7 @@ def test_y_flip_applied_to_all_ellipses():
 
 
 def test_y_flip_matches_highlight_and_background():
-    """AC3: Background and highlight patches share same center coords (both y-flipped)."""
+    """AC3: Background and highlight share one centre and one angle."""
     invalidate_population_caches()
     cells, vp = _make_vision_params(6)
     mw = _make_mock_main_window(vp)
@@ -199,13 +207,20 @@ def test_y_flip_matches_highlight_and_background():
         lw=1.75, zorder=10, visible=False
     )
     from src.gui.panels.population_panel import _update_highlight_patch
-    _update_highlight_patch(highlight_patch, vp, selected_cell_id, 100)
+    dm = MagicMock()
+    dm.vision_params = vp
+    dm.vision_sta_height = 100
+    dm.reference_bridge = None
+    dm.get_vision_id_for_cluster.side_effect = lambda cid: int(cid) + 1
+    _update_highlight_patch(highlight_patch, dm, selected_cell_id)
 
     hl_x, hl_y = highlight_patch.center
 
+    assert highlight_patch.get_visible()
     assert np.isclose(bg_x, hl_x)
     assert np.isclose(bg_y, hl_y)
-    assert np.isclose(bg_y, 100 - stafit.center_y)
+    assert np.isclose(bg_y, stafit.center_y)
+    assert np.isclose(highlight_patch.angle, np.degrees(target_coll._angles[0]))
 
 
 def test_snapshot_captures_nonempty_collections():
