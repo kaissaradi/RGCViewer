@@ -454,6 +454,16 @@ class EIPanel(QWidget):
                 self._load_vision_ei(cluster_ids)
             else:
                 lw = self.main_window.data_manager.get_lightweight_features(primary_id)
+                if lw is None and dm.dat_path is None and getattr(dm, "raw_reader", None) is None:
+                    # A Kilosort EI needs raw snippets. Without Vision EIs or
+                    # a raw file there is nothing to wait for, so say why
+                    # instead of "Loading…" forever.
+                    self._show_message(
+                        "No EI for this cell: no Vision .ei entry and no raw file.\n"
+                        "Load a raw .bin (File ▸ Load Raw) for a Kilosort EI.",
+                        color="gray",
+                    )
+                    return
                 hw = self.main_window.data_manager.get_heavyweight_features(primary_id)
                 if lw is None or hw is None:
                     self._show_message("Loading spatial features…", color="cyan")

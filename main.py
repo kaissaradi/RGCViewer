@@ -55,6 +55,9 @@ def main():
     QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QApplication(sys.argv)
+    # Without this, any exception in a Qt slot aborts the process (SIGABRT).
+    from src.gui import crash_guard
+    crash_guard.install()
     window = MainWindow(args.kilosort_dir, args.dat_file)
     window.show()
     sys.exit(app.exec())

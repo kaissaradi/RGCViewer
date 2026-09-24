@@ -308,6 +308,21 @@ def scenario_attach_vision(s):
     s.shot("after_attach", s.w)
 
 
+def scenario_selection_sync(s):
+    """Q21: tree -> table sync, table-view select (mosaic click path)."""
+    s.load()
+    w = s.w
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    a, b = ids[10], ids[20]
+    s.select(a, settle=0.5)
+    log(json.dumps({"tree_selected": a, "table_follows": w._selected_table_cluster_id()}))
+    w._switch_left_view(1)                       # table view active
+    ok = w.focus_cluster(b)                      # what a mosaic RF click calls
+    pump(0.5)
+    log(json.dumps({"focus_cluster_table_view": ok,
+                    "selected_now": w._get_selected_cluster_id(), "wanted": b}))
+
+
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()
              if k.startswith("scenario_")}
 

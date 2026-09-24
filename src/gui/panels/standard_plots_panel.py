@@ -738,10 +738,11 @@ class StandardPlotsPanel(QWidget):
                 sel = sim_panel.table.selectionModel()
                 if sel:
                     selected_similar_rows = sel.selectedRows()
-        except:
-            pass
+        except Exception:
+            logger.debug("similarity selection lookup failed", exc_info=True)
 
         showing_ccg = False
+        ccg_error = None
 
         if selected_similar_rows and hasattr(sim_panel, "similarity_model"):
             sim_model = sim_panel.similarity_model
@@ -799,8 +800,12 @@ class StandardPlotsPanel(QWidget):
                                             f"CCG: {cluster_id} vs {similar_id}"
                                         )
                                         showing_ccg = True
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Say so on the plot. A silent fallback showed the
+                            # ACG where the user expected a CCG (PLAN.md Q22).
+                            logger.warning("CCG %s vs %s failed", cluster_id, similar_id,
+                                           exc_info=True)
+                            ccg_error = f"{type(exc).__name__}"
 
         if not showing_ccg:
             time_lags = data.get("acg_time_lags")
@@ -814,7 +819,9 @@ class StandardPlotsPanel(QWidget):
                 self._ccg_bar.setVisible(False)
                 self._acg_zero_line.setVisible(False)
                 self.acg_plot.setXRange(0, float(time_lags[mask].max()), padding=0.02)
-                self.acg_plot.setTitle("Autocorrelation")
+                self.acg_plot.setTitle(
+                    "Autocorrelation" if ccg_error is None
+                    else f"CCG failed ({ccg_error}); showing autocorrelation")
             else:
                 self._acg_line.setData([], [])
                 self._ccg_bar.setVisible(False)

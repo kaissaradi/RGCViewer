@@ -1224,12 +1224,18 @@ def on_cluster_selection_changed(main_window: MainWindow):
 
 def on_spatial_data_ready(main_window: MainWindow, cluster_id: int, _features: dict):
     """Callback for when heavyweight spatial features are ready from the worker."""
+    # The EI panel queues this work on a Kilosort-only run and shows
+    # "Loading spatial features…"; redraw it once the result is in. This
+    # used to compare against a `summary_tab` that no longer exists, which
+    # raised AttributeError in the slot and aborted the app (PLAN.md Q22).
     current_id = main_window._get_selected_cluster_id()
-    current_tab_widget = main_window.analysis_tabs.currentWidget()
-    if cluster_id == current_id and current_tab_widget == main_window.summary_tab:
-        # Since draw_summary_EI_plot is not imported and apparently not used,
-        # we'll comment out this line for now until it's properly implemented
-        # plotting.draw_summary_EI_plot(main_window, cluster_id)
+    ei_panel = getattr(main_window, "ei_panel", None)
+    if (
+        cluster_id == current_id
+        and ei_panel is not None
+        and main_window.analysis_tabs.currentWidget() is ei_panel
+    ):
+        ei_panel.update_ei([cluster_id])
         main_window.status_bar.showMessage("Spatial analysis complete.", 2000)
 
 
@@ -1333,6 +1339,31 @@ def on_save_action(main_window: MainWindow):
         save_results(main_window, save_path)
 
 
+def vision_classification_lines(main_window):
+    """The tree as Vision classification lines: ``"<vision id>  All/<path>/"``.
+
+    Same format as a Vision classification.txt: two spaces, an ``All/`` root,
+    a trailing slash. The root "Unclassified" group is left out. Ids go
+    through DataManager's translation (AGENTS.md Law 1). Both File ▸ Save
+    and File ▸ Save Classification write this, so the two files agree.
+    """
+    dm = main_window.data_manager
+    lines = []
+
+    def recurse(item, current_path):
+        for i in range(item.rowCount()):
+            child = item.child(i)
+            cluster_id = child.data(Qt.ItemDataRole.UserRole)
+            if cluster_id is not None:
+                vid = dm.get_vision_id_for_cluster(int(cluster_id))
+                lines.append(f"{vid}  All/{current_path}")
+            elif child.text() != "Unclassified":
+                recurse(child, f"{current_path}{child.text()}/")
+
+    recurse(main_window.tree_model.invisibleRootItem(), "")
+    return lines
+
+
 def save_results(main_window, output_path):
     """Saves internal data AND the Vision-compatible text file."""
     try:
@@ -1342,25 +1373,12 @@ def save_results(main_window, output_path):
         tree_save_path = output_path.replace(".tsv", "_tree.json")
         main_window.data_manager.save_tree_structure(tree_save_path)
 
-        # 2. NEW: Export the Vision-compatible .txt classification
+        # 2. Export the Vision-compatible .txt classification. This used to
+        # write "id path/" with no All/ root and one space, which does not
+        # match Vision's format (PLAN.md Q24).
         txt_output_path = output_path.replace(".tsv", ".txt")
-        lines_to_write = []
-
-        def recurse_extract(item, current_path):
-            for i in range(item.rowCount()):
-                child = item.child(i)
-                cluster_id = child.data(Qt.ItemDataRole.UserRole)
-                if cluster_id is not None:
-                    # Format: "VisionID Path/" (Note: VisionID is cluster_id + 1)
-                    lines_to_write.append(f"{cluster_id + 1} {current_path}")
-                else:
-                    if child.text() != "Unclassified":
-                        recurse_extract(child, f"{current_path}{child.text()}/")
-
-        recurse_extract(main_window.tree_model.invisibleRootItem(), "")
-
         with open(txt_output_path, "w") as f:
-            f.write("\n".join(lines_to_write))
+            f.write("\n".join(vision_classification_lines(main_window)) + "\n")
 
         main_window.status_bar.showMessage("Saved: .tsv, .json, and Vision .txt", 5000)
     except Exception as e:
@@ -2104,8 +2122,10 @@ def load_classification_file(main_window: MainWindow):
                 elif classification_path == "All":
                     classification_path = ""
 
-                # Convert vision_id (1-indexed) to cluster_id (0-indexed)
-                cluster_id = vision_id - 1
+                # Vision id -> UI cluster id through the one canonical
+                # translation (AGENTS.md Law 1). A hard-coded "- 1" was wrong
+                # in Vision-only sessions, where the ids are not offset.
+                cluster_id = main_window.data_manager.get_cluster_id_for_vision(vision_id)
                 classifications[cluster_id] = classification_path
 
         # Update the tree view based on classifications
@@ -2226,48 +2246,7 @@ def save_classification_to_file(main_window: MainWindow):
 
     recent_paths.remember_dir(file_path, "classification")
 
-    lines_to_write = []
-
-    # Recursive helper to walk the tree
-    def recurse_tree(item, current_path):
-        for i in range(item.rowCount()):
-            child = item.child(i)
-            cluster_id = child.data(Qt.ItemDataRole.UserRole)
-
-            if cluster_id is not None:
-                # Leaf Node (Cluster) -> Write ID and Path
-                # Vision ID is cluster_id + 1
-                vision_id = (
-                    cluster_id
-                    if getattr(main_window.data_manager, "is_vision_only", False)
-                    else cluster_id + 1
-                )
-
-                # Ensure path starts with "All/"
-                final_path = current_path
-                if not final_path.startswith("All/"):
-                    if final_path:  # if there's already a path, prepend All/
-                        final_path = f"All/{final_path}"
-                    else:  # if path is completely empty, just make it All/
-                        final_path = "All/"
-
-                # Format requires TWO spaces between ID and the path
-                lines_to_write.append(f"{vision_id}  {final_path}")
-
-            else:
-                # Group Node -> Recurse deeper
-                group_name = child.text()
-
-                # Skip root 'Unclassified' group if desired
-                if group_name == "Unclassified":
-                    continue
-
-                # Build path (e.g., "ON" -> "ON/")
-                new_path = f"{current_path}{group_name}/"
-                recurse_tree(child, new_path)
-
-    # Start recursion from root
-    recurse_tree(main_window.tree_model.invisibleRootItem(), "")
+    lines_to_write = vision_classification_lines(main_window)
 
     # Write to file
     try:

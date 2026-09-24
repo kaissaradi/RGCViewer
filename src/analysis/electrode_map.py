@@ -2145,7 +2145,12 @@ def get_litke_array_adj_mat_by_array_id(array_id):
 
 def get_disconnected_electrode_set_by_array_id(array_id):
     array_type = determine_array_type(array_id)
-    if array_type == LitkeArrayType.LITKE_519_ARRAY_120UM or LitkeArrayType.LITKE_519_ARRAY_30UM:
+    # Was `x == A or B`. B (LITKE_519_ARRAY_30UM) is the int 0, so the test
+    # was only ever true for the 120 um board. Nothing in Encore reads the
+    # disconnected set today (GlobalsFileReader stores it), so this has had
+    # no visible effect.
+    if array_type in (LitkeArrayType.LITKE_519_ARRAY_120UM,
+                      LitkeArrayType.LITKE_519_ARRAY_30UM):
         return {0, 129, 258, 259, 388, 389, 518}
     else:
         return set()

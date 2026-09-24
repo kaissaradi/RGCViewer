@@ -41,10 +41,10 @@ Status: `done` = fixed and verified; `open` = not started; `wip` = started.
 | Q18 | Feature-extraction scatters have more contrast than the population view | Tester | open | |
 | Q19 | Loading indicator wrong on dataset reload | Lab meeting | open | |
 | Q20 | RF y-axis flip vs stimulus | Tester | open | `main` looks consistent after `5903177`. Confirm the reporter's version, then check on real data. |
-| Q21 | Mosaic click-to-select fails when the table view is active | Audit | open | `_select_cluster_in_table` reads `source._data`; the model has `_dataframe`. `_select_table_cluster_id` works. |
-| Q22 | Small bugs | Audit | open | `electrode_map.py:2146` `or` with enum 0; `callbacks.py:1195` `summary_tab` does not exist; legacy classification save/load always applies ±1 (wrong in Vision-only); bare `except` makes a failed CCG show the ACG. |
+| Q21 | Mosaic click-to-select fails when the table view is active | Audit | done | `_select_cluster_in_table` and the tree→table sync read a `_data` attribute the model does not have; both now use `_select_table_cluster_id`. `_is_syncing` is released in `finally`. Harness `selection_sync`. |
+| Q22 | Small bugs | Audit | done | `summary_tab` slot → now redraws the EI panel; EI panel says why it is empty with no Vision EI and no raw file; `electrode_map` enum `or` fixed (set is unused today); classification save/load go through `get_vision_id_for_cluster` / `get_cluster_id_for_vision`; a failed CCG says so in the plot title. NEW: `src/gui/crash_guard.py` — PyQt6 aborts (SIGABRT, exit 134) on any exception in a slot; the guard logs to `~/.encore/logs/errors.log` and the status bar instead. Tests `test_crash_guard_and_small_fixes.py`. |
 | Q23 | Population spike-rate plots like Vision | Tester | open | |
-| Q24 | Classification file structure matches Vision | Tester | open | High priority for the lab. |
+| Q24 | Classification file structure matches Vision | Tester | wip | File ▸ Save wrote `id path/` (no `All/`, one space); both exports now share `vision_classification_lines` → `id  All/path/`, the format of `data017.classificationYT.txt`. Ask tester what else "match Vision" means. |
 | Q25 | Tooltip for "RF short vs long" | Tester | open | |
 | Q26 | Vision fits at the lower bound (σx = σy = 1.00) show as real fits | Audit | open | 7.6% of cells on 20251212A/data018. Flag them. |
 | Q27 | Infra: CI, pinned dependencies, installer preflight (dirty tree, branch, venv Python), prune the unit suite | User | open | No `.github/workflows`. Deps unpinned. Docs name a missing `CLAUDE.md`, `environment.yml`, `requirements-dev.txt`. |

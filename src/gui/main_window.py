@@ -2078,43 +2078,14 @@ class MainWindow(QMainWindow):
         return True
 
     def _select_cluster_in_table(self, cluster_id) -> bool:
-        view_model = self.table_view.model()
-        if view_model is None:
-            return False
-        # The view holds the sort/filter proxy; the frame lives on the source.
-        source = (
-            view_model.sourceModel()
-            if hasattr(view_model, "sourceModel")
-            else view_model
-        )
-        if source is None or not hasattr(source, "_data"):
-            return False
-
-        df = source._data
-        if "cluster_id" not in df or cluster_id not in df["cluster_id"].values:
-            return False
-
-        row_labels = df.index[df["cluster_id"] == cluster_id].tolist()
-        if not row_labels:
-            return False
-        source_index = source.index(df.index.get_loc(row_labels[0]), 0)
-        view_index = (
-            view_model.mapFromSource(source_index)
-            if view_model is not source
-            else source_index
-        )
-        if not view_index.isValid():
-            # Filtered out of the table right now — fall back to the tree.
-            return self._select_cluster_in_tree(cluster_id)
-
-        self.table_view.setCurrentIndex(view_index)
-        self.table_view.selectionModel().select(
-            view_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
-        )
-        self.table_view.scrollTo(
-            view_index, QAbstractItemView.ScrollHint.PositionAtCenter
-        )
-        return True
+        # Goes through _select_table_cluster_id, which reads the source
+        # model's _dataframe. This used to read a `_data` attribute that the
+        # table model does not have, so it always returned False and a mosaic
+        # click with the table view active selected nothing (PLAN.md Q21).
+        if self._select_table_cluster_id(cluster_id):
+            return True
+        # Filtered out of the table right now — fall back to the tree.
+        return self._select_cluster_in_tree(cluster_id)
 
     def _switch_left_view(self, index):
         """Switches between the tree (0) and table (1) views in the left pane."""
@@ -2804,10 +2775,10 @@ class MainWindow(QMainWindow):
         """
         model = self.table_view.model()
         if model is None or self.main_cluster_model is None:
-            return
+            return False
         df = getattr(self.main_cluster_model, "_dataframe", None)
         if df is None or "cluster_id" not in df.columns:
-            return
+            return False
         target = int(cluster_id)
         source_row = None
         for row, value in enumerate(df["cluster_id"].to_numpy()):
@@ -2818,7 +2789,7 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 continue
         if source_row is None:
-            return
+            return False
         source_index = self.main_cluster_model.index(int(source_row), 0)
         view_index = (
             model.mapFromSource(source_index)
@@ -2826,16 +2797,17 @@ class MainWindow(QMainWindow):
             else source_index
         )
         if not view_index.isValid():
-            return
+            return False
         selection_model = self.table_view.selectionModel()
         if selection_model is None:
-            return
+            return False
         self.table_view.setCurrentIndex(view_index)
         selection_model.select(
             view_index,
             QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
         )
         self.table_view.scrollTo(view_index, QAbstractItemView.EnsureVisible)
+        return True
 
     def _refresh_tree_channels(self):
         """Write best_chan into tree column 2 without rebuilding the tree."""
@@ -3057,66 +3029,43 @@ class MainWindow(QMainWindow):
             return
 
         self._is_syncing = True
+        try:
+            cluster_id = self._get_selected_cluster_id()
+            sender = self.sender()
 
-        cluster_id = self._get_selected_cluster_id()
-        sender = self.sender()
-
-        if cluster_id is not None:
-            # Sync from Tree to Table
-            if sender == self.tree_view.selectionModel():
-                model = self.table_view.model()
-                if hasattr(model, "_data"):
-                    df = model._data
-                    if cluster_id in df["cluster_id"].values:
-                        row_indices = df.index[df["cluster_id"] == cluster_id].tolist()
-                        if row_indices:
-                            model_row = df.index.get_loc(row_indices[0])
-                            source_index = model.index(model_row, 0)
-                            # This assumes the model is a proxy model if
-                            # sorting is enabled
-                            view_index = (
-                                model.mapFromSource(source_index)
-                                if hasattr(model, "mapFromSource")
-                                else source_index
-                            )
-                            if view_index.isValid():
-                                self.table_view.selectionModel().select(
-                                    view_index,
-                                    QItemSelectionModel.ClearAndSelect
-                                    | QItemSelectionModel.Rows,
-                                )
-                                self.table_view.scrollTo(
-                                    view_index,
-                                    QAbstractItemView.ScrollHint.PositionAtCenter,
-                                )
-
-            # Sync from Table to Tree
-            elif sender == self.table_view.selectionModel():
-                # Use Qt's highly optimized, built-in recursive match
-                start_index = self.tree_model.index(0, 0)
-                matches = self.tree_model.match(
-                    start_index,
-                    Qt.ItemDataRole.UserRole,  # What role to search (Cluster ID)
-                    cluster_id,  # What value to look for
-                    1,  # Stop after 1 match is found
-                    Qt.MatchExactly
-                    | Qt.MatchRecursive,  # Tell it to search sub-folders
-                )
-
-                if matches:
-                    index = matches[0]
-                    self.tree_view.selectionModel().select(
-                        index,
-                        QItemSelectionModel.ClearAndSelect
-                        | QItemSelectionModel.Rows,
+            if cluster_id is not None:
+                if sender == self.tree_view.selectionModel():
+                    # Tree -> table. This path used to test the proxy for a
+                    # `_data` attribute it does not have, so the table never
+                    # followed the tree (PLAN.md Q21).
+                    self._select_table_cluster_id(cluster_id)
+                elif sender == self.table_view.selectionModel():
+                    # Table -> tree, with Qt's recursive match.
+                    start_index = self.tree_model.index(0, 0)
+                    matches = self.tree_model.match(
+                        start_index,
+                        Qt.ItemDataRole.UserRole,
+                        cluster_id,
+                        1,
+                        Qt.MatchExactly | Qt.MatchRecursive,
                     )
-                    self.tree_view.scrollTo(
-                        index, QAbstractItemView.ScrollHint.PositionAtCenter
-                    )
+                    if matches:
+                        index = matches[0]
+                        self.tree_view.selectionModel().select(
+                            index,
+                            QItemSelectionModel.ClearAndSelect
+                            | QItemSelectionModel.Rows,
+                        )
+                        self.tree_view.scrollTo(
+                            index, QAbstractItemView.ScrollHint.PositionAtCenter
+                        )
 
-        # Now that views are synced, trigger the update callbacks
-        callbacks.on_cluster_selection_changed(self)
-        self._is_syncing = False
+            # Now that views are synced, trigger the update callbacks
+            callbacks.on_cluster_selection_changed(self)
+        finally:
+            # Always released: an exception downstream used to leave this
+            # True and silently swallow every later selection.
+            self._is_syncing = False
 
         self.similarity_panel.reset_spacebar_counter()
 
