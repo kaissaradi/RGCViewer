@@ -39,6 +39,8 @@ from qt_bootstrap import prefer_bundled_qt  # noqa: E402
 
 prefer_bundled_qt()
 from qtpy.QtWidgets import QApplication  # noqa: E402
+from qtpy.QtCore import Qt  # noqa: E402
+import numpy as np  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -249,6 +251,29 @@ def scenario_grating(s):
         pump(0.5)
         s.shot("manual_condition", p)
         log("manual pick -> " + p.stats_label.text()[:120])
+
+
+def scenario_grating_table(s):
+    """Q7: DS/OS, DSI, OSI columns fill after the batch and follow the slider."""
+    from collections import Counter
+    s.load()
+    dm = s.dm()
+    wait_until(lambda: getattr(s.w, "_grating_batch_thread", None) is None, 300)
+    pump(1.0)
+    df = dm.cluster_df
+    log(json.dumps({"has_cols": all(c in df.columns for c in ("dsos", "dsi", "osi")),
+                    "calls": Counter(df["dsos"]) if "dsos" in df else None,
+                    "dsi_filled": int(np.isfinite(df["dsi"]).sum()) if "dsi" in df else 0}))
+    model = s.w.table_view.model()
+    headers = [model.headerData(i, Qt.Horizontal, Qt.DisplayRole)
+               for i in range(model.columnCount())]
+    log("headers: " + ", ".join(str(h) for h in headers))
+    s.w.pop_dsos_threshold_slider.setValue(60)
+    pump(1.0)
+    log(json.dumps({"calls_at_0.60": Counter(dm.cluster_df["dsos"])}))
+    s.w._switch_left_view(1)
+    pump(0.5)
+    s.shot("table", s.w)
 
 
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()

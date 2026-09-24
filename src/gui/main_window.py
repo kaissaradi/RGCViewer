@@ -102,6 +102,34 @@ logger = logging.getLogger(__name__)
 SIDEBAR_COLLAPSED_WIDTH = 22
 
 
+# Table column header labels (keeps internal df names intact). Copied per
+# use: _apply_chirp_qi_context adds the chirp_qi label to the copy.
+TABLE_HEADER_LABELS = {
+    "cluster_id": "ID",
+    "n_spikes": "# Spikes",
+    "best_chan": "Ch",
+    "group": "Folder",
+    "chirp_onoff": "ON/OFF",
+    "sta_snr": "STA SNR",
+    "dsos": "DS/OS",
+    "dsi": "DSI",
+    "osi": "OSI",
+    "KSLabel": "KS Label",
+    "isi_violations_pct": "ISI Viol%",
+    "contam_pct": "Contam%",
+    "amp_median": "Amp (µV)",
+    "firing_rate_hz": "FR (Hz)",
+    "template_amp": "Tpl Amp",
+    "max_dup_r": "Max Dup R",
+    "potential_dups": "Dup?",
+    "cell_type": "Type",
+    "status": "Status",
+    "x_um": "X (µm)",
+    "y_um": "Y (µm)",
+    "set": "Set",
+}
+
+
 class MainWindow(QMainWindow):
     # Emitted from the _warm_physics background thread (a plain
     # threading.Thread, not a QThread) once physics-cache warming
@@ -1955,6 +1983,16 @@ class MainWindow(QMainWindow):
         self.dsos_threshold = slider_value / 100.0
         self.pop_dsos_threshold_label.setText(f"{self.dsos_threshold:.2f}")
 
+        # The table's DS/OS column follows the slider. A table rebuild is too
+        # heavy for every slider step, so it waits until the slider settles.
+        timer = getattr(self, "_dsos_table_timer", None)
+        if timer is None:
+            timer = self._dsos_table_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(400)
+            timer.timeout.connect(lambda: callbacks.refresh_grating_columns(self))
+        timer.start()
+
         # The grating panel label used to stay at the 0.3 default until the
         # user re-clicked the cell. Refresh it if a cluster is already up.
         gp = getattr(self, "grating_panel", None)
@@ -2502,27 +2540,7 @@ class MainWindow(QMainWindow):
         proxy = self._install_table_proxy(model)
 
         # Column header labels override (keeps internal df names intact)
-        HEADER_LABELS = {
-            "cluster_id": "ID",
-            "n_spikes": "# Spikes",
-            "best_chan": "Ch",
-            "group": "Folder",
-            "chirp_onoff": "ON/OFF",
-            "sta_snr": "STA SNR",
-            "KSLabel": "KS Label",
-            "isi_violations_pct": "ISI Viol%",
-            "contam_pct": "Contam%",
-            "amp_median": "Amp (µV)",
-            "firing_rate_hz": "FR (Hz)",
-            "template_amp": "Tpl Amp",
-            "max_dup_r": "Max Dup R",
-            "potential_dups": "Dup?",
-            "cell_type": "Type",
-            "status": "Status",
-            "x_um": "X (µm)",
-            "y_um": "Y (µm)",
-            "set": "Set",
-        }
+        HEADER_LABELS = dict(TABLE_HEADER_LABELS)
         self._apply_chirp_qi_context(model, HEADER_LABELS)
 
         df_cols = list(model._dataframe.columns)
@@ -2599,6 +2617,9 @@ class MainWindow(QMainWindow):
             "chirp_qi",  # sits with the other per-unit quality metrics
             "chirp_onoff",  # polarity, beside the quality index it pairs with
             "sta_snr",      # the other per-unit quality metric
+            "dsos",         # grating DS/OS call at the population threshold
+            "dsi",
+            "osi",
             "amp_median",
             "firing_rate_hz",
             "template_amp",
@@ -2683,27 +2704,7 @@ class MainWindow(QMainWindow):
 
         # Re-apply header labels
         new_df_cols = list(df.columns)
-        HEADER_LABELS = {
-            "cluster_id": "ID",
-            "n_spikes": "# Spikes",
-            "best_chan": "Ch",
-            "group": "Folder",
-            "chirp_onoff": "ON/OFF",
-            "sta_snr": "STA SNR",
-            "KSLabel": "KS Label",
-            "isi_violations_pct": "ISI Viol%",
-            "contam_pct": "Contam%",
-            "amp_median": "Amp (µV)",
-            "firing_rate_hz": "FR (Hz)",
-            "template_amp": "Tpl Amp",
-            "max_dup_r": "Max Dup R",
-            "potential_dups": "Dup?",
-            "cell_type": "Type",
-            "status": "Status",
-            "x_um": "X (µm)",
-            "y_um": "Y (µm)",
-            "set": "Set",
-        }
+        HEADER_LABELS = dict(TABLE_HEADER_LABELS)
         self._apply_chirp_qi_context(model, HEADER_LABELS)
         model._header_overrides = {}
         _orig = model.headerData

@@ -5047,6 +5047,63 @@ class DataManager(QObject):
         return True
 
     # ------------------------------------------------------------------
+    # Grating DS/OS columns
+    # ------------------------------------------------------------------
+
+    GRATING_TABLE_COLUMNS = ("dsos", "dsi", "osi")
+
+    def attach_grating_columns(self, dsos_threshold=None) -> bool:
+        """Write the DS/OS call, DSI and OSI into ``cluster_df``.
+
+        Uses the Grating tab's "Auto" condition: the strongest significant
+        condition, or the largest |DSI| when nothing passes, so the table and
+        the tab show the same numbers. ``dsos`` is "DS", "OS" or "" at the
+        population slider's threshold. DSI/OSI do not depend on the threshold.
+
+        On a raw-only run the batch fills the cache after the dataset opens;
+        cells not computed yet get NaN / "". Call again when it finishes.
+        Returns False (cluster_df untouched) when there is no grating data.
+        """
+        if not getattr(self, "grating_available", False):
+            return False
+        if self.cluster_df is None or self.cluster_df.empty:
+            return False
+        from . import grating_calc
+
+        thr = grating_calc.DSI_THRESHOLD if dsos_threshold is None else float(dsos_threshold)
+        n = len(self.cluster_df)
+        calls = [""] * n
+        dsi = np.full(n, np.nan)
+        osi = np.full(n, np.nan)
+        for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
+            data = self.get_grating_data_for_cluster(int(cid))
+            if not data:
+                continue
+            sel = grating_calc.select_best_dsos_condition(
+                data, dsi_threshold=thr, osi_threshold=thr)
+            if sel is None:
+                continue
+            cond = sel["condition"]
+            if cond is None:
+                conds = [c for c in data if isinstance(c, tuple)
+                         and data[c].get("condition_type") == "dsos"]
+                finite = [c for c in conds if np.isfinite(data[c].get("DSI", np.nan))]
+                if not finite:
+                    continue
+                cond = max(finite, key=lambda c: abs(data[c]["DSI"]))
+            else:
+                calls[i] = sel["classification"]
+            dsi[i] = data[cond].get("DSI", np.nan)
+            osi[i] = data[cond].get("OSI", np.nan)
+
+        if getattr(self.cluster_df, "_is_copy", None) is not None:
+            self.cluster_df = self.cluster_df.copy()
+        self.cluster_df.loc[:, "dsos"] = calls
+        self.cluster_df.loc[:, "dsi"] = dsi
+        self.cluster_df.loc[:, "osi"] = osi
+        return True
+
+    # ------------------------------------------------------------------
     # STA quality
     # ------------------------------------------------------------------
 

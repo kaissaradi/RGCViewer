@@ -429,6 +429,7 @@ def _finalize_dataset_load(main_window):
             fn()
         except Exception:
             logger.warning("%s failed during load finalize", attach, exc_info=True)
+    _attach_grating_columns(main_window)
 
     if hasattr(main_window, "refresh_table_model"):
         main_window.refresh_table_model()
@@ -863,6 +864,25 @@ def rebuild_physics_cache(main_window):
     main_window.status_bar.showMessage("Rebuilding physics cache...", 5000)
 
 
+def _attach_grating_columns(main_window):
+    """DS/OS, DSI and OSI table columns at the population slider threshold."""
+    dm = getattr(main_window, "data_manager", None)
+    fn = getattr(dm, "attach_grating_columns", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(getattr(main_window, "dsos_threshold", None)))
+    except Exception:
+        logger.warning("attach_grating_columns failed", exc_info=True)
+        return False
+
+
+def refresh_grating_columns(main_window):
+    """Recompute the grating columns and rebuild the table (keeps sort/selection)."""
+    if _attach_grating_columns(main_window) and hasattr(main_window, "refresh_table_model"):
+        main_window.refresh_table_model()
+
+
 def maybe_fill_grating_cache(main_window, cluster_ids=None):
     """Background DSI/OSI for cells that are not already cached.
 
@@ -914,6 +934,9 @@ def _start_grating_batch(main_window, cluster_ids):
         dm = getattr(main_window, "data_manager", None)
         if dm is not None:
             dm.save_standard_plot_cache()
+        # The table's DS/OS columns were blank for cells the batch had not
+        # reached yet when the dataset opened.
+        refresh_grating_columns(main_window)
         if getattr(main_window, "population_view_enabled", False):
             canvas = getattr(main_window, "pop_mosaic_canvas", None)
             if canvas is not None and hasattr(canvas, "_pop_plot_state"):
