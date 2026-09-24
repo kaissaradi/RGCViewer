@@ -163,4 +163,4 @@ def test_trial_rasters_align_to_each_onset_in_seconds():
     assert set(k for k in r if k != "_timing") == {0.0, 90.0}
     assert [list(x) for x in r[0.0]] == [[0.0, 0.5], [1.0]]   # 0° and 360° merged
     assert list(r[90.0][0]) == [0.0]
-    assert r["_timing"] == {"pre_s": 0.25, "stim_s": 1.0}
+    assert r["_timing"] == {"pre_s": 0.25, "stim_s": 1.0, "tail_s": 0.25}

@@ -81,14 +81,3 @@ def test_missing_pvalue_does_not_hide_analyzed_files():
     entry["OSI_pvalue"] = np.nan
     sel = select_best_dsos_condition({(100.0, 2.0): entry})
     assert sel["classification"] == "DS"
-
-
-def test_compass_cells_are_unique_for_twelve_directions():
-    """12×30° gratings used to map two dirs onto each corner cell."""
-    from src.gui.panels.grating_panel import assign_directions_to_compass
-
-    dirs = np.arange(0.0, 360.0, 30.0)
-    assigned = assign_directions_to_compass(dirs)
-    cells = [cell for cell, _d in assigned]
-    assert len(cells) == len(set(cells))
-    assert len(assigned) == 8

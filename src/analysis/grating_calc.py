@@ -292,24 +292,27 @@ def trial_rasters(spike_times_by_trial_for_cell, trial_parameters, condition):
     Returns ``{direction_deg: [spike times in s from stimulus onset, ...]}``
     with one array per trial, in presentation order, or ``{}`` if the
     condition did not run. Directions are normalized to [0, 360).
-    ``pre_s`` / ``stim_s`` in the returned ``"_timing"`` entry give the
-    shared pre-stimulus and stimulus durations (the shortest across trials).
+    ``pre_s`` / ``stim_s`` / ``tail_s`` in the returned ``"_timing"`` entry
+    give the shared pre-stimulus, stimulus and tail durations (the shortest
+    across trials; tail is 0 when the protocol does not record it).
     """
     bw, tf = (float(condition[0]), float(condition[1]))
     by_dir = defaultdict(list)
-    pres, stims = [], []
+    pres, stims, tails = [], [], []
     for i, t in enumerate(trial_parameters):
         if float(t["barWidth"]) != bw or float(t["temporalFrequency"]) != tf:
             continue
         pre = float(t["preTime"])
         pres.append(pre)
         stims.append(float(t["stimTime"]))
+        tails.append(float(t.get("tailTime", 0.0) or 0.0))
         sp = np.asarray(spike_times_by_trial_for_cell[i], dtype=np.float64)
         by_dir[normalize_direction(t["orientation"])].append((sp - pre) / 1000.0)
     if not by_dir:
         return {}
     out = dict(sorted(by_dir.items()))
-    out["_timing"] = {"pre_s": min(pres) / 1000.0, "stim_s": min(stims) / 1000.0}
+    out["_timing"] = {"pre_s": min(pres) / 1000.0, "stim_s": min(stims) / 1000.0,
+                      "tail_s": min(tails) / 1000.0}
     return out
 
 

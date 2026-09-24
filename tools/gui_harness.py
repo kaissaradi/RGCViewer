@@ -199,6 +199,58 @@ def scenario_sta_modes(s):
         s.shot("no_sta_after_animation", p)
 
 
+def scenario_grating(s):
+    """Q6/Q8/Q10: batch timing, rasters, error bars, units, condition picker."""
+    from src.analysis import grating_calc
+    t_load = time.time()
+    s.load()
+    dm = s.dm()
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    log(f"grating_status={dm.grating_status}")
+
+    def n_current():
+        cache = dm.grating_computed_cache or {}
+        return sum(1 for c in ids if c in cache
+                   and not grating_calc.grating_entry_needs_recompute(cache[c]))
+    n_raw = len((dm.grating_raw_data or {}).get("spike_times_by_trial", {}))
+    wait_until(lambda: n_current() >= min(n_raw, len(ids)) or
+               getattr(s.w, "_grating_batch_thread", None) is None, 300)
+    log(f"grating batch: {n_current()} current rows, "
+        f"{time.time() - t_load:.1f}s after load start; "
+        f"physics done {getattr(dm, '_physics_done_count', 0)}/{len(ids)}")
+
+    by_cls = {}
+    for c in ids:
+        e = dm.get_grating_data_for_cluster(c)
+        if not e:
+            continue
+        sel = grating_calc.select_best_dsos_condition(e)
+        if sel:
+            by_cls.setdefault(sel["classification"], []).append(c)
+    log(json.dumps({k: len(v) for k, v in by_cls.items()}))
+
+    s.tab("Grating")
+    p = s.w.grating_panel
+    for cls in ("DS", "OS", "none"):
+        if not by_cls.get(cls):
+            continue
+        c = by_cls[cls][0]
+        s.select(c, settle=1.0)
+        n_rasters = sum(1 for plot, _r, _t in p.raster_view._pool if plot.isVisible())
+        log(json.dumps({"cls": cls, "cid": c, "stats": p.stats_label.text()[:120],
+                        "rasters": n_rasters,
+                        "combo": [p.condition_combo.itemText(i)
+                                  for i in range(p.condition_combo.count())]}))
+        s.shot(f"{cls}_{c}", p)
+    # Pick the non-best condition by hand, and check it sticks to the next cell.
+    if p.condition_combo.count() > 2:
+        p.condition_combo.setCurrentIndex(2)
+        p.condition_combo.activated.emit(2)
+        pump(0.5)
+        s.shot("manual_condition", p)
+        log("manual pick -> " + p.stats_label.text()[:120])
+
+
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()
              if k.startswith("scenario_")}
 

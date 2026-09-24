@@ -5,6 +5,7 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import QThread, Qt
 from qtpy.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QStackedLayout,
@@ -15,6 +16,7 @@ from qtpy.QtWidgets import (
 from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
 from ..workers.workers import GratingComputeWorker
 from ...analysis import grating_calc
+from .polar_raster_view import PolarRasterView
 
 logger = logging.getLogger(__name__)
 
@@ -36,36 +38,6 @@ _CONDITION_COLORS = [
 ]
 _SHADOW_ALPHA = 70  # 0-255, applied to non-best condition traces
 _BEST_ALPHA = 255
-
-
-# 3x3 compass: 0° right, 90° top. Center (1,1) stays empty.
-_COMPASS_CELLS = {
-    0: (1, 2),
-    45: (0, 2),
-    90: (0, 1),
-    135: (0, 0),
-    180: (1, 0),
-    225: (2, 0),
-    270: (2, 1),
-    315: (2, 2),
-}
-
-
-def assign_directions_to_compass(directions_deg):
-    """One PSTH per compass cell. 12×30° gratings used to collide on corners."""
-    dirs = np.asarray(directions_deg, dtype=float)
-    if dirs.size == 0:
-        return []
-    compass = np.array(list(_COMPASS_CELLS.keys()), dtype=float)
-    claimed = {}
-    for d in dirs:
-        nearest = compass[np.argmin(np.abs(((compass - d + 180.0) % 360.0) - 180.0))]
-        cell = _COMPASS_CELLS[int(nearest)]
-        dist = abs(((nearest - d + 180.0) % 360.0) - 180.0)
-        prev = claimed.get(cell)
-        if prev is None or dist < prev[1]:
-            claimed[cell] = (float(d), dist)
-    return [(cell, pair[0]) for cell, pair in claimed.items()]
 
 
 def select_dsos_for_display(data, dsos_threshold=None):
@@ -131,6 +103,18 @@ class GratingPanel(QWidget):
         )
         header.addWidget(title)
         header.addStretch()
+        # Which (bw, tf) the stats, rasters and error bars describe. "Auto"
+        # follows select_best_dsos_condition. A manual pick sticks across
+        # cells while that condition exists, so one condition can be scanned.
+        header.addWidget(QLabel("Condition:"))
+        self.condition_combo = QComboBox()
+        self.condition_combo.setToolTip(
+            "Condition shown in the stats line, rasters and error bars.\n"
+            "Auto = the strongest significant condition for this cell."
+        )
+        self.condition_combo.activated.connect(self._on_condition_picked)
+        header.addWidget(self.condition_combo)
+        self._condition_override = None
         data_layout.addLayout(header)
 
         # Condition legend — replaces the old dropdown. All conditions are
@@ -160,7 +144,11 @@ class GratingPanel(QWidget):
             pen=pg.mkPen(colors.get("plot_compare", "r"), width=2, style=Qt.DashLine)
         )
         self.polar_plot.addItem(self._polar_pref_line)
-        plots_row.addWidget(self.polar_plot, stretch=1)
+        # Polar plot framed by one spike raster per direction (replaces the
+        # 3x3 PSTH grid, which could hold only 8 directions and dropped the
+        # rest of a 12-direction run).
+        self.raster_view = PolarRasterView(self.polar_plot, colors)
+        plots_row.addWidget(self.raster_view, stretch=3)
 
         self.hist_plot = pg.PlotWidget()
         self.hist_plot.setLabel("bottom", "Direction (deg)")
@@ -169,35 +157,18 @@ class GratingPanel(QWidget):
         self._hist_bar_item = (
             None  # BarGraphItem for the best condition, rebuilt per cluster
         )
+        self._hist_error_item = None  # ±1 SD for the shown condition
         self._hist_shadow_curves = (
             []
         )  # PlotCurveItems for non-best conditions, rebuilt per cluster
-        plots_row.addWidget(self.hist_plot, stretch=1)
+        plots_row.addWidget(self.hist_plot, stretch=2)
 
-        data_layout.addLayout(plots_row, stretch=3)
+        data_layout.addLayout(plots_row, stretch=4)
 
-        # Per-direction PSTH grid — replaces the old single-trace "firing
-        # rate @ preferred direction" strip. That strip only ever showed
-        # ONE direction and threw away psth_by_direction for every other
-        # direction, which was already being computed. This shows all of
-        # them at once, arranged compass-style (direction angle -> grid
-        # position) so the spatial layout itself communicates the tuning
-        # shape, not just a single scalar-adjacent curve. Shared y-axis
-        # across all subplots is required — without it a flat noisy
-        # direction can look as "big" as a real response, which is the
-        # same amplitude-blind illusion that caused the DSI selection bug.
-        psth_label = QLabel(
-            f"<span style='color:{colors['text_tertiary']}; font-size:9px;'>"
-            f"PER-DIRECTION PSTH (best condition)</span>"
-        )
-        data_layout.addWidget(psth_label)
-        self._data_layout = (
-            data_layout  # kept so _clear_psth_grid can swap the widget in place
-        )
-        self.psth_grid_widget = pg.GraphicsLayoutWidget()
-        self.psth_grid_widget.setBackground(colors["bg_panel"])
-        self._psth_grid_plots = {}  # direction_deg -> PlotItem, rebuilt per cluster
-        data_layout.addWidget(self.psth_grid_widget, stretch=2)
+        # What the rings, bars and error bars mean, in words and units.
+        self.units_label = QLabel("")
+        self.units_label.setWordWrap(True)
+        data_layout.addWidget(self.units_label)
 
         # Bar-width / SF tuning curve — always visible when present,
         # independent of the dsos overlay (it's an aggregate view across
@@ -253,7 +224,7 @@ class GratingPanel(QWidget):
         self._style_plot(self.polar_plot, colors)
         self._style_plot(self.hist_plot, colors)
         self._style_plot(self.sf_plot, colors)
-        self.psth_grid_widget.setBackground(colors["bg_panel"])
+        self.raster_view.restyle(colors)
         self._polar_pref_line.setPen(
             pg.mkPen(
                 colors.get("plot_compare", "r"),
@@ -361,12 +332,6 @@ class GratingPanel(QWidget):
             plot.clear()
             if hasattr(plot, "close"):
                 plot.close()
-        # Not calling .clear() here — see _clear_psth_grid for why
-        # GraphicsLayout.clear()/removeItem() are unreliable with this
-        # grid's reuse pattern. At teardown we're destroying the whole
-        # widget anyway, so just close it directly; nothing needs to
-        # survive this call.
-        self.psth_grid_widget.close()
 
     def closeEvent(self, event):
         self.cleanup()
@@ -420,63 +385,167 @@ class GratingPanel(QWidget):
                 "No direction-tuning conditions found for this cluster."
             )
             self.legend_label.setText("")
+            self.units_label.setText("")
+            self._populate_condition_combo([], None, data)
             self._clear_polar()
             self._clear_hist()
-            self._clear_psth_grid()
+            self.raster_view.clear_rasters()
             return
 
         if selection["condition"] is not None:
             # Something passed the gate — use it, and its own classification.
-            display_cond = selection["condition"]
+            auto_cond = selection["condition"]
             classification = selection["classification"]
-            dsi = selection["DSI"]
-            osi = selection["OSI"]
-            pref_dir = selection["preferred_direction_deg"]
-            pref_ori = selection["preferred_orientation_deg"]
-            dsi_p = selection["DSI_pvalue"]
-            osi_p = selection["OSI_pvalue"]
         else:
             # Nothing passed the gate. Still show something real: pick the
-            # condition with the highest raw |DSI| purely so the PSTH grid
+            # condition with the highest raw |DSI| purely so the rasters
             # and stats line have a condition to key off of — this is
             # display-only and does NOT feed DS/OS classification or the
             # population probe map, which stay gated. The person can look
-            # at the actual PSTH/tuning curve and judge for themselves
+            # at the actual rasters/tuning curve and judge for themselves
             # whether the response looks real despite not clearing the
             # gate, rather than the panel deciding that for them by hiding
             # the data.
             def _abs_or_neg1(v):
                 return abs(v) if np.isfinite(v) else -1.0
 
-            display_cond = max(
+            auto_cond = max(
                 dsos_conditions, key=lambda c: _abs_or_neg1(data[c].get("DSI", np.nan))
             )
             classification = "none"
-            dsi = data[display_cond].get("DSI", np.nan)
-            osi = data[display_cond].get("OSI", np.nan)
-            pref_dir = data[display_cond].get("preferred_direction_deg", np.nan)
-            pref_ori = data[display_cond].get("preferred_orientation_deg", np.nan)
-            dsi_p = data[display_cond].get("DSI_pvalue", np.nan)
-            osi_p = data[display_cond].get("OSI_pvalue", np.nan)
+
+        self._populate_condition_combo(dsos_conditions, auto_cond, data)
+        display_cond = (
+            self._condition_override
+            if self._condition_override in dsos_conditions
+            else auto_cond
+        )
+        display_entry = data[display_cond]
+        dsi = display_entry.get("DSI", np.nan)
+        osi = display_entry.get("OSI", np.nan)
+        pref_dir = display_entry.get("preferred_direction_deg", np.nan)
+        pref_ori = display_entry.get("preferred_orientation_deg", np.nan)
+        dsi_p = display_entry.get("DSI_pvalue", np.nan)
+        osi_p = display_entry.get("OSI_pvalue", np.nan)
 
         self._render_legend(dsos_conditions, display_cond, data)
         self._render_dsos_overlay(dsos_conditions, display_cond, data)
         self._render_hist(dsos_conditions, display_cond, data)
 
-        display_entry = data[display_cond]
         cond_label = grating_calc.format_condition_label(display_cond, display_entry)
         pref_angle = pref_dir if classification == "DS" else pref_ori
         if classification == "none":
             label = "[not significant]"
         else:
             label = f"[{classification}]"
+        if display_cond != auto_cond:
+            # The DS/OS label is the cell's, decided at its best condition.
+            best = grating_calc.format_condition_label(auto_cond, data[auto_cond])
+            label += f" (at {best})"
         self.stats_label.setText(
             f"{label}  Shown: {cond_label}   "
             f"DSI: {self._fmt(dsi)} (p={self._fmt(dsi_p, 3)})   "
             f"OSI: {self._fmt(osi)} (p={self._fmt(osi_p, 3)})   "
             f"Pref. {'dir' if classification == 'DS' else 'ori'}: {self._fmt(pref_angle, 0)}°"
         )
-        self._draw_direction_psth_grid(display_entry, pref_dir)
+        self._draw_pref_spoke(display_entry, pref_dir)
+        self._draw_rasters(cluster_id, display_cond, display_entry, pref_dir)
+        self._update_units_label(display_entry)
+
+    # -- Condition selector ----------------------------------------------
+    def _populate_condition_combo(self, conditions, auto_cond, data):
+        combo = self.condition_combo
+        combo.blockSignals(True)
+        combo.clear()
+        if auto_cond is not None:
+            auto_label = grating_calc.format_condition_label(auto_cond, data.get(auto_cond))
+            combo.addItem(f"Auto ({auto_label})", None)
+        for cond in conditions:
+            combo.addItem(grating_calc.format_condition_label(cond, data.get(cond)), cond)
+        index = 0
+        if self._condition_override in conditions:
+            index = 1 + conditions.index(self._condition_override)
+        combo.setCurrentIndex(index)
+        combo.setEnabled(bool(conditions))
+        combo.blockSignals(False)
+
+    def _on_condition_picked(self, index):
+        self._condition_override = self.condition_combo.itemData(index)
+        if self._current_cluster_id is not None and self._current_data is not None:
+            self._render_cluster_data(self._current_cluster_id, self._current_data)
+
+    # -- Error bars and units --------------------------------------------
+    @staticmethod
+    def _spread(entry):
+        """(±values, 'SD' | 'SEM') for the tuning-curve error bars, or (None, None).
+
+        SD across trials when the entry has it. Older analyzed files and v1
+        caches only stored SEM; say so rather than label SEM as SD.
+        """
+        sd = entry.get("sd_response")
+        if sd is not None:
+            return np.asarray(sd, dtype=float), "SD"
+        sem = entry.get("sem_response")
+        if sem is not None:
+            return np.asarray(sem, dtype=float), "SEM"
+        return None, None
+
+    @staticmethod
+    def _response_axis_label(entry):
+        label = entry.get("response_label") or "F1 amplitude"
+        units = entry.get("response_units") or "spikes/s"
+        return f"{label} ({units})"
+
+    def _update_units_label(self, entry):
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
+        spread, kind = self._spread(entry)
+        n = entry.get("n_trials")
+        n_txt = ""
+        if n is not None and len(n):
+            lo, hi = int(np.min(n)), int(np.max(n))
+            n_txt = f", n = {lo}" if lo == hi else f", n = {lo}–{hi}"
+        bars = (f"error bars ±1 {kind} across trials{n_txt}"
+                if kind else "no error bars (file has no trial spread)")
+        self.units_label.setText(
+            f"<span style='color:{colors['text_tertiary']}; font-size:9px;'>"
+            f"Radius and bars: {self._response_axis_label(entry)}, trial-averaged; "
+            f"{bars}. Rings mark ½ and 1× the largest response. "
+            f"Rasters: one row per trial, shading = stimulus on.</span>"
+        )
+
+    # -- Preferred-direction spoke and rasters ----------------------------
+    def _draw_pref_spoke(self, entry, pref_dir_deg):
+        if pref_dir_deg is None or not np.isfinite(pref_dir_deg):
+            self._polar_pref_line.setData([], [])
+            return
+        mean_resp = np.asarray(entry.get("mean_response", []), dtype=float)
+        r_max = np.nanmax(mean_resp) if mean_resp.size else 1.0
+        r_max = r_max if np.isfinite(r_max) and r_max > 0 else 1.0
+        theta = math.radians(pref_dir_deg)
+        self._polar_pref_line.setData(
+            [0, r_max * math.cos(theta)], [0, r_max * math.sin(theta)]
+        )
+
+    def _draw_rasters(self, cluster_id, cond, entry, pref_dir_deg):
+        dm = self.main_window.data_manager
+        raw = getattr(dm, "grating_raw_data", None)
+        trials = None
+        if raw is not None:
+            trials = raw.get("spike_times_by_trial", {}).get(int(cluster_id))
+        if trials is None:
+            self.raster_view.clear_rasters(
+                "Rasters need per-trial spikes (the raw grating file). "
+                "This run only has analysed DS/OS values."
+            )
+            return
+        rasters = grating_calc.trial_rasters(trials, raw["trial_parameters"], cond)
+        timing = rasters.pop("_timing", {})
+        highlight = None
+        dirs = np.asarray(entry.get("directions_deg", []), dtype=float)
+        if dirs.size and pref_dir_deg is not None and np.isfinite(pref_dir_deg):
+            gap = np.abs(((dirs - pref_dir_deg + 180.0) % 360.0) - 180.0)
+            highlight = float(dirs[int(np.argmin(gap))])
+        self.raster_view.set_rasters(rasters, timing, highlight_dir=highlight)
 
     def _render_legend(self, conditions, best_cond, data):
         parts = []
@@ -514,6 +583,13 @@ class GratingPanel(QWidget):
             resp = np.asarray(data[cond].get("mean_response", []), dtype=float)
             if resp.size and np.any(np.isfinite(resp)):
                 r_max = max(r_max, float(np.nanmax(resp)))
+        best_entry = data[best_cond]
+        best_resp = np.asarray(best_entry.get("mean_response", []), dtype=float)
+        spread, _kind = self._spread(best_entry)
+        if spread is not None and spread.size == best_resp.size and best_resp.size:
+            tops = np.clip(best_resp, 0, None) + np.nan_to_num(spread)
+            if np.any(np.isfinite(tops)):
+                r_max = max(r_max, float(np.nanmax(tops)))
         r_max = r_max if r_max > 0 else 1.0
 
         colors = resolve_theme_colors(self.main_window.get_current_colors())
@@ -527,6 +603,14 @@ class GratingPanel(QWidget):
             )
             self.polar_plot.addItem(ring)
             self._polar_grid_items.append(ring)
+            # Ring value, so the radius has a scale. Anchored to the left of
+            # its point so it stays inside the view; the unit is the title.
+            ring_label = pg.TextItem(
+                f"{r_max * frac:.3g}", color=colors["text_tertiary"], anchor=(1, 1))
+            ang = math.radians(22.5)
+            ring_label.setPos(r_max * frac * math.cos(ang), r_max * frac * math.sin(ang))
+            self.polar_plot.addItem(ring_label)
+            self._polar_grid_items.append(ring_label)
 
         for i, cond in enumerate(conditions):
             entry = data[cond]
@@ -554,6 +638,24 @@ class GratingPanel(QWidget):
             self.polar_plot.addItem(curve)
             self._polar_curves.append(curve)
 
+        # ±spread along each spoke of the shown condition.
+        dirs = np.asarray(best_entry.get("directions_deg", []), dtype=float)
+        if spread is not None and spread.size == dirs.size == best_resp.size and dirs.size:
+            th = np.deg2rad(dirs)
+            r = np.clip(best_resp, 0, None)
+            lo = np.clip(r - spread, 0, None)
+            hi = r + spread
+            ok = np.isfinite(lo) & np.isfinite(hi)
+            xs = np.column_stack([lo * np.cos(th), hi * np.cos(th)])[ok].ravel()
+            ys = np.column_stack([lo * np.sin(th), hi * np.sin(th)])[ok].ravel()
+            color = _CONDITION_COLORS[conditions.index(best_cond) % len(_CONDITION_COLORS)]
+            bars = pg.PlotCurveItem(xs, ys, connect="pairs", pen=pg.mkPen(color, width=1.5))
+            self.polar_plot.addItem(bars)
+            self._polar_grid_items.append(bars)
+
+        self.polar_plot.setTitle(
+            f"<span style='color:{colors['text_tertiary']}; font-size:9px;'>"
+            f"{self._response_axis_label(best_entry)}</span>")
         self.polar_plot.setXRange(-r_max * 1.15, r_max * 1.15)
         self.polar_plot.setYRange(-r_max * 1.15, r_max * 1.15)
 
@@ -562,6 +664,9 @@ class GratingPanel(QWidget):
         if self._hist_bar_item is not None:
             self.hist_plot.removeItem(self._hist_bar_item)
             self._hist_bar_item = None
+        if self._hist_error_item is not None:
+            self.hist_plot.removeItem(self._hist_error_item)
+            self._hist_error_item = None
         for c in self._hist_shadow_curves:
             self.hist_plot.removeItem(c)
         self._hist_shadow_curves = []
@@ -609,6 +714,21 @@ class GratingPanel(QWidget):
             pen=pg.mkPen(None),
         )
         self.hist_plot.addItem(self._hist_bar_item)
+        self.hist_plot.setLabel("left", self._response_axis_label(best_entry))
+
+        spread, _kind = self._spread(best_entry)
+        if spread is not None and spread.size == best_resp.size:
+            s_sorted = np.nan_to_num(spread[order])
+            self._hist_error_item = pg.ErrorBarItem(
+                x=best_dirs_sorted,
+                y=best_resp_sorted,
+                top=s_sorted,
+                bottom=np.minimum(s_sorted, best_resp_sorted),  # never below 0
+                beam=bar_width * 0.4,
+                pen=pg.mkPen(resolve_theme_colors(
+                    self.main_window.get_current_colors())["text_primary"], width=1.2),
+            )
+            self.hist_plot.addItem(self._hist_error_item)
 
         for i, cond in enumerate(conditions):
             if cond == best_cond:
@@ -632,131 +752,3 @@ class GratingPanel(QWidget):
             self._hist_shadow_curves.append(curve)
 
         self.hist_plot.enableAutoRange()
-
-    def _clear_psth_grid(self):
-        # GraphicsLayout's removeItem()/clear() have confirmed upstream
-        # bugs around cell bookkeeping and orphaned border QGraphicsRectItems
-        # (pyqtgraph#2173, pyqtgraph#3085) that leave Qt's real
-        # QGraphicsGridLayout believing a cell is still occupied even after
-        # a "successful" removeItem() call — which is what produced the
-        # "Cell (0, 2) already taken" warnings and visibly broken/misplaced
-        # subplots on the next addPlot(row=, col=) at that same cell. We
-        # tried removeItem()-based approaches twice; both hit the same
-        # underlying pyqtgraph fragility since this grid reuses fixed
-        # (row, col) positions every redraw. Rather than continue patching
-        # around a confirmed library bug, replace the whole widget each
-        # cluster switch — cheap for a handful of small plots, and there is
-        # no shared internal state left over for Qt's grid layout to get
-        # confused about, since the old widget (and its QGraphicsGridLayout)
-        # is discarded wholesale rather than mutated in place.
-        colors = resolve_theme_colors(self.main_window.get_current_colors())
-        old_widget = self.psth_grid_widget
-
-        new_widget = pg.GraphicsLayoutWidget()
-        new_widget.setBackground(colors["bg_panel"])
-
-        self._data_layout.replaceWidget(old_widget, new_widget)
-        old_widget.setParent(None)
-        old_widget.deleteLater()
-
-        self.psth_grid_widget = new_widget
-        self._psth_grid_plots = {}
-        self._polar_pref_line.setData([], [])
-
-    def _draw_direction_psth_grid(self, entry, pref_dir_deg):
-        """
-        Draws one small PSTH per direction for the best condition, arranged
-        compass-style: grid position is chosen by each direction's angle
-        (0 deg at the right/center-column-top, going counterclockwise, 3x3
-        layout), so the *spatial arrangement* of the grid communicates the
-        tuning shape at a glance, not just a single scalar-adjacent curve.
-
-        Replaces the old single-direction firing-rate strip, which only
-        ever plotted the direction closest to preferred and discarded
-        psth_by_direction for every other direction despite it already
-        being computed by grating_calc. Answers "is there a real,
-        time-locked response, in which directions, or is DSI/OSI picking
-        out noise on a near-silent cell" — visible across the whole tuning
-        curve, not just at the winning direction.
-
-        All subplots share one y-axis range (max across all directions'
-        PSTHs) — this is required, not cosmetic: without a shared scale, a
-        flat noisy direction can visually look as "big" as a real evoked
-        response, which is the same amplitude-blind illusion that caused
-        the original DSI-selection bug.
-        """
-        self._clear_psth_grid()
-
-        directions_deg = np.asarray(entry.get("directions_deg", []), dtype=float)
-        psth_by_dir = entry.get("psth_by_direction")
-        t_s = entry.get("psth_time_s")
-
-        # Pre-analyzed files loaded from disk (predating psth_by_direction)
-        # won't have per-bin PSTHs. Consistent with the peak_rate_hz gating
-        # decision elsewhere in this fix: no scalar-value fallback here
-        # either — an empty grid is a more honest signal that this
-        # cluster's data needs re-running through compute_grating_response
-        # than silently substituting a flat reference line.
-        if directions_deg.size == 0 or not psth_by_dir or t_s is None:
-            return
-
-        # Preferred-direction spoke on the polar plot (kept from the old
-        # sanity strip — cheap, and still the clearest single indicator of
-        # "where is preferred pointing" at a glance).
-        if not (isinstance(pref_dir_deg, float) and math.isnan(pref_dir_deg)):
-            mean_resp = np.asarray(entry.get("mean_response", []), dtype=float)
-            r_max = np.nanmax(mean_resp) if mean_resp.size else 1.0
-            r_max = r_max if r_max > 0 else 1.0
-            theta = math.radians(pref_dir_deg)
-            self._polar_pref_line.setData(
-                [0, r_max * math.cos(theta)], [0, r_max * math.sin(theta)]
-            )
-
-        # Shared y-range across every subplot in the grid — see docstring.
-        y_max = 0.0
-        for d in directions_deg:
-            rate = np.asarray(psth_by_dir.get(d, []), dtype=float)
-            if rate.size and np.any(np.isfinite(rate)):
-                y_max = max(y_max, float(np.nanmax(rate)))
-        y_max = y_max if y_max > 0 else 1.0
-
-        colors = resolve_theme_colors(self.main_window.get_current_colors())
-        t = np.asarray(t_s)
-
-        closest_idx = None
-        if directions_deg.size and not (
-            isinstance(pref_dir_deg, float) and math.isnan(pref_dir_deg)
-        ):
-            closest_idx = int(
-                np.argmin(np.abs(((directions_deg - pref_dir_deg + 180) % 360) - 180))
-            )
-
-        dir_to_idx = {float(d): i for i, d in enumerate(directions_deg)}
-        for (row, col), d in assign_directions_to_compass(directions_deg):
-            rate = np.asarray(psth_by_dir.get(d, []), dtype=float)
-            i = dir_to_idx.get(float(d))
-
-            plot_item = self.psth_grid_widget.addPlot(row=row, col=col)
-            plot_item.hideAxis("bottom")
-            plot_item.hideAxis("left")
-            plot_item.setYRange(0, y_max * 1.05, padding=0)
-            plot_item.setMouseEnabled(x=False, y=False)
-            plot_item.setMenuEnabled(False)
-
-            is_pref = closest_idx is not None and i == closest_idx
-            pen_color = (
-                colors.get("plot_compare", "#E03131")
-                if is_pref
-                else colors.get("plot_fr", "#FFD43B")
-            )
-            plot_item.plot(
-                t, rate, pen=pg.mkPen(pen_color, width=2 if is_pref else 1.5)
-            )
-
-            label_color = colors["text_primary"] if is_pref else colors["text_tertiary"]
-            title_html = (
-                f"<span style='color:{label_color}; font-size:8px;'>{d:g}°</span>"
-            )
-            plot_item.setTitle(title_html)
-
-            self._psth_grid_plots[float(d)] = plot_item
