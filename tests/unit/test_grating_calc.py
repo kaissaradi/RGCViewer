@@ -203,6 +203,7 @@ def test_stale_six_dir_sf_cache_needs_recompute():
 
 def test_real_dsos_cache_is_not_stale():
     entry = {
+        "schema_version": grating_calc.GRATING_SCHEMA_VERSION,
         (100.0, 2.0): {
             "condition_type": "dsos",
             "directions_deg": np.arange(0.0, 360.0, 30.0),
@@ -215,6 +216,7 @@ def test_real_dsos_cache_is_not_stale():
 
 def test_one_dir_sf_cache_is_not_stale():
     entry = {
+        "schema_version": grating_calc.GRATING_SCHEMA_VERSION,
         (80.0, 2.0): {
             "condition_type": "sf",
             "directions_deg": np.array([0.0]),
@@ -298,6 +300,7 @@ def test_grating_ids_needing_compute_includes_stale_entries():
     dm.grating_computed_cache = {
         0: _stale_six_dir_sf_entry(),
         1: {
+            "schema_version": grating_calc.GRATING_SCHEMA_VERSION,
             (100.0, 2.0): {
                 "condition_type": "dsos",
                 "directions_deg": np.arange(0.0, 360.0, 30.0),

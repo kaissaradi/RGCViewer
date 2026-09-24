@@ -21,6 +21,18 @@ scalars.
 N_SHUFFLES is 200. Conditions with |DSI| and |OSI| both below
 SHUFFLE_INDEX_FLOOR skip the permutation test. GratingBatchWorker fills
 the cache in parallel with physics warm-up.
+
+Conventions
+-----------
+* Spike times are ms from trial start. Each trial uses its OWN preTime and
+  stimTime; the stimulus window is [preTime, preTime + stimTime).
+* Bins are half-open. A partial last bin is dropped, never extended past
+  the end of the stimulus.
+* Directions are normalized to [0, 360), so 0° and 360° are one direction.
+* Shuffle p-values are (k + 1) / (N + 1): never 0, smallest 1/(N+1).
+* Responses are in spikes/s ("F1 amplitude" of the rate, or "Δ rate").
+* GRATING_SCHEMA_VERSION tags each computed result. Cached rows from an
+  older version are recomputed once.
 """
 
 from collections import defaultdict
@@ -68,19 +80,99 @@ ALPHA = 0.05  # shuffle-test significance threshold
 DSI_THRESHOLD = 0.3  # DS classification cutoff, applied AFTER gating
 OSI_THRESHOLD = 0.3  # OS classification cutoff, applied AFTER gating
 
+# Bump when compute_grating_response's output changes meaning.
+#   1 (untagged): timing from trial 0, p = k/N, raw orientation labels.
+#   2: per-trial timing, p = (k+1)/(N+1), directions mod 360,
+#      sd_response / n_trials / response_label added.
+GRATING_SCHEMA_VERSION = 2
+RESPONSE_METRICS = {"f1": "F1 amplitude", "delta": "Δ firing rate"}
+RESPONSE_UNITS = "spikes/s"
+PSTH_DISPLAY_BIN_MS = 50.0
+
+
+def normalize_direction(deg):
+    """Map a direction to [0, 360). 0° and 360° (or -90° and 270°) match."""
+    d = round(float(deg) % 360.0, 6)
+    return d % 360.0  # 359.9999999 rounds to 360.0; wrap it to 0.0
+
+
+def stim_window(trial_params):
+    """(start, end) of the stimulus in ms from trial start, for one trial."""
+    pre = float(trial_params["preTime"])
+    return pre, pre + float(trial_params["stimTime"])
+
+
+def _n_full_bins(duration_ms, bin_ms):
+    return int(np.floor(duration_ms / bin_ms + 1e-9))
+
+
+def binned_counts(trials, onsets_ms, n_bins, bin_ms):
+    """Spike counts per bin, one row per trial, aligned to each trial's onset.
+
+    Bin k of trial i is [onset_i + k*bin_ms, onset_i + (k+1)*bin_ms).
+    One bincount for all trials; this replaced a histogram per trial.
+    """
+    n = len(trials)
+    counts = np.zeros((n, max(n_bins, 0)), dtype=np.float64)
+    if n == 0 or n_bins <= 0:
+        return counts
+    lens = np.fromiter((len(t) for t in trials), dtype=np.int64, count=n)
+    if lens.sum() == 0:
+        return counts
+    spikes = np.concatenate([np.asarray(t, dtype=np.float64).ravel() for t in trials])
+    rows = np.repeat(np.arange(n), lens)
+    onsets = np.repeat(np.asarray(onsets_ms, dtype=np.float64), lens)
+    bins = np.floor((spikes - onsets) / bin_ms).astype(np.int64)
+    ok = (bins >= 0) & (bins < n_bins)
+    flat = np.bincount(rows[ok] * n_bins + bins[ok], minlength=n * n_bins)
+    return flat.reshape(n, n_bins).astype(np.float64)
+
+
+def f1_amplitudes(trials, windows, tfs_hz, bin_ms=PSTH_BIN_MS):
+    """F1 amplitude (spikes/s) of every trial's rate at its own temporal frequency.
+
+    ``windows`` holds one (t0, t1) per trial. Trials are grouped by window
+    length so each group shares one binned matrix and one FFT.
+    """
+    out = np.full(len(trials), np.nan)
+    if not len(trials):
+        return out
+    windows = np.asarray(windows, dtype=np.float64).reshape(-1, 2)
+    tfs_hz = np.asarray(tfs_hz, dtype=np.float64)
+    durations = windows[:, 1] - windows[:, 0]
+    for dur in np.unique(durations):
+        sel = np.flatnonzero(durations == dur)
+        n_bins = _n_full_bins(dur, bin_ms)
+        if n_bins < 4:
+            continue
+        counts = binned_counts([trials[i] for i in sel], windows[sel, 0], n_bins, bin_ms)
+        rate = counts / (bin_ms / 1000.0)
+        spec = np.fft.rfft(rate - rate.mean(axis=1, keepdims=True), axis=1)
+        freqs = np.fft.rfftfreq(n_bins, d=bin_ms / 1000.0)
+        f1_idx = np.argmin(np.abs(freqs[None, :] - tfs_hz[sel][:, None]), axis=1)
+        out[sel] = 2.0 * np.abs(spec[np.arange(sel.size), f1_idx]) / n_bins
+    return out
+
 
 def f1_amplitude(spike_times_ms, window, tf_hz, bin_ms=PSTH_BIN_MS):
-    t0, t1 = window
-    edges = np.arange(t0, t1 + bin_ms, bin_ms)
-    counts, _ = np.histogram(spike_times_ms, bins=edges)
-    rate = counts / (bin_ms / 1000.0)
-    n = len(rate)
-    if n < 4:
-        return np.nan
-    fft_vals = np.fft.rfft(rate - rate.mean())
-    freqs = np.fft.rfftfreq(n, d=bin_ms / 1000.0)
-    f1_idx = int(np.argmin(np.abs(freqs - tf_hz)))
-    return 2.0 * np.abs(fft_vals[f1_idx]) / n
+    """F1 amplitude (spikes/s) for one trial. See f1_amplitudes."""
+    return float(f1_amplitudes([spike_times_ms], [window], [tf_hz], bin_ms)[0])
+
+
+def window_rates(trials, windows):
+    """Mean rate (spikes/s) of each trial in its own [t0, t1) window."""
+    out = np.full(len(trials), np.nan)
+    if not len(trials):
+        return out
+    windows = np.asarray(windows, dtype=np.float64).reshape(-1, 2)
+    durations = windows[:, 1] - windows[:, 0]
+    for dur in np.unique(durations):
+        if dur <= 0:
+            continue
+        sel = np.flatnonzero(durations == dur)
+        counts = binned_counts([trials[i] for i in sel], windows[sel, 0], 1, dur)
+        out[sel] = counts[:, 0] / (dur / 1000.0)
+    return out
 
 
 def firing_rate_in_window(spike_times_ms, window):
@@ -102,8 +194,25 @@ def vector_sum_index(thetas_deg, responses, harmonic=1):
     return index, pref_angle
 
 
+def _permutation_p(null_indices, observed_index):
+    """(k + 1) / (N + 1) over the finite nulls. Never 0 for a finite N."""
+    null_indices = np.asarray(null_indices, dtype=float)
+    valid = np.isfinite(null_indices)
+    n = int(np.count_nonzero(valid))
+    if n == 0:
+        return np.nan
+    k = int(np.count_nonzero(null_indices[valid] >= observed_index))
+    return (k + 1.0) / (n + 1.0)
+
+
 def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng):
-    """Permutation test — identical to combined_grating_analysis.py."""
+    """Permutation test: shuffle trial responses across directions.
+
+    Same shuffles as combined_grating_analysis.py. The p-value is
+    (k + 1) / (N + 1), not k / N: the observed labelling is itself one of
+    the permutations, and k / N reports p = 0 for any cell that beats all
+    200 shuffles.
+    """
     directions = sorted(directions)
     sizes = [len(trial_responses_by_dir[d]) for d in directions]
     n_per_dir = sizes[0]
@@ -128,7 +237,7 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
                 ]
             )
             null_indices[s], _ = vector_sum_index(np.array(directions), means, harmonic)
-        return np.mean(null_indices >= observed_index)
+        return _permutation_p(null_indices, observed_index)
 
     n_dir = len(directions)
     all_resp = np.concatenate([trial_responses_by_dir[d] for d in directions])
@@ -151,36 +260,57 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
     denom = means.sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         null_indices = np.abs(vec) / denom
-
-    valid = np.isfinite(null_indices)
-    if not np.any(valid):
-        return np.nan
-    p = np.mean(null_indices[valid] >= observed_index)
-    return p
+    return _permutation_p(null_indices, observed_index)
 
 
-def direction_psth(spike_times_by_direction_ms, window, bin_ms=50.0):
+def direction_psth(spike_times_by_direction_ms, window, bin_ms=PSTH_DISPLAY_BIN_MS,
+                   onsets_ms=None):
     """
-    Mean PSTH (Hz) across trials for one direction, binned over the stim
-    window. Cheap — just a histogram, unlike f1_amplitude/shuffle_pvalue —
-    safe to compute for every direction alongside the DSI/OSI math without
-    materially adding to per-cluster compute cost.
+    Mean PSTH (spikes/s) across trials for one direction over the stimulus.
+
+    ``window`` is (t0, t1) and fixes the duration. ``onsets_ms`` gives each
+    trial's own stimulus onset; by default every trial starts at t0.
+    Returns (bin centres in ms from onset, rate).
     """
     t0, t1 = window
-    edges = np.arange(0, (t1 - t0) + bin_ms, bin_ms)
-    n_bins = len(edges) - 1
+    n_bins = _n_full_bins(t1 - t0, bin_ms)
     if n_bins <= 0:
         return np.array([]), np.array([])
-    counts = np.zeros(n_bins, dtype=np.float64)
-    n_trials = max(len(spike_times_by_direction_ms), 1)
-    for sp in spike_times_by_direction_ms:
-        sp_rel = np.asarray(sp) - t0
-        mask = (sp_rel >= 0) & (sp_rel < (t1 - t0))
-        c, _ = np.histogram(sp_rel[mask], bins=edges)
-        counts += c
+    trials = list(spike_times_by_direction_ms)
+    if onsets_ms is None:
+        onsets_ms = [t0] * len(trials)
+    counts = binned_counts(trials, onsets_ms, n_bins, bin_ms).sum(axis=0)
+    n_trials = max(len(trials), 1)
     rate = (counts / n_trials) / (bin_ms / 1000.0)
-    t = edges[:-1] + bin_ms / 2.0
+    t = np.arange(n_bins) * bin_ms + bin_ms / 2.0
     return t, rate
+
+
+def trial_rasters(spike_times_by_trial_for_cell, trial_parameters, condition):
+    """Per-direction spike rasters for one (barWidth, temporalFrequency).
+
+    Returns ``{direction_deg: [spike times in s from stimulus onset, ...]}``
+    with one array per trial, in presentation order, or ``{}`` if the
+    condition did not run. Directions are normalized to [0, 360).
+    ``pre_s`` / ``stim_s`` in the returned ``"_timing"`` entry give the
+    shared pre-stimulus and stimulus durations (the shortest across trials).
+    """
+    bw, tf = (float(condition[0]), float(condition[1]))
+    by_dir = defaultdict(list)
+    pres, stims = [], []
+    for i, t in enumerate(trial_parameters):
+        if float(t["barWidth"]) != bw or float(t["temporalFrequency"]) != tf:
+            continue
+        pre = float(t["preTime"])
+        pres.append(pre)
+        stims.append(float(t["stimTime"]))
+        sp = np.asarray(spike_times_by_trial_for_cell[i], dtype=np.float64)
+        by_dir[normalize_direction(t["orientation"])].append((sp - pre) / 1000.0)
+    if not by_dir:
+        return {}
+    out = dict(sorted(by_dir.items()))
+    out["_timing"] = {"pre_s": min(pres) / 1000.0, "stim_s": min(stims) / 1000.0}
+    return out
 
 
 def group_grating_conditions(
@@ -210,7 +340,7 @@ def group_grating_conditions(
         idx_by_dir = defaultdict(list)
         for i, t in enumerate(trial_parameters):
             if float(t["barWidth"]) == bw and float(t["temporalFrequency"]) == tf:
-                idx_by_dir[float(t["orientation"])].append(i)
+                idx_by_dir[normalize_direction(t["orientation"])].append(i)
         directions = sorted(idx_by_dir)
         typ = "dsos" if len(directions) >= min_directions_for_dsos else "sf"
         groups.append(
@@ -227,7 +357,11 @@ def group_grating_conditions(
 def grating_entry_needs_recompute(
     entry, min_directions_for_dsos=MIN_DIRECTIONS_FOR_DSOS
 ):
-    """True when a persisted result's DSOS/SF tags don't match the data.
+    """True when a persisted result must be recomputed.
+
+    Two reasons: its DSOS/SF tags don't match the direction counts, or it
+    was computed by an older GRATING_SCHEMA_VERSION. Use this on rows from
+    compute_grating_response only; analyzed files carry no version.
 
     Dummy cache rows without per-condition tuples (used by persistence
     tests) are left alone.
@@ -241,6 +375,8 @@ def grating_entry_needs_recompute(
     ]
     if not conds:
         return False
+    if entry.get("schema_version", 1) < GRATING_SCHEMA_VERSION:
+        return True
     for v in conds:
         dirs = v.get("directions_deg")
         n = 0 if dirs is None else len(np.asarray(dirs))
@@ -302,77 +438,93 @@ def compute_grating_response(
 
     Returns None if cluster_id has no trials in spike_times_by_trial.
     """
+    if response_metric not in RESPONSE_METRICS:
+        raise ValueError(
+            f"response_metric must be one of {sorted(RESPONSE_METRICS)}, "
+            f"got {response_metric!r}"
+        )
     if cluster_id not in spike_times_by_trial:
         return None
 
     rng = np.random.default_rng(rng_seed)
     trials = spike_times_by_trial[cluster_id]
-
-    pre_time_ms = trial_parameters[0]["preTime"]
-    stim_time_ms = trial_parameters[0]["stimTime"]
-    stim_window = (pre_time_ms, pre_time_ms + stim_time_ms)
+    # Every trial's own stimulus window; a protocol can mix durations.
+    windows = [stim_window(t) for t in trial_parameters]
 
     groups = group_grating_conditions(
         trial_parameters, min_directions_for_dsos=min_directions_for_dsos
     )
     condition_type = {g["key"]: g["condition_type"] for g in groups}
 
-    result = {}
+    result = {"schema_version": GRATING_SCHEMA_VERSION}
     for group in groups:
         bw, tf = group["key"]
         local_dirs = group["directions"]
         typ = group["condition_type"]
         idx_by_dir = group["idx_by_dir"]
+        group_idxs = [i for d in local_dirs for i in idx_by_dir[d]]
+
+        # One vectorized pass over every trial of this condition.
+        g_trials = [trials[i] for i in group_idxs]
+        g_windows = [windows[i] for i in group_idxs]
+        if response_metric == "f1":
+            g_tfs = [float(trial_parameters[i]["temporalFrequency"]) for i in group_idxs]
+            g_resp = f1_amplitudes(g_trials, g_windows, g_tfs)
+        else:
+            # Δ rate can be negative; vector_sum_index is only meaningful
+            # for non-negative responses, so treat this metric's DSI/OSI
+            # as descriptive.
+            evoked = window_rates(g_trials, g_windows)
+            baseline = window_rates(g_trials, [(0.0, w[0]) for w in g_windows])
+            g_resp = evoked - baseline
+        g_rates = window_rates(g_trials, g_windows)
 
         trial_resp_by_dir = {}
+        pos = 0
         for direction in local_dirs:
-            idxs = idx_by_dir[direction]
-            if response_metric == "f1":
-                resp = np.array(
-                    [
-                        f1_amplitude(
-                            trials[i],
-                            stim_window,
-                            float(trial_parameters[i]["temporalFrequency"]),
-                        )
-                        for i in idxs
-                    ]
-                )
-            else:
-                baseline = np.array(
-                    [firing_rate_in_window(trials[i], (0.0, pre_time_ms)) for i in idxs]
-                )
-                evoked = np.array(
-                    [firing_rate_in_window(trials[i], stim_window) for i in idxs]
-                )
-                resp = evoked - baseline
-            trial_resp_by_dir[direction] = resp
+            n = len(idx_by_dir[direction])
+            trial_resp_by_dir[direction] = g_resp[pos:pos + n]
+            pos += n
 
-        mean_resp = np.array([np.nanmean(trial_resp_by_dir[dd]) for dd in local_dirs])
-        sem_resp = np.array(
-            [
-                np.nanstd(trial_resp_by_dir[dd], ddof=1)
-                / np.sqrt(len(trial_resp_by_dir[dd]))
-                for dd in local_dirs
-            ]
-        )
+        n_trials = np.array([np.count_nonzero(np.isfinite(trial_resp_by_dir[d]))
+                             for d in local_dirs])
+        with np.errstate(invalid="ignore"):
+            mean_resp = np.array([np.nanmean(trial_resp_by_dir[d])
+                                  if n_trials[j] else np.nan
+                                  for j, d in enumerate(local_dirs)])
+            sd_resp = np.array([np.nanstd(trial_resp_by_dir[d], ddof=1)
+                                if n_trials[j] > 1 else np.nan
+                                for j, d in enumerate(local_dirs)])
+            sem_resp = sd_resp / np.sqrt(np.maximum(n_trials, 1))
 
         entry = {
             "condition_type": typ,
             "directions_deg": np.array(local_dirs),
             "mean_response": mean_resp,
+            "sd_response": sd_resp,
             "sem_response": sem_resp,
+            "n_trials": n_trials,
+            "response_label": RESPONSE_METRICS[response_metric],
+            "response_units": RESPONSE_UNITS,
         }
 
         if typ == "dsos":
-            # Per-direction firing-rate PSTHs — cheap, used by the GUI's
-            # sanity-check strip so it can show a real time-resolved trace
-            # at the preferred direction, not just the scalar mean_response.
+            # Per-direction firing-rate PSTHs, aligned to each trial's own
+            # onset and cut to the shortest stimulus in the condition. One
+            # binned matrix for the condition, then a mean per direction.
+            bin_ms = PSTH_DISPLAY_BIN_MS
+            dur = min(w[1] - w[0] for w in g_windows) if g_windows else 0.0
+            n_bins = _n_full_bins(dur, bin_ms)
+            counts = binned_counts(g_trials, [w[0] for w in g_windows], n_bins, bin_ms)
             psth_by_dir = {}
+            pos = 0
             for direction in local_dirs:
-                idxs = idx_by_dir[direction]
-                t, rate = direction_psth([trials[i] for i in idxs], stim_window)
-                psth_by_dir[direction] = rate
+                n = len(idx_by_dir[direction])
+                psth_by_dir[direction] = (
+                    counts[pos:pos + n].sum(axis=0) / max(n, 1) / (bin_ms / 1000.0)
+                )
+                pos += n
+            t = np.arange(n_bins) * bin_ms + bin_ms / 2.0
             entry["psth_time_s"] = (t / 1000.0) if local_dirs else np.array([])
             entry["psth_by_direction"] = psth_by_dir
 
@@ -415,17 +567,7 @@ def compute_grating_response(
             # with a handful of noisy spikes can't out-rank a condition
             # with a real, strong response just because its DSI happens
             # to be numerically higher.
-            group_idxs = [i for idxs in idx_by_dir.values() for i in idxs]
-            peak_rate_hz = (
-                np.nanmax(
-                    [
-                        firing_rate_in_window(trials[i], stim_window)
-                        for i in group_idxs
-                    ]
-                )
-                if group_idxs
-                else np.nan
-            )
+            peak_rate_hz = np.nanmax(g_rates) if g_rates.size else np.nan
 
             entry.update(
                 {
