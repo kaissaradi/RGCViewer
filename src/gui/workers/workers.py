@@ -1,4 +1,4 @@
-from qtpy.QtCore import QObject, QThread, Signal
+from qtpy.QtCore import QObject, QRunnable, QThread, Signal
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ...analysis import analysis_core, grating_calc
@@ -897,3 +897,32 @@ class ClusterWorker(QObject):
         except Exception as e:
             logger.exception("Clustering failed")
             self.error.emit(str(e))
+
+
+class _CallSignals(QObject):
+    done = Signal(object)    # fn's return value
+    failed = Signal(object)  # the exception fn raised
+
+
+class BackgroundCall(QRunnable):
+    """Run ``fn()`` on the global thread pool.
+
+    ``signals`` is created on the calling (GUI) thread, so ``done`` and
+    ``failed`` are delivered there. The caller keeps ``signals`` alive until
+    one of them fires.
+    """
+
+    def __init__(self, fn):
+        super().__init__()
+        self.setAutoDelete(True)
+        self.fn = fn
+        self.signals = _CallSignals()
+
+    def run(self):
+        try:
+            result = self.fn()
+        except Exception as exc:  # reported to the GUI, which decides what to show
+            logger.debug("background call failed", exc_info=True)
+            self.signals.failed.emit(exc)
+            return
+        self.signals.done.emit(result)

@@ -31,9 +31,12 @@ class KeyForwarder(QObject):
                         self.main_window.table_view, event.key()
                     )
                 return True
-            # Add Cmd+D / Ctrl+D shortcut for marking duplicates
+            # Ctrl+<letter> marks the status. Noisy is Ctrl+Shift+N: Ctrl+S
+            # saves the classification (docs/specs/ux_ui_redesign.md AC18).
             elif event.modifiers() & Qt.ControlModifier:
-                if event.key() == Qt.Key_D:
+                if event.key() == Qt.Key_N and event.modifiers() & Qt.ShiftModifier:
+                    status = "Noisy"
+                elif event.key() == Qt.Key_D:
                     status = "Duplicate"
                 elif event.key() == Qt.Key_C:
                     status = "Clean"
@@ -41,8 +44,6 @@ class KeyForwarder(QObject):
                     status = "Edge"
                 elif event.key() == Qt.Key_W:
                     status = "Unsure"
-                elif event.key() == Qt.Key_S:
-                    status = "Noisy"
                 elif event.key() == Qt.Key_X:
                     status = "Contaminated"
                 elif event.key() == Qt.Key_A:

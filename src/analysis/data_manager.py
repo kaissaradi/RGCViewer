@@ -13,6 +13,7 @@ from . import analysis_core
 from . import cache_persistence
 from . import storage
 from . import vision_integration
+from . import vision_sort_check
 from .constants import (
     ISI_REFRACTORY_PERIOD_MS,
     EI_CORR_THRESHOLD,
@@ -471,6 +472,11 @@ class DataManager(QObject):
         # and the EI-correlation pickle carry the source they came from, so a
         # different Vision folder never reuses them (PLAN.md Q11).
         self._vision_source = None
+        # <vision dir>/<dataset>.params of the loaded Vision files, or None.
+        # Ctrl+S writes the classification here (params_classification.py).
+        self.vision_params_path = None
+        # (key, SortCheck) of vision_sort_check(); see vision_sort_check.py.
+        self._sort_check_cache = None
 
         # --- Cross-Run Reference Bridge ---
         self.reference_bridge = None  # Optional[ReferenceBridge]
@@ -977,6 +983,14 @@ class DataManager(QObject):
             return False, f"Error during Kilosort data loading: {e}"
 
     @staticmethod
+    def _params_path_for(vision_dir, dataset_name):
+        path = Path(vision_dir) / f"{dataset_name}.params"
+        try:
+            return path if path.is_file() else None
+        except OSError:
+            return None
+
+    @staticmethod
     def _vision_source_key(vision_dir, dataset_name):
         try:
             resolved = str(Path(vision_dir).resolve())
@@ -1040,6 +1054,7 @@ class DataManager(QObject):
         if old_source is not None and old_source != new_source:
             self._forget_vision_derived(old_source, new_source)
         self._vision_source = new_source
+        self.vision_params_path = self._params_path_for(vision_path, dataset_name)
 
         # Use the high-level helper in vision_integration
         logger.debug("Calling vision_integration.load_vision_data")
@@ -1244,6 +1259,7 @@ class DataManager(QObject):
 
         vision_path = Path(vision_dir)
         self.is_vision_only = True  # Flag this session!
+        self.vision_params_path = self._params_path_for(vision_path, dataset_name)
 
         # 1. Load the Vision data
         vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
@@ -5778,6 +5794,36 @@ class DataManager(QObject):
         with self._grating_cache_lock:
             self.grating_computed_cache[cluster_id] = result
 
+        return result
+
+    def vision_sort_check(self):
+        """Do the loaded .sta/.params describe this sort's cells? (vision_sort_check.py)
+
+        Pairs each .params RF centre (x0, y0) with the array position of the
+        cell Encore maps it to, and fits one affine map. Cached per Vision
+        source and cluster count; a few hundred points, so cheap either way.
+        """
+        df = self._optional_attr("cluster_df")
+        vp = self._optional_attr("vision_params")
+        key = (self._optional_attr("_vision_source"), id(vp),
+               0 if df is None else len(df))
+        cached = self._optional_attr("_sort_check_cache")
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        result = vision_sort_check.NO_CHECK
+        if vp is not None and df is not None and {"x_um", "y_um"} <= set(df.columns):
+            rf = {}
+            for vid in vp.get_cell_ids():
+                try:
+                    rf[int(vid)] = (float(vp.get_data_for_cell(vid, "x0")),
+                                    float(vp.get_data_for_cell(vid, "y0")))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            pos = {self.get_vision_id_for_cluster(int(c)): (float(x), float(y))
+                   for c, x, y in zip(df["cluster_id"], df["x_um"], df["y_um"])}
+            result = vision_sort_check.check_pairing(rf, pos)
+        self._sort_check_cache = (key, result)
         return result
 
     def get_vision_id_for_cluster(self, cluster_id: int) -> int:

@@ -18,7 +18,12 @@ JSON line per check. Add a scenario as a function named scenario_<name>(s).
 The default dataset (20251212A/data018) has Kilosort, Vision (.ei/.sta/
 .params/.neurons) and a DSOS grating file. It sits on the CIFS mount, so a
 cold load takes ~15 s. Closing the window writes the normal in-place cache
-.pkl files next to the data.
+.pkl files next to the data. Its .sta/.params come from another sort
+(PLAN.md Q32): good for mechanics, not for what an STA shows. A matched run:
+/mnt/lab/Array-data/sorted/20260220A/kilosort25/data022/ksfiles (~70 s).
+
+Scenario params_save works on a copy of the .params in $HARNESS_OUT and
+never writes the lab file.
 """
 import os
 import sys
@@ -321,6 +326,159 @@ def scenario_selection_sync(s):
     pump(0.5)
     log(json.dumps({"focus_cluster_table_view": ok,
                     "selected_now": w._get_selected_cluster_id(), "wanted": b}))
+
+
+VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
+    "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
+_CHECK_PARAMS_JAVA = """
+import edu.ucsc.neurobiology.vision.io.ParametersFile;
+import java.util.*;
+public class CheckParams {
+    public static void main(String[] a) throws Exception {
+        ParametersFile p = new ParametersFile(a[0]);
+        LinkedHashMap<Integer, ? extends Object> c = p.getClassIDs();
+        for (int id : p.getIDList()) System.out.println(id + "\\t" + c.get(id));
+        p.close(false);
+    }
+}
+"""
+
+
+def vision_reads_classes(params_path, work_dir):
+    """{id: classID} as Vision's own ParametersFile reads it, or None without Java/Vision.jar."""
+    import shutil
+    import subprocess
+    java_dir = next((os.path.dirname(x) for x in (
+        shutil.which("javac"), os.path.expanduser("~/miniconda3/bin/javac"))
+        if x and os.path.isfile(x)), None)
+    if not (os.path.isfile(VISION_JAR) and java_dir):
+        return None
+    javac, java = os.path.join(java_dir, "javac"), os.path.join(java_dir, "java")
+    src = os.path.join(work_dir, "CheckParams.java")
+    with open(src, "w") as f:
+        f.write(_CHECK_PARAMS_JAVA)
+    subprocess.run([javac, "-cp", VISION_JAR, "-d", work_dir, src], check=True)
+    out = subprocess.run([java, "-Djava.awt.headless=true", "-cp",
+                          f"{VISION_JAR}{os.pathsep}{work_dir}", "CheckParams", params_path],
+                         check=True, capture_output=True, text=True).stdout
+    return {int(line.split("\t")[0]): line.split("\t")[1]
+            for line in out.splitlines() if line.strip()}
+
+
+def scenario_params_save(s):
+    """Ctrl+S writes the tree into the .params — on a scratch copy, never the lab file."""
+    import shutil
+    from pathlib import Path
+    from qtpy.QtTest import QTest
+    from qtpy.QtWidgets import QMessageBox
+    from src.gui import callbacks
+    from src.analysis import params_classification as pc
+
+    s.load()
+    w, dm = s.w, s.dm()
+    chk = dm.vision_sort_check()
+    log(json.dumps({"step": "sort_check", "n_cells": chk.n_cells, "r2": round(chk.r2, 3),
+                    "r2_robust": round(chk.r2_robust, 3), "mismatch": chk.mismatch,
+                    "status": w.status_bar.currentMessage(),
+                    "warning_label": (w.vision_sort_warning_label.isVisible()
+                                      if hasattr(w, "vision_sort_warning_label") else None)}))
+    s.shot("status_bar", w.status_bar)
+    real = dm.vision_params_path
+    real_stamp = pc.file_stamp(real)
+    work = os.path.join(OUT, "params_save")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    copy = Path(work) / real.name
+    shutil.copy2(real, copy)
+    dm.vision_params_path = copy
+
+    def idle():
+        return wait_until(lambda: not getattr(w, "_params_busy", False), 60)
+
+    # 1. File > Load Classification from Vision .params
+    orig_q = callbacks.QMessageBox.question
+    callbacks.QMessageBox.question = staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    try:
+        w.load_params_classification_action.trigger()
+        idle()
+    finally:
+        callbacks.QMessageBox.question = orig_q
+    file_classes = pc.read_classes(copy)
+    tree = callbacks.vision_class_ids(w)
+    shared = [v for v in file_classes if v in tree]
+    log(json.dumps({"step": "import", "rows": len(file_classes), "rows_with_a_cell": len(shared),
+                    "tree_matches_file": all(tree[v] == file_classes[v] for v in shared),
+                    "top_groups": [w.tree_model.item(i).text()
+                                   for i in range(w.tree_model.rowCount())]}))
+
+    asked = []
+    orig_c = callbacks._confirm_params_save
+    callbacks._confirm_params_save = lambda mw, path, diff, check=callbacks.NO_SORT_CHECK: (
+        asked.append(callbacks.params_save_summary(path, diff, check)), True)[1]
+
+    def ctrl_s():
+        w.activateWindow()
+        pump(0.1)
+        n_noisy = int((dm.status_df["status"] == "Noisy").sum()) if len(dm.status_df) else 0
+        before = pc.file_stamp(copy)
+        QTest.keyClick(w, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+        started = getattr(w, "_params_busy", False) or pc.file_stamp(copy) != before
+        via = "shortcut"
+        if not started and "classification" not in w.status_bar.currentMessage():
+            via = "action"          # the offscreen platform did not route the key
+            w.save_params_action.trigger()
+        idle()
+        pump(0.3)
+        noisy_now = int((dm.status_df["status"] == "Noisy").sum()) if len(dm.status_df) else 0
+        return via, w.status_bar.currentMessage(), noisy_now != n_noisy
+
+    try:
+        # 2. Ctrl+S with no edits
+        via, msg, marked = ctrl_s()
+        log(json.dumps({"step": "save_unchanged", "via": via, "status": msg,
+                        "marked_noisy": marked, "asked": len(asked),
+                        "file_unchanged": pc.file_stamp(copy) == pc.file_stamp(real)}))
+
+        # 3. move 5 classified cells to a new group, Ctrl+S
+        groups = {dm.get_cluster_id_for_vision(v): g for v, g in callbacks.tree_vision_groups(w)}
+        moved = [c for c, g in groups.items() if g][:5]
+        for c in moved:
+            groups[c] = ["Encore harness", "moved"]
+        callbacks.apply_classification(w, groups)
+        via, msg, marked = ctrl_s()
+        after = pc.read_classes(copy)
+        vids = [dm.get_vision_id_for_cluster(c) for c in moved]
+        vision = vision_reads_classes(str(copy), work)
+        log(json.dumps({
+            "step": "save_edit", "via": via, "status": msg, "marked_noisy": marked,
+            "asked": len(asked), "summary": asked[-1] if asked else None,
+            "moved_now": [after[v] for v in vids],
+            "others_unchanged": all(after[v] == c for v, c in file_classes.items() if v not in vids),
+            "backup_is_original": (Path(str(copy) + ".bak").read_bytes() == real.read_bytes()),
+            "vision_jar_agrees": None if vision is None else vision == after,
+            "tmp_files_left": [p.name for p in Path(work).glob("*.tmp")]}))
+
+        # 4. another edit, same session, file unchanged since our save: no dialog
+        n_asked = len(asked)
+        groups[moved[0]] = ["Encore harness", "second"]
+        callbacks.apply_classification(w, groups)
+        via, msg, _ = ctrl_s()
+        log(json.dumps({"step": "save_again", "status": msg, "asked_again": len(asked) > n_asked}))
+
+        # 5. someone else saves the file (as Vision would): the dialog comes back
+        pc.write_classes(copy, {vids[1]: "All/saved elsewhere"}, keep_backup=False)
+        groups[moved[2]] = ["Encore harness", "third"]
+        callbacks.apply_classification(w, groups)
+        n_asked = len(asked)
+        via, msg, _ = ctrl_s()
+        log(json.dumps({"step": "save_after_outside_edit", "status": msg,
+                        "asked_again": len(asked) > n_asked}))
+    finally:
+        callbacks._confirm_params_save = orig_c
+        dm.vision_params_path = real
+    log(json.dumps({"step": "lab_file_untouched", "ok": pc.file_stamp(real) == real_stamp}))
+    s.shot("tree_after", w)
 
 
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()

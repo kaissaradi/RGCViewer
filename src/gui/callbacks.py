@@ -3,11 +3,15 @@ import os
 import threading
 import time
 from pathlib import Path
-from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication
-from qtpy.QtCore import QThread, Qt, QTimer
+from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QLabel
+from qtpy.QtCore import QThread, QThreadPool, Qt, QTimer
 
 from ..analysis.data_manager import DataManager
+from ..analysis import params_classification as pc
+from ..analysis.vision_sort_check import NO_CHECK as NO_SORT_CHECK, SortCheck
+from ..analysis.vision_sort_check import describe as describe_sort_check
 from .workers.workers import (
+    BackgroundCall,
     RefinementWorker,
     SpatialWorker,
     StandardPlotsWorker,
@@ -31,6 +35,7 @@ from .panels.population_panel import (
 )
 from .panels.feature_extraction import FeatureExtractionWindow
 from . import recent_paths
+from .theme import resolve_theme_colors
 from typing import TYPE_CHECKING
 import logging
 
@@ -430,6 +435,7 @@ def _finalize_dataset_load(main_window):
         except Exception:
             logger.warning("%s failed during load finalize", attach, exc_info=True)
     _attach_grating_columns(main_window)
+    _warn_if_vision_from_other_sort(main_window)
 
     if hasattr(main_window, "refresh_table_model"):
         main_window.refresh_table_model()
@@ -592,6 +598,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     main_window.load_classification_action.setEnabled(True)
     main_window.save_action.setEnabled(True)
     main_window.save_classification_action.setEnabled(True)
+    # The .params actions check for a loaded .params file when triggered,
+    # so Vision files attached later need no extra enable step.
+    main_window.save_params_action.setEnabled(True)
+    main_window.load_params_classification_action.setEnabled(True)
     main_window.calibrate_array_action.setEnabled(True)
     if hasattr(main_window, 'map_reference_action'):
         main_window.map_reference_action.setEnabled(True)
@@ -799,6 +809,10 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     main_window.load_raw_action.setEnabled(True)
     main_window.save_action.setEnabled(True)
     main_window.save_classification_action.setEnabled(True)
+    # The .params actions check for a loaded .params file when triggered,
+    # so Vision files attached later need no extra enable step.
+    main_window.save_params_action.setEnabled(True)
+    main_window.load_params_classification_action.setEnabled(True)
     if hasattr(main_window, 'map_reference_action'):
         main_window.map_reference_action.setEnabled(True)
     # A cache can only be rebuilt once there is a run to rebuild it for.
@@ -867,6 +881,47 @@ def rebuild_physics_cache(main_window):
     start_worker(main_window)
     start_physics_warmup(main_window, fill_grating=True)
     main_window.status_bar.showMessage("Rebuilding physics cache...", 5000)
+
+
+def _warn_if_vision_from_other_sort(main_window):
+    """Log and show (no dialog) when the Vision files look made from another sort.
+
+    No modal here on purpose; see the note in _on_vision_loaded. Ctrl+S
+    repeats the warning in its dialog, where a wrong pairing would do harm.
+    """
+    try:
+        _show_vision_sort_check(main_window, main_window.data_manager.vision_sort_check())
+    except Exception:
+        # A warning must never stop a dataset from opening.
+        logger.warning("Vision/sort pairing check failed", exc_info=True)
+
+
+def _show_vision_sort_check(main_window, check):
+    if not isinstance(check, SortCheck):
+        return
+    dm = main_window.data_manager
+    # A permanent status-bar label: a timed message is overwritten by the
+    # next progress message within seconds.
+    label = getattr(main_window, "vision_sort_warning_label", None)
+    if label is None:
+        label = QLabel()
+        main_window.status_bar.addPermanentWidget(label)
+        main_window.vision_sort_warning_label = label
+    label.setVisible(check.mismatch)
+    if check.mismatch:
+        msg = describe_sort_check(check)
+        logger.warning("%s (%s)", msg, getattr(dm, "_vision_source", None))
+        # status_mua_text: the palette's AA-safe yellow text (docs/design/palette.md)
+        get_colors = getattr(main_window, "get_current_colors", None)
+        colors = resolve_theme_colors(get_colors() if callable(get_colors) else None)
+        label.setStyleSheet(f"color: {colors['status_mua_text']}; padding: 0 8px;")
+        label.setText("⚠ Vision files may be from another sort")
+        label.setMinimumWidth(label.sizeHint().width())
+        label.setToolTip(msg)
+        main_window.status_bar.showMessage(f"Warning: {msg}", 30000)
+    elif check.decided:
+        logger.info("Vision/sort pairing OK: R² %.2f over %d cells",
+                    check.r2_robust, check.n_cells)
 
 
 def _attach_grating_columns(main_window):
@@ -1339,29 +1394,53 @@ def on_save_action(main_window: MainWindow):
         save_results(main_window, save_path)
 
 
-def vision_classification_lines(main_window):
-    """The tree as Vision classification lines: ``"<vision id>  All/<path>/"``.
+UNCLASSIFIED_GROUP_NAME = "Unclassified"
 
-    Same format as a Vision classification.txt: two spaces, an ``All/`` root,
-    a trailing slash. The root "Unclassified" group is left out. Ids go
-    through DataManager's translation (AGENTS.md Law 1). Both File ▸ Save
-    and File ▸ Save Classification write this, so the two files agree.
+
+def tree_vision_groups(main_window):
+    """``[(vision id, [group, subgroup, ...]), ...]`` for every cell in the tree.
+
+    Cells in the root "Unclassified" group get ``None``; cells at the root
+    get ``[]``. Ids go through DataManager's translation (AGENTS.md Law 1).
     """
     dm = main_window.data_manager
-    lines = []
+    out = []
 
-    def recurse(item, current_path):
+    def recurse(item, groups):
         for i in range(item.rowCount()):
             child = item.child(i)
             cluster_id = child.data(Qt.ItemDataRole.UserRole)
             if cluster_id is not None:
-                vid = dm.get_vision_id_for_cluster(int(cluster_id))
-                lines.append(f"{vid}  All/{current_path}")
-            elif child.text() != "Unclassified":
-                recurse(child, f"{current_path}{child.text()}/")
+                out.append((dm.get_vision_id_for_cluster(int(cluster_id)), groups))
+            elif groups == [] and child.text() == UNCLASSIFIED_GROUP_NAME:
+                recurse(child, None)
+            else:
+                recurse(child, None if groups is None else [*groups, child.text()])
 
-    recurse(main_window.tree_model.invisibleRootItem(), "")
-    return lines
+    recurse(main_window.tree_model.invisibleRootItem(), [])
+    return out
+
+
+def vision_classification_lines(main_window):
+    """The tree as Vision classification lines: ``"<vision id>  All/<path>/"``.
+
+    Same format as a Vision classification.txt: two spaces, an ``All/`` root,
+    a trailing slash. The root "Unclassified" group is left out. Both File ▸
+    Save and File ▸ Save Classification write this, so the two files agree.
+    """
+    return [f"{vid}  All/" + "".join(f"{g}/" for g in groups)
+            for vid, groups in tree_vision_groups(main_window) if groups is not None]
+
+
+def vision_class_ids(main_window):
+    """Vision id → ``classID`` string for the .params file.
+
+    ``"All/ON/brisk transient"``; ``"All"`` for cells at the root or in the
+    root "Unclassified" group. A "/" inside a group name makes a sub-level,
+    as it does in the .txt export.
+    """
+    return {vid: pc.class_path(pc.class_groups("/".join(groups or [])))
+            for vid, groups in tree_vision_groups(main_window)}
 
 
 def save_results(main_window, output_path):
@@ -2098,123 +2177,98 @@ def load_classification_file(main_window: MainWindow):
     recent_paths.remember_dir(file_path, "classification")
 
     try:
-        main_window.status_bar.showMessage("Loading classification file...")
-        QApplication.processEvents()
-
-        # Parse the classification file
         with open(file_path, "r") as f:
-            lines = f.readlines()
-
-        # Dictionary to store cluster_id -> classification path
-        classifications = {}
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                vision_id = int(parts[0])
-                classification_path = parts[1]
-
-                # --- FIX: Skip the standard "All/" root folder ---
-                if classification_path.startswith("All/"):
-                    classification_path = classification_path[4:]
-                elif classification_path == "All":
-                    classification_path = ""
-
-                # Vision id -> UI cluster id through the one canonical
-                # translation (AGENTS.md Law 1). A hard-coded "- 1" was wrong
-                # in Vision-only sessions, where the ids are not offset.
-                cluster_id = main_window.data_manager.get_cluster_id_for_vision(vision_id)
-                classifications[cluster_id] = classification_path
-
-        # Update the tree view based on classifications
-        main_window.tree_model.clear()
-
-        # Group clusters by their classifications
-        classification_groups = {}
-        for cluster_id, path in classifications.items():
-            if path not in classification_groups:
-                classification_groups[path] = []
-            classification_groups[path].append(cluster_id)
-
-        # Also need to maintain clusters that weren't in the classification
-        # file
-        all_cluster_ids = set(main_window.data_manager.cluster_df["cluster_id"])
-        classified_cluster_ids = set(classifications.keys())
-        unclassified_cluster_ids = all_cluster_ids - classified_cluster_ids
-
-        # Add clusters that were in the classification file
-        for path, cluster_ids in classification_groups.items():
-            # Create hierarchical structure from path (e.g., "All/OFF/brisk
-            # sustained/" -> nested groups)
-            path_parts = [
-                part for part in path.split("/") if part
-            ]  # Remove empty parts
-
-            # Navigate/create the hierarchical structure
-            current_parent = main_window.tree_model
-            for _, part in enumerate(path_parts):
-                # Look for existing item with this name in current parent
-                found_item = None
-                for row in range(current_parent.rowCount()):
-                    # For QStandardItemModel (like tree_model), use item(row)
-                    # For QStandardItem (nested items), use child(row)
-                    if type(current_parent).__name__ == "QStandardItemModel":
-                        item = current_parent.item(row)
-                    else:
-                        item = current_parent.child(row)
-                    if item and item.text() == part:
-                        found_item = item
-                        break
-
-                if found_item is None:
-                    group_row = make_group_row(part, 0)
-                    current_parent.appendRow(group_row)
-                    current_parent = group_row[0]
-                else:
-                    current_parent = found_item
-
-            # Add cluster items to the final group
-            df = main_window.data_manager.cluster_df
-            for cluster_id in cluster_ids:
-                if cluster_id in all_cluster_ids:
-                    # Sync the dataframe so background plots know the cell's new group
-                    leaf_name = path_parts[-1] if path_parts else "Unclassified"
-                    df.loc[df["cluster_id"] == cluster_id, "KSLabel"] = leaf_name
-
-                    cluster_info = df[df["cluster_id"] == cluster_id].iloc[0]
-                    current_parent.appendRow(_cell_row_from_record(cluster_info))
-
-        # Add unclassified clusters under an 'Unclassified' group
-        if unclassified_cluster_ids:
-            unclassified_row = make_group_row("Unclassified", 0)
-            unclassified_group = unclassified_row[0]
-            main_window.tree_model.appendRow(unclassified_row)
-
-            for cluster_id in unclassified_cluster_ids:
-                cluster_info = main_window.data_manager.cluster_df[
-                    main_window.data_manager.cluster_df["cluster_id"] == cluster_id
-                ].iloc[0]
-                unclassified_group.appendRow(_cell_row_from_record(cluster_info))
-
-        refresh_tree_group_counts(main_window.tree_model.invisibleRootItem())
-
-        # Set up the tree model and expand all
-        main_window.setup_tree_model(main_window.tree_model)
-        main_window.tree_view.collapseAll()
-
-        main_window.status_bar.showMessage(
-            f"Loaded classification file with {len(classifications)} classified clusters.",
-            5000,
+            groups_by_vid = parse_classification_text(f.readlines())
+        dm = main_window.data_manager
+        n = apply_classification(
+            main_window,
+            {dm.get_cluster_id_for_vision(v): g for v, g in groups_by_vid.items()},
         )
-        main_window.load_classification_action.setEnabled(True)
-
+        main_window.status_bar.showMessage(
+            f"Loaded classification file with {n} classified clusters.", 5000
+        )
     except Exception as e:
         QMessageBox.critical(
             main_window, "Loading Error", f"Error loading classification file: {e}"
         )
         main_window.status_bar.showMessage("Classification file loading failed.", 5000)
+
+
+def parse_classification_text(lines):
+    """Vision classification.txt lines → ``{vision id: [group, subgroup, ...]}``.
+
+    A line is ``"<id>  All/<group>/<subgroup>/"``. Group names can contain
+    spaces ("brisk transient"), so only the first run of whitespace splits
+    the line. ``"All/"`` gives ``[]``: the cell goes at the root of the tree.
+    """
+    out = {}
+    for line in lines:
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            out[int(parts[0])] = pc.class_groups(parts[1])
+    return out
+
+
+def apply_classification(main_window, groups_by_cluster):
+    """Rebuild the tree from ``{cluster id: [group, ...] or None}``.
+
+    ``[]`` puts the cell at the root; ``None``, or a cluster that is not in
+    the mapping, puts it in the root "Unclassified" group. Ids that are not
+    in cluster_df are ignored. Returns the number of cells placed in groups
+    or at the root.
+    """
+    dm = main_window.data_manager
+    df = dm.cluster_df
+    all_cluster_ids = set(int(c) for c in df["cluster_id"])
+    placed = {int(c): g for c, g in groups_by_cluster.items()
+              if int(c) in all_cluster_ids and g is not None}
+
+    main_window.tree_model.clear()
+
+    by_path = {}
+    for cluster_id, groups in placed.items():
+        by_path.setdefault(tuple(groups), []).append(cluster_id)
+
+    for path_parts, cluster_ids in by_path.items():
+        # Navigate/create the nested groups for this path
+        current_parent = main_window.tree_model
+        for part in path_parts:
+            found_item = None
+            for row in range(current_parent.rowCount()):
+                # QStandardItemModel has item(row); a nested QStandardItem has child(row)
+                if type(current_parent).__name__ == "QStandardItemModel":
+                    item = current_parent.item(row)
+                else:
+                    item = current_parent.child(row)
+                if item and item.text() == part:
+                    found_item = item
+                    break
+            if found_item is None:
+                group_row = make_group_row(part, 0)
+                current_parent.appendRow(group_row)
+                current_parent = group_row[0]
+            else:
+                current_parent = found_item
+
+        for cluster_id in cluster_ids:
+            # Sync the dataframe so background plots know the cell's new group
+            leaf_name = path_parts[-1] if path_parts else UNCLASSIFIED_GROUP_NAME
+            df.loc[df["cluster_id"] == cluster_id, "KSLabel"] = leaf_name
+            cluster_info = df[df["cluster_id"] == cluster_id].iloc[0]
+            current_parent.appendRow(_cell_row_from_record(cluster_info))
+
+    unclassified_ids = [c for c in df["cluster_id"] if int(c) not in placed]
+    if unclassified_ids:
+        unclassified_row = make_group_row(UNCLASSIFIED_GROUP_NAME, 0)
+        main_window.tree_model.appendRow(unclassified_row)
+        for cluster_id in unclassified_ids:
+            cluster_info = df[df["cluster_id"] == cluster_id].iloc[0]
+            unclassified_row[0].appendRow(_cell_row_from_record(cluster_info))
+
+    refresh_tree_group_counts(main_window.tree_model.invisibleRootItem())
+    main_window.setup_tree_model(main_window.tree_model)
+    main_window.tree_view.collapseAll()
+    return len(placed)
 
 
 def save_classification_to_file(main_window: MainWindow):
@@ -2256,6 +2310,201 @@ def save_classification_to_file(main_window: MainWindow):
         main_window.status_bar.showMessage(f"Classification saved to {file_path}", 5000)
     except Exception as e:
         QMessageBox.critical(main_window, "Save Error", f"Could not save file:\n{e}")
+
+
+# ── Classification in the Vision .params file (Ctrl+S) ─────────────────────
+
+def _run_in_background(main_window, fn, on_done, on_failed):
+    """Run ``fn()`` on the thread pool; then ``on_done(result)`` or ``on_failed(exc)`` here."""
+    task = BackgroundCall(fn)
+    keep = getattr(main_window, "_background_calls", None)
+    if keep is None:
+        keep = main_window._background_calls = set()
+    keep.add(task.signals)
+
+    def finish(handler, value):
+        keep.discard(task.signals)
+        handler(value)
+
+    task.signals.done.connect(lambda result: finish(on_done, result))
+    task.signals.failed.connect(lambda exc: finish(on_failed, exc))
+    QThreadPool.globalInstance().start(task)
+
+
+def _loaded_params_path(main_window):
+    dm = main_window.data_manager
+    return None if dm is None else getattr(dm, "vision_params_path", None)
+
+
+def params_save_needs_confirm(main_window, path, stamp, diff, check=NO_SORT_CHECK):
+    """Ask first, unless this session saved this exact file version and the save is not risky."""
+    last = getattr(main_window, "_params_saved_stamps", {}).get(str(path))
+    return last != tuple(stamp) or params_save_is_risky(diff, check)
+
+
+def params_save_is_risky(diff, check=NO_SORT_CHECK):
+    """Warn and default to Cancel: cells lose a class, or the file is from another sort."""
+    return bool(diff.unclassified) or check.mismatch
+
+
+def params_save_summary(path, diff, check=NO_SORT_CHECK):
+    """The text of the confirmation dialog for a .params save."""
+    s = lambda n: "" if n == 1 else "s"  # noqa: E731
+    n = diff.n_changed
+    parts = []
+    if check.mismatch:
+        parts.append(f"WARNING: {describe_sort_check(check)} If so, this save puts classes "
+                     "on the wrong cells in Vision.")
+    parts.append(f"{n} cell{s(n)} will change class in {path.name}.")
+    if diff.unclassified:
+        k = len(diff.unclassified)
+        parts.append(f"{k} of them {'is' if k == 1 else 'are'} classified in the file now and "
+                     f"will become unclassified (\"All\").")
+    if diff.not_in_file:
+        k = len(diff.not_in_file)
+        parts.append(f"{k} Encore cell{s(k)} {'has' if k == 1 else 'have'} no row in this "
+                     "file and will not be saved.")
+    if diff.not_in_encore:
+        k = len(diff.not_in_encore)
+        parts.append(f"{k} row{s(k)} in the file {'has' if k == 1 else 'have'} no cell in "
+                     "this sort (usually clusters deleted after the STA run) and will stay "
+                     f"as {'it is' if k == 1 else 'they are'}.")
+    parts.append(f"The current file is kept as {pc.backup_path(path).name}.")
+    parts.append("If this dataset is open in Vision, close it there first. When Vision and "
+                 "Encore both save the same file, one of the two saves can be lost.")
+    if diff.unclassified:
+        parts.append("To start from the file's classification instead, cancel and use "
+                     "File ▸ Load Classification from Vision .params.")
+    return "\n\n".join(parts)
+
+
+def _confirm_params_save(main_window, path, diff, check=NO_SORT_CHECK):
+    risky = params_save_is_risky(diff, check)
+    box = QMessageBox(main_window)
+    box.setIcon(QMessageBox.Icon.Warning if risky else QMessageBox.Icon.Question)
+    box.setWindowTitle("Save classification to Vision .params")
+    box.setText(params_save_summary(path, diff, check))
+    save = box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+    cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(cancel if risky else save)
+    box.exec()
+    return box.clickedButton() is save
+
+
+def _report_params_error(main_window, path, exc, doing="save to"):
+    logger.warning("Could not %s %s: %s", doing, path, exc)
+    if isinstance(exc, pc.ParamsChangedError):
+        QMessageBox.warning(main_window, "Not saved",
+                            f"{exc}\n\nNothing was written. Press Ctrl+S again to compare "
+                            "with the new version.")
+    elif isinstance(exc, pc.ParamsFileError):
+        QMessageBox.critical(main_window, "Vision .params file is damaged",
+                             f"Encore did not {doing} {path.name} because the file does not "
+                             f"read correctly:\n\n{exc}\n\nNothing was changed.")
+    else:
+        QMessageBox.critical(main_window, "Vision .params error",
+                             f"Could not {doing} {path}:\n\n{type(exc).__name__}: {exc}")
+    main_window.status_bar.showMessage(f"Could not {doing} {path.name}.", 6000)
+
+
+def save_classification_to_params(main_window):
+    """Ctrl+S: write the tree's classification into the loaded Vision .params.
+
+    1. Read the file and compare it with the tree (thread pool).
+    2. Ask the user, when params_save_needs_confirm() says so (GUI thread).
+    3. Write it with params_classification.write_classes (thread pool). The
+       write is refused if the file changed after step 1.
+    """
+    bar = main_window.status_bar
+    if main_window.data_manager is None:
+        bar.showMessage("No dataset is loaded; nothing to save.", 5000)
+        return
+    path = _loaded_params_path(main_window)
+    if path is None:
+        bar.showMessage("No Vision .params file is loaded, so there is nowhere to save the "
+                        "classification. File ▸ Save Classification Text File writes a .txt.",
+                        8000)
+        return
+    if getattr(main_window, "_params_busy", False):
+        return
+    new = vision_class_ids(main_window)
+    check = main_window.data_manager.vision_sort_check()
+    main_window._params_busy = True
+    bar.showMessage(f"Reading {path.name}…")
+
+    def compare():
+        table = pc.read_table(path)
+        return table.stamp, pc.diff_classes(table.classes(), new)
+
+    def compared(result):
+        stamp, diff = result
+        if diff.n_changed == 0:
+            main_window._params_busy = False
+            bar.showMessage(f"{path.name} already has this classification.", 5000)
+            return
+        if (params_save_needs_confirm(main_window, path, stamp, diff, check)
+                and not _confirm_params_save(main_window, path, diff, check)):
+            main_window._params_busy = False
+            bar.showMessage("Not saved.", 4000)
+            return
+        bar.showMessage(f"Saving to {path.name}…")
+        _run_in_background(
+            main_window, lambda: pc.write_classes(path, new, expected_stamp=stamp),
+            saved, failed)
+
+    def saved(report):
+        main_window._params_busy = False
+        stamps = getattr(main_window, "_params_saved_stamps", None)
+        if stamps is None:
+            stamps = main_window._params_saved_stamps = {}
+        stamps[str(path)] = tuple(report.stamp)
+        n = len(report.changed)
+        bar.showMessage(f"Saved the class of {n} cell{'' if n == 1 else 's'} to {path.name} "
+                        f"(previous version: {report.backup.name}).", 8000)
+
+    def failed(exc):
+        main_window._params_busy = False
+        _report_params_error(main_window, path, exc)
+
+    _run_in_background(main_window, compare, compared, failed)
+
+
+def load_classification_from_params(main_window):
+    """Replace the tree with the classID column of the loaded Vision .params."""
+    if main_window.data_manager is None:
+        QMessageBox.warning(main_window, "No Data Loaded", "Please load a dataset first.")
+        return
+    path = _loaded_params_path(main_window)
+    if path is None:
+        QMessageBox.information(main_window, "No Vision .params file",
+                                "This dataset has no Vision .params file loaded.")
+        return
+    if getattr(main_window, "_params_busy", False):
+        return
+    answer = QMessageBox.question(
+        main_window, "Load classification from Vision .params",
+        f"Replace the tree with the classification in {path.name}?\n\n"
+        "The current tree is replaced. Save it first if you need it.")
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+    main_window._params_busy = True
+    main_window.status_bar.showMessage(f"Reading {path.name}…")
+
+    def loaded(classes):
+        main_window._params_busy = False
+        dm = main_window.data_manager
+        n = apply_classification(
+            main_window,
+            {dm.get_cluster_id_for_vision(v): (pc.class_groups(c) or None)
+             for v, c in classes.items()})
+        main_window.status_bar.showMessage(
+            f"Loaded the classification of {n} cells from {path.name}.", 6000)
+
+    def failed(exc):
+        main_window._params_busy = False
+        _report_params_error(main_window, path, exc, doing="read")
+
+    _run_in_background(main_window, lambda: pc.read_classes(path), loaded, failed)
 
 
 def load_raw_data(main_window):

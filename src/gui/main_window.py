@@ -1830,10 +1830,25 @@ class MainWindow(QMainWindow):
         )
         self.load_classification_action.setEnabled(True)
 
+        self.load_params_classification_action = file_menu.addAction(
+            "Load Classification from Vision .params"
+        )
+        self.load_params_classification_action.setEnabled(False)
+
         self.save_classification_action = file_menu.addAction(
             "Save Classification Text File..."
         )
         self.save_classification_action.setEnabled(False)
+
+        # Ctrl+S writes the tree into the loaded .params file, where Vision
+        # reads it. The action is also added to the window: the File menu
+        # hangs off a header button, and a closed menu does not see keys.
+        self.save_params_action = file_menu.addAction(
+            "Save Classification to Vision .params"
+        )
+        self.save_params_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Save))
+        self.save_params_action.setEnabled(False)
+        self.addAction(self.save_params_action)
 
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
@@ -1862,6 +1877,12 @@ class MainWindow(QMainWindow):
         self.load_classification_action.triggered.connect(self.load_classification_file)
         self.save_classification_action.triggered.connect(
             self.on_save_classification_action
+        )
+        self.load_params_classification_action.triggered.connect(
+            lambda: callbacks.load_classification_from_params(self)
+        )
+        self.save_params_action.triggered.connect(
+            lambda: callbacks.save_classification_to_params(self)
         )
         self.save_action.triggered.connect(self.on_save_action)
         self.map_reference_action.triggered.connect(self.map_reference_run)

@@ -126,6 +126,34 @@ folder. Chirp is precomputed. Grating may be a raw
 `*DSOS*.npy`). The GUI then computes DSI/OSI for each `(bar width, TF)`
 that was actually run and stores `grating_computed_cache.pkl`.
 
+## Save the classification for Vision
+
+**Ctrl+S** (File → Save Classification to Vision .params) writes the tree
+into the `classID` column of the run's `.params` file. Vision shows that
+column. A group path becomes `All/<group>/<subgroup>`; a cell in the root
+"Unclassified" group becomes `All`.
+
+- Encore changes only the `classID` cells. It keeps the previous file as
+  `<name>.params.bak`.
+- Encore asks first on the first save of a session, after the file was saved
+  elsewhere, when a cell would lose its class, and when the Vision files look
+  like they come from another sort.
+- Close the run in Vision before you save. Vision saves the same file in place,
+  and one of the two saves can be lost.
+- File → Load Classification from Vision .params replaces the tree with the
+  file's classes.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| Ctrl+S | Save the classification to the Vision `.params` |
+| Ctrl+F | Search the cell list |
+| Ctrl+D / Ctrl+C / Ctrl+E / Ctrl+W / Ctrl+X / Ctrl+A | Mark Duplicate / Clean / Edge / Unsure / Contaminated / Off Array |
+| Ctrl+Shift+N | Mark Noisy (was Ctrl+S) |
+| Delete | Move the selected cells to Trash |
+| Space | Select the next row of the similarity table |
+
 ## Documents
 
 Read documents in this order:

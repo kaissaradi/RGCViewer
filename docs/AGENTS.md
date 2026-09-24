@@ -49,6 +49,8 @@ This translation is already implemented in `DataManager.get_cell_physics()`. **C
 
 **What breaks without it:** `vision_stas[cluster_id]` silently returns the *previous* cell's STA. The panel renders incorrect data with no error.
 
+**The offset assumes the Vision files were made from this sort.** A `.sta`/`.params` made from another sort loads without error and every STA, RF fit and Vision class lands on the wrong cell. `DataManager.vision_sort_check()` (`src/analysis/vision_sort_check.py`) tests the pairing from content (RF centre vs array position). Do not treat a partial id overlap as proof either way (PLAN.md Q32).
+
 **Regression test:** `test_get_cell_physics_vision_id_offset` — both parametrize branches (hybrid and vision-only) must pass after any change to `get_cell_physics()` or any code that accesses `vision_stas`, `vision_eis`, or `vision_params`.
 
 ---
