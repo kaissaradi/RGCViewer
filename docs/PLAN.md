@@ -29,8 +29,8 @@ Status: `done` = fixed and verified; `open` = not started; `wip` = started.
 | Q6 | Grating polar plot: no units, no error bars (SD across trials) | Lab meeting | open | |
 | Q7 | DSI/OSI missing from the cluster table | Lab meeting | open | |
 | Q8 | Per-direction rasters around the polar plot (replace the 8-slot PSTH grid) | User, lab | open | `assign_directions_to_compass` drops directions past 8. Per-trial spikes exist in `compute_grating_response` but are not kept. |
-| Q9 | Grating math: timing from trial 0 only; p-value has no +1 correction; 0°/360° not merged; negative delta-rate enters vector sum; F1 window overruns stimTime | Audit | open | `grating_calc.py`. Add known-answer tests. |
-| Q10 | First load: grating DS/OS batch is slow | User | open | Profile before changing. 200 shuffles × conditions × cells. |
+| Q9 | Grating math: timing from trial 0 only; p-value has no +1 correction; 0°/360° not merged; negative delta-rate enters vector sum; F1 window overruns stimTime | Audit | done | Fixed in `grating_calc.py`; see its Conventions block. `GRATING_SCHEMA_VERSION = 2` recomputes old cache rows once. Old vs new on all 201 cells of 20251212A/data018: no DS/OS change. Tests `test_grating_math.py`. Open question for the user: no multiple-comparison correction across conditions and DSI/OSI. |
+| Q10 | First load: grating DS/OS batch is slow | User | wip | Math vectorized: 25 → 6.5 ms/cell. Still to measure: the real first-load timeline in the app (physics warm-up over CIFS, cache saves every 100 cells in `GratingBatchWorker`). |
 | Q11 | Kilosort + Vision from separate directories builds the physics cache twice or freezes | Tester | open | Physics warm-ups are not joined (`start_physics_warmup`). Vision switch does not clear `feature_cache`, `vision_sim_cache`, `ei_corr_dict`. |
 | Q12 | `retinanalysis` ignored even when installed | Tester | open | Harness log: "retinanalysis module not available". |
 | Q13 | State from the previous dataset survives a dataset switch | Audit | open | Stale guards check cluster ID only. `_PCA_CACHE`, `EIPanel._ei_map_cache`, array image. Needs a dataset-generation token. |
@@ -48,6 +48,8 @@ Status: `done` = fixed and verified; `open` = not started; `wip` = started.
 | Q25 | Tooltip for "RF short vs long" | Tester | open | |
 | Q26 | Vision fits at the lower bound (σx = σy = 1.00) show as real fits | Audit | open | 7.6% of cells on 20251212A/data018. Flag them. |
 | Q27 | Infra: CI, pinned dependencies, installer preflight (dirty tree, branch, venv Python), prune the unit suite | User | open | No `.github/workflows`. Deps unpinned. Docs name a missing `CLAUDE.md`, `environment.yml`, `requirements-dev.txt`. |
+| Q28 | UMAP does not separate RGC types well | User | open | Evaluate against labelled cells (Vision classification) before tuning. Check feature blocks, weights, missing-data handling. |
+| Q29 | Windows / plots overlay each other when switching tabs | User | open | Reproduce with the harness first. |
 
 Parked, low priority: two datasets side by side; cluster matching in Encore.
 
