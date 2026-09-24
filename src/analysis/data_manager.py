@@ -467,6 +467,10 @@ class DataManager(QObject):
         self.ei_corr_dict = (
             None  # Initialize to None, will be set when vision data is loaded
         )
+        # "resolved dir::dataset" of the loaded Vision files. Physics entries
+        # and the EI-correlation pickle carry the source they came from, so a
+        # different Vision folder never reuses them (PLAN.md Q11).
+        self._vision_source = None
 
         # --- Cross-Run Reference Bridge ---
         self.reference_bridge = None  # Optional[ReferenceBridge]
@@ -967,6 +971,54 @@ class DataManager(QObject):
         except Exception as e:
             return False, f"Error during Kilosort data loading: {e}"
 
+    @staticmethod
+    def _vision_source_key(vision_dir, dataset_name):
+        try:
+            resolved = str(Path(vision_dir).resolve())
+        except OSError:
+            resolved = str(vision_dir)
+        return f"{resolved}::{dataset_name}"
+
+    def _forget_vision_derived(self, old_source, new_source):
+        """Drop everything computed from the previous Vision files.
+
+        Attaching a different Vision folder to the same Kilosort run used to
+        keep the old STA timecourses, RF fits, Vision similarity rows and EI
+        duplicate flags, because every one of those caches is keyed by
+        cluster id only. The new files would then be described by the old
+        ones with no error.
+        """
+        logger.info("Vision source changed (%s -> %s); dropping Vision-derived caches",
+                    old_source, new_source)
+        for attr in ("vision_stas", "vision_eis"):
+            reader = getattr(self, attr, None)
+            close = getattr(reader, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("closing old %s failed", attr, exc_info=True)
+            setattr(self, attr, None)
+        self.vision_params = None
+        self.vision_channel_positions = None
+        lock = getattr(self, "_feature_lock", None)
+        if lock is not None:
+            with lock:
+                self.feature_cache.clear()
+        else:
+            self.feature_cache.clear()
+        hw_lock = getattr(self, "_heavyweight_lock", None)
+        hw = getattr(self, "heavyweight_cache", None)
+        if hw is not None:
+            if hw_lock is not None:
+                with hw_lock:
+                    hw.clear()
+            else:
+                hw.clear()
+        self._physics_done_count = 0
+        self.vision_sim_cache = {}
+        self.ei_corr_dict = None
+
     def load_vision_data(self, vision_dir, dataset_name):
         """
         Loads EI, STA, and params data from a specified Vision directory.
@@ -977,6 +1029,12 @@ class DataManager(QObject):
         """
         logger.debug("Starting vision data load from %s", vision_dir)
         vision_path = Path(vision_dir)
+
+        new_source = self._vision_source_key(vision_path, dataset_name)
+        old_source = getattr(self, "_vision_source", None)
+        if old_source is not None and old_source != new_source:
+            self._forget_vision_derived(old_source, new_source)
+        self._vision_source = new_source
 
         # Use the high-level helper in vision_integration
         logger.debug("Calling vision_integration.load_vision_data")
@@ -1467,6 +1525,13 @@ class DataManager(QObject):
             logger.warning("%s has mismatched matrix shapes; recomputing", path)
             return None, None
 
+        src = cached.get("vision_source")
+        current = self._optional_attr("_vision_source")
+        if src is not None and current is not None and src != current:
+            logger.info("%s was computed from other Vision files (%s); recomputing",
+                        path, src)
+            return None, None
+
         ids = cached.get("ids")
         if ids is None:
             return cached, None  # legacy file; caller re-derives the order
@@ -1593,6 +1658,7 @@ class DataManager(QObject):
                 }
 
             self.ei_corr_dict["ids"] = [int(c) for c in ordered_ids]
+            self.ei_corr_dict["vision_source"] = self._optional_attr("_vision_source")
             if any(cid <= 0 or cid > 100_000 for cid in self.ei_corr_dict["ids"]):
                 logger.warning(
                     "Refusing to persist EI correlation cache: %d of %d ids "
@@ -2429,6 +2495,12 @@ class DataManager(QObject):
         # hit would make the zeros stick for the rest of the session.
         if entry.get("_timed_out"):
             return False
+        # Computed from other Vision files. Untagged entries (older pickles)
+        # are kept, so an update does not force every user to recompute.
+        src = entry.get("_vision_source")
+        current = self._optional_attr("_vision_source")
+        if src is not None and current is not None and src != current:
+            return False
         if entry.get("timecourse") is not None:
             return True
         if not self._sta_source_available(cluster_id):
@@ -2501,6 +2573,9 @@ class DataManager(QObject):
             time_to_peak = 0
 
             vid = self.get_vision_id_for_cluster(cluster_id)
+            # Captured before any read: a Vision switch mid-compute must mark
+            # this result with the source it was actually computed from.
+            vision_source = self._optional_attr("_vision_source")
             stas = self._optional_attr("vision_stas")
             params = self._optional_attr("vision_params")
             stafit = None
@@ -2672,6 +2747,7 @@ class DataManager(QObject):
 
             metrics = {
                 "_computed": True,
+                "_vision_source": vision_source,
                 "_sta_checked": self._sta_source_available(cluster_id),
                 "acg": acg_norm,
                 "timecourse": timecourse,

@@ -470,11 +470,16 @@ def _finalize_dataset_load(main_window):
                 bar.show()
                 start_cache_progress_polling(main_window)
 
-        # 4. Hand the window back.
-        main_window.central_widget.setEnabled(True)
-
         # 5. Background work, now that nothing else competes for the disk.
         start_worker(main_window)
+
+    # 4. Hand the window back — on every pass, not only the first reveal.
+    # File ▸ Load Vision locks the window before it attaches Vision to an
+    # open run, and this is the only place that unlocks it again. Unlocking
+    # only on first reveal left the window disabled for good after a manual
+    # attach, which looked like a freeze (PLAN.md Q11). This runs
+    # only once no load phase is pending, so unlocking here is always safe.
+    main_window.central_widget.setEnabled(True)
 
     if getattr(dm, "vision_eis", None) is not None:
         dm.precompute_ei_correlations_background()
@@ -1073,6 +1078,12 @@ def load_vision_directory(main_window):
         main_window.status_bar.showMessage(
             "Appending Vision data to Kilosort dataset..."
         )
+        # A physics warm-up may still be reading the previous Vision files.
+        # Stop it now: its results would describe the old files, and it would
+        # compete with this load for the network link.
+        stop = getattr(main_window, "_physics_warm_stop", None)
+        if stop is not None:
+            stop.set()
         main_window.vision_load_thread = QThread()
         main_window.vision_load_worker = VisionLoadWorker(
             main_window.data_manager, vision_dir_name

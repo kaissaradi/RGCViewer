@@ -276,6 +276,38 @@ def scenario_grating_table(s):
     s.shot("table", s.w)
 
 
+def scenario_attach_vision(s):
+    """Q11: File > Load Vision on an open Kilosort run (the reported freeze)."""
+    import threading
+    from src.gui import callbacks
+    s.load()
+    wait_until(lambda: s.w.central_widget.isEnabled(), 30)
+    vision_dir = os.environ.get("HARNESS_VISION") or os.path.dirname(s.ks_dir)
+    orig = callbacks.QFileDialog.getExistingDirectory
+    callbacks.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: vision_dir)
+    try:
+        t = time.time()
+        s.w.load_vision_directory()
+        done = wait_until(lambda: getattr(s.w, "vision_load_thread", None) is None, 120)
+        pump(2.0)
+    finally:
+        callbacks.QFileDialog.getExistingDirectory = orig
+    warm = [th.name for th in threading.enumerate() if th.name == "physics-warm"]
+    dm = s.dm()
+    log(json.dumps({"vision_load_done": done, "secs": round(time.time() - t, 1),
+                    "central_enabled": s.w.central_widget.isEnabled(),
+                    "physics_warm_threads": len(warm),
+                    "vision_source": getattr(dm, "_vision_source", None)}))
+    # Physics must be rebuilt from the attached files, not reused.
+    wait_until(lambda: not any(th.name == "physics-warm" and th.is_alive()
+                               for th in threading.enumerate()), 300)
+    srcs = [e.get("_vision_source") for e in dm.feature_cache.values()
+            if isinstance(e, dict) and e.get("_computed")]
+    from collections import Counter
+    log(json.dumps({"physics_entries_by_source": Counter(srcs)}))
+    s.shot("after_attach", s.w)
+
+
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()
              if k.startswith("scenario_")}
 
