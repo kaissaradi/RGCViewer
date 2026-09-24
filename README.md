@@ -37,6 +37,20 @@ encore
 | `--kilosort-dir PATH` | Load this run at start |
 | `--dat-file PATH` | Attach a raw `.bin` / `.dat` file for the Raw tab |
 
+### Optional packages (retinanalysis)
+
+The installer puts Encore in its own virtual environment,
+`~/.encore/.venv`. That environment does not see packages from conda or
+from your system Python. To use a package there, install it into that
+environment:
+
+```bash
+~/.encore/.venv/bin/pip install -e /path/to/retinanalysis
+```
+
+Encore does not need `retinanalysis` today. It only looks up stimulus
+timing metadata with it, and no view uses that metadata yet.
+
 ### Uninstall
 
 ```bash

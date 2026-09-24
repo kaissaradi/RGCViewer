@@ -643,8 +643,13 @@ class DataManager(QObject):
             self.d_timing = dju.get_epochblock_timing(self.exp_name, self.block_id)
             logger.debug("Loaded stimulus timing data successfully")
         except ImportError:
-            logger.warning(
-                "retinanalysis module not available, skipping stimulus timing data loading"
+            # Info, not a warning: nothing in Encore reads block_id/d_timing
+            # yet, and the installer's venv cannot see a conda-installed
+            # retinanalysis. The warning made a normal install look broken.
+            # README "Optional packages" says how to add it.
+            logger.info(
+                "retinanalysis is not installed in Encore's environment; "
+                "stimulus timing metadata skipped (optional, unused by the views)"
             )
             return
         except Exception:
