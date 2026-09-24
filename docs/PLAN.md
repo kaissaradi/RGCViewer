@@ -2,7 +2,54 @@
 
 Read `docs/AGENTS.md` before this file. This file is the pickup point.
 
-Last updated: 2026-08-25. Branch: `dev-testing`.
+Last updated: 2026-09-24. Branch: `dev-testing`.
+
+## Active queue (2026-09 sweep)
+
+This is the current work. Start here.
+
+Sources: reports from two testers, the 2026-08-10 lab meeting,
+and a code audit on 2026-09-24. `main` is production: `install.sh` updates
+every user with `git pull --ff-only` on `main`. Work on `dev-testing`. Commit
+each fix separately. Do not push or merge to `main` unless the user asks.
+
+Verify each GUI fix on real data with `tools/gui_harness.py` (see §6). The
+unit suite is weak (see defect "Older pytest failures"). A green suite is not
+proof. Add one focused test per fix that fails on the old code.
+
+Status: `done` = fixed and verified; `open` = not started; `wip` = started.
+
+| # | Item | Source | Status | Notes |
+|---|---|---|---|---|
+| Q1 | STA tab does not redraw on first select of an uncached cell | Tester | done | Cause: with a raw file loaded, `_process_selection` waited for `FeatureWorker`, and `on_features_ready` redraws only EI/Waveforms/Standard. Harness `sta_refresh` with `HARNESS_DAT`: 0/12 drew before, 12/12 after. Test `test_selection_draws_active_tab.py`. |
+| Q2 | STA image rescales every frame; gray must stay gray | Lab meeting | open | `_update_pg_image` uses per-frame min/max and ImageItem auto-levels. Vision STAs are zero-mean with peak abs = 1. Map 0 to mid-gray with one symmetric scale for the whole movie. |
+| Q3 | STA heatmap (spatial) and space-time view | User | open | Cube `(H, W, frames)` is in `STAPanel.current_sta_data`. |
+| Q4 | STA panel keeps the previous cell's movie after a failed or missing STA | Audit | open | `_clear_all` does not reset `current_sta_data` or stop the timer. |
+| Q5 | STA read blocks the GUI thread up to 8 s on a cold CIFS read | Audit | open | `STAPanel.update_view` reads `vision_stas[vid]` synchronously. 1–2 s seen during physics warm-up. |
+| Q6 | Grating polar plot: no units, no error bars (SD across trials) | Lab meeting | open | |
+| Q7 | DSI/OSI missing from the cluster table | Lab meeting | open | |
+| Q8 | Per-direction rasters around the polar plot (replace the 8-slot PSTH grid) | User, lab | open | `assign_directions_to_compass` drops directions past 8. Per-trial spikes exist in `compute_grating_response` but are not kept. |
+| Q9 | Grating math: timing from trial 0 only; p-value has no +1 correction; 0°/360° not merged; negative delta-rate enters vector sum; F1 window overruns stimTime | Audit | open | `grating_calc.py`. Add known-answer tests. |
+| Q10 | First load: grating DS/OS batch is slow | User | open | Profile before changing. 200 shuffles × conditions × cells. |
+| Q11 | Kilosort + Vision from separate directories builds the physics cache twice or freezes | Tester | open | Physics warm-ups are not joined (`start_physics_warmup`). Vision switch does not clear `feature_cache`, `vision_sim_cache`, `ei_corr_dict`. |
+| Q12 | `retinanalysis` ignored even when installed | Tester | open | Harness log: "retinanalysis module not available". |
+| Q13 | State from the previous dataset survives a dataset switch | Audit | open | Stale guards check cluster ID only. `_PCA_CACHE`, `EIPanel._ei_map_cache`, array image. Needs a dataset-generation token. |
+| Q14 | Feature Extraction default scatters | User | open | Wanted: Temporal PC1 v PC2, ACG PC1 v PC2, Temporal PC1 v ACG PC1, Temporal PC1 v RF area, then random. `_PLOT_META` in `feature_extraction.py`. Ask: RF area or diameter. |
+| Q15 | Editable, remembered plot presets | Tester | open | |
+| Q16 | Light mode has dark leftover panels | Tester | open | |
+| Q17 | Window width cannot shrink on laptops; drag-resize only in full screen | Lab meeting, tester | open | |
+| Q18 | Feature-extraction scatters have more contrast than the population view | Tester | open | |
+| Q19 | Loading indicator wrong on dataset reload | Lab meeting | open | |
+| Q20 | RF y-axis flip vs stimulus | Tester | open | `main` looks consistent after `5903177`. Confirm the reporter's version, then check on real data. |
+| Q21 | Mosaic click-to-select fails when the table view is active | Audit | open | `_select_cluster_in_table` reads `source._data`; the model has `_dataframe`. `_select_table_cluster_id` works. |
+| Q22 | Small bugs | Audit | open | `electrode_map.py:2146` `or` with enum 0; `callbacks.py:1195` `summary_tab` does not exist; legacy classification save/load always applies ±1 (wrong in Vision-only); bare `except` makes a failed CCG show the ACG. |
+| Q23 | Population spike-rate plots like Vision | Tester | open | |
+| Q24 | Classification file structure matches Vision | Tester | open | High priority for the lab. |
+| Q25 | Tooltip for "RF short vs long" | Tester | open | |
+| Q26 | Vision fits at the lower bound (σx = σy = 1.00) show as real fits | Audit | open | 7.6% of cells on 20251212A/data018. Flag them. |
+| Q27 | Infra: CI, pinned dependencies, installer preflight (dirty tree, branch, venv Python), prune the unit suite | User | open | No `.github/workflows`. Deps unpinned. Docs name a missing `CLAUDE.md`, `environment.yml`, `requirements-dev.txt`. |
+
+Parked, low priority: two datasets side by side; cluster matching in Encore.
 
 This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
@@ -98,7 +145,7 @@ The full suite still has older failures. Do not mark them skipped.
 | `_pop_plot_state = None` plus nested mosaic draw | `AttributeError` and recursive QWidget repaint on cluster click | Fixed 2026-08-24. State is a dict or absent. Highlight-only hot-swap. |
 | `get_cell_physics()` indexes the full STA cube | Slow scroll with a cold cache | Fixed 2026-08-12. Params timecourse first. Cube only on a miss. |
 | `_draw_plots()` redraws population panels on every selection | Chirp-view scroll is slow until cache is warm | Fixed 2026-08-12. Skip when the group timecourse and ACG caches already hold the subset. First visit of a group still draws. |
-| Older pytest failures | Suite is not a clean gate | Open. Do not skip. `test_raw_feature_blocks` now matches the prefilter and scalar-column contracts. `test_gui_polish` still ERRORs: `qtbot` is missing because `pytest-qt` is not installed in `encore` (it is listed in `requirements-dev.txt`). |
+| Older pytest failures | Suite is not a clean gate | Open. Do not skip. 2026-09-24 in `rgcviewer`, offscreen: 335 pass, 3 fail, all in `test_gui_polish.py` (PyQt6 `QMouseEvent` wants `QPointF`, test passes `QPoint`). `pytest-qt` and `pytest-mock` are not declared in `pyproject.toml`. `requirements-dev.txt` does not exist. The suite tests cache plumbing, not dataset switches or grating numerics. The user does not trust it (Q27). |
 
 ## 4. Expected messages (not defects)
 
@@ -135,6 +182,25 @@ python main.py
 python -m pytest tests/unit/ -v
 python -m pytest tests/unit/test_live_selectors.py tests/unit/test_vision_load_robustness.py tests/unit/test_ei_panel_view.py -v
 ```
+
+On the lab workstation the working environment is conda `rgcviewer`.
+User installs run from `~/.encore/.venv`.
+
+```bash
+# Unit suite, headless
+QT_QPA_PLATFORM=offscreen conda run -n rgcviewer python -m pytest tests/unit -q
+
+# Drive the real GUI offscreen on a real run; screenshots in $HARNESS_OUT
+HARNESS_OUT=/tmp/encore_harness conda run --no-capture-output -n rgcviewer \
+    python tools/gui_harness.py sta_refresh
+# Same, with the raw .bin attached (FeatureWorker path)
+HARNESS_DAT=/mnt/lab/Array-data/raw/20251212A/data018 \
+    conda run --no-capture-output -n rgcviewer python tools/gui_harness.py sta_refresh
+```
+
+Harness dataset: `/mnt/lab/Array-data/sorted/20251212A/kilosort40/data018/ksfiles`
+(Kilosort; Vision files one level up; DSOS grating file). Raw:
+`/mnt/lab/Array-data/raw/20251212A/data018`.
 
 Lab data (tests skip if unmounted):
 
