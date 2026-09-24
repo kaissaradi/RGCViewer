@@ -1044,6 +1044,13 @@ class MainWindow(QMainWindow):
             )
             self.feature_worker_thread.started.connect(self.feature_worker.run)
             self.feature_worker_thread.start()
+
+            # on_features_ready redraws only the tabs that read the snippet
+            # features. Every other tab (STA, Grating, Chirp, ...) reads the
+            # DataManager directly, so it has to draw now or it stays on the
+            # previous cell until the user switches tabs.
+            if self.analysis_tabs.currentWidget() not in self._panels_needing_features():
+                self._draw_plots(cluster_id, None)
         else:
             self.status_bar.showMessage(
                 "Raw data file not loaded: waveform plot disabled.", 4000
@@ -1186,17 +1193,18 @@ class MainWindow(QMainWindow):
         # Cache the newly computed features
         self.data_manager.ei_cache[cluster_id] = features
 
-        # Only draw if still on a tab that needs these features
+        # Only draw if still on a tab that needs these features; the rest
+        # already drew in _process_selection.
         current_tab = self.analysis_tabs.currentWidget()
-        if current_tab in (
-            self.ei_panel,
-            self.waveforms_panel,
-            self.standard_plots_panel,
-        ):
+        if current_tab in self._panels_needing_features():
             self._draw_plots(cluster_id, features)
 
         # Cleanup with timeout to prevent hangs
         self._cleanup_thread("feature_worker_thread")
+
+    def _panels_needing_features(self):
+        """Tabs that wait for FeatureWorker's snippet features before drawing."""
+        return (self.ei_panel, self.waveforms_panel, self.standard_plots_panel)
 
     def _cleanup_thread(self, thread_attr: str, timeout_ms: int = 2000):
         """
