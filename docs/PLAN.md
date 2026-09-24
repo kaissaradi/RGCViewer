@@ -22,9 +22,9 @@ Status: `done` = fixed and verified; `open` = not started; `wip` = started.
 | # | Item | Source | Status | Notes |
 |---|---|---|---|---|
 | Q1 | STA tab does not redraw on first select of an uncached cell | Tester | done | Cause: with a raw file loaded, `_process_selection` waited for `FeatureWorker`, and `on_features_ready` redraws only EI/Waveforms/Standard. Harness `sta_refresh` with `HARNESS_DAT`: 0/12 drew before, 12/12 after. Test `test_selection_draws_active_tab.py`. |
-| Q2 | STA image rescales every frame; gray must stay gray | Lab meeting | open | `_update_pg_image` uses per-frame min/max and ImageItem auto-levels. Vision STAs are zero-mean with peak abs = 1. Map 0 to mid-gray with one symmetric scale for the whole movie. |
-| Q3 | STA heatmap (spatial) and space-time view | User | open | Cube `(H, W, frames)` is in `STAPanel.current_sta_data`. |
-| Q4 | STA panel keeps the previous cell's movie after a failed or missing STA | Audit | open | `_clear_all` does not reset `current_sta_data` or stop the timer. |
+| Q2 | STA image rescales every frame; gray must stay gray | Lab meeting | done | One symmetric scale per movie (±max|STA|), 0 = mid-gray, ImageItem levels fixed. Harness `sta_modes`: image median 0.50 on 3 cells. Test `test_sta_display.py`. |
+| Q3 | STA heatmap (spatial) and space-time view | User | done | Display combo: Stimulus / Heatmap (dominant channel, CET-D1, colorbar) / Space–time (x–t and y–t through the fit centre, else the peak pixel). Harness `sta_modes` screenshots. |
+| Q4 | STA panel keeps the previous cell's movie after a failed or missing STA | Audit | done | `_clear_all` drops the movie and stops the timer. Harness `sta_modes`: movie dropped, timer stopped. |
 | Q5 | STA read blocks the GUI thread up to 8 s on a cold CIFS read | Audit | open | `STAPanel.update_view` reads `vision_stas[vid]` synchronously. 1–2 s seen during physics warm-up. |
 | Q6 | Grating polar plot: no units, no error bars (SD across trials) | Lab meeting | open | |
 | Q7 | DSI/OSI missing from the cluster table | Lab meeting | open | |

@@ -158,6 +158,47 @@ def scenario_sta_refresh(s):
     log(f"STA not redrawn for {stale}/{len(picks)} selections")
 
 
+def scenario_sta_modes(s):
+    """Q2/Q3/Q4: fixed scale, heatmap and space–time views, stale-state clear."""
+    import numpy as np
+    s.load()
+    dm = s.dm()
+    p = s.w.sta_panel
+    s.tab("STA")
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    with_sta = [c for c in ids if dm.get_vision_id_for_cluster(c) in dm.vision_stas]
+    without = [c for c in ids if c not in set(with_sta)]
+    picks = with_sta[len(with_sta) // 3: len(with_sta) // 3 + 3]
+    for c in picks:
+        s.select(c, settle=0.0)
+        wait_until(lambda: p.current_sta_cluster_id == c, 12)
+        for mode in ("Stimulus", "Heatmap", "Space–time"):
+            p.sta_mode_combo.setCurrentText(mode)
+            pump(0.3)
+            s.shot(f"{c}_{mode.replace('–', '-')}", p)
+        p.sta_mode_combo.setCurrentText("Stimulus")
+        pump(0.1)
+        img = p._pg_image_item.image
+        # The noise mean must sit at mid-gray (0.5), not wherever the frame min/max put it.
+        log(json.dumps({"cid": c, "img_median": round(float(np.median(img)), 3),
+                        "absmax": round(p._absmax_all, 3), "dom": p._dom_idx,
+                        "slice": p._slice_rc, "slice_src": p._slice_source}))
+
+    # Stale state: animate a cell, then select a cell with no STA.
+    if without:
+        s.select(picks[0], settle=0.0)
+        wait_until(lambda: p.current_sta_cluster_id == picks[0], 12)
+        p._start_animation_timer()
+        pump(0.3)
+        s.select(without[0], settle=0.5)
+        timer = p.sta_animation_timer
+        log(json.dumps({"no_sta_cid": without[0],
+                        "movie_dropped": p.current_sta_data is None,
+                        "timer_stopped": not (timer and timer.isActive()),
+                        "img_cleared": p._pg_image_item.image is None}))
+        s.shot("no_sta_after_animation", p)
+
+
 SCENARIOS = {k[len("scenario_"):]: v for k, v in globals().items()
              if k.startswith("scenario_")}
 

@@ -3,23 +3,34 @@ STA Panel — spike-triggered average viewer for Encore.
 
 Layout
 ──────
-  Toolbar  (single row: frame nav left | animation controls right)
+  Toolbar  (frame nav | animation controls | display mode)
   ┌──────────────────────────┬─────────────────┐
   │  RF canvas (pyqtgraph)   │ Temporal filter  │  ~70% height
   └──────────────────────────┴─────────────────┘
   ┌──────────────────────────────────────────────┐
   │  Metrics strip (fixed-height pill bar)        │  ~90px
   └──────────────────────────────────────────────┘
+
+Display modes
+─────────────
+  Stimulus    RGB frame as the stimulus looked. Zero maps to mid-gray.
+  Heatmap     Dominant channel, signed, diverging colormap with a colorbar.
+  Space–time  Dominant channel, one row (x–t) and one column (y–t) through
+              the RF centre, against time before the spike.
+
+Every mode uses ONE symmetric scale for the whole movie (±max|STA|), never a
+per-frame min/max. Vision STAs are zero-mean, so a per-frame stretch moved
+"gray" between frames and blew pure-noise frames up to full contrast.
 """
 
 import logging
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QRectF, Qt, QTimer
 from qtpy.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton,
-    QSizePolicy, QSlider, QSplitter, QVBoxLayout,
+    QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QSlider, QSplitter, QStackedWidget, QVBoxLayout,
     QWidget,
 )
 
@@ -32,6 +43,37 @@ logger = logging.getLogger(__name__)
 # Matplotlib channel colours — consistent everywhere in this file
 _CH_COLORS = ['#e05555', '#55c155', '#5588e0']   # R, G, B (softer than pure)
 _CH_NAMES  = ['Red', 'Green', 'Blue']
+
+# Display modes, in combo order.
+_MODE_STIMULUS  = "Stimulus"
+_MODE_HEATMAP   = "Heatmap"
+_MODE_SPACETIME = "Space–time"
+_MODES = [_MODE_STIMULUS, _MODE_HEATMAP, _MODE_SPACETIME]
+
+
+def stimulus_frame(cube_frame: np.ndarray, absmax: float) -> np.ndarray:
+    """Map a signed (H, W, 3) STA frame to [0, 1] display values.
+
+    Zero goes to 0.5 (mid-gray). ``absmax`` is the peak |value| of the whole
+    movie, so every frame shares one scale and a noise frame stays near gray.
+    """
+    if not absmax or not np.isfinite(absmax):
+        return np.full(cube_frame.shape, 0.5, dtype=np.float32)
+    out = 0.5 + 0.5 * (cube_frame.astype(np.float32) / absmax)
+    return np.clip(out, 0.0, 1.0)
+
+
+def space_time_slices(channel: np.ndarray, row: int, col: int):
+    """Return (x–t, y–t) slices of a (H, W, T) channel through (row, col).
+
+    x–t has shape (T, W): time along axis 0, column along axis 1.
+    y–t has shape (T, H): time along axis 0, row along axis 1.
+    Both are laid out for pyqtgraph ImageItem, which reads axis 0 as x.
+    """
+    h, w, _ = channel.shape
+    row = int(np.clip(row, 0, h - 1))
+    col = int(np.clip(col, 0, w - 1))
+    return channel[row, :, :].T, channel[:, col, :].T
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -212,6 +254,14 @@ class STAPanel(QWidget):
         self._rf_params_table       = None
         self.sta_animation_timer    = None
 
+        # ── display state ─────────────────────────────────────────────────────
+        self._display_mode  = _MODE_STIMULUS
+        self._absmax_all    = 0.0     # peak |STA| over all channels and frames
+        self._absmax_dom    = 0.0     # peak |STA| of the dominant channel
+        self._dom_idx       = 2       # 0/1/2 = R/G/B; B/W runs duplicate into all
+        self._slice_rc      = None    # (row, col) the space–time slices go through
+        self._slice_source  = ""      # "fit centre" | "peak pixel"
+
         # ── cached metrics (set by _load_sta_data, read by all draw methods) ─
         self._current_metrics: dict | None = None
 
@@ -282,6 +332,22 @@ class STAPanel(QWidget):
 
         bar.addWidget(self.sta_animation_button)
         bar.addWidget(self.sta_animation_stop_button)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet(f"color: {colors.get('border_subtle','#333')};")
+        bar.addWidget(sep2)
+
+        self.sta_mode_combo = QComboBox()
+        self.sta_mode_combo.addItems(_MODES)
+        self.sta_mode_combo.setToolTip(
+            "Stimulus: the frame as shown on the monitor (0 = gray).\n"
+            "Heatmap: dominant channel, signed, fixed ± scale.\n"
+            "Space–time: dominant channel along one row (x–t) and one\n"
+            "column (y–t) through the RF centre, against time."
+        )
+        self.sta_mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        bar.addWidget(self.sta_mode_combo)
         bar.addStretch()
 
         # Wire signals
@@ -325,6 +391,42 @@ class STAPanel(QWidget):
         )
         self.rf_view.addItem(self.rf_center_item)
 
+        # Colorbar for the signed Heatmap mode. Deliberately not linked to the
+        # ImageItem: a linked bar owns the image's levels and LUT, which would
+        # fight the RGB Stimulus mode.
+        self._cmap = pg.colormap.get('CET-D1')
+        self.rf_colorbar = self._make_colorbar(colors)
+        self.rf_canvas.addItem(self.rf_colorbar, row=0, col=1)
+        self.rf_colorbar.hide()
+
+        # ── Space–time canvas (swapped in for the RF canvas) ──────────────────
+        self.st_canvas = pg.GraphicsLayoutWidget()
+        self.st_canvas.setBackground(colors.get('bg_panel', '#1a1a1a'))
+        self._xt_plot = self.st_canvas.addPlot(row=0, col=0)
+        self._yt_plot = self.st_canvas.addPlot(row=1, col=0)
+        self._yt_plot.invertY(True)            # row 0 at the top, as in the RF view
+        self._yt_plot.setXLink(self._xt_plot)
+        self._xt_image = pg.ImageItem()
+        self._yt_image = pg.ImageItem()
+        self._xt_cursor = pg.InfiniteLine(angle=90, movable=False)
+        self._yt_cursor = pg.InfiniteLine(angle=90, movable=False)
+        for plot, img, cursor, axis_name in (
+            (self._xt_plot, self._xt_image, self._xt_cursor, "x"),
+            (self._yt_plot, self._yt_image, self._yt_cursor, "y"),
+        ):
+            plot.addItem(img)
+            plot.addItem(cursor)
+            plot.setMenuEnabled(False)
+            plot.setLabel('left', f"{axis_name} (stixel)")
+            plot.setLabel('bottom', "Time before spike (ms)")
+        self.st_colorbar = self._make_colorbar(colors)
+        self.st_canvas.addItem(self.st_colorbar, row=0, col=1, rowspan=2)
+        self._style_st_plots(colors)
+
+        self.image_stack = QStackedWidget()
+        self.image_stack.addWidget(self.rf_canvas)   # index 0
+        self.image_stack.addWidget(self.st_canvas)   # index 1
+
         # ── Temporal filter (matplotlib) ──────────────────────────────────────
         self.temporal_filter_canvas = MplCanvas(self, width=4, height=5, dpi=110)
         self._draw_temporal_placeholder(colors)
@@ -339,7 +441,7 @@ class STAPanel(QWidget):
         self.temporal_toolbar = make_nav_toolbar(self.temporal_filter_canvas, temporal_col)
         temporal_layout.addWidget(self.temporal_toolbar)
 
-        self.main_splitter.addWidget(self.rf_canvas)
+        self.main_splitter.addWidget(self.image_stack)
         self.main_splitter.addWidget(temporal_col)
         self.main_splitter.setSizes([580, 320])
         self.main_splitter.setStretchFactor(0, 3)
@@ -358,8 +460,39 @@ class STAPanel(QWidget):
     # Theme
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _make_colorbar(self, colors):
+        bar = pg.ColorBarItem(
+            values=(-1.0, 1.0), colorMap=self._cmap, interactive=False,
+            width=14, colorMapMenu=False,
+        )
+        self._style_colorbar(bar, colors)
+        return bar
+
+    @staticmethod
+    def _style_colorbar(bar, colors):
+        text = colors.get('text_secondary', '#888')
+        axis = bar.getAxis('right')
+        axis.setTextPen(text)
+        axis.setPen(text)
+
+    def _style_st_plots(self, colors):
+        text = colors.get('text_secondary', '#888')
+        for plot in (self._xt_plot, self._yt_plot):
+            for side in ('left', 'bottom'):
+                axis = plot.getAxis(side)
+                axis.setTextPen(text)
+                axis.setPen(text)
+            plot.titleLabel.setAttr('color', text)
+        pen = pg.mkPen(colors.get('text_primary', '#ddd'), width=1, style=Qt.DashLine)
+        self._xt_cursor.setPen(pen)
+        self._yt_cursor.setPen(pen)
+
     def restyle_plots(self, colors):
         self.rf_canvas.setBackground(colors.get('bg_panel', '#1a1a1a'))
+        self.st_canvas.setBackground(colors.get('bg_panel', '#1a1a1a'))
+        self._style_colorbar(self.rf_colorbar, colors)
+        self._style_colorbar(self.st_colorbar, colors)
+        self._style_st_plots(colors)
         self.rf_ellipse_item.setPen(
             pg.mkPen(colors.get('text_primary', '#ddd'), width=1.5,
                      style=Qt.DashLine)
@@ -478,6 +611,20 @@ class STAPanel(QWidget):
         peak_frame     = int(np.argmax(frame_energies))
         self.current_frame_index = peak_frame
 
+        # One scale per movie (see module docstring), and the channel the
+        # signed views show. compute_sta_metrics already picked the dominant
+        # channel for the temporal plot; use the same one.
+        self._absmax_all = float(np.max(frame_energies)) if frame_energies.size else 0.0
+        raw = (metrics or {}).get('_raw_temporal') or {}
+        dom_idx = raw.get('dom_idx')
+        if dom_idx not in (0, 1, 2):
+            dom_idx = int(np.argmax(np.sum(all_ch ** 2, axis=(1, 2, 3))))
+        self._dom_idx = int(dom_idx)
+        dom = all_ch[self._dom_idx]
+        self._absmax_dom = float(np.max(np.abs(dom))) if dom.size else 0.0
+        self._slice_rc, self._slice_source = self._slice_centre(
+            dom, peak_frame, stafit, dm.vision_params)
+
         self.sta_frame_slider.blockSignals(True)
         self.sta_frame_slider.setMinimum(0)
         self.sta_frame_slider.setMaximum(n_frames - 1)
@@ -492,28 +639,109 @@ class STAPanel(QWidget):
     # Draw: RF image + ellipse
     # ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _slice_centre(dom, peak_frame, stafit, params_table):
+        """(row, col) for the space–time slices, and where it came from.
+
+        The fit centre when there is a fit inside the image, so the slices go
+        through the ellipse the user sees. Otherwise the pixel with the
+        largest |STA| in the peak frame.
+        """
+        h, w, _ = dom.shape
+        if stafit is not None:
+            fit = rf_geometry.rf_fit_from_stafit(
+                stafit, getattr(params_table, 'runtimemovie_params', None))
+            if fit is not None:
+                cx_p, cy_p, _w, _h, _a = rf_geometry.image_ellipse(fit, h)
+                row, col = int(np.floor(cy_p)), int(np.floor(cx_p))
+                if 0 <= row < h and 0 <= col < w:
+                    return (row, col), "fit centre"
+        frame = np.abs(dom[:, :, peak_frame])
+        row, col = np.unravel_index(int(np.argmax(frame)), frame.shape)
+        return (int(row), int(col)), "peak pixel"
+
+    def _frame_times_ms(self):
+        """Centre time of every frame, in ms before the spike (last frame = 0)."""
+        n = self.total_sta_frames
+        refresh = float(getattr(self.current_sta_data, 'refresh_time', 0) or 1000.0 / 60.0)
+        return refresh, -(n - 1 - np.arange(n)) * refresh
+
+    def _on_mode_changed(self, mode: str):
+        if mode not in _MODES:
+            return
+        self._display_mode = mode
+        self.image_stack.setCurrentIndex(1 if mode == _MODE_SPACETIME else 0)
+        self.rf_colorbar.setVisible(mode == _MODE_HEATMAP)
+        self._draw_rf_frame()
+
     def _draw_rf_frame(self):
         """Push the current frame to pyqtgraph and update the fit overlay."""
+        if self._display_mode == _MODE_SPACETIME:
+            self._draw_space_time()
         self._update_pg_image()
         self._update_rf_overlay()
 
     def _update_pg_image(self):
-        """Normalise and push the current frame to pyqtgraph ImageItem."""
+        """Push the current frame (or time cursor) for the active mode."""
         if self.current_sta_data is None:
             self._pg_image_item.clear()
             return
 
-        r = self.current_sta_data.red  [:, :, self.current_frame_index]
-        g = self.current_sta_data.green[:, :, self.current_frame_index]
-        b = self.current_sta_data.blue [:, :, self.current_frame_index]
-        frame = np.stack([r, g, b], axis=-1).astype(np.float32)
+        idx = self.current_frame_index
+        if self._display_mode == _MODE_SPACETIME:
+            _refresh, times = self._frame_times_ms()
+            if 0 <= idx < len(times):
+                self._xt_cursor.setValue(times[idx])
+                self._yt_cursor.setValue(times[idx])
+            return
 
-        mn, mx = frame.min(), frame.max()
-        if mx > mn:
-            frame = (frame - mn) / (mx - mn)
+        if self._display_mode == _MODE_HEATMAP:
+            ch = (self.current_sta_data.red, self.current_sta_data.green,
+                  self.current_sta_data.blue)[self._dom_idx]
+            a = self._absmax_dom or 1.0
+            self._pg_image_item.setColorMap(self._cmap)
+            # pyqtgraph ImageItem reads axis 0 as x, so (H, W) -> (W, H)
+            self._pg_image_item.setImage(
+                ch[:, :, idx].T, autoLevels=False, levels=(-a, a))
+            self.rf_colorbar.setLevels((-a, a))
+            return
 
-        # pyqtgraph ImageItem expects (width, height, 3) with row=x, col=y
-        self._pg_image_item.setImage(frame.transpose(1, 0, 2))
+        r = self.current_sta_data.red  [:, :, idx]
+        g = self.current_sta_data.green[:, :, idx]
+        b = self.current_sta_data.blue [:, :, idx]
+        frame = stimulus_frame(np.stack([r, g, b], axis=-1), self._absmax_all)
+
+        # pyqtgraph ImageItem expects (width, height, 3) with row=x, col=y.
+        # Fixed levels: ImageItem auto-levels by default, which would undo
+        # the shared scale.
+        self._pg_image_item.setLookupTable(None)
+        self._pg_image_item.setImage(
+            frame.transpose(1, 0, 2), autoLevels=False, levels=(0.0, 1.0))
+
+    def _draw_space_time(self):
+        """Fill the x–t and y–t images for the current cell."""
+        if self.current_sta_data is None or self._slice_rc is None:
+            self._xt_image.clear()
+            self._yt_image.clear()
+            return
+        ch = (self.current_sta_data.red, self.current_sta_data.green,
+              self.current_sta_data.blue)[self._dom_idx]
+        row, col = self._slice_rc
+        xt, yt = space_time_slices(ch, row, col)
+        a = self._absmax_dom or 1.0
+        refresh, times = self._frame_times_ms()
+        t_left = times[0] - refresh / 2.0
+        span = refresh * len(times)
+        h, w, _ = ch.shape
+        for img, data, extent in ((self._xt_image, xt, w), (self._yt_image, yt, h)):
+            img.setColorMap(self._cmap)
+            img.setImage(data, autoLevels=False, levels=(-a, a))
+            img.setRect(QRectF(t_left, 0.0, span, float(extent)))
+        self._xt_plot.setTitle(f"x–t through row {row} ({self._slice_source})")
+        self._yt_plot.setTitle(f"y–t through column {col}")
+        self.st_colorbar.setLevels((-a, a))
+        self._xt_plot.autoRange()
+        self._yt_plot.autoRange()
 
     def _update_rf_overlay(self):
         """Draw Gaussian ellipse outline and centre dot from stafit."""
@@ -728,7 +956,22 @@ class STAPanel(QWidget):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _clear_all(self, reason: str = "Select a cell"):
-        """Reset everything to the no-data state."""
+        """Reset everything to the no-data state.
+
+        Drops the previous cell's movie too. Keeping it let the animation
+        timer, the slider, or Play repaint the old cell into a panel that
+        looked cleared. The Play/Pause mode itself is kept, so the next cell
+        with an STA resumes animating.
+        """
+        if self.sta_animation_timer is not None and self.sta_animation_timer.isActive():
+            self.sta_animation_timer.stop()
+        self.current_sta_data = None
+        self.current_stafit = None
+        self.current_sta_cluster_id = None
+        self.total_sta_frames = 0
+        self._slice_rc = None
+        self._xt_image.clear()
+        self._yt_image.clear()
         self._pg_image_item.clear()
         self.rf_ellipse_item.setData([], [])
         self.rf_center_item.setData([], [])
