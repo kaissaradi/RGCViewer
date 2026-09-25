@@ -55,3 +55,15 @@ def test_empty_stimulus_tabs_say_what_would_fill_them():
     globs = DataManager._ANALYSIS_GLOBS
     assert globs["chirp"] == ("*Chirp*.npy",) and "*DSOS*.npy" in globs["grating"]
     assert "Cell 7 has no chirp response" in empty_states.no_cell_response("chirp", 7)
+
+
+def test_whats_new_is_on_the_welcome_page(qtbot, settings):
+    from src.gui.main_window import MainWindow
+    from src.gui.whats_new import WHATS_NEW
+    w = MainWindow()
+    try:
+        assert WHATS_NEW[0][0] in w.welcome_panel.news.text()
+    finally:
+        w.data_manager = None
+        w.close()
+        w.deleteLater()

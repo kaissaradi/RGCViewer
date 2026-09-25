@@ -90,6 +90,15 @@ class WelcomePanel(QWidget):
             col.addStretch(1)
             steps.addLayout(col, 1)
         body.addLayout(steps)
+        from ..whats_new import WHATS_NEW
+        news_head = QLabel("NEW IN THIS VERSION")
+        self.heads.append(news_head)
+        body.addWidget(news_head)
+        self.news = QLabel("<br>".join(f"<b>{name}</b> — {text}" for name, text in WHATS_NEW[:6]))
+        self.news.setWordWrap(True)
+        self.muted.append(self.news)
+        body.addWidget(self.news)
+
         tip = QLabel("F1 (or ?) shows every keyboard shortcut. "
                      "File ▸ About Encore shows the version to put in a bug report.")
         tip.setWordWrap(True)
