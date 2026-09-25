@@ -25,7 +25,8 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSizePolicy, QStackedLayout, QVBoxLayout,
+    QWidget,
 )
 
 from ..theme import apply_plot_theme, plot_grid_alpha, resolve_theme_colors
@@ -76,6 +77,9 @@ class ContrastPanel(QWidget):
             f"letter-spacing:0.06em;'>CONTRAST RESPONSE ACROSS LIGHT LEVELS</span>")
         header.addWidget(title)
         header.addStretch()
+        # Controls sit on their own row: on one row with the title they set a
+        # ~980 px minimum width for the tab and the window (PLAN.md Q17).
+        controls = QHBoxLayout()
 
         self.measure_combo = QComboBox()
         self.measure_combo.addItems(["F1 (at drift frequency)", "F0 (mean rate)",
@@ -84,8 +88,8 @@ class ContrastPanel(QWidget):
             "F1 is the modulated response at the grating's drift frequency.\n"
             "F2 picks out frequency-doubling (Y-like) cells.")
         self.measure_combo.currentIndexChanged.connect(self.refresh)
-        header.addWidget(QLabel("Measure:"))
-        header.addWidget(self.measure_combo)
+        controls.addWidget(QLabel("Measure:"))
+        controls.addWidget(self.measure_combo)
 
         self.fit_chk = QCheckBox("Naka-Rushton fit")
         self.fit_chk.setChecked(True)
@@ -95,7 +99,7 @@ class ContrastPanel(QWidget):
             "is still rising at the highest contrast shown, where it is an\n"
             "extrapolation rather than a measurement.")
         self.fit_chk.toggled.connect(self.refresh)
-        header.addWidget(self.fit_chk)
+        controls.addWidget(self.fit_chk)
 
         self.responsive_only_chk = QCheckBox("Responsive levels only")
         self.responsive_only_chk.setChecked(False)
@@ -103,14 +107,21 @@ class ContrastPanel(QWidget):
             "Hide light levels where this cell has no measurable response\n"
             "(F1 at the top contrast below twice the blank-contrast F1).")
         self.responsive_only_chk.toggled.connect(self.refresh)
-        header.addWidget(self.responsive_only_chk)
+        controls.addWidget(self.responsive_only_chk)
+        controls.addStretch()
 
         self.lbl_summary = QLabel("")
         self.lbl_summary.setStyleSheet(
             f"color: {colors['text_secondary']}; font-size: 11px;")
         header.addSpacing(10)
-        header.addWidget(self.lbl_summary)
+        # A plain QLabel is never narrower than its text; this long summary
+        # set the Contrast tab's (and so the window's) minimum width (Q17).
+        self.lbl_summary.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                       QSizePolicy.Policy.Preferred)
+        self.lbl_summary.setMinimumWidth(40)
+        header.addWidget(self.lbl_summary, 1)
         layout.addLayout(header)
+        layout.addLayout(controls)
 
         # --- plots ---
         self.glw = pg.GraphicsLayoutWidget()
@@ -274,6 +285,7 @@ class ContrastPanel(QWidget):
         if any("*" in b for b in bits):
             summary += " &nbsp; <i>*still rising at the top contrast</i>"
         self.lbl_summary.setText(summary)
+        self.lbl_summary.setToolTip(summary)   # the label may be clipped
         self.cell_plot.enableAutoRange()
 
     # ── per-group ────────────────────────────────────────────────────────────

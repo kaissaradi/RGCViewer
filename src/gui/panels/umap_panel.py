@@ -13,6 +13,8 @@ from qtpy.QtWidgets import (
     QTextEdit,
     QCheckBox,
     QSizePolicy,
+    QScrollArea,
+    QFrame,
     QGroupBox,
     QDoubleSpinBox,
     QGridLayout,
@@ -59,6 +61,39 @@ from ...analysis.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _HScrollArea(QScrollArea):
+    """Scrolls sideways only, and is exactly as tall as its content.
+
+    The horizontal bar's height is added only while the bar is needed, so a
+    wide window shows no empty strip under the controls.
+    """
+
+    def __init__(self, content, parent=None):
+        super().__init__(parent)
+        self.setWidget(content)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def sync_height(self):
+        content = self.widget()
+        if content is None:
+            return
+        h = max(content.sizeHint().height(), content.minimumSizeHint().height())
+        if content.minimumHeight() == content.maximumHeight() and content.minimumHeight() > 0:
+            h = content.minimumHeight()
+        needs_bar = content.minimumSizeHint().width() > self.viewport().width()
+        bar = self.horizontalScrollBar().sizeHint().height() if needs_bar else 0
+        if self.height() != h + bar:
+            self.setFixedHeight(h + bar)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.sync_height()
 
 
 # Hover text for the feature checkboxes (PLAN.md Q25).
@@ -555,7 +590,12 @@ class UMAPPanel(QWidget):
         self.controls_widget.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
-        self.layout.addWidget(self.controls_widget)
+        # The weights grid is ~1080 px wide. As a plain child it set the
+        # minimum width of every analysis tab (a QStackedWidget takes the
+        # widest page), so the window could not shrink on a laptop
+        # (PLAN.md Q17). In a sideways-only scroll area it scrolls instead.
+        self._controls_scroll = _HScrollArea(self.controls_widget, self)
+        self.layout.addWidget(self._controls_scroll)
 
     def refresh_feature_availability(self):
         """Re-gate data-dependent feature rows against the CURRENT DataManager.
@@ -660,6 +700,9 @@ class UMAPPanel(QWidget):
         hint_h = max(w.sizeHint().height(), w.minimumSizeHint().height())
         if hint_h > 0:
             w.setFixedHeight(hint_h)
+        scroll = getattr(self, "_controls_scroll", None)
+        if scroll is not None:
+            scroll.sync_height()
         self.layout.activate()
         self.updateGeometry()
 

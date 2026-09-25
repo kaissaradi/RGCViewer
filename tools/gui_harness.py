@@ -490,6 +490,29 @@ def scenario_light_mode(s):
     log(json.dumps({"dark_pixel_share": report}))
 
 
+def scenario_narrow_window(s):
+    """Q17: the window shrinks to laptop widths; tabs still lay out."""
+    s.load()
+    w = s.w
+    out = {"min_width": w.minimumSizeHint().width()}
+    for width in (1800, 1050):
+        w.resize(width, 700)
+        pump(0.5)
+        out[f"asked_{width}"] = w.width()
+        for name in ("UMAP", "Contrast", "STA", "Raw"):
+            try:
+                s.tab(name)
+            except KeyError:
+                continue
+            pump(0.8)
+            if name == "UMAP":
+                sc = w.umap_panel._controls_scroll
+                out[f"umap_bar_{width}"] = sc.horizontalScrollBar().isVisible()
+                out[f"umap_scroll_h_{width}"] = sc.height()
+            s.shot(f"{name}_{width}", w)
+    log(json.dumps(out))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """
