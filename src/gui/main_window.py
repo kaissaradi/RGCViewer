@@ -878,18 +878,17 @@ class MainWindow(QMainWindow):
             self.welcome_panel,
         ]
 
-        for panel in panels:
-            if hasattr(panel, "restyle_plots"):
-                panel.restyle_plots(colors)
-
-        # 4. Refresh similarity panel
-        self.similarity_panel.restyle_plots(colors)
-
-        # 4b. Refresh population canvases
-        self.pop_mosaic_canvas.restyle(colors)
-        self.pop_timecourse_canvas.restyle(colors)
-        self.pop_acg_canvas.restyle(colors)
-        self.pop_fr_canvas.restyle(colors)
+        # One panel failing must not leave the rest in the old theme: a UMAP
+        # restyle error once stopped Types, similarity and population here.
+        restyles = [panel.restyle_plots for panel in panels if hasattr(panel, "restyle_plots")]
+        restyles += [self.similarity_panel.restyle_plots,
+                     self.pop_mosaic_canvas.restyle, self.pop_timecourse_canvas.restyle,
+                     self.pop_acg_canvas.restyle, self.pop_fr_canvas.restyle]
+        for restyle in restyles:
+            try:
+                restyle(colors)
+            except Exception:
+                logger.exception("restyle failed: %s", getattr(restyle, "__qualname__", restyle))
 
         # Update population header styles
         self.pop_tc_label.setStyleSheet(

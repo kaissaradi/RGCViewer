@@ -270,7 +270,7 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
             ax.set_xticks([])
             ax.set_yticks([])
             self._update_caption(0)
-            self.canvas.draw_idle()
+            self._draw_when_ready()
             return
 
         geom = self._geometry
@@ -325,7 +325,21 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
 
         self._update_caption(0)
         self._ensure_selectors()
-        self.canvas.draw()
+        self._draw_when_ready()
+
+    def _draw_when_ready(self):
+        """Draw now, or on the next resize if the canvas is still 0×0.
+
+        A hidden or not-yet-laid-out canvas raises "'box_aspect' and
+        'fig_aspect' must be positive" on draw (AGENTS.md Law 5). It did so
+        when the UMAP finished and on the theme toggle, which stopped both
+        (errors.log, 2026-09-25).
+        """
+        if _axes_ready(self._ax):
+            self._pending_draw = False
+            self.canvas.draw()
+        else:
+            self._pending_draw = True
 
     # ── brushing ─────────────────────────────────────────────────────────────
 
@@ -508,6 +522,8 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
         super().resizeEvent(event)
         # Geometry changed: the cached background no longer matches the canvas.
         self._blit_bg = None
+        if getattr(self, "_pending_draw", False):
+            self._draw_when_ready()
         if self._sel_mode != "off" and (self._rect_sel is None or self._lasso_sel is None):
             self._ensure_selectors()
 
