@@ -5638,6 +5638,62 @@ class DataManager(QObject):
             "freq_max_hz": float(d["freq_max_hz"]),
         }
 
+    def get_borrowed_chirp(self, cluster_id):
+        """The matched reference cell's chirp, for a cell this run has none for (Q37).
+
+        Map Reference Run matches cells by EI (validated 2026-09-25, PLAN.md
+        Q37). Same dict as get_chirp_data_for_cluster, plus ``borrowed``
+        (source run, reference ID, match confidence and status) and
+        ``_source`` (the reference chirp file, for its timing). None without a
+        bridge, a match or a reference chirp.
+        """
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is None or not bridge.has_any_chirp():
+            return None
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
+        if not bridge.has_match(vid):
+            return None
+        pack = bridge.get_chirp_row(vid)
+        if pack is None:
+            return None
+        psth, _file_qi = pack
+        d = bridge._ref_chirp_data
+        # The file's own quality_index is on another scale (20260715A: 217–1953);
+        # score the reference trials the way this run's are (rebinned, gated).
+        qi, trials = float("nan"), None
+        ref_cid = bridge._ref_cluster_id(vid)
+        row = (bridge._ref_chirp_id_to_row or {}).get(ref_cid) if ref_cid is not None else None
+        binned = d.get("spikes_binned")
+        if row is not None and binned is not None and np.asarray(binned).ndim == 3:
+            counts = np.asarray(binned[row], dtype=float)
+            bin_ms = float(d.get("bin_size_ms") or 0.0)
+            factor = max(1, int(round(CHIRP_QI_BIN_MS / bin_ms))) if 0 < bin_ms < CHIRP_QI_BIN_MS else 1
+            x = self.rebin_counts(counts[None], factor)
+            if x.sum(axis=2).mean() >= CHIRP_MIN_SPIKES_PER_TRIAL:
+                qi = float(self._baden_quality_index(x)[0])
+            trials = {"counts": counts, "bin_size_ms": bin_ms, "runs": [],
+                      "blocks": [(None, "reference run", 0, counts.shape[0])]}
+
+        def span(key):
+            v = d.get(key)
+            return tuple(v) if v is not None else (0, 0)
+        return {
+            "psth_mean": psth,
+            "quality_index": qi,
+            "trials": trials,
+            "bin_size_ms": float(d["bin_size_ms"]),
+            "phase_step_on": span("phase_step_on"),
+            "phase_step_off": span("phase_step_off"),
+            "phase_freq_sweep": span("phase_freq_sweep"),
+            "phase_contrast": span("phase_contrast"),
+            "freq_min_hz": float(d.get("freq_min_hz", 0.0)),
+            "freq_max_hz": float(d.get("freq_max_hz", 0.0)),
+            "borrowed": {"run": str(bridge.ref_run_path), "reference_id": bridge.get_reference_id(vid),
+                         "confidence": float(bridge.get_confidence(vid)),
+                         "status": bridge.get_status(vid)},
+            "_source": d,
+        }
+
     def get_chirp_trials_for_cluster(self, cluster_id):
         """Per-trial binned spikes for one cell, labelled by source run.
 

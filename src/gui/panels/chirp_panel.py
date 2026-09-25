@@ -73,6 +73,12 @@ class ChirpPanel(QWidget):
         self.header_layout.addWidget(QLabel(
             f"<span style='color:{colors['text_tertiary']}; font-size:10px; "
             f"letter-spacing:0.06em;'>CHIRP DASHBOARD</span>"))
+        # "Borrowed from <run>": this run has no chirp for the cell (Q37).
+        self.borrow_note = QLabel("")
+        self.borrow_note.setStyleSheet(
+            f"color: {colors.get('status_mua_text', '#8A6500')}; font-size: 11px;")
+        self.borrow_note.hide()
+        self.header_layout.addWidget(self.borrow_note)
         self.header_layout.addStretch()
         self.lbl_qi = QLabel("")
         self.lbl_rate = QLabel("")
@@ -196,6 +202,11 @@ class ChirpPanel(QWidget):
             return
 
         data = dm.get_chirp_data_for_cluster(cluster_id)
+        borrowed = None
+        if data is None and hasattr(dm, "get_borrowed_chirp"):
+            borrowed = dm.get_borrowed_chirp(cluster_id)
+            data = borrowed
+        self._show_borrow_note(borrowed)
         if data is None:
             self.stack.setCurrentIndex(1)
             self.placeholder_label.setText(
@@ -205,9 +216,14 @@ class ChirpPanel(QWidget):
 
         self.stack.setCurrentIndex(0)
         colors = resolve_theme_colors(self.main_window.get_current_colors())
-        timing = dm.chirp_timing()
+        if borrowed is not None:
+            from ...analysis.chirp_calc import timing_from
+            timing = timing_from(None, borrowed["_source"])
+            trials = borrowed.get("trials")   # the reference cell's own trials
+        else:
+            timing = dm.chirp_timing()
+            trials = dm.get_chirp_trials_for_cluster(cluster_id)
         bin_ms = float(data["bin_size_ms"])
-        trials = dm.get_chirp_trials_for_cluster(cluster_id)
 
         for p in (self.stim_plot, self.raster_plot, self.psth_plot,
                   self.polarity_plot, self.freq_plot, self.contrast_plot):
@@ -222,6 +238,22 @@ class ChirpPanel(QWidget):
         self._draw_frequency(psth, timing, bin_ms, colors)
         self._draw_contrast(psth, timing, bin_ms, colors)
         self.psth_plot.setXRange(0, timing.total, padding=0.01)
+
+    def _show_borrow_note(self, borrowed):
+        if not borrowed:
+            self.borrow_note.hide()
+            return
+        b = borrowed["borrowed"]
+        from pathlib import Path
+        run = Path(b["run"]).name or b["run"]
+        self.borrow_note.setText(
+            f"Borrowed from {run}: matched cell {b['reference_id']} "
+            f"(EI match {b['confidence']:.2f}, {b['status']})")
+        self.borrow_note.setToolTip(
+            "This run has no chirp response for this cell. File ▸ Map Reference Run "
+            "matched it by its electrical image to a cell of the reference run, and "
+            f"this is that cell's chirp.\n{b['run']}")
+        self.borrow_note.show()
 
     # ── panels ───────────────────────────────────────────────────────────────
 

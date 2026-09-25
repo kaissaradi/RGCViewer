@@ -988,6 +988,36 @@ def scenario_optic_disc(s):
         shown[0].grab().save(os.path.join(s.shot_dir, "optic_disc.png"))
 
 
+def scenario_borrowed_chirp(s):
+    """Q37: Map Reference Run, then a matched cell's Chirp tab shows the reference cell's chirp.
+
+    HARNESS_REF: the reference Vision folder (a run of the same prep with a chirp).
+    """
+    from qtpy.QtWidgets import QFileDialog, QMessageBox
+    from src.gui import callbacks
+    ref = os.environ["HARNESS_REF"]
+    s.load()
+    w = s.w
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: ref)
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+    QMessageBox.exec_ = lambda self: QMessageBox.StandardButton.Ok
+    QMessageBox.exec = lambda self: QMessageBox.StandardButton.Ok
+    t = time.time()
+    callbacks.map_reference_run(w)
+    dm = s.dm()
+    ok = wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 600)
+    bridge = dm.reference_bridge
+    log(f"bridge installed={ok} in {time.time() - t:.0f}s: {bridge.summary() if bridge else None}")
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    borrowed = [c for c in ids if dm.get_chirp_data_for_cluster(c) is None and dm.get_borrowed_chirp(c)]
+    log(f"cells with a borrowed chirp: {len(borrowed)} of {len(ids)}")
+    if borrowed:
+        s.tab("Chirp")
+        s.select(borrowed[len(borrowed) // 2], settle=2.0)
+        log(f"note: {w.chirp_panel.borrow_note.text()!r}; drawn={w.chirp_panel.stack.currentIndex() == 0}")
+        s.shot("borrowed_chirp", w.chirp_panel)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

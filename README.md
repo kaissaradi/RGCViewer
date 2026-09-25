@@ -201,6 +201,10 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.
 
+- **Borrow responses from another run.** File → Map Reference Run matches the
+  cells of this run to another run of the same retina by their EIs. A cell
+  with no chirp here then shows its matched cell's chirp, with a note saying
+  where it comes from.
 - **Optic disc direction.** Array → Find the Optic Disc fits each cell's axon in
   its EI and shows where the axons converge: a disc point when the fit is
   clear, else a direction only, else nothing. It works best on the 512 array.
