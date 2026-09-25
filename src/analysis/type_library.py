@@ -206,3 +206,31 @@ def assemble(runs: Dict[str, dict], exclude_runs=()) -> Library:
         return Library(np.zeros((0, N_FEATURES)), np.array([]), np.array([]), np.array([]),
                        np.array([]), notes)
     return Library(np.vstack(X), np.array(y), np.array(prep), np.array(run), np.array(pol), notes)
+
+
+# --- the type atlas (PLAN.md Q44) ---------------------------------------------------
+
+@dataclass
+class TypeProfile:
+    name: str
+    n_cells: int
+    n_preps: int
+    tc_mean: np.ndarray        # run-scaled time course (type_features.S_GRID)
+    tc_sd: np.ndarray
+    acg_mean: np.ndarray       # 20 log bins (type_features.ACG_EDGES)
+    acg_sd: np.ndarray
+
+
+def atlas_profiles(lib: Library) -> Dict[str, TypeProfile]:
+    """Mean and spread of each class's time course and ACG across the library."""
+    from .type_features import S_GRID
+    n_tc = len(S_GRID)
+    out = {}
+    for name in sorted(set(lib.y)):
+        m = lib.y == name
+        X = lib.X[m]
+        out[name] = TypeProfile(
+            name=name, n_cells=int(m.sum()), n_preps=len(set(lib.prep[m])),
+            tc_mean=X[:, :n_tc].mean(axis=0), tc_sd=X[:, :n_tc].std(axis=0),
+            acg_mean=X[:, n_tc:n_tc + 20].mean(axis=0), acg_sd=X[:, n_tc:n_tc + 20].std(axis=0))
+    return out

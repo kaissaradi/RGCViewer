@@ -128,3 +128,24 @@ def test_mosaic_screen_holds_back_a_cell_on_top_of_a_member(win, monkeypatch):
     kept, held = suggestions.mosaic_screen(
         win, {"ON brisk sustained": [2, 3, 4]}, {1: "ON brisk sustained"})
     assert kept == {"ON brisk sustained": [3]} and sorted(held) == [2, 4]
+
+
+def test_atlas_profiles_per_class():
+    lib = _library(n=10)
+    prof = tl.atlas_profiles(lib)
+    assert set(prof) == set(lib.y)
+    p = prof["ON brisk sustained"]
+    assert p.n_cells == 10 and p.tc_mean.shape == (21,) and p.acg_mean.shape == (20,)
+    assert p.tc_mean[np.argmax(np.abs(p.tc_mean))] > 0            # ON: positive lobe
+    assert prof["OFF transient"].tc_mean[np.argmax(np.abs(prof["OFF transient"].tc_mean))] < 0
+
+
+def test_type_atlas_dialog_builds_one_row_per_type(qtbot):
+    from src.gui.panels.type_atlas import TypeAtlas
+    lib = _library(n=6)
+    prof = tl.atlas_profiles(lib)
+    rows = {"ON brisk sustained": [lib.X[0], lib.X[1]]}
+    dlg = TypeAtlas(None, prof, rows)
+    qtbot.addWidget(dlg)
+    assert set(dlg.plots) == set(prof)
+    assert dlg.plots["ON brisk sustained"][2] == 2 and dlg.plots["OFF transient"][2] == 0

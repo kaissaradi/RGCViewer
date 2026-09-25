@@ -204,6 +204,11 @@ class TypesPanel(QWidget):
         self.accept_btn.setEnabled(False)
         self.accept_btn.clicked.connect(self._accept_confident)
         sug.addWidget(self.accept_btn)
+        self.atlas_btn = QPushButton("Type atlas")
+        self.atlas_btn.setToolTip("What each named type looks like across the lab, with this "
+                                  "run's cells drawn on top")
+        self.atlas_btn.clicked.connect(self._atlas)
+        sug.addWidget(self.atlas_btn)
         self.suggest_summary = QLabel("Ctrl+J: next cell to review · Ctrl+Enter: accept its suggestion")
         self.suggest_summary.setObjectName("mutedLabel")
         self.suggest_summary.setWordWrap(True)
@@ -245,6 +250,10 @@ class TypesPanel(QWidget):
     def _suggest(self):
         from .. import suggestions
         suggestions.start(self.main_window)
+
+    def _atlas(self):
+        from .type_atlas import open_atlas
+        open_atlas(self.main_window)
 
     def _accept_confident(self):
         from .. import suggestions

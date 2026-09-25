@@ -807,6 +807,14 @@ def scenario_suggest(s):
     log(f"Ctrl+Enter: cell {cid} {before} -> {suggestions.folder_class(w, cid)}; "
         f"now at {w._get_selected_cluster_id()}")
     s.shot("suggest_sidebar", w)
+    from src.gui.panels import type_atlas
+    type_atlas.TypeAtlas.exec = lambda self: self.show()
+    type_atlas.open_atlas(w)
+    pump(1.0)
+    dlg = next(x for x in w.findChildren(type_atlas.TypeAtlas))
+    log(f"type atlas: {[(k, v[2]) for k, v in dlg.plots.items()]} (type, this run's traces)")
+    dlg.grab().save(os.path.join(s.shot_dir, "type_atlas.png"))
+    dlg.close()
     n = suggestions.accept_confident(w)
     pump(0.5)
     log(f"accept confident moved {n} cells")

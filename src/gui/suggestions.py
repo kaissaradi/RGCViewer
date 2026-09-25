@@ -40,6 +40,8 @@ class RunSuggestions:
     library_notes: List[str] = field(default_factory=list)
     swapped_polarity: Optional[float] = None       # share of labelled cells with the opposite ON/OFF
     reviewed: set = field(default_factory=set)     # cells the user has accepted or skipped
+    library: object = None                         # the full lab library (the type atlas uses it)
+    run_features: Dict[int, object] = field(default_factory=dict)   # cluster id -> feature row
 
 
 # --- background work ------------------------------------------------------------
@@ -48,10 +50,10 @@ def _compute(dm, progress):
     from ..analysis import type_features as tf
     from ..analysis import type_library as tl
     from ..analysis.type_suggest import Suggester
-    lib = tl.build_library(progress=progress)
+    full = tl.build_library(progress=progress)
     # Never learn from the run being checked (its own labels would agree).
     own = tl.prep_of(getattr(dm, "vision_params_path", None) or getattr(dm, "kilosort_dir", "") or "")
-    lib = lib.without_prep(own)
+    lib = full.without_prep(own)
     sg = Suggester(lib)
     vp = dm.vision_params
     stas = getattr(dm, "vision_stas", None)
@@ -60,14 +62,15 @@ def _compute(dm, progress):
     cells = tf.cells_from_vision(vp, vids, stixel)
     order = list(cells)
     X, pol = tf.run_features([cells[v] for v in order])
-    out = {}
-    for vid, s in zip(order, sg.suggest(X, pol)):
+    out, rows = {}, {}
+    for i, (vid, s) in enumerate(zip(order, sg.suggest(X, pol))):
         try:
             cid = int(dm.get_cluster_id_for_vision(int(vid)))
         except Exception:
             continue
         out[cid] = s
-    return RunSuggestions(out, sg.n_train, list(lib.notes))
+        rows[cid] = X[i]
+    return RunSuggestions(out, sg.n_train, list(lib.notes), library=full, run_features=rows)
 
 
 def start(main_window):
@@ -102,6 +105,12 @@ def start(main_window):
             return                                   # a different run is open now
         result.swapped_polarity = polarity_mismatch(main_window, result)
         main_window._suggestions = result
+        if getattr(main_window, "_open_atlas_after_suggest", False):
+            main_window._open_atlas_after_suggest = False
+            refresh_line(main_window)
+            from .panels.type_atlas import open_atlas
+            open_atlas(main_window)
+            return
         show_summary(main_window, result)
         refresh_line(main_window)
 
