@@ -31,7 +31,11 @@ TAB_HELP = {
         ["Polar plot: firing rate for each motion direction, ± 1 SD across trials.",
          "DSI / OSI: direction and orientation selectivity (0 = none, 1 = only one "
          "direction / orientation), with a shuffle test across all conditions.",
-         "Rasters around the polar plot: the spikes for each direction."]),
+         "Rasters around the polar plot: the spikes for each direction.",
+         "Angles are the protocol's label θ. The lab's grating protocol moves the bars toward "
+         "θ + 180°, in the same frame as the STA (PLAN.md, open defects).",
+         "Compare DS runs… shows every DS grating run of the prep, or of every prep, in one "
+         "frame: on the screen, or from the direction to the optic disc."]),
     "EI": (
         "The electrical image: the cell's mean voltage on every electrode around its spike.",
         ["The biggest signal marks the soma. A small signal that moves away over time is "

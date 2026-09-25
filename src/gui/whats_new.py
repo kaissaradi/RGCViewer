@@ -6,6 +6,8 @@ the details live in README.md and docs/PLAN.md.
 
 WHATS_NEW = [
     ("Fixed: timing", "Firing rates were 1.5x too high and ISI / ACG lags 2/3 too short: Kilosort times were read at 30 kHz, not 20 kHz. Caches rebuild once, by themselves."),
+    ("Compare DS runs", "Array ▸ Compare DS Runs: every DS grating run of the prep or the share, "
+     "lined up by where its optic disc lies."),
     ("Help on every tab", "The ? button in the header (Shift+F1) says what the current tab's "
      "plots show and what to look for."),
     ("Suggested classes", "Types tab ▸ Suggest classes learns the lab's 5 named types from every "

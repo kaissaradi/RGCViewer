@@ -200,7 +200,6 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
 - **Compare a cell with its population.** Ctrl+P opens the population pane.
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.
-
 - **Borrow responses from another run.** File → Map Reference Run matches the
   cells of this run to another run of the same retina by their EIs. A cell
   with no chirp here then shows its matched cell's chirp, with a note saying
@@ -209,6 +208,17 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   its EI and shows where the axons converge: a disc point when the fit is
   clear, else a direction only, else nothing. It works best on the 512 array.
   It does not tell dorsal from ventral.
+- **Compare DS runs.** Array → Compare DS Runs (or the button on the Grating
+  tab) lists every DS grating run of this prep, or of every prep on the
+  share: its DS cells (the Grating tab's test), the direction its axons point
+  (toward the optic disc), and the array → screen turn, measured from a
+  white-noise run of the same prep. The roses pool the ticked runs (one run
+  per prep by default: two runs of one piece record the same cells), either
+  as the bars moved on the screen or as an angle from the direction to the
+  optic disc, which means the same in every prep. The angles are the way the
+  bars moved: the Grating tab's angle + 180° (see `docs/PLAN.md`, open
+  defects). The first look at a run reads it once (10–40 s); later looks
+  read a small summary in its `ksfiles/`.
 
 What the lab's type names mean, with references: `docs/design/rgc_types.md`.
 

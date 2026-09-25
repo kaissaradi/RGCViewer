@@ -1988,6 +1988,11 @@ class MainWindow(QMainWindow):
         self.optic_disc_action = array_menu.addAction("Find the Optic Disc…")
         self.optic_disc_action.setToolTip("Fit every cell's axon in its EI and see where they converge")
         self.optic_disc_action.triggered.connect(self._find_optic_disc)
+        # Every DS grating run of the prep (or the share) in one frame (PLAN.md Q51).
+        self.ds_compare_action = array_menu.addAction("Compare DS Runs…")
+        self.ds_compare_action.setToolTip(
+            "Preferred directions of every DS grating run, on the screen or from the optic disc")
+        self.ds_compare_action.triggered.connect(self._compare_ds_runs)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -2315,6 +2320,10 @@ class MainWindow(QMainWindow):
     def _find_optic_disc(self):
         from .panels.optic_disc_dialog import find_optic_disc
         find_optic_disc(self)
+
+    def _compare_ds_runs(self):
+        from .panels.ds_compare_dialog import compare_ds_runs
+        compare_ds_runs(self)
 
     def _show_about(self):
         from ..build_info import describe

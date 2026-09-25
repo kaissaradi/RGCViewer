@@ -988,6 +988,44 @@ def scenario_optic_disc(s):
         shown[0].grab().save(os.path.join(s.shot_dir, "optic_disc.png"))
 
 
+def scenario_ds_compare(s):
+    """Q51: Array > Compare DS Runs on the loaded run's prep; screenshots of both frames.
+
+    HARNESS_DS_SCOPE=all compares every prep on the share (slow the first time).
+    """
+    from src.gui.panels import ds_compare_dialog as dc
+    s.load()
+    w = s.w
+    shown = []
+    dc.DSCompareDialog.exec = lambda self: (shown.append(self), self.show())
+    t = time.time()
+    w.ds_compare_action.trigger()
+    if not shown:
+        log("ds compare: no dialog")
+        return
+    dlg = shown[0]
+    if os.environ.get("HARNESS_DS_SCOPE") == "all":
+        dlg.scope_combo.setCurrentIndex(1)
+        dlg._on_scope_picked(1)
+    ok = wait_until(lambda: dlg._state["finished"], 3600)
+    pump(0.6)
+    log(f"ds compare finished={ok} in {time.time() - t:.0f}s: {dlg.status.text()}")
+    for r in dlg.runs:
+        log(f"  {r.run}: ds {r.n_ds}/{r.n_cells} disc {r.bearing_verdict} {r.bearing_deg:.0f} "
+            f"turn {r.turn} from {r.turn_source or '-'} pooled {dlg.pooled.get(r.run)} {r.note}")
+    dlg.resize(1280, 820)
+    for i in range(dlg.frame_combo.count()):
+        dlg.frame_combo.setCurrentIndex(i)
+        dlg._fill_table()
+        dlg.redraw()
+        pump(0.6)
+        dlg.grab().save(os.path.join(s.shot_dir, f"ds_compare_{dlg.frame_combo.currentData()}.png"))
+    t = time.time()
+    dlg.scan()                                   # a second look reads the summaries
+    wait_until(lambda: dlg._state["finished"], 600)
+    log(f"ds compare second scan in {time.time() - t:.1f}s")
+
+
 def scenario_borrowed_chirp(s):
     """Q37: Map Reference Run, then a matched cell's Chirp tab shows the reference cell's chirp.
 

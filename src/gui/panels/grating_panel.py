@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QStackedLayout,
     QVBoxLayout,
     QWidget,
@@ -115,6 +116,11 @@ class GratingPanel(QWidget):
         )
         self.condition_combo.activated.connect(self._on_condition_picked)
         header.addWidget(self.condition_combo)
+        self.compare_runs_btn = QPushButton("Compare DS runs…")
+        self.compare_runs_btn.setToolTip(
+            "Every DS grating run of this prep, or of every prep, in one frame (Array menu too)")
+        self.compare_runs_btn.clicked.connect(lambda: self.main_window._compare_ds_runs())
+        header.addWidget(self.compare_runs_btn)
         self._condition_override = None
         data_layout.addLayout(header)
 

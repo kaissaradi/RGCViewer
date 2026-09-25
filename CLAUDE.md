@@ -53,7 +53,13 @@ slower, not faster. Encore writes its caches (`*.pkl`) into `ksfiles/` and
 7. **Sample rate.** Kilosort's `params.py` stores it as `sample_rate`
    (20000 on this rig). Encore read `fs` until 2026-09-25 and used 30000
    (PLAN.md Q48). Every time from Kilosort spike samples depends on it.
-8. **`.params` is shared with Vision.** Vision opens it read-write and saves
+8. **Grating angle is not the motion.** The θ in `*GratingDSOS.npy` (the
+   protocol's `orientation`) drifts the bars toward θ + 180°, in the STA's
+   frame (Stage `Grating.m`, from the code; PLAN.md open defects, Q51).
+9. **The array → screen turn is per prep.** Most preps: −90° (screen =
+   (0, 1, −1, 0) · array); 20240820A: +90°. Trust it only from a pairing
+   with robust R² ≥ 0.4 (`ds_pool.TURN_MIN_R2`, PLAN.md Q51).
+10. **`.params` is shared with Vision.** Vision opens it read-write and saves
    it in place. Encore never edits it in place (`params_classification.py`,
    PLAN.md Q30–Q31). Close a run in Vision before Ctrl+S in Encore.
 
