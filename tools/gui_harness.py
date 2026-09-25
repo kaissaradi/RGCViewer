@@ -328,6 +328,33 @@ def scenario_selection_sync(s):
                     "selected_now": w._get_selected_cluster_id(), "wanted": b}))
 
 
+def scenario_feature_defaults(s):
+    """Q14: Feature Extraction opens on the user's four pairs plus two random ones."""
+    from src.gui import callbacks
+    s.load()
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    shown = {}
+    def keep_open(dlg):          # exec() would block the harness
+        shown["dlg"] = dlg
+        return 0
+
+    orig = callbacks.FeatureExtractionWindow.exec
+    callbacks.FeatureExtractionWindow.exec = keep_open
+    try:
+        callbacks.feature_extraction(s.w, ids)
+    finally:
+        callbacks.FeatureExtractionWindow.exec = orig
+    dlg = shown["dlg"]
+    dlg.show()
+    ok = wait_until(lambda: bool(dlg.catalog) and bool(dlg._panels), 300)
+    pump(1.0)
+    log(json.dumps({"catalog_ready": ok, "n_features": len(dlg.catalog),
+                    "panels": dlg._panels,
+                    "combos": [(cx.currentText(), cy.currentText()) for cx, cy in dlg.axis_combos]}))
+    s.shot("feature_window", dlg)
+    dlg.close()
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

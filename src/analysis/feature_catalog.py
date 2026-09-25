@@ -31,37 +31,45 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["FeatureEntry", "build_catalog", "resolve_panels", "DEFAULT_PANELS"]
+__all__ = ["FeatureEntry", "build_catalog", "resolve_panels", "DEFAULT_PANELS",
+           "RANDOM_PAIR"]
 
 N_PCS = 3
 
-# What the six panels show before the user picks anything.
+# What the six panels show before the user picks anything. The user's choice
+# (2026-09-24): the STA and ACG shape PCs against each other and against RF
+# area, then two random pairs so each opening shows something new.
+RANDOM_PAIR = None
+DEFAULT_PANELS = [
+    ("Temporal STA PC1", "Temporal STA PC2"),
+    ("ACG PC1", "ACG PC2"),
+    ("Temporal STA PC1", "ACG PC1"),
+    ("Temporal STA PC1", "RF area"),
+    RANDOM_PAIR,
+    RANDOM_PAIR,
+]
+
+# Substitutes for a default that names a feature this dataset lacks (no STA
+# gives no Temporal STA PCs; chirp is precomputed offline and often absent).
+# Consumed in order, and only as needed.
 #
-# Chosen empirically rather than by intuition. Every pair of the 32 catalogue
-# features (495 of them) was clustered at realistic type size and its groups
-# scored by how many cells overlap their nearest same-group neighbour — the
-# mosaic test — against a null that keeps each cell's own receptive field and
-# randomises only where it sits. These are the pairs that produced the most
-# groups with a tiling receptive-field layout.
+# Ranked empirically. Every pair of the 32 catalogue features (495 of them)
+# was clustered at realistic type size and its groups scored by how many cells
+# overlap their nearest same-group neighbour — the mosaic test — against a
+# null that keeps each cell's own receptive field and randomises only where it
+# sits. These were the pairs with the most groups with a tiling layout (they
+# were the defaults until 2026-09-24).
 #
 # **The margins are small.** The best pair beat chance by ~3 clean groups, and
 # 463 of the 495 pairs were at or below chance, on one rd10 + Grm6-waChR
-# preparation where the ON/OFF axis has partly collapsed. Treat these as a
-# better-than-arbitrary starting view, not as the axes that define cell types.
-DEFAULT_PANELS = [
+# preparation where the ON/OFF axis has partly collapsed.
+FALLBACK_PANELS = [
     ("ACG PC1", "RF area"),                     # +3.0 clean groups over chance
     ("ACG PC2", "RF diameter (short)"),         # +2.6
     ("Time to peak", "Chirp preferred freq"),   # +2.6
     ("Temporal STA PC3", "ACG PC2"),            # +2.3
     ("Temporal STA PC3", "Time to peak"),       # +2.2
     ("Temporal STA PC3", "Chirp ON/OFF index"), # +2.1
-]
-
-# Substitutes for any default naming a feature this dataset lacks. Chirp is
-# precomputed offline and often simply absent, and two of the defaults depend
-# on it, so these are the next-best pairs from the same ranking that use no
-# chirp feature at all. Consumed in order, and only as needed.
-FALLBACK_PANELS = [
     ("Time to peak", "RF ellipticity"),         # +1.8
     ("ACG PC2", "ACG PC3"),                     # +1.2
     ("ACG PC2", "RF area"),                     # +1.2
@@ -109,25 +117,27 @@ def reindex_catalog(catalog, from_ids, to_ids):
     return out
 
 
-def resolve_panels(catalog, panels=None):
+def resolve_panels(catalog, panels=None, rng=None):
     """Fit *panels* to whatever the catalogue actually holds.
 
-    A default can name a feature this dataset lacks — two of them use chirp,
-    which is precomputed offline and often absent, and the whole set is empty
-    on a vision-only load with no spike times. A pair is replaced *whole*
-    rather than by patching one axis: half of a ranked pair is not the pair,
-    and swapping one side silently produces a plot nothing justified.
+    A default can name a feature this dataset lacks — the STA PCs need an
+    STA, chirp is precomputed offline and often absent, and the whole set is
+    empty on a vision-only load with no spike times. A pair is replaced
+    *whole* rather than by patching one axis: half of a chosen pair is not the
+    pair, and swapping one side silently produces a plot nothing justified.
 
-    Substitutes come from FALLBACK_PANELS first (the next-best chirp-free pairs
-    from the same ranking), then from whatever features exist, so the grid is
-    always populated with the best-supported choice available.
+    Substitutes come from FALLBACK_PANELS first, then from whatever features
+    exist, so the grid is always populated. A RANDOM_PAIR entry becomes a
+    random pair of catalogue features that no other panel shows (``rng``:
+    a numpy Generator, for tests).
     """
     names = list(catalog.keys())
     if not names:
         return []
 
     def usable(pair):
-        return pair[0] in catalog and pair[1] in catalog and pair[0] != pair[1]
+        return (pair is not RANDOM_PAIR and pair[0] in catalog
+                and pair[1] in catalog and pair[0] != pair[1])
 
     wanted = list(panels or DEFAULT_PANELS)
     spares = [p for p in FALLBACK_PANELS if usable(p)]
@@ -136,24 +146,29 @@ def resolve_panels(catalog, panels=None):
     generic = [(names[i], names[j])
                for i in range(len(names)) for j in range(i + 1, len(names))]
 
-    out, used = [], set()
-    for pair in wanted:
-        if usable(pair):
-            out.append(pair)
-            used.add(tuple(sorted(pair)))
+    out, used = [None] * len(wanted), set()
+
+    def take(i, pair):
+        out[i] = pair
+        used.add(tuple(sorted(pair)))
+
+    # Fixed pairs first, so a random pick never repeats one of them.
+    for i, pair in enumerate(wanted):
+        if usable(pair) and tuple(sorted(pair)) not in used:
+            take(i, pair)
+    for i, pair in enumerate(wanted):
+        if out[i] is not None or pair is RANDOM_PAIR:
             continue
-        replacement = None
-        for source in (spares, generic):
-            for cand in source:
-                if usable(cand) and tuple(sorted(cand)) not in used:
-                    replacement = cand
-                    break
-            if replacement:
-                break
-        if replacement is None:
-            replacement = (names[0], names[min(1, len(names) - 1)])
-        out.append(replacement)
-        used.add(tuple(sorted(replacement)))
+        replacement = next((c for source in (spares, generic) for c in source
+                            if tuple(sorted(c)) not in used), None)
+        take(i, replacement or (names[0], names[min(1, len(names) - 1)]))
+    rng = rng if rng is not None else np.random.default_rng()
+    for i, pair in enumerate(wanted):
+        if out[i] is not None:
+            continue
+        free = [c for c in generic if tuple(sorted(c)) not in used]
+        take(i, free[rng.integers(len(free))] if free
+             else (names[0], names[min(1, len(names) - 1)]))
     return out
 
 

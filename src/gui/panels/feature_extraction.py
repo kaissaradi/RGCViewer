@@ -804,7 +804,7 @@ class FeatureExtractionWindow(QDialog):
             return
         self._building_combos = True
         names = list(self.catalog.keys())
-        panels = feature_catalog.resolve_panels(self.catalog, self._panels)
+        panels = feature_catalog.resolve_panels(self.catalog, self._panels, self._rng)
         self._panels = panels
         for (cx, cy), (xname, yname) in zip(self.axis_combos, panels):
             for combo, chosen in ((cx, xname), (cy, yname)):
