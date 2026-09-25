@@ -46,12 +46,18 @@ def runs_in_folder(name: str) -> List[str]:
     return []
 
 
+# Plot labels: narrow stimulus blocks need short names.
+DISPLAY = {"ChirpStimulus": "Chirp", "ContrastResponseGrating": "Contrast",
+           "GratingDSOS": "Gratings", "SpatialNoise": "Noise"}
+
+
 def short_protocol(label: Optional[str]) -> str:
-    """'manookinlab.protocols.ChirpStimulus' → 'ChirpStimulus'; '..._ks' dropped."""
+    """'manookinlab.protocols.ChirpStimulus' → 'Chirp'; '..._ks' dropped."""
     if not label:
         return "?"
     name = str(label).rsplit(".", 1)[-1]
-    return name[:-3] if name.endswith("_ks") else name
+    name = name[:-3] if name.endswith("_ks") else name
+    return DISPLAY.get(name, name)
 
 
 def stimulus_blocks(folder_name: str, manifest, last_spike_sample: int,
@@ -98,14 +104,17 @@ def stability(t, rate, amp=None, blocks: Sequence[Block] = ()) -> Stability:
     overall = float(np.nanmedian(rate)) if rate.size else float("nan")
     per_block = {}
     notes = []
+    quiet = []
     if blocks and overall > 0:
         for b in blocks:
             m = (t >= b.start_s) & (t < b.end_s)
             if m.sum() >= 3:
                 rel = float(np.nanmedian(rate[m]) / overall)
                 per_block[f"{b.protocol} ({b.run})"] = rel
-                if rel < LOW_RATE:
-                    notes.append(f"fires little during {b.protocol} ({rel:.0%} of its rate)")
+                if rel < LOW_RATE and b.protocol not in quiet:
+                    quiet.append(b.protocol)
+    if quiet:
+        notes.append(f"fires little during {', '.join(quiet)}")
     drift = None
     if amp is not None:
         a = np.asarray(amp, float)

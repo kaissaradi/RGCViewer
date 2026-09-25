@@ -33,8 +33,7 @@ def test_folder_names():
 def test_blocks_of_the_real_20260715A_data007_010():
     """Last spike of that sort: sample 89,559,992 (checked 2026-09-25)."""
     blocks = rt.stimulus_blocks("data007-010", _m(), 89_559_992, 20000.0)
-    assert [b.protocol for b in blocks] == ["ChirpStimulus", "ContrastResponseGrating",
-                                           "GratingDSOS", "SpatialNoise"]
+    assert [b.protocol for b in blocks] == ["Chirp", "Contrast", "Gratings", "Noise"]
     assert blocks[0].start_s == 0 and np.isclose(blocks[-1].end_s, 89_560_000 / 20000)
 
 
@@ -52,6 +51,6 @@ def test_stability_names_the_block_where_the_cell_went_quiet():
     rate[grating] = 2.0
     amp = np.linspace(100, 50, t.size)
     st = rt.stability(t, rate, amp, blocks)
-    assert "fires little during GratingDSOS" in st.verdict
+    assert "fires little during Gratings" in st.verdict
     assert "amplitude falls" in st.verdict
     assert rt.stability(t, np.full(t.size, 20.0), np.full(t.size, 80.0), blocks).verdict == "stable"
