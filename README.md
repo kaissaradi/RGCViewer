@@ -201,6 +201,11 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.
 
+- **Optic disc direction.** Array → Find the Optic Disc fits each cell's axon in
+  its EI and shows where the axons converge: a disc point when the fit is
+  clear, else a direction only, else nothing. It works best on the 512 array.
+  It does not tell dorsal from ventral.
+
 What the lab's type names mean, with references: `docs/design/rgc_types.md`.
 
 ## Keyboard shortcuts

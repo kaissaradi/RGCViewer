@@ -1943,6 +1943,10 @@ class MainWindow(QMainWindow):
         self.align_array_action.setCheckable(True)
         self.align_array_action.setChecked(array_orientation.enabled())
         self.align_array_action.toggled.connect(self._on_align_array_toggled)
+        # Where the axons point: the optic disc direction (PLAN.md Q43).
+        self.optic_disc_action = array_menu.addAction("Find the Optic Disc…")
+        self.optic_disc_action.setToolTip("Fit every cell's axon in its EI and see where they converge")
+        self.optic_disc_action.triggered.connect(self._find_optic_disc)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -2266,6 +2270,10 @@ class MainWindow(QMainWindow):
             msg = f"Array views {array_orientation.describe(matrix)} to match the screen."
         self.status_bar.showMessage(msg, 8000)
         self.on_tab_changed(self.analysis_tabs.currentIndex())
+
+    def _find_optic_disc(self):
+        from .panels.optic_disc_dialog import find_optic_disc
+        find_optic_disc(self)
 
     def _show_about(self):
         from ..build_info import describe

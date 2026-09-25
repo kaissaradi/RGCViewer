@@ -971,6 +971,23 @@ def scenario_sort_check(s):
         log(describe(chk))
 
 
+def scenario_optic_disc(s):
+    """Q43: Array > Find the Optic Disc on a loaded run; screenshot of the dialog."""
+    from src.gui.panels import optic_disc_dialog as od
+    s.load()
+    w = s.w
+    shown = []
+    od.OpticDiscDialog.exec = lambda self: (shown.append(self), self.show())
+    t = time.time()
+    w.optic_disc_action.trigger()
+    ok = wait_until(lambda: bool(shown), 300)
+    b = getattr(s.dm(), "axon_bearing", None)
+    log(f"optic disc ready={ok} in {time.time() - t:.1f}s: {b.sentence() if b else None}")
+    if shown:
+        pump(1.0)
+        shown[0].grab().save(os.path.join(s.shot_dir, "optic_disc.png"))
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings
