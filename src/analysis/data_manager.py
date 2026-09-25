@@ -3381,6 +3381,24 @@ class DataManager(QObject):
         }
         return raw_blocks, valid_ids, discarded_ids
 
+    def peek_cell_physics(self, cluster_id):
+        """Cached physics row or None. Never computes (whole-run views, Q40)."""
+        lock = getattr(self, "_feature_lock", None)
+        cache = getattr(self, "feature_cache", None) or {}
+        if lock is None:
+            return cache.get(cluster_id)
+        with lock:
+            return cache.get(cluster_id)
+
+    def peek_standard_plot_data(self, cluster_id):
+        """Cached ISI/ACG/FR row or None. Never computes (whole-run views, Q40)."""
+        lock = getattr(self, "_standard_plot_lock", None)
+        cache = getattr(self, "standard_plot_cache", None) or {}
+        if lock is None:
+            return cache.get(cluster_id)
+        with lock:
+            return cache.get(cluster_id)
+
     def get_acg_data(self, cluster_id):
         """Convenience wrapper: return (time_lags_ms, acg_values)."""
         data = self.get_standard_plot_data(cluster_id)
