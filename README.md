@@ -217,8 +217,9 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   as the bars moved on the screen or as an angle from the direction to the
   optic disc, which means the same in every prep. The angles are the way the
   bars moved: the Grating tab's angle + 180° (see `docs/PLAN.md`, open
-  defects). The first look at a run reads it once (10–40 s); later looks
-  read a small summary in its `ksfiles/`.
+  defects). The first look at a run reads it once (10–40 s; every prep
+  took 10 min); later looks read a small summary in its `ksfiles/` (one
+  prep: under a second; every prep: about 20 s).
 
 What the lab's type names mean, with references: `docs/design/rgc_types.md`.
 

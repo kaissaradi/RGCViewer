@@ -337,7 +337,7 @@ def summarize_run(grating_npy: Path, root: Path, progress: Optional[Callable[[st
     run.ids, run.theta_deg, run.dsi, run.n_cells, run.has_directions = ds_cells(grating)
     del grating
     if not run.has_directions:
-        run.note = "one direction only (a bar-width sweep)"
+        run.note = "one direction only: a bar-width sweep"
         _write_cache(cache_path, stamp, run)
         return run
 

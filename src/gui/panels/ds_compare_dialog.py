@@ -5,8 +5,9 @@ direction from its own EIs and the array → screen turn (``ds_pool``). The
 figure pools the ticked runs and shows each run on its own, either as the
 bars moved on the screen or as an angle from the direction to the optic
 disc, which is the same in every prep. Runs are read one at a time in the
-background (the share is CIFS) and kept in a small summary per run, so the
-second look is instant.
+background (the share is CIFS) and kept in a small summary per run, so a
+second look only checks that the sources are unchanged (one prep: well under
+a second; every prep: about 20 s of file checks on the share).
 """
 
 from __future__ import annotations
@@ -264,7 +265,7 @@ class DSCompareDialog(QDialog):
                 lobes = f"{axis:.0f}° ({strength:.2f})"
             else:
                 lobes = ""
-            ds = f"{r.n_ds} / {r.n_cells}" if r.has_directions else (r.note or "no DS test")
+            ds = f"{r.n_ds} / {r.n_cells}" if r.has_directions else "bar widths only"
             name = f"{r.prep} {Path(r.run).name}"
             cells = [pool, QTableWidgetItem(name + ("  ◀ open" if r.run == self.current_run else "")),
                      QTableWidgetItem(ds), QTableWidgetItem(lobes),
@@ -305,14 +306,15 @@ class DSCompareDialog(QDialog):
         c = self.c
         self.fig.clear()
         chosen = [r for r in self.runs if r.n_ds and self.pooled.get(r.run)]
-        shown = [r for r in self.runs if r.n_ds][:MAX_SMALL]
+        shown = [r for r in self.runs if r.n_ds]
         if frame == "disc":
             chosen = [r for r in chosen if r.can_align]
             shown = [r for r in shown if r.can_align]
+        shown = shown[:MAX_SMALL]
         n = 1 + len(shown)
         cols = int(np.ceil(np.sqrt(n * 1.3)))
         rows = int(np.ceil(n / cols))
-        gs = self.fig.add_gridspec(rows, cols, hspace=0.55, wspace=0.35)
+        gs = self.fig.add_gridspec(rows, cols, hspace=0.6, wspace=0.6)
         weight = self.weight_box.isChecked()
         pooled_angles = [r.angles(frame) for r in chosen]
         pooled_w = [r.dsi for r in chosen]
