@@ -15,6 +15,7 @@ def main_window_fixture(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     window.resize(1400, 900)
+    window.show_analysis_view()      # as a load does (the welcome page is page 0)
     window.show()
     qtbot.waitExposed(window)
     return window

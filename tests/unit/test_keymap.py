@@ -19,6 +19,7 @@ def win(qtbot):
     from src.gui.main_window import MainWindow
     w = MainWindow()
     qtbot.addWidget(w)
+    w.show_analysis_view()           # as a load does (the welcome page is page 0)
     w.show()
     qtbot.waitExposed(w)
     w.activateWindow()

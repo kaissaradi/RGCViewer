@@ -83,6 +83,8 @@ from . import array_orientation
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .panels.types_panel import TypesPanel
+from .panels.welcome_panel import WelcomePanel
+from . import recent_paths
 from .theme import (
     APP_NAME,
     DARK_COLORS,
@@ -866,6 +868,7 @@ class MainWindow(QMainWindow):
             self.sta_panel,
             self.umap_panel,
             self.types_panel,
+            self.welcome_panel,
         ]
 
         for panel in panels:
@@ -1421,8 +1424,15 @@ class MainWindow(QMainWindow):
         """Initializes and lays out all the UI widgets."""
         self._build_topbar()
 
+        # Page 0: the welcome screen until a load starts (PLAN.md Q49);
+        # page 1: the analysis view. The rest of the code enables / disables
+        # central_widget as before.
         self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
+        self.central_stack = QStackedWidget()
+        self.welcome_panel = WelcomePanel(self, recent_paths.recent_runs())
+        self.central_stack.addWidget(self.welcome_panel)
+        self.central_stack.addWidget(self.central_widget)
+        self.setCentralWidget(self.central_stack)
         main_layout = QHBoxLayout(self.central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -3052,6 +3062,12 @@ class MainWindow(QMainWindow):
         """Ctrl+F: move focus to the sidebar search bar and select all text."""
         self.cluster_search_bar.setFocus()
         self.cluster_search_bar.selectAll()
+
+    def show_analysis_view(self):
+        """Leave the welcome screen (a load has started)."""
+        stack = getattr(self, "central_stack", None)
+        if stack is not None and stack.currentWidget() is not self.central_widget:
+            stack.setCurrentWidget(self.central_widget)
 
     def _leave_search_bar(self):
         """Esc in the search bar: clear it and give the keys back to the list."""

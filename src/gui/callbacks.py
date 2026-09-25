@@ -356,6 +356,8 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     _release_previous_dataset(main_window)
 
     # 1. Lock UI and Prep DataManager
+    if hasattr(main_window, "show_analysis_view"):
+        main_window.show_analysis_view()          # leave the welcome screen (Q49)
     main_window.central_widget.setEnabled(False)
     main_window.status_bar.showMessage("Initializing loader...")
     main_window._expect_physics = False
@@ -575,6 +577,7 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # Only a load that actually worked is worth reopening next launch.
     main_window._reopening_remembered = False
     recent_paths.remember_dataset(ks_dir_name, dat_file)
+    recent_paths.remember_recent(ks_dir_name)
 
     n_clusters = len(main_window.data_manager.cluster_df)
     if hasattr(main_window, "refresh_run_meta"):

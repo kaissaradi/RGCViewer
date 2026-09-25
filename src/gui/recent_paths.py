@@ -177,3 +177,34 @@ def suggested_path(main_window, key: str, filename: str, preferred_dir=None) -> 
     if base is None:
         base = Path(last_dir(main_window, key))
     return str(base / filename)
+
+
+# --- recent runs (the welcome screen lists them; nothing reopens by itself) ---
+
+_RECENT_KEY = "recent/runs"
+RECENT_MAX = 6
+
+
+def remember_recent(kilosort_dir) -> None:
+    """Put a run that loaded at the top of the recent list (PLAN.md Q49)."""
+    resolved = _as_existing_dir(kilosort_dir)
+    if resolved is None:
+        return
+    try:
+        import json
+        settings = _settings()
+        runs = [r for r in json.loads(settings.value(_RECENT_KEY, "[]") or "[]")
+                if r != str(resolved)]
+        settings.setValue(_RECENT_KEY, json.dumps([str(resolved)] + runs[:RECENT_MAX - 1]))
+    except Exception:
+        logger.debug("remember_recent: could not persist", exc_info=True)
+
+
+def recent_runs() -> list:
+    """Recent Kilosort folders that still exist, newest first."""
+    try:
+        import json
+        runs = json.loads(_settings().value(_RECENT_KEY, "[]") or "[]")
+    except Exception:
+        return []
+    return [r for r in runs if _as_existing_dir(r) is not None]
