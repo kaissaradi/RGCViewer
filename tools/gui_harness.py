@@ -564,6 +564,86 @@ def scenario_population_fr(s):
     s.shot("population_pane", w.pop_context_widget)
 
 
+def scenario_keyboard(s):
+    """Q39: the keyboard workflow on a loaded run; how long each key takes.
+
+    Tree edits stay in memory (only File > Save Results writes a tree), so
+    nothing reaches the lab folder.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtTest import QTest
+    from qtpy.QtWidgets import QInputDialog
+    from src.gui import callbacks, keymap
+    s.load()
+    w = s.w
+    w.activateWindow()
+    pump(0.5)
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values][:6]
+    ctrl, shift = Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier
+    timings = {}
+
+    def press(name, key, mods=Qt.KeyboardModifier.NoModifier, target=None, settle=0.3):
+        t = time.time()
+        QTest.keyClick(target or w.tree_view, key, mods)
+        timings[name] = round((time.time() - t) * 1000)
+        pump(settle)
+
+    def group_of(cid):
+        parent = callbacks.find_items_by_cluster_ids(w, [cid])[0].parent()
+        return parent.text() if parent is not None else None
+
+    def select(*cids):
+        w._select_cluster_in_tree(cids[0])
+        pump(0.5)
+        if len(cids) > 1:
+            from qtpy.QtCore import QItemSelectionModel
+            sel = w.tree_view.selectionModel()
+            for cid in cids[1:]:
+                item = callbacks.find_items_by_cluster_ids(w, [cid])[0]
+                sel.select(w.tree_model.indexFromItem(item),
+                           QItemSelectionModel.SelectionFlag.Select
+                           | QItemSelectionModel.SelectionFlag.Rows)
+        w.tree_view.setFocus()
+
+    result = {}
+    for n in (2, 5, 1):
+        press(f"ctrl_{n}", getattr(Qt.Key, f"Key_{n}"), ctrl, settle=1.0)
+        result[f"tab_after_ctrl_{n}"] = w.analysis_tabs.tabText(w.analysis_tabs.currentIndex())
+    press("ctrl_tab", Qt.Key.Key_Tab, ctrl, settle=1.0)
+    result["tab_after_ctrl_tab"] = w.analysis_tabs.tabText(w.analysis_tabs.currentIndex())
+
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("Harness group", True))
+    select(ids[0], ids[1])
+    press("ctrl_g", Qt.Key.Key_G, ctrl)
+    result["ctrl_g"] = [group_of(ids[0]), group_of(ids[1])]
+    target = next(item for path, item in callbacks.collect_group_items(w)
+                  if path.endswith("Harness group"))
+    keymap.pick_group = lambda parent, groups, preselect=None: target
+    select(ids[2])
+    press("ctrl_m", Qt.Key.Key_M, ctrl)
+    select(ids[3])
+    press("ctrl_shift_m", Qt.Key.Key_M, ctrl | shift)
+    result["ctrl_m_then_repeat"] = [group_of(ids[2]), group_of(ids[3])]
+    select(ids[4])
+    w.analysis_tabs.currentWidget().setFocus()
+    press("delete_from_plot", Qt.Key.Key_Delete, target=w.analysis_tabs.currentWidget())
+    result["delete_from_plot"] = group_of(ids[4])
+    press("ctrl_t", Qt.Key.Key_T, ctrl)
+    result["ctrl_t_view"] = w.view_stack.currentIndex()
+    press("ctrl_t_back", Qt.Key.Key_T, ctrl, target=w.table_view)
+    press("ctrl_p", Qt.Key.Key_P, ctrl, settle=2.0)
+    result["ctrl_p_population_pane"] = w.pop_context_widget.isVisible()
+    s.shot("population_split", w)
+    press("ctrl_p_off", Qt.Key.Key_P, ctrl)
+    bar = w.cluster_search_bar
+    bar.setFocus()
+    QTest.keyClicks(bar, "12 ")
+    result["search_text"] = bar.text()
+    QTest.keyClick(bar, Qt.Key.Key_Escape)
+    result["search_after_esc"] = bar.text()
+    log(json.dumps({"result": result, "ms_per_key": timings}))
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

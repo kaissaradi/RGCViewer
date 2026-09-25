@@ -1,10 +1,16 @@
 from __future__ import annotations
 from qtpy.QtCore import QEvent, QObject
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import (
+    QAbstractSpinBox, QApplication, QLineEdit, QPlainTextEdit, QTextEdit, QWidget,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gui.main_window import MainWindow
+
+
+_TEXT_INPUTS = (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)
 
 
 class KeyForwarder(QObject):
@@ -12,8 +18,28 @@ class KeyForwarder(QObject):
         super().__init__()
         self.main_window = main_window
 
-    def eventFilter(self, _obj, event):
+    def _is_main_window_key(self, obj, key) -> bool:
+        """Only keys meant for the main window's plots and lists (PLAN.md Q39).
+
+        A dialog (Feature Extraction, a message box, the group picker), an
+        open menu, and a text field keep their own keys; only Up/Down in the
+        sidebar search bar still move the cell list, so search → arrow works.
+        """
+        app = QApplication.instance()
+        if app is not None and app.activePopupWidget() is not None:
+            return False
+        target = obj if isinstance(obj, QWidget) else (app.focusWidget() if app else None)
+        if target is not None and target.window() is not self.main_window:
+            return False
+        if isinstance(target, _TEXT_INPUTS):
+            search = getattr(self.main_window, "cluster_search_bar", None)
+            return target is search and key in (Qt.Key_Up, Qt.Key_Down)
+        return True
+
+    def eventFilter(self, obj, event):
         if event.type() == QEvent.KeyPress:
+            if not self._is_main_window_key(obj, event.key()):
+                return False
             if event.key() == Qt.Key_Space:
                 self.main_window.similarity_panel.handle_spacebar()
                 return True

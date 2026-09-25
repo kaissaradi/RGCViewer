@@ -77,6 +77,7 @@ from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
+from . import keymap
 from . import array_orientation
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
@@ -226,7 +227,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.load_directory(ks_dir, dat_path))
 
         # key forwarder
+        # Parented to the window, so it dies with it; the application then
+        # drops the deleted filter by itself.
         self.key_forwarder = KeyForwarder(self)
+        self.key_forwarder.setParent(self)
         QApplication.instance().installEventFilter(self.key_forwarder)
 
     def _move_selection_in_view(self, view, key):
@@ -1496,11 +1500,8 @@ class MainWindow(QMainWindow):
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.open_tree_context_menu)
 
-        # Delete sends the selection to Trash. Scoped to the tree rather than
-        # the window so Delete keeps its normal meaning in text fields.
-        self._trash_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.tree_view)
-        self._trash_shortcut.setContext(Qt.WidgetShortcut)
-        self._trash_shortcut.activated.connect(self.move_tree_selection_to_trash)
+        # Delete / Backspace (send the selection to Trash) are window-level in
+        # keymap.py; a text field still claims them first (PLAN.md Q39).
 
         # Table View
         self.table_view = CustomTableView()
@@ -1520,14 +1521,6 @@ class MainWindow(QMainWindow):
         self.table_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_view.customContextMenuRequested.connect(
             self.open_table_context_menu
-        )
-
-        self._table_trash_shortcut = QShortcut(
-            QKeySequence(Qt.Key_Delete), self.table_view
-        )
-        self._table_trash_shortcut.setContext(Qt.WidgetShortcut)
-        self._table_trash_shortcut.activated.connect(
-            self.move_table_selection_to_trash
         )
 
         self.view_stack.addWidget(self.tree_view)
@@ -1888,8 +1881,12 @@ class MainWindow(QMainWindow):
         self.rebuild_cache_action = file_menu.addAction("Re&build Physics Cache...")
         self.rebuild_cache_action.setEnabled(False)
 
-        # Which build this is (channel + commit), for bug reports (PLAN.md Q35).
+        # Every shortcut, from keymap.BINDINGS (PLAN.md Q39).
         file_menu.addSeparator()
+        self.shortcuts_action = file_menu.addAction("Keyboard Shortcuts...\tF1")
+        self.shortcuts_action.triggered.connect(lambda: keymap.show_cheat_sheet(self))
+
+        # Which build this is (channel + commit), for bug reports (PLAN.md Q35).
         self.about_action = file_menu.addAction("About Encore...")
         self.about_action.triggered.connect(self._show_about)
 
@@ -1934,9 +1931,14 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.reset_views)
         self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
 
-        # Ctrl+F: focus the sidebar search bar
+        # Ctrl+F: focus the sidebar search bar; Esc there clears it and goes
+        # back to the cell list.
         self.search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self.search_shortcut.activated.connect(self._focus_search_bar)
+        self._search_escape = QShortcut(QKeySequence("Escape"), self.cluster_search_bar)
+        self._search_escape.setContext(Qt.WidgetShortcut)
+        self._search_escape.activated.connect(self._leave_search_bar)
+        keymap.install(self)
 
         # Connect the raw panel's status and error messages to the status bar
         self.raw_panel.status_message.connect(
@@ -2432,10 +2434,13 @@ class MainWindow(QMainWindow):
             move_menu.addSeparator()
         move_new_action = move_menu.addAction("New group…")
 
-        trash_action = menu.addAction(f"Move {noun} to Trash")
+        trash_action = menu.addAction(
+            f"Move {noun} to Trash\t{keymap.key_hint('trash_selection')}")
         menu.addSeparator()
-        group_action = menu.addAction(f"Group {noun} into new group…")
-        feature_action = menu.addAction("Feature Extraction")
+        group_action = menu.addAction(
+            f"Group {noun} into new group…\t{keymap.key_hint('group_selection')}")
+        feature_action = menu.addAction(
+            f"Feature Extraction\t{keymap.key_hint('feature_extraction')}")
 
         # Offered on the QI cell itself, where the question "how many trials is
         # this actually based on?" comes up.
@@ -3016,6 +3021,11 @@ class MainWindow(QMainWindow):
         self.cluster_search_bar.setFocus()
         self.cluster_search_bar.selectAll()
 
+    def _leave_search_bar(self):
+        """Esc in the search bar: clear it and give the keys back to the list."""
+        self.cluster_search_bar.clear()
+        self.view_stack.currentWidget().setFocus()
+
     def _filter_sidebar(self, text: str):
         """
         Dispatch the current search query to whichever view is active.
@@ -3294,6 +3304,7 @@ class MainWindow(QMainWindow):
 
         # ── Move to… ─────────────────────────────────────────────────────────
         move_menu = menu.addMenu(f"Move {noun} to")
+        move_menu.setToolTip(f"Or press {keymap.key_hint('move_to_group')} to type a group name")
         move_actions = {}
         for path, group_item in callbacks.collect_group_items(self, exclude=targets):
             act = move_menu.addAction(path)
@@ -3308,7 +3319,8 @@ class MainWindow(QMainWindow):
             trash_action = None
             restore_action = menu.addAction(f"Restore {noun} from Trash")
         else:
-            trash_action = menu.addAction(f"Move {noun} to Trash")
+            trash_action = menu.addAction(
+                f"Move {noun} to Trash\t{keymap.key_hint('trash_selection')}")
             restore_action = None
 
         menu.addSeparator()
@@ -3319,8 +3331,10 @@ class MainWindow(QMainWindow):
             group_action = menu.addAction(
                 f"Group {len(cluster_ids)} cell"
                 f"{'s' if len(cluster_ids) != 1 else ''} into new group…"
+                f"\t{keymap.key_hint('group_selection')}"
             )
-            feature_action = menu.addAction("Feature Extraction")
+            feature_action = menu.addAction(
+                f"Feature Extraction\t{keymap.key_hint('feature_extraction')}")
 
         # ── Folder-only actions (single folder clicked) ──────────────────────
         add_group_action = rename_action = flatten_action = delete_action = None
@@ -3338,7 +3352,7 @@ class MainWindow(QMainWindow):
                 export_menu.setEnabled(False)
 
             add_group_action = menu.addAction("Add New Group")
-            rename_action = menu.addAction("Rename")
+            rename_action = menu.addAction(f"Rename\t{keymap.key_hint('rename_group')}")
             flatten_action = menu.addAction("Flatten Group (Remove Sub-folders)")
             delete_action = menu.addAction("Delete Group (Keep Units)")
 

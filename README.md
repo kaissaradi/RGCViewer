@@ -164,14 +164,34 @@ column. A group path becomes `All/<group>/<subgroup>`; a cell in the root
 
 ## Keyboard shortcuts
 
+Press F1 (or ?) in Encore for this list. Shortcuts do not fire while you
+type in a text field; Esc leaves the search bar.
+
 | Keys | Action |
 |---|---|
-| Ctrl+S | Save the classification to the Vision `.params` |
-| Ctrl+F | Search the cell list |
+| **Cells** | |
+| ↑ / ↓ | Previous / next cell in the list |
+| Delete / Backspace | Move the selected cells to Trash |
+| Ctrl+M | Move the selection to a group (type to filter) |
+| Ctrl+Shift+M | Move the selection to the last group used |
+| Ctrl+G | Put the selected cells in a new group |
 | Ctrl+D / Ctrl+C / Ctrl+E / Ctrl+W / Ctrl+X / Ctrl+A | Mark Duplicate / Clean / Edge / Unsure / Contaminated / Off Array |
-| Ctrl+Shift+N | Mark Noisy (was Ctrl+S) |
-| Delete | Move the selected cells to Trash |
-| Space | Select the next row of the similarity table |
+| Ctrl+Shift+N | Mark Noisy |
+| Space | Next row of the similarity table |
+| **Groups** | |
+| F2 | Rename the selected group |
+| Ctrl+Shift+F | Feature Extraction on the selection |
+| **Views** | |
+| Ctrl+1 … Ctrl+9 | Go to analysis tab 1 … 9 |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous analysis tab |
+| Ctrl+T | Switch the cell list between tree and table |
+| Ctrl+P | Show / hide the population pane beside the cell |
+| Ctrl+F | Search the cell list (Esc clears) |
+| ← / → | Previous / next EI overlay cell |
+| **File** | |
+| Ctrl+O | Open a Kilosort run |
+| Ctrl+S | Save the classification to the Vision .params |
+| F1 / ? | Show these shortcuts |
 
 ## Documents
 
