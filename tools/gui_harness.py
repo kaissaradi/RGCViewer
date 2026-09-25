@@ -487,6 +487,13 @@ def scenario_light_mode(s):
                          ("status_bar", w.status_bar)):
         if widget is not None:
             s.shot(name, widget)
+    # The population pane (RF mosaic, dynamics, ACG, firing rate), light mode.
+    tabs.setCurrentIndex(0)
+    w.toggle_population_split_view(True)
+    pump(1.0)
+    s.select(cid, settle=2.5)
+    s.shot("population_pane", w.pop_context_widget)
+    s.shot("window_with_population", w)
     log(json.dumps({"dark_pixel_share": report}))
 
 
@@ -671,6 +678,36 @@ def scenario_umap_eval(s):
             out["only_" + b[4:]] = evaluate(only)
         except Exception as exc:          # a block this run lacks
             out["only_" + b[4:]] = f"n/a ({type(exc).__name__})"
+    log(json.dumps(out))
+
+
+def scenario_orientation_check(s):
+    """Q20: does a cell sit at the same place in its STA movie and in the mosaic?"""
+    from src.analysis import rf_geometry
+    s.load()
+    w, dm = s.w, s.dm()
+    vp = dm.vision_params
+    fits = {}
+    for cid in [int(c) for c in dm.cluster_df["cluster_id"]]:
+        vid = dm.get_vision_id_for_cluster(cid)
+        f = rf_geometry.raw_rf_fit(vp, vid)
+        if f is not None and vid in dm.vision_stas:
+            fits[cid] = f
+    left = min(fits, key=lambda c: fits[c].x0)
+    top = max(fits, key=lambda c: fits[c].y0)
+    w.toggle_population_split_view(True)
+    s.tab("STA")
+    out = {"stimulus_w_h": [dm.vision_sta_width, dm.vision_sta_height]}
+    for tag, cid in (("leftmost", left), ("topmost", top)):
+        s.select(cid, settle=0.3)
+        wait_until(lambda: w.sta_panel.current_sta_cluster_id == cid, 30)
+        pump(1.5)
+        ax = w.pop_mosaic_canvas.fig.axes[0] if w.pop_mosaic_canvas.fig.axes else None
+        out[tag] = {"cid": cid, "x0": round(fits[cid].x0, 1), "y0": round(fits[cid].y0, 1),
+                    "mosaic_xlim": [round(v, 1) for v in ax.get_xlim()] if ax else None,
+                    "mosaic_ylim": [round(v, 1) for v in ax.get_ylim()] if ax else None}
+        s.shot(f"{tag}_sta", w.sta_panel.rf_canvas)
+        s.shot(f"{tag}_mosaic", w.pop_mosaic_canvas)
     log(json.dumps(out))
 
 

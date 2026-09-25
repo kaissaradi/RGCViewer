@@ -217,6 +217,13 @@ def make_nav_toolbar(canvas, parent=None):
     bar.setIconSize(bar.iconSize() * 0.75)
     bar.setMaximumHeight(28)
     bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    # Matplotlib draws these icons pure black or white only; at full strength
+    # four rows of them were the loudest thing in the population pane
+    # (tester, 2026-09-25). A partial opacity lets the plots lead.
+    from qtpy.QtWidgets import QGraphicsOpacityEffect
+    fade = QGraphicsOpacityEffect(bar)
+    fade.setOpacity(0.45)
+    bar.setGraphicsEffect(fade)
     return bar
 
 

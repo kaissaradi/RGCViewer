@@ -114,13 +114,17 @@ def test_get_theme_colors_returns_copy():
     assert LIGHT_COLORS["accent"] != "#000000"
 
 
+from src.gui import theme  # noqa: E402
+
+
 def test_locked_palette_tokens():
+    # Light values softened 2026-09-25 (docs/design/palette.md).
     assert PALETTE_LIGHT == {
-        "bg": "#F2EFE6",
-        "surface": "#FFFFFF",
-        "ink": "#1B1B1B",
-        "muted": "#6E6A61",
-        "rule": "#D9D4C7",
+        "bg": "#F4F2EC",
+        "surface": "#FBFAF7",
+        "ink": "#26241F",
+        "muted": "#77736A",
+        "rule": "#E4E0D6",
         "red": "#C8322B",
         "yellow": "#E9B520",
         "blue": "#1B4E9B",
@@ -146,8 +150,9 @@ def test_semantic_roles_map_onto_locked_palette():
     assert LIGHT_COLORS["border_default"] == PALETTE_LIGHT["rule"]
     assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["blue"]
     assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
-    assert LIGHT_COLORS["plot_acg"] == PALETTE_LIGHT["blue"]
-    assert LIGHT_COLORS["plot_line"] == PALETTE_LIGHT["ink"]
+    # Plot data uses a softer blue and ink than the chrome (2026-09-25).
+    assert LIGHT_COLORS["plot_acg"] == theme._BLUE_PLOT_LIGHT
+    assert LIGHT_COLORS["plot_line"] == theme._INK_PLOT_LIGHT
     assert DARK_COLORS["bg_base"] == PALETTE_DARK["bg"]
     assert DARK_COLORS["plot_fr"] == PALETTE_DARK["yellow"]
     assert DARK_COLORS["accent"] != "#e30613"
@@ -157,7 +162,7 @@ def test_ink_is_warm_black_never_pure_black():
     assert LIGHT_COLORS["text_primary"].lower() != "#000000"
     assert LIGHT_COLORS["plot_line"].lower() != "#000000"
     assert LIGHT_COLORS["plot_mean"].lower() != "#000000"
-    assert LIGHT_COLORS["text_primary"] == "#1B1B1B"
+    assert LIGHT_COLORS["text_primary"] == "#26241F"
 
 
 def test_accent_is_palette_blue_and_readable():
@@ -179,9 +184,9 @@ def test_light_and_dark_plot_roles_are_designed_separately():
 
 
 def test_light_plots_use_bauhaus_primaries_not_only_black():
-    assert LIGHT_COLORS["plot_acg"] == PALETTE_LIGHT["blue"]
+    assert LIGHT_COLORS["plot_acg"] == theme._BLUE_PLOT_LIGHT
     assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
-    assert LIGHT_COLORS["plot_ensemble"] == PALETTE_LIGHT["blue"]
+    assert LIGHT_COLORS["plot_ensemble"] == theme._BLUE_PLOT_LIGHT
     assert LIGHT_COLORS["plot_isi"] != LIGHT_COLORS["plot_fr"]
 
 
@@ -199,8 +204,9 @@ def test_format_run_meta_breadcrumb():
 def test_is_light_theme_and_plot_stroke():
     assert is_light_theme(LIGHT_COLORS) is True
     assert is_light_theme(DARK_COLORS) is False
-    assert plot_stroke(LIGHT_COLORS) > plot_stroke(DARK_COLORS)
-    assert plot_grid_alpha(LIGHT_COLORS) > plot_grid_alpha(DARK_COLORS)
+    # Light mode is no longer drawn heavier than dark (it read as loud).
+    assert plot_stroke(LIGHT_COLORS) == plot_stroke(DARK_COLORS)
+    assert plot_grid_alpha(LIGHT_COLORS) <= plot_grid_alpha(DARK_COLORS)
 
 
 def test_light_plot_ink_contrasts_against_paper():

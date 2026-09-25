@@ -1635,13 +1635,11 @@ class MainWindow(QMainWindow):
         mosaic_layout.setContentsMargins(0, 0, 0, 0)
         self.pop_mosaic_canvas = MplCanvas(width=6, height=4, dpi=100)
         mosaic_layout.addWidget(self.pop_mosaic_canvas)
-        # AC4: Zoom & Pan toolbar for the RF mosaic
-        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-
-        self.pop_mosaic_toolbar = NavigationToolbar2QT(
+        # AC4: Zoom & Pan toolbar for the RF mosaic (the shared compact,
+        # faded bar, like every other plot pane)
+        self.pop_mosaic_toolbar = make_nav_toolbar(
             self.pop_mosaic_canvas, self.pop_mosaic_widget
         )
-        self.pop_mosaic_toolbar.setMaximumHeight(28)
         mosaic_layout.addWidget(self.pop_mosaic_toolbar)
         self.pop_master_splitter.addWidget(self.pop_mosaic_widget)
 

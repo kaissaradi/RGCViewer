@@ -14,12 +14,15 @@ import pyqtgraph as pg
 APP_NAME = "ENCORE"
 
 # Locked 2026-08-12. These eight names are the only primaries.
+# Light values softened 2026-09-25 (tester: light mode was far too bright;
+# every line, dot, number and word stood out): off-white surface instead of
+# pure white, softer ink, lighter hairlines. docs/design/palette.md.
 PALETTE_LIGHT = {
-    "bg": "#F2EFE6",  # warm paper, not white
-    "surface": "#FFFFFF",
-    "ink": "#1B1B1B",  # warm black, never #000
-    "muted": "#6E6A61",
-    "rule": "#D9D4C7",
+    "bg": "#F4F2EC",  # warm paper, not white
+    "surface": "#FBFAF7",  # off-white; pure white read as glare
+    "ink": "#26241F",  # warm black, never #000 (14.9:1 on surface)
+    "muted": "#77736A",  # 4.5:1 on surface (AA body text)
+    "rule": "#E4E0D6",
     "red": "#C8322B",
     "yellow": "#E9B520",
     "blue": "#1B4E9B",
@@ -43,6 +46,9 @@ _YELLOW_TEXT_LIGHT = "#8A6500"  # #E9B520 fails AA as 12px text on white
 _BLUE_PLOT_DARK = "#6B9BE0"  # #4A82D6 is 4.13:1 on #232220
 _BLUE_FILL_DARK = "#1B4E9B"  # #4A82D6 + white is 3.85:1
 _RED_TEXT_DARK = "#F28A82"  # #E8564A is 4.44:1 on #232220
+_BLUE_PLOT_LIGHT = "#4A72B8"  # data blue on the light field: 4.6:1, softer than #1B4E9B
+_TICK_LIGHT = "#948F85"  # axis tick numbers only (plot_tick): 3.1:1, they recede
+_INK_PLOT_LIGHT = "#3B3934"  # mean traces: 11:1, not full ink
 
 
 DARK_COLORS = {
@@ -79,6 +85,7 @@ DARK_COLORS = {
     "selection_bg": "rgba(74, 130, 214, 0.22)",
     "selection_bg_strong": "rgba(74, 130, 214, 0.36)",
     "plot_bg": PALETTE_DARK["surface"],
+    "plot_tick": PALETTE_DARK["muted"],
     "plot_line": PALETTE_DARK["ink"],
     "plot_scatter": _BLUE_PLOT_DARK,
     "plot_shadow": PALETTE_DARK["muted"],
@@ -100,7 +107,7 @@ LIGHT_COLORS = {
     "bg_base": PALETTE_LIGHT["bg"],
     "bg_panel": PALETTE_LIGHT["surface"],
     "bg_surface": PALETTE_LIGHT["bg"],
-    "bg_elevated": "#E8E4D8",
+    "bg_elevated": "#ECE9E1",
     "bg_overlay": "rgba(27,27,27,0.32)",
     "bg_tooltip": PALETTE_LIGHT["surface"],
     "accent": PALETTE_LIGHT["blue"],
@@ -113,11 +120,11 @@ LIGHT_COLORS = {
     "text_primary": PALETTE_LIGHT["ink"],
     "text_secondary": PALETTE_LIGHT["muted"],
     "text_tertiary": PALETTE_LIGHT["muted"],
-    "text_disabled": "#A39E94",
+    "text_disabled": "#ADA89E",
     "text_tooltip": PALETTE_LIGHT["ink"],
     "border_subtle": PALETTE_LIGHT["rule"],
     "border_default": PALETTE_LIGHT["rule"],
-    "border_strong": "#B8B2A4",
+    "border_strong": "#CFCABF",
     "border_focus": PALETTE_LIGHT["blue"],
     "status_good_bg": "rgba(31, 122, 77, 0.12)",
     "status_good_text": _GOOD_LIGHT,
@@ -130,18 +137,19 @@ LIGHT_COLORS = {
     "selection_bg": "rgba(27, 78, 155, 0.16)",
     "selection_bg_strong": "rgba(27, 78, 155, 0.28)",
     "plot_bg": PALETTE_LIGHT["surface"],
-    "plot_line": PALETTE_LIGHT["ink"],
-    "plot_scatter": PALETTE_LIGHT["blue"],
-    "plot_shadow": PALETTE_LIGHT["muted"],
-    "plot_ensemble": PALETTE_LIGHT["blue"],
-    "plot_fill": PALETTE_LIGHT["blue"],
-    "plot_mean": PALETTE_LIGHT["ink"],
+    "plot_tick": _TICK_LIGHT,
+    "plot_line": _INK_PLOT_LIGHT,
+    "plot_scatter": _BLUE_PLOT_LIGHT,
+    "plot_shadow": _TICK_LIGHT,
+    "plot_ensemble": _BLUE_PLOT_LIGHT,
+    "plot_fill": _BLUE_PLOT_LIGHT,
+    "plot_mean": _INK_PLOT_LIGHT,
     "plot_peak": PALETTE_LIGHT["yellow"],
     "plot_highlight": PALETTE_LIGHT["blue"],
-    "plot_acg": PALETTE_LIGHT["blue"],
-    "plot_isi": PALETTE_LIGHT["blue"],
+    "plot_acg": _BLUE_PLOT_LIGHT,
+    "plot_isi": _BLUE_PLOT_LIGHT,
     "plot_fr": PALETTE_LIGHT["yellow"],
-    "plot_overlay": PALETTE_LIGHT["blue"],
+    "plot_overlay": _BLUE_PLOT_LIGHT,
     "plot_compare": PALETTE_LIGHT["red"],
     "plot_waveform_shadow": PALETTE_LIGHT["rule"],
 }
@@ -223,14 +231,14 @@ def is_light_theme(colors: dict = None, theme_name: str = "dark") -> bool:
 def plot_stroke(colors: dict = None, weight: str = "line") -> float:
     """Line width that stays readable on the current plot field.
 
-    Light-mode traces sit on white, so they are drawn heavier than the same
-    role on a dark field.
+    Light mode used to draw everything heavier, which made it loud; both
+    themes now use the same weights (2026-09-25).
     """
     light = is_light_theme(colors)
     strokes = {
-        "thin": (1.6, 1.0),
-        "line": (2.6, 2.0),
-        "thick": (3.2, 2.4),
+        "thin": (1.0, 1.0),
+        "line": (2.0, 2.0),
+        "thick": (2.4, 2.4),
     }
     lo, dk = strokes.get(weight, strokes["line"])
     return lo if light else dk
@@ -238,7 +246,7 @@ def plot_stroke(colors: dict = None, weight: str = "line") -> float:
 
 def plot_grid_alpha(colors: dict = None) -> float:
     """Hairline grid. The mockup panes are almost gridless."""
-    return 0.10 if is_light_theme(colors) else 0.08
+    return 0.06 if is_light_theme(colors) else 0.08
 
 
 def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
@@ -247,17 +255,27 @@ def plot_field(colors: dict = None, theme_name: str = "dark") -> str:
     return colors.get("plot_bg", colors["bg_panel"])
 
 
-def plot_ensemble_alpha(colors: dict = None) -> float:
-    """Many overlapping traces: saturated enough to read on paper/surface."""
-    return 0.65 if is_light_theme(colors) else 0.45
+def plot_ensemble_alpha(colors: dict = None, n_traces: int = None) -> float:
+    """Opacity of one trace in an overlaid ensemble.
+
+    Light mode: hundreds of traces at a fixed opacity added up to a solid
+    block (tester, 2026-09-25), so the opacity falls with the square root of
+    the count past 20 traces, never below 0.06. Dark mode is unchanged.
+    """
+    if not is_light_theme(colors):
+        return 0.45
+    base = 0.40
+    if n_traces and n_traces > 20:
+        return max(0.06, base * (20.0 / float(n_traces)) ** 0.5)
+    return base
 
 
 def plot_rf_bg_alpha(colors: dict = None) -> float:
-    return 0.90 if is_light_theme(colors) else 0.32
+    return 0.45 if is_light_theme(colors) else 0.32
 
 
 def plot_rf_target_alpha(colors: dict = None) -> float:
-    return 1.0 if is_light_theme(colors) else 0.75
+    return 0.55 if is_light_theme(colors) else 0.75
 
 
 def opaque_brush(color_hex: str, alpha: int = 255):
@@ -319,7 +337,7 @@ def apply_plot_theme(target, colors: dict) -> None:
 
 def _style_pg_plot_item(plot_item, colors: dict) -> None:
     spine = pg.mkPen(colors["border_default"])
-    tick = pg.mkPen(colors["text_secondary"])
+    tick = pg.mkPen(colors.get("plot_tick", colors["text_secondary"]))
     for name in ("bottom", "left"):
         try:
             axis = plot_item.getAxis(name)
@@ -339,7 +357,7 @@ def _style_pg_plot_item(plot_item, colors: dict) -> None:
 def _style_mpl_axes(ax, colors: dict) -> None:
     bg = plot_field(colors)
     spine = colors["border_default"]
-    tick = colors["text_secondary"]
+    tick = colors.get("plot_tick", colors["text_secondary"])
     ax.set_facecolor(bg)
     for side in ax.spines.values():
         side.set_color(spine)
@@ -350,7 +368,7 @@ def _style_mpl_axes(ax, colors: dict) -> None:
     title = ax.title
     if title is not None:
         title.set_color(colors["text_primary"])
-    grid_alpha = 0.55 if is_light_theme(colors) else 0.35
+    grid_alpha = 0.35
     ax.grid(True, color=colors["border_subtle"], linewidth=0.7, alpha=grid_alpha)
 
 

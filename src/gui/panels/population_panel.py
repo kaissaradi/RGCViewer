@@ -228,7 +228,7 @@ def _apply_rf_axes_style(ax, colors, title=None):
         ax.set_title(title, color=colors["text_primary"])
     ax.set_facecolor(plot_field(colors))
     ax.set_aspect("equal", adjustable="box")
-    ax.tick_params(colors=colors["text_secondary"])
+    ax.tick_params(colors=colors.get("plot_tick", colors["text_secondary"]))
     for spine in ax.spines.values():
         spine.set_edgecolor(colors["border_subtle"])
     ax.grid(False)
@@ -436,6 +436,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
 
         state["mean_line"].set_data(t_axis, mean_tc)
         state["shadow_lines"].set_segments(segments)
+        state["shadow_lines"].set_alpha(plot_ensemble_alpha(colors, len(segments)))
         state["peak_marker"].set_data([peak_time], [peak_val])
 
         state["peak_text"].set_position((peak_time, peak_val + (np.max(mean_tc) * 0.1)))
@@ -468,7 +469,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
             segments,
             color=colors.get("plot_ensemble", colors["plot_shadow"]),
             linewidth=plot_stroke(colors, "thin"),
-            alpha=plot_ensemble_alpha(colors),
+            alpha=plot_ensemble_alpha(colors, len(segments)),
             zorder=2,
         )
         ax.add_collection(shadow_lines)
@@ -513,7 +514,7 @@ def draw_population_timecourse_panel(main_window, subset_ids=None):
         ax.set_xlim(t_axis[0], t_axis[-1])
         ax.set_ylim(y_bottom, y_top)
 
-        ax.tick_params(colors=colors["text_secondary"], labelsize=8)
+        ax.tick_params(colors=colors.get("plot_tick", colors["text_secondary"]), labelsize=8)
         for spine in ax.spines.values():
             spine.set_edgecolor(colors["border_subtle"])
 
@@ -720,7 +721,8 @@ def draw_population_rfs_plot(
 
         highlight_hex = colors.get("plot_peak", colors["plot_highlight"])
         highlight_rgb = QColor(highlight_hex).getRgbF()[:3]
-        highlight_fill = 0.55 if is_light_theme(colors) else 0.48
+        light = is_light_theme(colors)
+        highlight_fill = 0.30 if light else 0.48
         highlight_patch = Ellipse(
             xy=(0, 0),
             width=1,
@@ -728,7 +730,7 @@ def draw_population_rfs_plot(
             angle=0,
             edgecolor=colors["plot_line"],
             facecolor=(*highlight_rgb, highlight_fill),
-            lw=plot_stroke(colors, "thick"),
+            lw=1.6 if light else plot_stroke(colors, "thick"),
             zorder=10,
             visible=False,
         )
@@ -941,7 +943,7 @@ def plot_population_rfs_background(
     is_light = is_light_theme(colors)
     target_color = colors.get("plot_scatter", colors.get("plot_highlight", "#0d47a1"))
     target_alpha = plot_rf_target_alpha(colors)
-    target_lw = 1.8 if is_light else 1.25
+    target_lw = 1.0 if is_light else 1.25   # light was 1.8: a solid blue mass
 
     target_coll = _build_ellipse_collection(
         target_ellipses,
@@ -1414,7 +1416,7 @@ def plot_rich_ei(
     ax.set_title("Electrical Image", color=colors["text_primary"])
     ax.set_xlabel("X (µm)", color=colors["text_secondary"])
     ax.set_ylabel("Y (µm)", color=colors["text_secondary"])
-    ax.tick_params(colors=colors["text_secondary"])
+    ax.tick_params(colors=colors.get("plot_tick", colors["text_secondary"]))
     for spine in ax.spines.values():
         spine.set_edgecolor(colors["border_subtle"])
     ax.set_aspect("equal")
@@ -1554,6 +1556,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
 
         state["mean_line"].set_data(t_axis, mean_acg)
         state["shadow_lines"].set_segments(segments)
+        state["shadow_lines"].set_alpha(plot_ensemble_alpha(colors, len(segments)))
         ax.set_xlim(t_axis[0], t_axis[-1])
         ax.set_ylim(y_bottom, y_top)
     else:
@@ -1583,7 +1586,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
             segments,
             color=colors.get("plot_ensemble", colors["plot_acg"]),
             linewidth=plot_stroke(colors, "thin"),
-            alpha=plot_ensemble_alpha(colors),
+            alpha=plot_ensemble_alpha(colors, len(segments)),
             zorder=2,
         )
         ax.add_collection(shadow_lines)
@@ -1602,7 +1605,7 @@ def draw_population_acg_panel(main_window, subset_ids=None):
         ax.set_ylabel("Autocorrelation", color=colors["text_secondary"], fontsize=9)
         ax.set_xlim(t_axis[0], t_axis[-1])
         ax.set_ylim(y_bottom, y_top)
-        ax.tick_params(colors=colors["text_secondary"], labelsize=8)
+        ax.tick_params(colors=colors.get("plot_tick", colors["text_secondary"]), labelsize=8)
         for spine in ax.spines.values():
             spine.set_edgecolor(colors["border_subtle"])
 
@@ -1746,6 +1749,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
 
         state["mean_line"].set_data(t_axis, mean_fr)
         state["shadow_lines"].set_segments(segments)
+        state["shadow_lines"].set_alpha(plot_ensemble_alpha(colors, len(segments)))
         ax.set_xlim(t_axis[0], t_axis[-1])
         ax.set_ylim(y_bottom, y_top)
     else:
@@ -1758,7 +1762,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
             segments,
             color=colors.get("plot_ensemble", colors["plot_fr"]),
             linewidth=plot_stroke(colors, "thin"),
-            alpha=plot_ensemble_alpha(colors),
+            alpha=plot_ensemble_alpha(colors, len(segments)),
             zorder=2,
         )
         ax.add_collection(shadow_lines)
@@ -1777,7 +1781,7 @@ def draw_population_fr_panel(main_window, subset_ids=None):
         ax.set_ylabel("Firing Rate (Hz)", color=colors["text_secondary"], fontsize=9)
         ax.set_xlim(t_axis[0], t_axis[-1])
         ax.set_ylim(y_bottom, y_top)
-        ax.tick_params(colors=colors["text_secondary"], labelsize=8)
+        ax.tick_params(colors=colors.get("plot_tick", colors["text_secondary"]), labelsize=8)
         for spine in ax.spines.values():
             spine.set_edgecolor(colors["border_subtle"])
 
