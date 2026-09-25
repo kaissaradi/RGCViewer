@@ -9,6 +9,8 @@ from src.gui.widgets.widgets import make_cell_row, make_group_row
 
 class FakeDM:
     generation = 1
+    # MainWindow's debounced tree-change timer reads it (a race on slow CI runners).
+    cluster_df = None
     chirp_available = False
     vision_params = None
 

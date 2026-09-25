@@ -9,6 +9,8 @@ from src.gui.panels import population_panel as pp
 
 
 class FakeDM:
+    # MainWindow's debounced tree-change timer reads it (a race on slow CI runners).
+    cluster_df = None
     def get_cell_physics(self, cid):
         return {"timecourse": np.sin(np.arange(31) / 5.0 + cid)}
 
