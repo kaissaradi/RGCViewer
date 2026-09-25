@@ -372,12 +372,14 @@ class CheatSheet(QDialog):
         for section in SECTIONS:
             head = QLabel(section.upper())
             head.setObjectName("sectionLabel")
+            head.setStyleSheet("font-weight: 700; letter-spacing: 0.08em; padding-top: 6px;")
             grid.addWidget(head, row, 0, 1, 2)
             row += 1
             for b in BINDINGS:
                 if b.section != section:
                     continue
-                keys = QLabel("  ·  ".join(
+                sep = "  …  " if b.keys == ("Ctrl+1", "Ctrl+9") else "  ·  "
+                keys = QLabel(sep.join(
                     QKeySequence(k).toString(QKeySequence.SequenceFormat.NativeText) or k
                     for k in b.keys))
                 keys.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
