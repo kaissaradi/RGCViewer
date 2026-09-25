@@ -38,6 +38,14 @@ class _FakeWorker:
         pass
 
 
+class _Waveforms:
+    def __init__(self):
+        self.reading = []
+
+    def show_reading(self, cluster_id):
+        self.reading.append(cluster_id)
+
+
 class _Host:
     """The slice of MainWindow that _process_selection touches."""
 
@@ -49,7 +57,7 @@ class _Host:
 
     def __init__(self, current_tab_name):
         self.ei_panel = object()
-        self.waveforms_panel = object()
+        self.waveforms_panel = _Waveforms()
         self.standard_plots_panel = object()
         self.sta_panel = object()
         self.grating_panel = object()
@@ -91,4 +99,13 @@ def test_feature_tabs_wait_for_the_worker(tab):
     host = _Host(tab)
     host._process_selection()
     # on_features_ready draws these; drawing now would paint them twice.
+    assert host.drawn == []
+    # The Waveforms tab clears to "reading…" at once instead of keeping the last cell.
+    assert host.waveforms_panel.reading == ([7] if tab == "waveforms_panel" else [])
+
+
+def test_debounced_selection_after_the_run_closed_does_nothing():
+    host = _Host("sta_panel")
+    host.data_manager = None                 # the run closed before the timer fired
+    host._process_selection()
     assert host.drawn == []

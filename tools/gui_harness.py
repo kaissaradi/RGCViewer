@@ -1056,6 +1056,36 @@ def scenario_borrowed_chirp(s):
         s.shot("borrowed_chirp", w.chirp_panel)
 
 
+def scenario_waveforms_pca(s):
+    """Q56: Waveforms tab with the raw file: time to waveform and to PCA per cell; screenshots.
+
+    HARNESS_DAT: the run's raw Litke folder (e.g. /mnt/lab/Array-data/raw/20260220A/data022).
+    """
+    s.load()
+    w = s.w
+    wp = w.waveforms_panel
+    s.tab("Waveforms")
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    picks = [ids[len(ids) // 5], ids[len(ids) // 2], ids[(4 * len(ids)) // 5]]
+    for cid in picks:
+        t = time.time()
+        s.select(cid, settle=0.2)
+        got_wave = wait_until(lambda: "spikes" in wp._cluster_header.text()
+                              and f"Cluster {cid} " in wp._cluster_header.text(), 120)
+        t_wave = time.time() - t
+        got_pca = wait_until(lambda: wp._last_pca_payload is not None
+                             or wp._isolation_label.text().startswith(("PCA: no", "PCA failed")), 240)
+        t_pca = time.time() - t
+        stats = {k: v.text() for k, v in wp._stat_values.items()}
+        log(json.dumps({"cell": cid, "wave_s": round(t_wave, 1), "wave_ok": got_wave,
+                        "pca_s": round(t_pca, 1), "pca_ok": got_pca,
+                        "header": wp._cluster_header.text(), "isolation": wp._isolation_label.text(),
+                        "n_spikes": stats.get("n_spikes"), "mean_fr": stats.get("mean_fr"),
+                        "pca_points": None if wp._last_pca_payload is None else
+                        [len(wp._last_pca_payload["unit_coords"]), len(wp._last_pca_payload["bg_coords"])]}))
+        s.shot(f"waveforms_{cid}", wp)
+
+
 def scenario_borrowed_grating(s):
     """Q52: Map Reference Run to the prep's grating run; matched cells show its DS tuning.
 

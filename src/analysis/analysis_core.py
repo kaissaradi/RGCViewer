@@ -4,6 +4,7 @@ Analysis Core Functions
 This module contains all analysis functions for RGC data processing.
 """
 
+import threading
 import warnings
 import numpy as np
 from pathlib import Path
@@ -25,6 +26,68 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Snippet extraction
 # ---------------------------------------------------------------------------
+
+
+# One raw read at a time. PyBinFileReader.get_data seeks, then reads, on
+# shared file handles; two threads interleaving returned wrong samples for
+# 1 of 60 snippets with no error (2026-09-25). Hold it for each get_data.
+RAW_READ_LOCK = threading.RLock()
+
+
+def extract_channel_snippets(source, spike_times, channels, window=(-20, 60), cancelled=None):
+    """(n_spikes, len(channels), snip_len) float32 raw snippets on a few channels.
+
+    ``source``: a PyBinFileReader (Litke: row 0 is TTL, so channel c is row
+    c + 1) or an ndarray / memmap of shape (n_samples, n_channels). Spikes
+    whose window falls off the recording are dropped; the second value is
+    the mask of spikes kept. ``cancelled()`` returning True stops early.
+    """
+    snip_len = int(window[1] - window[0])
+    spike_times = np.asarray(spike_times, dtype=np.int64)
+    chans = np.asarray(channels, dtype=np.intp)
+    out = np.zeros((len(spike_times), len(chans), snip_len), dtype=np.float32)
+    kept = np.zeros(len(spike_times), dtype=bool)
+    is_reader = _PyBinFileReader is not None and isinstance(source, _PyBinFileReader)
+    total = source.length if is_reader else source.shape[0]
+    rows = chans + 1 if is_reader else chans
+    for i, t in enumerate(spike_times):
+        if cancelled is not None and i % 16 == 0 and cancelled():
+            break
+        start = int(t) + int(window[0])
+        if start < 0 or start + snip_len > total:
+            continue
+        try:
+            if is_reader:
+                with RAW_READ_LOCK:
+                    block = source.get_data(start, snip_len)
+                out[i] = block[rows, :]
+            else:
+                out[i] = np.asarray(source[start:start + snip_len, rows]).T
+            kept[i] = True
+        except Exception:
+            logger.debug("raw read failed at sample %d", start, exc_info=True)
+    return out, kept
+
+
+def read_channel_block(source, start, n_samples, channels):
+    """(len(channels), n) float32: one contiguous stretch of a few channels.
+
+    One large read instead of one seek per spike: on the CIFS share a seek
+    costs ~45 ms whatever its size, and a 1 s block of all 513 rows (20 MB)
+    about as long as a handful of seeks.
+    """
+    chans = np.asarray(channels, dtype=np.intp)
+    if _PyBinFileReader is not None and isinstance(source, _PyBinFileReader):
+        with RAW_READ_LOCK:
+            block = source.get_data(int(start), int(n_samples))
+        return np.asarray(block[chans + 1, :], dtype=np.float32)
+    return np.asarray(source[int(start):int(start) + int(n_samples), chans], dtype=np.float32).T
+
+
+def recording_length(source) -> int:
+    if _PyBinFileReader is not None and isinstance(source, _PyBinFileReader):
+        return int(source.length)
+    return int(source.shape[0])
 
 
 def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
@@ -56,7 +119,8 @@ def _extract_snippets_from_reader(reader, spike_times, window, n_channels):
             continue
 
         try:
-            raw_block = reader.get_data(start_sample, snip_len)
+            with RAW_READ_LOCK:
+                raw_block = reader.get_data(start_sample, snip_len)
             snips[i] = raw_block[litke_channel_rows, :]
         except Exception:
             logger.debug(

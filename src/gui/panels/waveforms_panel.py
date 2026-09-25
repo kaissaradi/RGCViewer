@@ -435,28 +435,28 @@ def _build_pca_payload(
     if len(combined) < 4:
         return {"cluster_id": cluster_id, "error": "too_few_spikes"}
 
-    # --- Z-score normalise each waveform row before PCA -------------------
-    # This is essential when mixing real raw snippets (µV scale) with
-    # template-synthesised bg waveforms (whitened / arbitrary scale).
-    # Each row becomes unit-variance, so PCA separates shape not amplitude.
-    row_std = combined.std(axis=1, keepdims=True)
-    row_std[row_std < 1e-9] = 1.0  # guard against flat waveforms
-    combined_norm = (combined - combined.mean(axis=1, keepdims=True)) / row_std
-
-    # --- PCA on combined set ------------------------------------------------
-    pca = PCA(n_components=2)
-    coords = pca.fit_transform(combined_norm)
+    # --- PCA on the waveforms in µV -----------------------------------------
+    # Rows are real spikes on the dominant channel and its nearest channels,
+    # baseline-subtracted (get_channel_all_snippets). Amplitude is kept: it
+    # is most of what separates two cells on one electrode. (They were
+    # z-scored only to mix in synthetic template waves, now removed.)
+    # 3 components: the plot shows the first 2, the isolation score uses all 3.
+    pca = PCA(n_components=min(3, combined.shape[1], len(combined)))
+    coords3 = pca.fit_transform(combined)
+    coords = coords3[:, :2]
     var = pca.explained_variance_ratio_
 
     bg_mask = labels == 0
     unit_mask = labels == 1
     bg_coords = coords[bg_mask] if has_bg else np.empty((0, 2))
     unit_coords = coords[unit_mask]
+    unit3 = coords3[unit_mask]
 
     # --- Project each per-cluster bg set into the SAME PCA space -----------
     # This is the key step for the compare feature: we project bg_waves_by_cid
     # through the already-fitted PCA so all clouds share the same axes.
     bg_coords_by_cid: dict = {}
+    bg3_by_cid: dict = {}
     if bg_waves_by_cid:
         for cid, cid_waves in bg_waves_by_cid.items():
             if cid_waves is None or len(cid_waves) == 0:
@@ -470,35 +470,31 @@ def _build_pca_payload(
                     ]
                 # Align time dimension
                 cid_sub = cid_sub[:, :n_time]
-                # Z-score normalise same way as the combined set
-                cs_std = cid_sub.std(axis=1, keepdims=True)
-                cs_std[cs_std < 1e-9] = 1.0
-                cid_norm = (cid_sub - cid_sub.mean(axis=1, keepdims=True)) / cs_std
-                bg_coords_by_cid[cid] = pca.transform(cid_norm)
+                c3 = pca.transform(cid_sub)
+                bg3_by_cid[cid] = c3
+                bg_coords_by_cid[cid] = c3[:, :2]
             except Exception:
                 pass
 
-    # --- Isolation metrics (d-prime, unit vs all-background) ---------------
-    isolation_label = "N/A (no bg)"
+    # --- Isolation: d′ to the closest neighbouring cell ---------------------
+    # Each neighbour on its own, along the line joining the two means in the
+    # first 3 PCs: d′ = |Δmean| / sqrt((var_cell + var_neighbour) / 2). Against
+    # all neighbours pooled, as before, the score mixed several cells' spread
+    # and moved from 0.64 to 0.32 between two samples of one cell (2026-09-25).
+    isolation_label = "N/A (no neighbouring cells within 60 µm)"
     dprime = None
-    if has_bg and len(unit_coords) > 3 and len(bg_coords) > 3:
-        try:
-            unit_mean = unit_coords.mean(axis=0)
-            unit_cov = np.cov(unit_coords.T) + np.eye(2) * 1e-6
-            bg_mean = bg_coords.mean(axis=0)
-            pooled_std = np.sqrt(
-                (np.trace(unit_cov) + np.trace(np.cov(bg_coords.T))) / 4.0
-            )
-            if pooled_std > 0:
-                dprime = float(np.linalg.norm(unit_mean - bg_mean) / pooled_std)
-                if dprime > 3.0:
-                    isolation_label = f"d' = {dprime:.2f}  ✓ well isolated"
-                elif dprime > 1.5:
-                    isolation_label = f"d' = {dprime:.2f}  ~ marginal"
-                else:
-                    isolation_label = f"d' = {dprime:.2f}  ✗ poor"
-        except Exception:
-            pass
+    closest = None
+    if len(unit3) >= 10:
+        for cid, c3 in bg3_by_cid.items():
+            if len(c3) < 10:
+                continue
+            d = _pair_dprime(unit3, c3)
+            if dprime is None or d < dprime:
+                dprime, closest = d, cid
+    if dprime is not None:
+        verdict = ("✓ well isolated" if dprime > 3.0 else
+                   "~ marginal" if dprime > 1.5 else "✗ poor")
+        isolation_label = f"closest neighbour: cell {closest}, d' = {dprime:.1f}  {verdict}"
 
     # --- Ellipse (unit, 2-sigma) --------------------------------------------
     ellipse = _compute_ellipse(unit_coords)
@@ -515,6 +511,32 @@ def _build_pca_payload(
         "ellipse": ellipse,
         "has_bg": has_bg,
     }
+
+
+def _pair_dprime(a: np.ndarray, b: np.ndarray) -> float:
+    """d′ between two point clouds along the line joining their means."""
+    v = b.mean(axis=0) - a.mean(axis=0)
+    n = float(np.linalg.norm(v))
+    if n == 0.0:
+        return 0.0
+    v /= n
+    pa, pb = a @ v, b @ v
+    return float(abs(pb.mean() - pa.mean()) / np.sqrt((pa.var() + pb.var()) / 2.0 + 1e-12))
+
+
+def _ellipse_item(e: dict, pen):
+    """A 2-σ ellipse item, turned to its major axis (data coordinates, y up).
+
+    The angle was computed but never applied, so every ellipse was drawn
+    axis-aligned (2026-09-25).
+    """
+    w, h = e["width"], e["height"]
+    ell = pg.QtWidgets.QGraphicsEllipseItem(-w / 2, -h / 2, w, h)
+    ell.setPos(e["cx"], e["cy"])
+    ell.setRotation(e["angle"])
+    ell.setPen(pen)
+    ell.setBrush(pg.mkBrush(0, 0, 0, 0))
+    return ell
 
 
 def _compute_ellipse(coords: np.ndarray) -> Optional[dict]:
@@ -545,13 +567,12 @@ def _compute_ellipse(coords: np.ndarray) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 class _ChannelSnippetsWorker(QRunnable):
     """
-    Fetches unit + background waveforms for the dominant channel.
+    Reads the cell's and its neighbours' real spikes around the dominant
+    channel (dm.get_channel_all_snippets), then starts a _PCAWorker.
 
-    Priority order:
-      1. dm.get_channel_all_snippets()  (raw data path — real spikes)
-      2. Inline template synthesiser    (no disk I/O, always available)
-
-    On success, immediately enqueues a _PCAWorker with the result.
+    Raw data only. The old fallback drew templates plus noise as if they
+    were spikes and scored a d′ on them (2026-09-25). Stops early when the
+    user has moved to another cell (``cancelled``).
     """
 
     def __init__(
@@ -559,174 +580,40 @@ class _ChannelSnippetsWorker(QRunnable):
         cluster_id: int,
         dom_chan: int,
         dm,
-        unit_waves_override: Optional[np.ndarray],
         signals: _WorkerSignals,
+        cancelled=None,
     ):
         super().__init__()
         self.setAutoDelete(True)
         self.cluster_id = cluster_id
         self.dom_chan = dom_chan
         self.dm = dm
-        self.unit_waves_override = (
-            unit_waves_override  # already-extracted from ei_cache
-        )
         self.signals = signals
+        self.cancelled = cancelled or (lambda: False)
 
     @Slot()
     def run(self):
         try:
-            result = self._fetch()
-            if result is None:
-                self.signals.error.emit(
-                    self.cluster_id, "no waveform data available for PCA"
-                )
+            r = self.dm.get_channel_all_snippets(
+                self.dom_chan, self.cluster_id, cancelled=self.cancelled)
+            if r["source"] == "cancelled":
                 return
-            unit_waves, bg_waves, bg_waves_by_cid, unit_indices = result
-
-            # Hand off to PCA stage
+            if r["source"] != "raw" or len(r["unit_waves"]) == 0:
+                self.signals.error.emit(self.cluster_id, "no raw spikes read for PCA")
+                return
             pca_worker = _PCAWorker(
                 self.cluster_id,
-                unit_waves,
-                bg_waves,
-                unit_indices,
+                r["unit_waves"],
+                r["bg_waves"],
+                r["unit_indices"],
                 self.signals,
-                bg_waves_by_cid=bg_waves_by_cid,
+                bg_waves_by_cid=r.get("bg_waves_by_cid", {}),
                 generation=getattr(self.dm, "generation", None),
             )
             QThreadPool.globalInstance().start(pca_worker)
-
         except Exception as exc:
             logger.exception("ChannelSnippetsWorker failed cid=%d", self.cluster_id)
             self.signals.error.emit(self.cluster_id, str(exc))
-
-    def _fetch(self):
-        dm = self.dm
-        cid = self.cluster_id
-        ch = self.dom_chan
-
-        # -- Path 1: dm.get_channel_all_snippets (raw data available) -----------
-        if hasattr(dm, "get_channel_all_snippets"):
-            raw_available = (
-                getattr(dm, "raw_reader", None) is not None
-                or getattr(dm, "raw_data_memmap", None) is not None
-            )
-            if raw_available:
-                try:
-                    r = dm.get_channel_all_snippets(ch, cid)
-                    if r["source"] == "raw" and len(r["unit_waves"]) > 0:
-                        return (
-                            r["unit_waves"],
-                            r["bg_waves"],
-                            r.get("bg_waves_by_cid", {}),
-                            r["unit_indices"],
-                        )
-                except Exception:
-                    logger.debug("get_channel_all_snippets failed", exc_info=True)
-
-        # -- Path 2: use unit waveforms already extracted from ei_cache ----------
-        unit_waves = self.unit_waves_override
-        bg_waves = self._synth_bg_from_templates(dm, cid, ch)
-        if unit_waves is None:
-            unit_waves = self._synth_unit_from_template(dm, cid, ch)
-
-        if unit_waves is None or len(unit_waves) == 0:
-            return None
-
-        # No global spike indices in template path — leave empty for now
-        unit_indices = getattr(dm, "get_cluster_spike_indices", lambda x: None)(cid)
-
-        # Build per-cluster bg dict from template synthesiser
-        bg_by_cid = self._synth_bg_by_cid_from_templates(dm, cid, ch)
-        return (
-            unit_waves.astype(np.float32),
-            bg_waves.astype(np.float32) if bg_waves is not None else None,
-            bg_by_cid,
-            unit_indices,
-        )
-
-    # -- Template synthesisers (no disk I/O) ------------------------------------
-    def _synth_bg_from_templates(self, dm, cluster_id, dom_chan):
-        try:
-            templates = getattr(dm, "templates", None)
-            tmpl_ind = getattr(dm, "templates_ind", None)
-            if templates is None or "best_chan" not in dm.cluster_df.columns:
-                return None
-            chan_df = dm.cluster_df[dm.cluster_df["best_chan"] == dom_chan]
-            waves = []
-            for row in chan_df.itertuples():
-                c = int(row.cluster_id)
-                if c == cluster_id or c >= templates.shape[0]:
-                    continue
-                wave = _extract_template_channel(templates, tmpl_ind, c, dom_chan)
-                if wave is None:
-                    continue
-                n_rep = min(200, max(10, int(row.n_spikes) // 100))
-                noise = np.random.normal(
-                    0, float(np.std(wave)) * 0.05, (n_rep, len(wave))
-                ).astype(np.float32)
-                waves.append(np.tile(wave, (n_rep, 1)) + noise)
-            return np.vstack(waves) if waves else None
-        except Exception:
-            return None
-
-    def _synth_unit_from_template(self, dm, cluster_id, dom_chan):
-        try:
-            templates = getattr(dm, "templates", None)
-            tmpl_ind = getattr(dm, "templates_ind", None)
-            if templates is None or cluster_id >= templates.shape[0]:
-                return None
-            wave = _extract_template_channel(templates, tmpl_ind, cluster_id, dom_chan)
-            if wave is None:
-                return None
-            row = dm.cluster_df[dm.cluster_df.cluster_id == cluster_id]
-            n_spikes = int(row["n_spikes"].values[0]) if not row.empty else 100
-            n_rep = min(500, max(20, n_spikes // 50))
-            noise = np.random.normal(
-                0, float(np.std(wave)) * 0.12, (n_rep, len(wave))
-            ).astype(np.float32)
-            return np.tile(wave, (n_rep, 1)) + noise
-        except Exception:
-            return None
-
-    def _synth_bg_by_cid_from_templates(self, dm, cluster_id, dom_chan):
-        """Return dict{cid: ndarray} — one synthetic wave array per neighbour cluster."""
-        result = {}
-        try:
-            templates = getattr(dm, "templates", None)
-            tmpl_ind = getattr(dm, "templates_ind", None)
-            if templates is None or "best_chan" not in dm.cluster_df.columns:
-                return result
-            chan_df = dm.cluster_df[dm.cluster_df["best_chan"] == dom_chan]
-            for row in chan_df.itertuples():
-                c = int(row.cluster_id)
-                if c == cluster_id or c >= templates.shape[0]:
-                    continue
-                wave = _extract_template_channel(templates, tmpl_ind, c, dom_chan)
-                if wave is None:
-                    continue
-                n_rep = min(200, max(10, int(row.n_spikes) // 100))
-                noise = np.random.normal(
-                    0, float(np.std(wave)) * 0.05, (n_rep, len(wave))
-                ).astype(np.float32)
-                result[c] = np.tile(wave, (n_rep, 1)) + noise
-        except Exception:
-            pass
-        return result
-
-
-def _extract_template_channel(templates, tmpl_ind, cluster_id, dom_chan):
-    """Extract the 1-D waveform for dom_chan from a cluster's template."""
-    tpl = np.asarray(templates[cluster_id], dtype=np.float32)  # (n_time, n_tCh)
-    if tmpl_ind is not None and cluster_id < tmpl_ind.shape[0]:
-        local = np.where(tmpl_ind[cluster_id] == dom_chan)[0]
-        if len(local) == 0:
-            return None
-        return tpl[:, int(local[0])]
-    else:
-        if dom_chan >= tpl.shape[1]:
-            return None
-        return tpl[:, dom_chan]
-
 
 # ---------------------------------------------------------------------------
 # Stat badge helpers
@@ -931,18 +818,8 @@ class WaveformPanel(QWidget):
     def _make_wave_plot(self) -> pg.PlotWidget:
         pw = pg.PlotWidget()
         _plot_style(pw)
-        pw.setLabel(
-            "bottom",
-            "Time",
-            units="ms",
-            **{"color": _C["axis_text"], "font-size": "9pt"},
-        )
-        pw.setLabel(
-            "left",
-            "Amplitude",
-            units="µV",
-            **{"color": _C["axis_text"], "font-size": "9pt"},
-        )
+        pw.setLabel("bottom", "Time (ms)", **{"color": _C["axis_text"], "font-size": "9pt"})
+        pw.setLabel("left", "Amplitude (µV)", **{"color": _C["axis_text"], "font-size": "9pt"})
 
         # Persistent zero-line
         self._zero_line = pg.InfiniteLine(
@@ -1091,6 +968,23 @@ class WaveformPanel(QWidget):
         self._clear_compare_buttons()  # remove stale buttons immediately
         self._render_tier1(cluster_id)
 
+    def show_reading(self, cluster_id: int):
+        """The raw read for a new cell has started: clear the last cell's plots.
+
+        The tab used to keep the previous cell's waveforms and title until the
+        read finished (5–16 s on the share), so it looked stuck.
+        """
+        if not self.isVisible():
+            return
+        self._current_cluster_id = cluster_id        # also stops the last cell's PCA reads
+        self._compare_cluster_id = None
+        self._last_pca_payload = None
+        self._clear_compare_buttons()
+        self._clear_plots()
+        self._cluster_header.setText(f"Cluster {cluster_id} — reading its spikes from the raw file…")
+        self._wave_title.setText("")
+        self._isolation_label.setText("PCA: waiting for the spikes…")
+
     def restyle_plots(self, colors: dict):
         """Re-colour the panel for a theme switch (PLAN.md Q16)."""
         _C.update(palette_from_theme(colors))
@@ -1130,8 +1024,9 @@ class WaveformPanel(QWidget):
                 ax.setPen(pg.mkPen(_C["axis_pen"], width=1))
                 ax.setTextPen(pg.mkPen(_C["axis_text"]))
         style = {"color": _C["axis_text"], "font-size": "9pt"}
-        self._wave_plot.setLabel("bottom", "Time", units="ms", **style)
-        self._wave_plot.setLabel("left", "Amplitude", units="µV", **style)
+        # Units in the text: with units= pyqtgraph added its own prefix ("mms", "mµV").
+        self._wave_plot.setLabel("bottom", "Time (ms)", **style)
+        self._wave_plot.setLabel("left", "Amplitude (µV)", **style)
         self._pca_plot.setLabel("bottom", "PC1", **style)
         self._pca_plot.setLabel("left", "PC2", **style)
         self._zero_line.setPen(pg.mkPen(_C["zero_line"], width=1, style=Qt.DashLine))
@@ -1154,8 +1049,16 @@ class WaveformPanel(QWidget):
         features = dm.get_lightweight_features(cluster_id)
 
         if not features or "median_ei" not in features:
-            self._wave_title.setText(f"Cluster {cluster_id} — waiting for cache…")
-            self._cluster_header.setText(f"Cluster {cluster_id}")
+            self._wave_title.setText("")
+            if getattr(dm, "dat_path", None) is None:
+                # This used to say "waiting for cache…" forever.
+                self._cluster_header.setText(
+                    f"Cluster {cluster_id} — no raw recording is loaded. "
+                    "File ▸ Load Raw Data File shows its spikes and their PCA.")
+                self._isolation_label.setText("PCA: needs the raw recording")
+            else:
+                self._cluster_header.setText(
+                    f"Cluster {cluster_id} — reading its spikes from the raw file…")
             return
 
         median_ei = features["median_ei"]  # (n_ch, n_time)
@@ -1176,20 +1079,15 @@ class WaveformPanel(QWidget):
         # --- Draw median immediately (Tier 1) ----------------------------
         self._median_item.setData(t_ms, median_trace)
 
-        # Title
-        n_spikes = (
-            int(raw_snippets.shape[2])
-            if raw_snippets is not None
-            else int(
-                dm.cluster_df.loc[
-                    dm.cluster_df.cluster_id == cluster_id, "n_spikes"
-                ].values[0]
-                if not dm.cluster_df.empty
-                else 0
-            )
-        )
+        # Title. The cell's own spike count, not the number of cached
+        # snippets: that was 30 for every cell, and the mean rate came out
+        # as 30 spikes over the whole recording, "0.0 Hz" (2026-09-25).
+        row = dm.cluster_df.loc[dm.cluster_df.cluster_id == cluster_id, "n_spikes"]
+        n_spikes = int(row.values[0]) if len(row) else 0
+        n_drawn = int(raw_snippets.shape[2]) if raw_snippets is not None else 0
         self._wave_title.setText(
             f"Cluster {cluster_id}  ·  Ch {dom_chan}  ·  {n_spikes:,} spikes"
+            + (f" ({n_drawn} drawn)" if 0 < n_drawn < n_spikes else "")
         )
         self._wave_title.setPos(t_ms[0], float(median_trace.max()))
 
@@ -1409,14 +1307,17 @@ class WaveformPanel(QWidget):
             self._on_pca_ready(cluster_id, _PCA_CACHE[cache_key])
             return
 
-        # Fire a snippets-fetch worker; on completion it will fire the PCA worker
+        # Fire a snippets-fetch worker; on completion it will fire the PCA worker.
+        # It stops reading once the user has moved on (it used to compete
+        # with the next cell's reads).
         worker = _ChannelSnippetsWorker(
             cluster_id=cluster_id,
             dom_chan=dom_chan,
             dm=dm,
-            unit_waves_override=unit_waves_from_cache,
             signals=self._signals,
+            cancelled=lambda cid=cluster_id: self._current_cluster_id != cid,
         )
+        self._isolation_label.setText("PCA: reading spikes from the raw file…")
         self._pool.start(worker)
 
     @Slot(int, object)
@@ -1520,21 +1421,17 @@ class WaveformPanel(QWidget):
         cmp_cid = self._compare_cluster_id
 
         # --- Gray background cloud (all bg, minus compare if active) -----
+        # From the per-cell sets, so the compared cell is left out exactly.
+        # (It dropped the first N grey points, right only when that cell
+        # happened to come first.)
         if payload["has_bg"] and len(bg_coords) > 0:
-            if cmp_cid is not None and cmp_cid in bg_coords_by_cid:
-                # Remove compare cluster from the gray cloud so it doesn't
-                # appear twice (gray + coral)
-                cmp_coords = bg_coords_by_cid[cmp_cid]
-                cmp_n = len(cmp_coords)
-                rest = bg_coords[cmp_n:]  # approximate exclusion — good enough
-                if len(rest) > 0:
-                    self._pca_bg_scatter.addPoints(
-                        x=rest[:, 0].tolist(), y=rest[:, 1].tolist()
-                    )
+            if bg_coords_by_cid:
+                parts = [c for cid, c in bg_coords_by_cid.items() if cid != cmp_cid and len(c)]
+                rest = np.vstack(parts) if parts else np.empty((0, 2))
             else:
-                self._pca_bg_scatter.addPoints(
-                    x=bg_coords[:, 0].tolist(), y=bg_coords[:, 1].tolist()
-                )
+                rest = bg_coords
+            if len(rest) > 0:
+                self._pca_bg_scatter.addPoints(x=rest[:, 0].tolist(), y=rest[:, 1].tolist())
 
         # --- Coral compare cluster ----------------------------------------
         if cmp_cid is not None and cmp_cid in bg_coords_by_cid:
@@ -1546,15 +1443,8 @@ class WaveformPanel(QWidget):
                 # 2-sigma ellipse for compare cluster
                 cmp_ellipse = _compute_ellipse(cmp_coords)
                 if cmp_ellipse is not None:
-                    cx, cy = cmp_ellipse["cx"], cmp_ellipse["cy"]
-                    w, h = cmp_ellipse["width"], cmp_ellipse["height"]
-                    ell = pg.QtWidgets.QGraphicsEllipseItem(
-                        cx - w / 2, cy - h / 2, w, h
-                    )
-                    ell.setPen(
-                        pg.mkPen(_C["pca_cmp_ell"], width=1.5, style=Qt.DashLine)
-                    )
-                    ell.setBrush(pg.mkBrush(0, 0, 0, 0))
+                    ell = _ellipse_item(cmp_ellipse, pg.mkPen(_C["pca_cmp_ell"], width=1.5,
+                                                              style=Qt.DashLine))
                     self._pca_plot.addItem(ell)
                     self._pca_cmp_ellipse_item = ell
 
@@ -1577,11 +1467,8 @@ class WaveformPanel(QWidget):
         # --- Unit 2-sigma ellipse -----------------------------------------
         unit_ellipse = payload.get("ellipse")
         if unit_ellipse is not None:
-            cx, cy = unit_ellipse["cx"], unit_ellipse["cy"]
-            w, h = unit_ellipse["width"], unit_ellipse["height"]
-            ell = pg.QtWidgets.QGraphicsEllipseItem(cx - w / 2, cy - h / 2, w, h)
-            ell.setPen(pg.mkPen(_C["pca_ellipse"], width=1.5, style=Qt.DashLine))
-            ell.setBrush(pg.mkBrush(0, 0, 0, 0))
+            ell = _ellipse_item(unit_ellipse, pg.mkPen(_C["pca_ellipse"], width=1.5,
+                                                       style=Qt.DashLine))
             self._pca_plot.addItem(ell)
             self._pca_ellipse_item = ell
 
@@ -1630,8 +1517,14 @@ class WaveformPanel(QWidget):
     # -----------------------------------------------------------------------
     @Slot(int, str)
     def _on_worker_error(self, cluster_id: int, msg: str):
-        if cluster_id == self._current_cluster_id:
-            logger.warning("Waveform worker error cid=%d: %s", cluster_id, msg)
+        if cluster_id != self._current_cluster_id:
+            return
+        logger.info("Waveform worker cid=%d: %s", cluster_id, msg)
+        if msg == "no raw spikes read for PCA":
+            self._isolation_label.setText(
+                "PCA: no spikes of this cell could be read from the raw file")
+        else:
+            self._isolation_label.setText(f"PCA failed: {msg}")
 
     # -----------------------------------------------------------------------
     # Helpers

@@ -3756,228 +3756,187 @@ class DataManager(QObject):
     # It is a regular instance method — indented 4 spaces like all other methods.
     # ──────────────────────────────────────────────────────────────────────────────
 
+    # Waveforms tab PCA (2026-09-25). It read 1,500 + 1,500 spikes one seek
+    # each (2–2.5 min on the share), skipped the cell itself when its
+    # template channel differed from its raw one, and then fell back to
+    # templates plus noise, which drew a made-up cloud and d′.
+    PCA_UNIT_SPIKES = 300
+    PCA_BG_SPIKES = 600
+    PCA_NEIGHBOUR_UM = 60.0
+    PCA_N_CHANNELS = 4
+    # Spikes are cut from a few 1 s stretches centred on the cell's own
+    # spikes: 8 large reads instead of ~900 one-spike seeks (43–68 s on the
+    # share, 2026-09-25). A cell with few spikes in them is topped up by seeks.
+    PCA_BLOCKS = 8
+    PCA_BLOCK_S = 1.0
+    PCA_MIN_UNIT = 60
+
+    def pca_channels(self, dom_chan: int, n: int = None) -> list:
+        """``dom_chan`` and its nearest channels (n in all), nearest first."""
+        n = n or self.PCA_N_CHANNELS
+        pos = getattr(self, "channel_positions", None)
+        if pos is None:
+            return [int(dom_chan)]
+        pos = np.asarray(pos, dtype=float)
+        d = np.hypot(*(pos - pos[int(dom_chan)]).T)
+        return [int(c) for c in np.argsort(d, kind="stable")[:n]]
+
+    def pca_neighbours(self, dom_chan: int, target_cluster_id: int) -> list:
+        """Other cells whose template channel lies within PCA_NEIGHBOUR_UM of ``dom_chan``."""
+        df = self.cluster_df
+        if df is None or "best_chan" not in df.columns:
+            return []
+        pos = getattr(self, "channel_positions", None)
+        chans = df["best_chan"].to_numpy(dtype=int)
+        if pos is None:
+            near = chans == int(dom_chan)
+        else:
+            pos = np.asarray(pos, dtype=float)
+            ok = (chans >= 0) & (chans < len(pos))
+            near = np.zeros(len(chans), dtype=bool)
+            near[ok] = np.hypot(*(pos[chans[ok]] - pos[int(dom_chan)]).T) <= self.PCA_NEIGHBOUR_UM
+        ids = df["cluster_id"].to_numpy(dtype=int)[near]
+        return [int(c) for c in ids if int(c) != int(target_cluster_id)]
+
+    def _pca_snippets_from_blocks(self, source, idx_of, target, chans, window, rng, cancelled):
+        """Snippets of every cell in ``idx_of`` inside a few 1 s blocks, plus seeks if too few.
+
+        Returns (snips (n, len(chans), snip_len), owner cluster per row, spike index per row).
+        """
+        from . import analysis_core
+        pre, post = -int(window[0]), int(window[1])
+        snip_len = pre + post
+        total = analysis_core.recording_length(source)
+        fs = float(getattr(self, "sampling_rate", 20000.0) or 20000.0)
+        half = int(self.PCA_BLOCK_S * fs) // 2
+        unit_t = np.asarray(self.spike_times[idx_of[target]], dtype=np.int64)
+        centres = np.sort(rng.choice(unit_t, min(self.PCA_BLOCKS, len(unit_t)), replace=False))
+        spans = []
+        for c in centres:                                   # merge overlapping blocks
+            a, b = max(0, int(c) - half), min(total, int(c) + half)
+            if spans and a <= spans[-1][1]:
+                spans[-1][1] = max(spans[-1][1], b)
+            else:
+                spans.append([a, b])
+        all_idx = np.concatenate(list(idx_of.values()))
+        all_who = np.concatenate([np.full(len(v), c) for c, v in idx_of.items()])
+        all_t = np.asarray(self.spike_times[all_idx], dtype=np.int64)
+        out_s, out_w, out_i = [], [], []
+        for a, b in spans:
+            if cancelled is not None and cancelled():
+                break
+            inside = (all_t - pre >= a) & (all_t + post <= b)
+            if not inside.any():
+                continue
+            block = analysis_core.read_channel_block(source, a, b - a, chans)
+            for t, w, i in zip(all_t[inside], all_who[inside], all_idx[inside]):
+                s0 = int(t) - pre - a
+                out_s.append(block[:, s0:s0 + snip_len])
+                out_w.append(w)
+                out_i.append(i)
+        n_unit = sum(1 for w in out_w if w == target)
+        if n_unit < self.PCA_MIN_UNIT and (cancelled is None or not cancelled()):
+            got = set(out_i)
+            more = np.array([i for i in idx_of[target] if i not in got], dtype=np.int64)
+            if len(more):
+                more = np.sort(rng.choice(more, min(len(more), self.PCA_MIN_UNIT - n_unit),
+                                          replace=False))
+                s_more, kept = analysis_core.extract_channel_snippets(
+                    source, self.spike_times[more], chans, window=window, cancelled=cancelled)
+                for srow, ok, i in zip(s_more, kept, more):
+                    if ok:
+                        out_s.append(srow)
+                        out_w.append(target)
+                        out_i.append(i)
+        if not out_s:
+            return (np.empty((0, len(chans), snip_len), np.float32),
+                    np.empty(0, int), np.empty(0, np.int64))
+        return np.stack(out_s).astype(np.float32), np.asarray(out_w), np.asarray(out_i, np.int64)
+
     def get_channel_all_snippets(
         self,
         dom_chan: int,
         target_cluster_id: int,
-        max_bg_spikes: int = 1500,
+        max_bg_spikes: int = None,
         snippet_window=(-20, 60),
+        cancelled=None,
     ) -> dict:
-        """
-        Return all spike waveforms on *dom_chan*, labelled by cluster.
+        """Real spike waveforms for the Waveforms-tab PCA: the cell and its neighbours.
 
-        Two backends:
-          1. Raw data (memmap / PyBinFileReader) — real snippets, preferred.
-          2. Template fallback — synthetic waveforms, no disk I/O.
+        Each row is one spike on ``pca_channels(dom_chan)`` (the dominant
+        channel and its 3 nearest), baseline-subtracted, in µV, channels
+        concatenated. The cell is always read; neighbours are the cells of
+        ``pca_neighbours``. At most PCA_UNIT_SPIKES of the cell and
+        ``max_bg_spikes`` (PCA_BG_SPIKES) of the neighbours, read in time
+        order under the raw read lock. Raw data only: with no raw file, or
+        nothing read, ``source`` is "none" and the arrays are empty.
 
-        Returns
-        -------
-        dict:
-            "unit_waves"      : np.ndarray (n_unit, n_time) float32
-            "bg_waves"        : np.ndarray (n_bg,   n_time) float32
-            "bg_waves_by_cid" : dict[int, np.ndarray]  — per-cluster bg waves
-            "unit_indices"    : np.ndarray (n_unit,) int64  — global spike idx
-            "source"          : "raw" | "template" | "none"
+        Returns {"unit_waves", "bg_waves", "bg_waves_by_cid", "unit_indices",
+        "channels", "source": "raw" | "none" | "cancelled"}.
         """
-        import numpy as np
         from . import analysis_core
 
-        snip_len_fallback = int(snippet_window[1] - snippet_window[0])
-
+        max_bg = int(max_bg_spikes or self.PCA_BG_SPIKES)
+        chans = self.pca_channels(dom_chan)
+        snip_len = int(snippet_window[1] - snippet_window[0])
+        width = snip_len * len(chans)
         empty = {
-            "unit_waves": np.empty((0, snip_len_fallback), dtype=np.float32),
-            "bg_waves": np.empty((0, snip_len_fallback), dtype=np.float32),
+            "unit_waves": np.empty((0, width), dtype=np.float32),
+            "bg_waves": np.empty((0, width), dtype=np.float32),
             "bg_waves_by_cid": {},
             "unit_indices": np.empty((0,), dtype=np.int64),
+            "channels": chans,
             "source": "none",
         }
-
-        # ── 1. Find clusters that live on dom_chan ─────────────────────────────
-        if "best_chan" not in self.cluster_df.columns:
+        source = self.raw_reader if self.raw_reader is not None else self.raw_data_memmap
+        if source is None or self.cluster_df is None:
             return empty
 
-        chan_df = self.cluster_df[self.cluster_df["best_chan"] == dom_chan]
-        if chan_df.empty:
+        rng = np.random.default_rng(int(target_cluster_id))
+        neighbours = self.pca_neighbours(dom_chan, target_cluster_id)
+        cells = [int(target_cluster_id)] + neighbours
+        idx_of = {}
+        for cid in cells:
+            idx = self.get_cluster_spike_indices(cid)
+            if idx is not None and len(idx):
+                idx_of[cid] = np.asarray(idx, dtype=np.int64)
+        if int(target_cluster_id) not in idx_of:
             return empty
-
-        # ── 2a. Raw data path ──────────────────────────────────────────────────
-        raw_available = self.raw_reader is not None or self.raw_data_memmap is not None
-
-        if raw_available:
-            try:
-                snip_len = int(snippet_window[1] - snippet_window[0])
-                unit_waves_list = []
-                unit_indices_list = []
-                bg_waves_by_cid = {}  # {cid: ndarray (n, snip_len)}
-
-                n_bg_clusters = max(1, len(chan_df) - 1)
-                quota_per_bg = max(1, max_bg_spikes // n_bg_clusters)
-
-                source = (
-                    self.raw_reader
-                    if self.raw_reader is not None
-                    else self.raw_data_memmap
-                )
-
-                for row in chan_df.itertuples():
-                    cid = int(row.cluster_id)
-                    spike_indices = self.get_cluster_spike_indices(cid)
-                    spike_times = self.spike_times[spike_indices]
-                    n = len(spike_times)
-
-                    if n == 0:
-                        continue
-
-                    if cid == target_cluster_id:
-                        # Unit: subsample up to 1500, keep global indices
-                        if n > 1500:
-                            chosen = np.random.choice(n, 1500, replace=False)
-                        else:
-                            chosen = np.arange(n, dtype=np.intp)
-                        st_chosen = spike_times[chosen].astype(np.int64)
-                        idx_chosen = spike_indices[chosen]
-
-                        raw = analysis_core.extract_snippets(
-                            source,
-                            st_chosen,
-                            window=snippet_window,
-                            n_channels=self.n_channels,
-                        )  # (n_ch, snip_len, n_chosen)
-                        if raw.shape[2] == 0:
-                            continue
-                        waves = raw[dom_chan, :, :].T  # (n_chosen, snip_len)
-                        unit_waves_list.append(
-                            waves.astype(np.float32) * self.uV_per_bit
-                        )
-                        unit_indices_list.append(idx_chosen)
-
-                    else:
-                        # Background cluster — subsample to quota
-                        if n > quota_per_bg:
-                            chosen = np.random.choice(n, quota_per_bg, replace=False)
-                            st_chosen = spike_times[chosen].astype(np.int64)
-                        else:
-                            st_chosen = spike_times.astype(np.int64)
-
-                        raw = analysis_core.extract_snippets(
-                            source,
-                            st_chosen,
-                            window=snippet_window,
-                            n_channels=self.n_channels,
-                        )
-                        if raw.shape[2] == 0:
-                            continue
-                        waves = (
-                            raw[dom_chan, :, :].T.astype(np.float32) * self.uV_per_bit
-                        )
-                        bg_waves_by_cid[cid] = waves
-
-                unit_waves = (
-                    np.vstack(unit_waves_list)
-                    if unit_waves_list
-                    else np.empty((0, snip_len), dtype=np.float32)
-                )
-                unit_indices = (
-                    np.concatenate(unit_indices_list)
-                    if unit_indices_list
-                    else np.empty((0,), dtype=np.int64)
-                )
-                bg_waves_all = (
-                    np.vstack(list(bg_waves_by_cid.values()))
-                    if bg_waves_by_cid
-                    else np.empty((0, snip_len), dtype=np.float32)
-                )
-
-                return {
-                    "unit_waves": unit_waves,
-                    "bg_waves": bg_waves_all,
-                    "bg_waves_by_cid": bg_waves_by_cid,
-                    "unit_indices": unit_indices,
-                    "source": "raw",
-                }
-
-            except Exception:
-                logger.exception(
-                    "get_channel_all_snippets raw path failed cid=%d chan=%d",
-                    target_cluster_id,
-                    dom_chan,
-                )
-                # fall through to template path
-
-        # ── 2b. Template fallback (no disk I/O) ────────────────────────────────
         try:
-            templates = getattr(self, "templates", None)  # (n_tpl, n_time, n_tCh)
-            tmpl_ind = getattr(self, "templates_ind", None)
-            if templates is None:
-                return empty
-
-            snip_len = templates.shape[1]
-            unit_waves_list = []
-            bg_waves_by_cid = {}
-
-            n_bg_clusters = max(1, len(chan_df) - 1)
-            quota_per_bg = max(5, max_bg_spikes // n_bg_clusters)
-
-            for row in chan_df.itertuples():
-                cid = int(row.cluster_id)
-                if cid >= templates.shape[0]:
-                    continue
-
-                tpl = np.asarray(templates[cid], dtype=np.float32)  # (n_time, n_tCh)
-
-                # Map dom_chan → local template channel index
-                if tmpl_ind is not None and cid < tmpl_ind.shape[0]:
-                    local = np.where(tmpl_ind[cid] == dom_chan)[0]
-                    if len(local) == 0:
-                        continue
-                    wave = tpl[:, int(local[0])]
-                else:
-                    if dom_chan >= tpl.shape[1]:
-                        continue
-                    wave = tpl[:, dom_chan]
-
-                n_spikes_row = int(row.n_spikes)
-                noise_scale = float(np.std(wave)) or 1e-6
-
-                if cid == target_cluster_id:
-                    n_rep = min(500, max(20, n_spikes_row // 50))
-                    noise = np.random.normal(
-                        0, noise_scale * 0.12, (n_rep, snip_len)
-                    ).astype(np.float32)
-                    unit_waves_list.append(np.tile(wave, (n_rep, 1)) + noise)
-                else:
-                    n_rep = min(quota_per_bg, max(5, n_spikes_row // 100))
-                    noise = np.random.normal(
-                        0, noise_scale * 0.05, (n_rep, snip_len)
-                    ).astype(np.float32)
-                    bg_waves_by_cid[cid] = np.tile(wave, (n_rep, 1)) + noise
-
-            unit_waves = (
-                np.vstack(unit_waves_list)
-                if unit_waves_list
-                else np.empty((0, snip_len), dtype=np.float32)
-            )
-            bg_waves_all = (
-                np.vstack(list(bg_waves_by_cid.values()))
-                if bg_waves_by_cid
-                else np.empty((0, snip_len), dtype=np.float32)
-            )
-
-            return {
-                "unit_waves": unit_waves,
-                "bg_waves": bg_waves_all,
-                "bg_waves_by_cid": bg_waves_by_cid,
-                "unit_indices": np.empty((0,), dtype=np.int64),
-                "source": "template",
-            }
-
+            snips, who, gi = self._pca_snippets_from_blocks(
+                source, idx_of, int(target_cluster_id), chans, snippet_window, rng, cancelled)
         except Exception:
-            logger.exception(
-                "get_channel_all_snippets template path failed cid=%d chan=%d",
-                target_cluster_id,
-                dom_chan,
-            )
+            logger.exception("PCA snippet read failed cid=%d chan=%d", target_cluster_id, dom_chan)
             return empty
+        if cancelled is not None and cancelled():
+            out = dict(empty)
+            out["source"] = "cancelled"
+            return out
+        # Cap per cell: the cell PCA_UNIT_SPIKES, the neighbours max_bg together.
+        quota = max(20, max_bg // max(1, len(neighbours)))
+        keep = np.zeros(len(who), dtype=bool)
+        for cid in np.unique(who):
+            rows_c = np.flatnonzero(who == cid)
+            n_max = self.PCA_UNIT_SPIKES if cid == int(target_cluster_id) else quota
+            if len(rows_c) > n_max:
+                rows_c = rng.choice(rows_c, n_max, replace=False)
+            keep[rows_c] = True
+        snips, who, gi = snips[keep], who[keep], gi[keep]
+        pre = max(1, -int(snippet_window[0]) // 2)      # baseline: the first samples
+        snips = (snips - snips[:, :, :pre].mean(axis=2, keepdims=True)) * float(self.uV_per_bit)
+        rows = snips.reshape(len(snips), -1).astype(np.float32)
+        unit = who == int(target_cluster_id)
+        if not unit.any():
+            return empty
+        by_cid = {int(c): rows[who == c] for c in np.unique(who[~unit])}
+        return {
+            "unit_waves": rows[unit],
+            "bg_waves": rows[~unit],
+            "bg_waves_by_cid": by_cid,
+            "unit_indices": gi[unit],
+            "channels": chans,
+            "source": "raw",
+        }
 
     def get_heavyweight_features(self, cluster_id):
         # Fast-path: check cache under lock
@@ -4071,7 +4030,9 @@ class DataManager(QObject):
                 # is_row_major=True.  Row 0 is the TTL channel, rows 1..N are
                 # the real electrodes, so we add 1 to convert Kilosort 0-based
                 # channel indices to Litke 1-based electrode indices.
-                raw_block = self.raw_reader.get_data(start_sample, num_samples)
+                from .analysis_core import RAW_READ_LOCK
+                with RAW_READ_LOCK:
+                    raw_block = self.raw_reader.get_data(start_sample, num_samples)
                 # raw_block shape: (N_ELECTRODES_total, num_samples)
                 litke_indices = [idx + 1 for idx in valid_channel_indices]
                 raw_snippet = raw_block[litke_indices, :]  # (n_ch, n_samples)

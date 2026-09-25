@@ -1072,7 +1072,8 @@ class MainWindow(QMainWindow):
         scrolling. It performs the actual data loading for the last selected cluster.
         """
         cluster_id = self._pending_cluster_id
-        if cluster_id is None:
+        # Debounced: it can fire after the run (or a test's stand-in) is gone.
+        if cluster_id is None or self.data_manager is None:
             return
 
         self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
@@ -1103,6 +1104,10 @@ class MainWindow(QMainWindow):
                 self._feature_pending = cluster_id
             else:
                 self._start_feature_worker(cluster_id)
+            # The Waveforms tab clears to a "reading…" state now; it used to
+            # keep the previous cell on screen until the read finished.
+            if self.analysis_tabs.currentWidget() is self.waveforms_panel:
+                self.waveforms_panel.show_reading(cluster_id)
 
             # on_features_ready redraws only the tabs that read the snippet
             # features. Every other tab (STA, Grating, Chirp, ...) reads the
@@ -2021,7 +2026,8 @@ class MainWindow(QMainWindow):
 
         self.collapse_all_btn.clicked.connect(self.collapse_tree)
         self.reset_button.clicked.connect(self.reset_views)
-        self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
+        # on_tab_changed is connected once, in __init__: a second connection
+        # here ran every tab switch twice (two raw reads on Waveforms).
 
         # Ctrl+F: focus the sidebar search bar; Esc there clears it and goes
         # back to the cell list.
