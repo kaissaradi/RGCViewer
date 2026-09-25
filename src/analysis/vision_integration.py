@@ -75,7 +75,24 @@ class LazySTADict:
         if key in self:
             return self[key]  # This safely triggers __getitem__ and the RAM cache
         return default
-        
+
+    def cached(self, key):
+        """The STA if it is already in RAM, else None. Never reads the file.
+
+        Lets the GUI thread draw a cache hit at once and send a miss to a
+        background read (PLAN.md Q5): a cold read over CIFS can take seconds.
+        """
+        try:
+            key = int(key)
+        except (TypeError, ValueError):
+            return None
+        lock = getattr(self, "_cache_lock", None)
+        cache = getattr(self, "_cache", None)
+        if lock is None or cache is None:
+            return None
+        with lock:
+            return cache.get(key)
+
     def _thread_local_reader(self):
         """One STAReader per thread so workers do not share a file handle."""
         local = getattr(self, '_local', None)

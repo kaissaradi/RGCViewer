@@ -41,6 +41,9 @@ from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
 
+# "No STA passed" for _load_sta_data; None means a read that failed.
+_UNSET = object()
+
 # Matplotlib channel colours — consistent everywhere in this file
 _CH_COLORS = ['#e05555', '#55c155', '#5588e0']   # R, G, B (softer than pure)
 _CH_NAMES  = ['Red', 'Green', 'Blue']
@@ -265,6 +268,11 @@ class STAPanel(QWidget):
 
         # ── cached metrics (set by _load_sta_data, read by all draw methods) ─
         self._current_metrics: dict | None = None
+
+        # ── background STA read (PLAN.md Q5) ─────────────────────────────────
+        self._sta_inflight = None    # (cluster_id, vision_id, dm) being read
+        self._sta_wanted = None      # latest request while a read runs
+        self._sta_signals = None     # keeps the BackgroundCall signals alive
 
         self._setup_ui()
 
@@ -552,8 +560,57 @@ class STAPanel(QWidget):
             self._clear_all()
             return
 
+        # A cold read over the network can take seconds (PLAN.md Q5): draw a
+        # RAM hit now, read a miss in the background.
+        stas = dm.vision_stas
+        if hasattr(stas, "cached"):
+            sta_data = stas.cached(vision_id)
+            if sta_data is None:
+                self._request_sta(cluster_id, vision_id, dm)
+                return
+        else:
+            sta_data = stas[vision_id]    # a plain dict (tests)
+        self._show_sta(cluster_id, vision_id, dm, sta_data)
+
+    def _request_sta(self, cluster_id, vision_id, dm):
+        """Read one STA off the GUI thread; at most one read in flight.
+
+        While a read runs, only the latest request is kept: scrolling past
+        ten cells reads the one the user stops on, not all ten, and parallel
+        reads on the CIFS mount are slower, not faster.
+        """
+        self._clear_all(reason="Loading STA…")
+        self._sta_wanted = (cluster_id, vision_id, dm)
+        if getattr(self, "_sta_inflight", None) is not None:
+            return
+        self._sta_inflight = (cluster_id, vision_id, dm)
+        from ..workers.workers import BackgroundCall
+        from qtpy.QtCore import QThreadPool
+        task = BackgroundCall(lambda: dm.vision_stas[vision_id])
+        self._sta_signals = task.signals          # keep alive until it fires
+        task.signals.done.connect(self._on_sta_read)
+        task.signals.failed.connect(lambda _exc: self._on_sta_read(None))
+        QThreadPool.globalInstance().start(task)
+
+    def _on_sta_read(self, sta_data):
+        cluster_id, vision_id, dm = self._sta_inflight
+        self._sta_inflight = None
+        wanted = getattr(self, "_sta_wanted", None)
+        current_dm = getattr(self.main_window, "data_manager", None)
+        selected = self.main_window._get_selected_cluster_id()
+        if wanted == (cluster_id, vision_id, dm) and dm is current_dm and selected == cluster_id:
+            self._sta_wanted = None
+            self._show_sta(cluster_id, vision_id, dm, sta_data)
+            return
+        # The user moved on while this read ran. Fetch what they want now,
+        # unless it belongs to a run that is no longer loaded.
+        if wanted is not None and wanted[2] is current_dm:
+            self._sta_wanted = None
+            self.update_view(wanted[0])
+
+    def _show_sta(self, cluster_id, vision_id, dm, sta_data):
         # Load & cache
-        if not self._load_sta_data(cluster_id, vision_id, dm):
+        if not self._load_sta_data(cluster_id, vision_id, dm, sta_data):
             # vision_stas[vision_id] returned None (corrupt byte offset, or
             # the per-cell read timed out — see LazySTADict.__getitem__).
             # That's an expected, documented possibility, not a crash.
@@ -587,7 +644,7 @@ class STAPanel(QWidget):
     # Data loading  (single call per cell selection)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _load_sta_data(self, cluster_id: int, vision_id: int, dm) -> bool:
+    def _load_sta_data(self, cluster_id: int, vision_id: int, dm, sta_data=_UNSET) -> bool:
         """
         Fetch sta_data, stafit, and the full metrics dict.  Results cached on
         self so every draw method reads the same objects without re-fetching.
@@ -600,7 +657,8 @@ class STAPanel(QWidget):
         already checks this; this one didn't, which is why a single bad
         cell could silently kill the rest of the panel update.
         """
-        sta_data = dm.vision_stas[vision_id]
+        if sta_data is _UNSET:
+            sta_data = dm.vision_stas[vision_id]
 
         if not hasattr(sta_data, 'red') or sta_data.red is None:
             logger.warning(
