@@ -48,7 +48,10 @@ slower, not faster. Encore writes its caches (`*.pkl`) into `ksfiles/` and
    Each trial has its own preTime / stimTime (PLAN.md Q9).
 6. **DS/OS significance** is one shuffle test per cell across all its
    conditions (PLAN.md Q33).
-7. **`.params` is shared with Vision.** Vision opens it read-write and saves
+7. **Sample rate.** Kilosort's `params.py` stores it as `sample_rate`
+   (20000 on this rig). Encore read `fs` until 2026-09-25 and used 30000
+   (PLAN.md Q48). Every time from Kilosort spike samples depends on it.
+8. **`.params` is shared with Vision.** Vision opens it read-write and saves
    it in place. Encore never edits it in place (`params_classification.py`,
    PLAN.md Q30–Q31). Close a run in Vision before Ctrl+S in Encore.
 
