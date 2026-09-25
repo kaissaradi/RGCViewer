@@ -854,7 +854,7 @@ def scenario_sample_rate(s):
     log(f"sampling_rate={dm.sampling_rate}; rebuilt old-rate cache: "
         f"{bool(getattr(dm, '_std_cache_rate_changed', False))}; "
         f"recording {dm.spike_times[-1] / dm.sampling_rate:.0f} s")
-    ok = wait_until(lambda: len(dm.standard_plot_cache) >= 0.95 * len(dm.cluster_df), 900)
+    ok = wait_until(lambda: len(dm.standard_plot_cache) >= 0.95 * len(dm.cluster_df), 300)
     log(f"standard cache {len(dm.standard_plot_cache)}/{len(dm.cluster_df)} filled={ok}")
     import numpy as np
     vp = dm.vision_params
@@ -882,6 +882,28 @@ def scenario_sample_rate(s):
     if len(r):
         log(f"half-max rise lag, Encore vs Vision over {len(r)} cells: median ratio "
             f"{np.median(r[:, 0] / r[:, 1]):.2f} (1.00 = same time base; 0.67 = the old 30 kHz bug)")
+    dm.save_standard_plot_cache(blocking=True)       # as closing the window does
+    log("saved the standard cache (stamped)")
+
+
+def scenario_std_fill(s):
+    """Debug Q48: does the standard-plot cache refill after an old-rate cache is dropped?"""
+    s.load()
+    w = s.w
+    dm = s.dm()
+    for i in range(18):
+        wk = getattr(w, "standard_plots_worker", None)
+        q = None
+        for name in ("queue", "_queue", "_high", "_low", "pending"):
+            if wk is not None and hasattr(wk, name):
+                try:
+                    q = (name, len(getattr(wk, name)))
+                except Exception:
+                    pass
+        log(f"t={i*10}s rate={dm.sampling_rate} changed={getattr(dm, '_std_cache_rate_changed', None)} "
+            f"std={len(dm.standard_plot_cache)} n={len(dm.cluster_df)} queue={q} "
+            f"worker_thread_running={getattr(getattr(w, 'standard_worker_thread', None), 'isRunning', lambda: None)()}")
+        pump(10)
 
 
 def scenario_feature_presets(s):

@@ -43,6 +43,9 @@ except ImportError:
     _BIN2PY_AVAILABLE = False
 logger = logging.getLogger(__name__)
 
+# standard_plot_cache.pkl records the sample rate it was computed at (Q48).
+SAMPLE_RATE_KEY = "__sampling_rate__"
+
 # Most points of the firing-rate trace kept in standard_plot_cache.pkl.
 #
 # Module level because the writer and the loader's staleness check must use the
@@ -1853,7 +1856,16 @@ class DataManager(QObject):
                     except (ValueError, SyntaxError):
                         # Fallback: treat as a plain string (remove surrounding quotes if present)
                         params[key] = val.strip("'\"")
-        self.sampling_rate = params.get("fs", 30000)
+        # Kilosort / phy write ``sample_rate``; every lab params.py (1,000 of
+        # them, 2026-09-25) says 20000. Reading only ``fs`` fell back to 30000
+        # on all of them, so every Kilosort time was 2/3 of the truth and every
+        # rate 1.5x (PLAN.md Q48).
+        rate = params.get("sample_rate", params.get("fs"))
+        if rate is None:
+            logger.warning("params.py has no sample_rate; assuming 30000 Hz")
+            rate = 30000
+        self.sampling_rate = float(rate)
+        self._check_std_cache_rate()
         self.n_channels = params.get("n_channels_dat", 512)
         dat_path_str = params.get("dat_path", "")
         if isinstance(dat_path_str, (list, tuple)) and dat_path_str:
@@ -2218,6 +2230,8 @@ class DataManager(QObject):
 
         with self._standard_plot_lock:
             snapshot = dict(self.standard_plot_cache)
+        # The ISI / ACG / FR in it are only right at the rate they were made with.
+        snapshot[SAMPLE_RATE_KEY] = float(self._optional_attr("sampling_rate", 0) or 0)
 
         # Only fully-computed rows may reach disk. Partial ACG-only rows would
         # be deleted by the load-time pruner in build_cluster_dataframe, which
@@ -2308,6 +2322,9 @@ class DataManager(QObject):
         with self._standard_plot_lock:
             if not cache_pkl.exists() or self.standard_plot_cache:
                 return
+        # Dropped for its sample rate (Q48): do not read the same file again.
+        if self._optional_attr("_std_cache_rate_changed", False):
+            return
 
         # --- Step 2: slow I/O outside the lock ---
         try:
@@ -2315,6 +2332,9 @@ class DataManager(QObject):
                 cache = pickle.load(f)
             if not isinstance(cache, dict):
                 raise TypeError("standard_plot_cache.pkl did not contain a dict")
+            # Judged once the sort's rate is known (_check_std_cache_rate):
+            # this can run in __init__, before params.py is read.
+            self._std_cache_stamp = cache.pop(SAMPLE_RATE_KEY, None)
 
             # Bloat guard: pre-fix caches stored spike-length raw arrays
             # ('spikes', 'spikes_sec', etc.) which caused OOM kills at ~68%
@@ -2361,6 +2381,7 @@ class DataManager(QObject):
         except (EOFError, pickle.UnpicklingError, OSError, AttributeError, TypeError):
             logger.warning("Could not load standard_plot_cache.pkl", exc_info=True)
             cache = {}
+            self._std_cache_stamp = None
 
         # --- Step 3: assign under lock, double-checking no one beat us ---
         with self._standard_plot_lock:
@@ -2370,6 +2391,7 @@ class DataManager(QObject):
                     "Restored standard_plot_cache (%d entries) from disk",
                     len(self.standard_plot_cache),
                 )
+        self._check_std_cache_rate()
 
     def load_persisted_caches(self):
         """Loads both standard plot and feature caches from disk.
@@ -2391,6 +2413,11 @@ class DataManager(QObject):
                     self.feature_cache = cache_persistence.load_versioned_entries(
                         payload
                     )
+                    if self._optional_attr("_std_cache_rate_changed", False):
+                        # _feature_lock is held here (and is not re-entrant).
+                        for row in self.feature_cache.values():
+                            if isinstance(row, dict):
+                                row.pop("acg", None)
                     self._physics_done_count = sum(
                         1 for v in self.feature_cache.values() if v.get("_computed")
                     )
@@ -3417,6 +3444,43 @@ class DataManager(QObject):
             "scalars": scalars_df,
         }
         return raw_blocks, valid_ids, discarded_ids
+
+    def _check_std_cache_rate(self):
+        """Drop a restored standard_plot_cache made at another sample rate (Q48).
+
+        Its ISI / ACG / firing rates were computed with that rate. Caches from
+        before 2026-09-25 carry no stamp and were all made at the wrong
+        30000 Hz, so an unstamped one is dropped too. Runs once, when both the
+        cache and the sort's rate are known.
+        """
+        rate = float(self._optional_attr("sampling_rate", 0) or 0)
+        stamp = self._optional_attr("_std_cache_stamp", "unset")
+        if not rate or stamp == "unset":
+            return
+        self._std_cache_stamp = "unset"
+        lock = self._optional_attr("_standard_plot_lock")
+        if lock is None:
+            return
+        with lock:
+            stale = bool(self.standard_plot_cache) and stamp != rate
+            if stale:
+                self.standard_plot_cache = {}
+        if stale:
+            logger.info("standard_plot_cache.pkl was made at %s Hz, the sort is %s Hz: "
+                        "its ISI / ACG / firing rates are rebuilt (PLAN.md Q48).", stamp, rate)
+            self._std_cache_rate_changed = True
+            self._drop_physics_acg()
+
+    def _drop_physics_acg(self):
+        """Physics rows copied their ACG from the standard cache; it is refilled."""
+        lock = self._optional_attr("_feature_lock")
+        cache = self._optional_attr("feature_cache") or {}
+        if lock is None:
+            return
+        with lock:
+            for row in cache.values():
+                if isinstance(row, dict):
+                    row.pop("acg", None)
 
     def peek_cell_physics(self, cluster_id):
         """Cached physics row or None. Never computes (whole-run views, Q40)."""
