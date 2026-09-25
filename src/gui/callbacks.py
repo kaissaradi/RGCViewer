@@ -255,6 +255,8 @@ def _forget_previous_dataset_views(main_window):
     ei_panel = getattr(main_window, "ei_panel", None)
     if ei_panel is not None and hasattr(ei_panel, "reset_for_new_dataset"):
         ei_panel.reset_for_new_dataset()
+    # Pinned cells are cluster IDs of the old run (PLAN.md Q45).
+    main_window._pinned_cells = []
 
 
 def _release_previous_dataset(main_window):
@@ -1283,6 +1285,19 @@ def redraw_population_panels(main_window: MainWindow, subset=None):
     draw_population_timecourse_panel(main_window, subset_ids=subset)
     draw_population_acg_panel(main_window, subset_ids=subset)
     draw_population_fr_panel(main_window, subset_ids=subset)
+    # A full redraw rebuilds the axes; lay the selected / pinned cells back on.
+    refresh_population_overlays(main_window)
+
+
+def refresh_population_overlays(main_window, cluster_id=None):
+    """Selected + pinned cells over the population panes (PLAN.md Q45)."""
+    from .panels.population_compare import update_overlays
+    try:
+        if cluster_id is None:
+            cluster_id = main_window._get_selected_cluster_id()
+        update_overlays(main_window, cluster_id, getattr(main_window, "_pinned_cells", []))
+    except Exception:
+        logger.warning("population overlay update failed", exc_info=True)
 
 
 def on_cluster_selection_changed(main_window: MainWindow):

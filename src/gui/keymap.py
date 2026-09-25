@@ -54,6 +54,8 @@ BINDINGS: List[Binding] = [
     Binding(("Ctrl+Tab", "Ctrl+Shift+Tab"), "Next / previous analysis tab", "Views"),
     Binding(("Ctrl+T",), "Switch the cell list between tree and table", "Views", "toggle_left_view"),
     Binding(("Ctrl+P",), "Show / hide the population pane beside the cell", "Views", "toggle_population"),
+    Binding(("Ctrl+K",), "Pin / unpin the cell to compare it with others (up to 4)", "Views", "toggle_pin"),
+    Binding(("Ctrl+Shift+K",), "Clear the pinned cells", "Views", "clear_pins"),
     Binding(("Ctrl+F",), "Search the cell list (Esc clears)", "Views"),
     Binding(("Left", "Right"), "Previous / next EI overlay cell", "Views"),
     Binding(("Ctrl+O",), "Open a Kilosort run", "File", "open_run"),
@@ -170,6 +172,30 @@ def toggle_left_view(w):
 
 def toggle_population(w):
     w.pop_view_btn.toggle()
+
+
+def toggle_pin(w):
+    from . import callbacks
+    from .panels import population_compare as pc
+    cid = w._get_selected_cluster_id()
+    if cid is None:
+        return _nothing_selected(w)
+    pins = pc.toggle_pin(w, cid)
+    if not w.pop_view_btn.isChecked():
+        w.pop_view_btn.setChecked(True)      # the comparison lives in that pane
+    callbacks.refresh_population_overlays(w, cid)
+    state = "Pinned" if int(cid) in pins else "Unpinned"
+    w.status_bar.showMessage(
+        f"{state} cell {cid}. Pinned: {', '.join(map(str, pins)) or 'none'} "
+        f"(Ctrl+Shift+K clears).", 5000)
+
+
+def clear_pins(w):
+    from . import callbacks
+    from .panels import population_compare as pc
+    pc.clear_pins(w)
+    callbacks.refresh_population_overlays(w)
+    w.status_bar.showMessage("Pinned cells cleared.", 3000)
 
 
 def open_run(w):

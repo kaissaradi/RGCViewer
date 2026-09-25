@@ -186,6 +186,8 @@ type in a text field; Esc leaves the search bar.
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous analysis tab |
 | Ctrl+T | Switch the cell list between tree and table |
 | Ctrl+P | Show / hide the population pane beside the cell |
+| Ctrl+K | Pin / unpin the cell to compare it with others (up to 4) |
+| Ctrl+Shift+K | Clear the pinned cells |
 | Ctrl+F | Search the cell list (Esc clears) |
 | ← / → | Previous / next EI overlay cell |
 | **File** | |

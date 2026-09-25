@@ -1062,6 +1062,15 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
 
+        # Same group: move the selected-cell line now (~20 ms), without
+        # waiting for the raw-file features below (PLAN.md Q45).
+        if getattr(self, "population_view_enabled", False):
+            try:
+                if population_group_plots_cached(self._get_pop_subset_ids()):
+                    callbacks.refresh_population_overlays(self, cluster_id)
+            except Exception as e:
+                logger.error(f"Population overlay update failed: {e}")
+
         cached_features = self.data_manager.get_lightweight_features(cluster_id)
         if cached_features:
             self._draw_plots(cluster_id, cached_features)

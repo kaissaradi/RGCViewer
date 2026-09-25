@@ -644,6 +644,62 @@ def scenario_keyboard(s):
     log(json.dumps({"result": result, "ms_per_key": timings}))
 
 
+def scenario_population_compare(s):
+    """Q45: selected + pinned cells over their Vision-class population, both themes.
+
+    Loads the run's own Vision classes into the tree (in memory only).
+    """
+    from qtpy.QtWidgets import QMessageBox
+    from src.gui import callbacks, keymap
+    from src.analysis.class_names import canonical_type
+    s.load()
+    w = s.w
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    callbacks.load_classification_from_params(w)
+    wait_until(lambda: any("brisk" in p.lower() for p, _ in callbacks.collect_group_items(w)), 120)
+    groups = callbacks.collect_group_items(w)
+    path, group = next((p, g) for p, g in groups
+                       if (canonical_type(p) or ("",))[0] == "ON brisk transient"
+                       or p.lower().endswith("brisk transient"))
+    cells = callbacks.iter_cluster_ids(group)
+    log(f"group {path}: {len(cells)} cells")
+    w.toggle_population_split_view(True)
+    pump(1.0)
+    s.select(cells[0], settle=3.0)
+    t = time.time()
+    s.select(cells[1], settle=0.0)
+    ok = wait_until(lambda: any(k.get_visible() and k.get_text() == f"Cell {cells[1]}"
+                                for k in w.pop_fr_canvas._fr_state.get("compare_keys", [])), 10)
+    log(f"overlay follows the selection: {ok} in {time.time() - t:.2f}s (incl. 150 ms debounce)")
+    w._select_cluster_in_tree(cells[2]); pump(1.0)
+    keymap.toggle_pin(w)
+    w._select_cluster_in_tree(cells[3]); pump(1.0)
+    keymap.toggle_pin(w)
+    s.select(cells[1], settle=3.0)
+    keys = {pane: [k.get_text() for k in getattr(getattr(w, attr), state).get("compare_keys", [])
+                   if k.get_visible()]
+            for pane, (attr, state) in __import__(
+                "src.gui.panels.population_compare", fromlist=["PANES"]).PANES.items()}
+    log(json.dumps({"pins": w._pinned_cells, "keys": keys}))
+    cost = []
+    for cid in cells[5:15]:
+        t = time.time()
+        callbacks.refresh_population_overlays(w, cid)
+        w.pop_fr_canvas.repaint()
+        cost.append((time.time() - t) * 1000)
+    log(f"overlay update alone (3 panes + one repaint), 10 cells: "
+        f"median {np.median(cost):.0f} ms, max {max(cost):.0f} ms")
+    s.shot("compare_dark", w.pop_context_widget)
+    w.toggle_theme()
+    pump(2.0)
+    s.select(cells[4], settle=0.5)
+    s.select(cells[1], settle=3.0)
+    s.shot("compare_light", w.pop_context_widget)
+    s.shot("window_light", w)
+    w.toggle_theme()
+    pump(1.0)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings
