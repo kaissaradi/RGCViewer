@@ -69,7 +69,7 @@ are one-offs).
 | # | Item | Notes |
 |---|---|---|
 | Q36 | Suggested cell classes from labelled runs | User: "the killer idea". Propose a class and a confidence for each cell from runs the lab already classified; the user confirms; Ctrl+S (Q31) writes it. Evidence so far: Q28 leave-one-out 5-NN 0.92 / 0.97 within a run, chance ~0.3, but the labels were made from similar features. First step: measure train-on-one-prep, test-on-another accuracy offline before any GUI. |
-| Q37 | Match cells across runs | Was parked (tester request). Same cell in two runs of one prep (e.g. noise run → grating run), from EI similarity and position. Design not started. |
+| Q37 | Match cells across runs | Was parked (tester request). Not from scratch: File ▸ Map Reference Run already matches cells by EI (`cross_run_matcher.py`, KS-template fallback, RF-position check, JSON sidecar) and borrows the reference run's STA / chirp / grating (`reference_bridge.py`, spec `docs/specs/cross_run_stimulus_bridge.md`, stages 0–4 done). Open: stage 5 (show borrowed curves in the single-cell Chirp / Grating panels) and the lab acceptance on real data, never run. First step: run it on two runs of one prep and measure match quality. |
 | Q38 | Spike rasters when there is no raw file | Was parked ("Stimulus / epoch rasters"). User: in the Raw tab when no `.bin` is loaded, or a new tab. Design not started. |
 
 This file lists standing decisions, fragile code, and open defects. It is
