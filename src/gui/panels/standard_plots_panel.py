@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QFrame,
 )
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from .. import array_orientation
 from ..theme import apply_plot_theme, opaque_brush, plot_field, plot_stroke, resolve_theme_colors
 import logging
@@ -275,6 +276,27 @@ class StandardPlotsPanel(QWidget):
             name="Averaged Amplitude",
         )
 
+        # Amplitude on its own right-hand axis, % of the cell's median, and
+        # the stimulus blocks of the recording shaded (PLAN.md Q41).
+        pi = self.fr_plot.getPlotItem()
+        self._amp_vb = pg.ViewBox()
+        pi.scene().addItem(self._amp_vb)
+        pi.getAxis("right").linkToView(self._amp_vb)
+        self._amp_vb.setXLink(pi)
+        self._amp_vb.setMouseEnabled(x=False, y=False)
+        self._amp_curve = pg.PlotCurveItem(
+            pen=pg.mkPen(colors["plot_overlay"], width=plot_stroke(colors, "thin")))
+        self._amp_vb.addItem(self._amp_curve)
+
+        def _sync_amp_view():
+            self._amp_vb.setGeometry(pi.vb.sceneBoundingRect())
+            self._amp_vb.linkedViewChanged(pi.vb, self._amp_vb.XAxis)
+        pi.vb.sigResized.connect(_sync_amp_view)
+        self._show_amp_axis(colors)
+        self._block_items = []
+        self._blocks_key = None
+        self._blocks = []
+
         self.bottom_splitter.addWidget(self.fr_plot)
 
         self.vert_splitter.setSizes([500, 300])
@@ -332,9 +354,69 @@ class StandardPlotsPanel(QWidget):
         self._fr_rate_curve.setPen(pg.mkPen(colors["plot_fr"], width=stroke))
         self._fr_overlay_curve.setPen(pg.mkPen(colors["plot_overlay"], width=thin))
         self.fr_plot.setLabel("left", "Firing Rate (Hz)", color=colors["text_secondary"])
+        if hasattr(self, "_amp_curve"):
+            self._amp_curve.setPen(pg.mkPen(colors["plot_overlay"], width=thin))
+            self._show_amp_axis(colors)
+            self._blocks_key = None          # re-shade in the new colours on the next draw
 
         # Refresh widgets
         self.grid_widget.setBackground(plot_field(colors))
+
+    def _show_amp_axis(self, colors):
+        """The theme hides right axes; this one carries the amplitude."""
+        pi = self.fr_plot.getPlotItem()
+        pi.showAxis("right")
+        axis = pi.getAxis("right")
+        axis.setLabel("Amplitude (% of median)", color=colors["plot_overlay"])
+        axis.setPen(pg.mkPen(colors["border_default"]))
+        axis.setTextPen(pg.mkPen(colors["plot_overlay"]))
+
+    def _recording_blocks(self, dm):
+        """Stimulus blocks of the loaded sort (Q41), computed once per dataset."""
+        key = (getattr(dm, "generation", None), id(dm))
+        if key == self._blocks_key:
+            return self._blocks
+        self._blocks_key = key
+        self._blocks = []
+        try:
+            from ...analysis import recording_timeline as rt
+            if getattr(dm, "stimulus_manifest", None) is None and hasattr(dm, "load_stimulus_manifest"):
+                dm.load_stimulus_manifest()
+            spikes = getattr(dm, "spike_times", None)
+            if spikes is not None and len(spikes):
+                self._blocks = rt.stimulus_blocks(
+                    dm.kilosort_dir.parent.name, dm.stimulus_manifest,
+                    int(spikes[-1]), float(dm.sampling_rate))
+        except Exception:
+            logger.debug("no stimulus blocks for this sort", exc_info=True)
+            self._blocks = []
+        self._draw_blocks()
+        return self._blocks
+
+    def _draw_blocks(self):
+        for item in self._block_items:
+            self.fr_plot.removeItem(item)
+        self._block_items = []
+        if len(self._blocks) < 2:
+            return                          # one stimulus: nothing to separate
+        colors = resolve_theme_colors(self.main_window.get_current_colors())
+        shade = QColor(colors["text_primary"])
+        for i, b in enumerate(self._blocks):
+            shade.setAlpha(18 if i % 2 == 0 else 0)
+            region = pg.LinearRegionItem((b.start_s, b.end_s), movable=False,
+                                         brush=pg.mkBrush(shade), pen=pg.mkPen(None))
+            region.setZValue(-10)
+            self.fr_plot.addItem(region)
+            label = pg.TextItem(b.protocol, color=colors["text_secondary"], anchor=(0, 0))
+            label.setPos(b.start_s, 0)
+            label.setZValue(-5)
+            self.fr_plot.addItem(label)
+            self._block_items += [region, label]
+
+    def _place_block_labels(self, top):
+        for item in self._block_items:
+            if isinstance(item, pg.TextItem):
+                item.setPos(item.pos().x(), top)
 
     def _style_plot(self, plot_widget, colors=None):
         if colors is None:
@@ -716,6 +798,7 @@ class StandardPlotsPanel(QWidget):
             self._isi_scatter.setVisible(False)
             self._fr_rate_curve.setData([], [])
             self._fr_overlay_curve.setData([], [])
+            self._amp_curve.setData([], [])
             self.acg_plot.setTitle(
                 f"<span style='color:{colors['text_tertiary']}; font-size:10px;'>AUTOCORRELATION — computing…</span>"
             )
@@ -911,35 +994,44 @@ class StandardPlotsPanel(QWidget):
         else:
             self._fr_rate_curve.setData([], [])
 
-        # FR overlay — recompute on-demand from amplitudes; spike-length arrays
-        # are never cached (OOM fix). Memory is reclaimed after this block.
-        overlay_x = None
-        overlay_y = None
-        _amps_ov = dm.get_cluster_spike_amplitudes(cluster_id)
-        _amps_ov = np.asarray(_amps_ov) if _amps_ov is not None else np.array([])
-        if (
-            _amps_ov.size > 10
-            and fr_rate is not None
-            and fr_rate.size > 0
-            and _spikes_raw.size > 10
-        ):
-            _max_amp = float(np.max(_amps_ov))
-            if _max_amp > 0:
-                _norm_amp = _amps_ov / _max_amp
-            else:
-                _norm_amp = _amps_ov.astype(float)
-            _avg_amp = np.convolve(_norm_amp, np.ones(10) / 10.0, mode="valid")
-            _scaled = _avg_amp * 0.8 * float(np.max(fr_rate))
-            _spikes_sec_ov = _spikes_raw / float(dm.sampling_rate)
-            _ov_len = min(len(_scaled), len(_spikes_sec_ov))
-            if _ov_len > 0:
-                overlay_x = _spikes_sec_ov[:_ov_len]
-                overlay_y = _scaled[:_ov_len]
-
-        if overlay_x is not None and overlay_y is not None:
-            self._fr_overlay_curve.setData(overlay_x, overlay_y)
+        # Amplitude over time on the right axis, % of the cell's median: the
+        # cached 1-s means (fr_amp_*), else binned here from the spikes. The
+        # old overlay drew every spike (100k+ points) scaled to the largest
+        # one, so one outlier flattened it (PLAN.md Q41).
+        self._fr_overlay_curve.setData([], [])
+        amp_x, amp_y = data.get("fr_amp_x"), data.get("fr_amp_y")
+        if (amp_x is None or amp_y is None) and fr_bin_centers is not None \
+                and _spikes_raw.size > 10:
+            _amps = dm.get_cluster_spike_amplitudes(cluster_id)
+            _amps = np.asarray(_amps, float) if _amps is not None else np.array([])
+            if _amps.size == _spikes_raw.size:
+                edges = np.append(fr_bin_centers, fr_bin_centers[-1] + np.diff(fr_bin_centers[-2:]))
+                t_s = _spikes_raw / float(dm.sampling_rate)
+                total, _ = np.histogram(t_s, bins=edges, weights=_amps)
+                count, _ = np.histogram(t_s, bins=edges)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    amp_x, amp_y = fr_bin_centers, np.where(count > 0, total / count, np.nan)
+        stab_verdict = ""
+        if amp_x is not None and amp_y is not None and len(amp_y):
+            amp_y = np.asarray(amp_y, float)
+            med = np.nanmedian(np.abs(amp_y))
+            pct = 100.0 * np.abs(amp_y) / med if np.isfinite(med) and med > 0 else amp_y
+            self._amp_curve.setData(np.asarray(amp_x, float), np.nan_to_num(pct, nan=100.0))
+            self._amp_vb.setYRange(0, max(150.0, float(np.nanmax(pct)) * 1.05), padding=0)
         else:
-            self._fr_overlay_curve.setData([], [])
+            self._amp_curve.setData([], [])
+            pct = None
+        blocks = self._recording_blocks(dm)
+        if fr_bin_centers is not None and fr_rate is not None and len(fr_rate):
+            from ...analysis.recording_timeline import stability
+            stab_verdict = stability(fr_bin_centers, fr_rate, pct, blocks).verdict
+            self._place_block_labels(float(np.nanmax(fr_rate)) * 1.02)
+        c = resolve_theme_colors(self.main_window.get_current_colors())
+        tone = c["text_tertiary"] if stab_verdict in ("", "stable") else c.get("plot_compare", c["text_tertiary"])
+        self.fr_plot.setTitle(
+            f"<span style='color:{c['text_tertiary']}; font-size:10px; letter-spacing:0.06em;'>"
+            f"FIRING RATE (line) · AMPLITUDE (right axis)</span>"
+            + (f"<span style='color:{tone}; font-size:10px;'> — {stab_verdict}</span>" if stab_verdict else ""))
 
         # Re-enable auto-range after batch updates
         for plot in plots_to_update:

@@ -815,6 +815,75 @@ def scenario_suggest(s):
     s.shot("suggest_types_after", w)
 
 
+def scenario_stability(s):
+    """Q41: firing rate + amplitude over the recording, stimulus blocks shaded (a concatenated sort)."""
+    s.load()
+    w = s.w
+    s.tab("Standard")
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    sp = w.standard_plots_panel
+    verdicts = {}
+    for cid in ids[:40]:
+        s.select(cid, settle=0.2)
+        wait_until(lambda: len(sp._amp_curve.getData()[0] or []) > 0 if sp._amp_curve.getData()[0] is not None else False, 5)
+        title = sp.fr_plot.getPlotItem().titleLabel.text
+        verdicts[cid] = title.split("— ")[-1].split("<")[0] if "— " in title else ""
+    blocks = [(b.protocol, round(b.start_s), round(b.end_s)) for b in sp._blocks]
+    log(json.dumps({"blocks": blocks,
+                    "verdicts": {k: v for k, v in list(verdicts.items())[:12]},
+                    "n_not_stable": sum(v not in ("", "stable") for v in verdicts.values()),
+                    "n": len(verdicts)}))
+    t = time.time()
+    for cid in ids[40:60]:
+        sp.update_all(cid)
+    log(f"Standard update_all: {1000 * (time.time() - t) / 20:.0f} ms per cell (warm cache)")
+    worst = next((c for c, v in verdicts.items() if "fires little" in v), ids[0])
+    s.select(worst, settle=1.5)
+    s.shot("stability", sp)
+
+
+def scenario_sample_rate(s):
+    """Q48: the sort's rate comes from params.py; the old-rate standard cache rebuilds once.
+
+    Compares Encore's ACG with Vision's own (params 'Auto', a separate rate
+    source) on the same cells: the refractory dip must end at the same lag.
+    """
+    s.load()
+    w = s.w
+    dm = s.dm()
+    log(f"sampling_rate={dm.sampling_rate}; rebuilt old-rate cache: "
+        f"{bool(getattr(dm, '_std_cache_rate_changed', False))}; "
+        f"recording {dm.spike_times[-1] / dm.sampling_rate:.0f} s")
+    ok = wait_until(lambda: len(dm.standard_plot_cache) >= 0.95 * len(dm.cluster_df), 900)
+    log(f"standard cache {len(dm.standard_plot_cache)}/{len(dm.cluster_df)} filled={ok}")
+    import numpy as np
+    vp = dm.vision_params
+    rows = []
+    for cid in [int(c) for c in dm.cluster_df["cluster_id"].values][:300]:
+        std = dm.peek_standard_plot_data(cid)
+        if not std or std.get("acg_norm") is None:
+            continue
+        vid = dm.get_vision_id_for_cluster(cid)
+        try:
+            auto = np.asarray(vp.get_data_for_cell(vid, "Auto"), float)
+            binning = float(vp.get_data_for_cell(vid, "acfBinning") or 0.5)
+        except Exception:
+            continue
+        if auto.size < 20 or auto.sum() <= 0:
+            continue
+        lags, acg = np.asarray(std["acg_time_lags"], float), np.asarray(std["acg_norm"], float)
+        pos = lags > 0
+        # lag at which each ACG first reaches half its maximum (ms)
+        e = lags[pos][np.argmax(acg[pos] >= 0.5 * acg[pos].max())]
+        v = (np.argmax(auto >= 0.5 * auto.max()) + 0.5) * binning
+        if 0 < v < 30:
+            rows.append((e, v))
+    r = np.array(rows)
+    if len(r):
+        log(f"half-max rise lag, Encore vs Vision over {len(r)} cells: median ratio "
+            f"{np.median(r[:, 0] / r[:, 1]):.2f} (1.00 = same time base; 0.67 = the old 30 kHz bug)")
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings
