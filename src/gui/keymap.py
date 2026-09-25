@@ -50,7 +50,7 @@ BINDINGS: List[Binding] = [
     Binding(("Space",), "Next row of the similarity table", "Cells"),
     Binding(("F2",), "Rename the selected group", "Groups", "rename_group"),
     Binding(("Ctrl+Shift+F",), "Feature Extraction on the selection", "Groups", "feature_extraction"),
-    Binding(("Ctrl+1", "Ctrl+9"), "Go to analysis tab 1 … 9", "Views"),
+    Binding(("Ctrl+1", "Ctrl+9"), "Go to analysis tab 1 … 9 (Ctrl+0: tab 10)", "Views"),
     Binding(("Ctrl+Tab", "Ctrl+Shift+Tab"), "Next / previous analysis tab", "Views"),
     Binding(("Ctrl+T",), "Switch the cell list between tree and table", "Views", "toggle_left_view"),
     Binding(("Ctrl+P",), "Show / hide the population pane beside the cell", "Views", "toggle_population"),
@@ -64,7 +64,7 @@ BINDINGS: List[Binding] = [
 ]
 
 # Tab keys are generated, not one row each.
-_TAB_KEYS = [(f"Ctrl+{n}", n - 1) for n in range(1, 10)]
+_TAB_KEYS = [(f"Ctrl+{n}", n - 1) for n in range(1, 10)] + [("Ctrl+0", 9)]
 
 
 # --- selection -------------------------------------------------------------

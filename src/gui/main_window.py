@@ -81,6 +81,7 @@ from . import keymap
 from . import array_orientation
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
+from .panels.types_panel import TypesPanel
 from .theme import (
     APP_NAME,
     DARK_COLORS,
@@ -863,6 +864,7 @@ class MainWindow(QMainWindow):
             self.raw_panel,
             self.sta_panel,
             self.umap_panel,
+            self.types_panel,
         ]
 
         for panel in panels:
@@ -1028,6 +1030,9 @@ class MainWindow(QMainWindow):
         # 0. UMAP side panels — show where this one cell sits among the cells
         # it was embedded with. Blit-only, so it costs nothing on the fast path.
         self._highlight_selection_in_umap([cluster_id])
+        # Types tab: move the row / outline marker only (Q40).
+        if self.analysis_tabs.currentWidget() is self.types_panel:
+            self.types_panel.highlight(cluster_id)
 
         # 1. Population RF Updates - Only if hot-swap is possible (fast path)
         # Full rebuild is deferred to Tier 2 to avoid first-click freeze
@@ -1324,6 +1329,9 @@ class MainWindow(QMainWindow):
 
         elif current_panel == self.sta_panel:
             self.sta_panel.update_view(cluster_id)
+
+        elif current_panel == self.types_panel:
+            self.types_panel.highlight(cluster_id)
 
     def _draw_plots(self, cluster_id, features):
         """Only update what's actually visible."""
@@ -1799,6 +1807,7 @@ class MainWindow(QMainWindow):
         self.raw_panel = RawPanel(self)
         self.sta_panel = STAPanel(self)
         self.umap_panel = UMAPPanel(self)
+        self.types_panel = TypesPanel(self)
 
         # --- Tab Order (Short Labels) ---
         self.analysis_tabs.addTab(self.standard_plots_panel, "Standard")
@@ -1808,6 +1817,8 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.ei_panel, "EI")
         self.analysis_tabs.addTab(self.sta_panel, "STA")
         self.analysis_tabs.addTab(self.umap_panel, "UMAP")
+        # The whole run by class: barcode + mosaic atlas (PLAN.md Q40, Q42).
+        self.analysis_tabs.addTab(self.types_panel, "Types")
         self.analysis_tabs.addTab(self.waveforms_panel, "Waveforms")
         self.analysis_tabs.addTab(self.raw_panel, "Raw")
         for i in range(self.analysis_tabs.count()):

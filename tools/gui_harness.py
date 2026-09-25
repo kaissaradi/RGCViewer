@@ -700,6 +700,61 @@ def scenario_population_compare(s):
     pump(1.0)
 
 
+def scenario_types_tab(s):
+    """Q40/Q42: the Types tab (barcode + mosaic atlas) on the run's own Vision classes."""
+    from qtpy.QtWidgets import QMessageBox
+    from src.gui import callbacks
+    s.load()
+    w = s.w
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    callbacks.load_classification_from_params(w)
+    wait_until(lambda: any("brisk" in p.lower() for p, _ in callbacks.collect_group_items(w)), 120)
+    wait_until(lambda: getattr(w.data_manager, "physics_cache_complete", True), 5)
+    pump(8.0)                                   # let the physics / standard caches fill
+    t = time.time()
+    s.tab("Types")
+    pump(0.2)
+    tp = w.types_panel
+    log(f"types tab built in {time.time() - t:.2f}s: {tp.status.text()}")
+    code = tp._barcode
+    log(json.dumps({
+        "bands": [(g, e - b) for g, b, e in code.bands] if code else [],
+        "misfits": len(code.misfits()) if code else 0,
+        "tiles": [(tl["group"], tl["stats"].verdict, len(tl["holes"])) for tl in tp._tiles]}))
+    t = time.time()
+    if os.environ.get("HARNESS_PROFILE"):
+        import cProfile, pstats, io
+        prof = cProfile.Profile()
+        prof.enable()
+        tp.refresh(force=True)
+        prof.disable()
+        buf = io.StringIO()
+        pstats.Stats(prof, stream=buf).sort_stats("cumulative").print_stats(18)
+        log(buf.getvalue())
+    else:
+        tp.refresh(force=True)
+    log(f"forced rebuild {1000 * (time.time() - t):.0f} ms")
+    if code and code.cells:
+        cid = code.cells[len(code.cells) // 2]
+        tp._select(cid)
+        pump(1.0)
+        log(f"row click selects cell {cid}: {w._get_selected_cluster_id() == cid}")
+    s.shot("types_dark", w)
+    for feature in ("Autocorrelation", "Chirp response"):
+        tp.feature_combo.setCurrentText(feature)
+        pump(0.5)
+        log(f"{feature}: {tp.status.text()}")
+    tp.feature_combo.setCurrentText("Autocorrelation")
+    pump(0.3)
+    s.shot("types_acg_dark", w)
+    tp.feature_combo.setCurrentText("STA time course")
+    w.toggle_theme()
+    pump(2.0)
+    s.shot("types_light", w)
+    w.toggle_theme()
+    pump(0.5)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

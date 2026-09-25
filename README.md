@@ -162,6 +162,27 @@ column. A group path becomes `All/<group>/<subgroup>`; a cell in the root
 - File → Load Classification from Vision .params replaces the tree with the
   file's classes.
 
+## Check a classification
+
+Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
+(File → Load Classification from Vision .params). Then:
+
+- **Types tab: barcode.** One row per cell, one band per group. Pick the row
+  type: STA time course, autocorrelation, or chirp. The most typical cell of
+  a group is at the top of its band. A red tick at the right edge marks a
+  cell that fits another type's average better than its own group's. Hover
+  a row for the numbers; click it to select the cell.
+- **Types tab: mosaic atlas.** One small RF mosaic per type, all at the same
+  scale. A real type tiles the retina, so neighbours sit about one RF apart
+  (NNND ≈ 2). Red outlines: two cells of one type overlap too much (a split
+  unit, a duplicate, or a mixed group). Grey rings: unclassified cells that
+  look like the type and sit in a gap of its mosaic. Click one to select it.
+- **Compare a cell with its population.** Ctrl+P opens the population pane.
+  The selected cell is drawn in red over its group's time courses, ACGs and
+  firing rates. Ctrl+K pins up to four more cells for comparison.
+
+What the lab's type names mean, with references: `docs/design/rgc_types.md`.
+
 ## Keyboard shortcuts
 
 Press F1 (or ?) in Encore for this list. Shortcuts do not fire while you
@@ -182,7 +203,7 @@ type in a text field; Esc leaves the search bar.
 | F2 | Rename the selected group |
 | Ctrl+Shift+F | Feature Extraction on the selection |
 | **Views** | |
-| Ctrl+1 … Ctrl+9 | Go to analysis tab 1 … 9 |
+| Ctrl+1 … Ctrl+9 | Go to analysis tab 1 … 9 (Ctrl+0: tab 10) |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous analysis tab |
 | Ctrl+T | Switch the cell list between tree and table |
 | Ctrl+P | Show / hide the population pane beside the cell |
