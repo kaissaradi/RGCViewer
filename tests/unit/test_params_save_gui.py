@@ -173,3 +173,23 @@ def test_datamanager_sort_check():
     dm.cluster_df = None
     dm.vision_params = None
     assert not dm.vision_sort_check().decided
+
+
+# ── STA panel warning strip (PLAN.md Q32) ─────────────────────────────────
+
+@pytest.mark.parametrize("check, shown", [
+    (vsc.SortCheck(240, 0.01, 0.03), True),
+    (vsc.SortCheck(578, 0.68, 0.86), False),
+    (vsc.NO_CHECK, False),
+])
+def test_sta_panel_warns_only_when_the_files_look_foreign(qapp, check, shown):
+    from qtpy.QtWidgets import QLabel
+    from unittest.mock import MagicMock
+    from src.gui.panels.sta_panel import STAPanel
+    host = SimpleNamespace(sort_warning=QLabel())
+    host.sort_warning.setVisible(not shown)
+    STAPanel._sync_sort_warning(host, SimpleNamespace(vision_sort_check=lambda: check))
+    assert host.sort_warning.isHidden() is (not shown)
+    # a mock DataManager (as in the load tests) never shows it
+    STAPanel._sync_sort_warning(host, MagicMock())
+    assert host.sort_warning.isHidden()

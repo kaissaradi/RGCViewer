@@ -36,6 +36,7 @@ from qtpy.QtWidgets import (
 
 from ...analysis import analysis_core
 from ...analysis import rf_geometry
+from ...analysis.vision_sort_check import describe as describe_sort_check
 from ..widgets.widgets import MplCanvas
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,18 @@ class STAPanel(QWidget):
         root.setSpacing(0)
 
         root.addLayout(self._build_toolbar(colors), 0)
+        # Shown when the .sta looks made from another sort (PLAN.md Q32):
+        # the STA drawn is then probably another cell's.
+        self.sort_warning = QLabel(
+            "⚠ These STAs may belong to other cells: the Vision files do not "
+            "match this sort (see the status bar).")
+        self.sort_warning.setWordWrap(True)
+        self.sort_warning.setStyleSheet(
+            f"color: {colors.get('status_mua_text', '#8A6500')};"
+            f"background: {colors.get('status_mua_bg', 'transparent')};"
+            "padding: 3px 8px; font-size: 11px;")
+        self.sort_warning.hide()
+        root.addWidget(self.sort_warning, 0)
         root.addWidget(self._build_main_splitter(colors), 1)
         root.addWidget(self._build_metrics_bar(colors), 0)
 
@@ -523,6 +536,7 @@ class STAPanel(QWidget):
         if dm is None or not dm.vision_stas:
             self._clear_all()
             return
+        self._sync_sort_warning(dm)
 
         vision_id = dm.get_vision_id_for_cluster(cluster_id)
         logger.debug("get_vision_id_for_cluster(%d) -> %s", cluster_id, vision_id)
@@ -555,6 +569,19 @@ class STAPanel(QWidget):
         # Honour animation state if it was already running
         if getattr(self.main_window, 'current_sta_view', 'rf') == 'animation':
             self._start_animation_timer()
+
+    def _sync_sort_warning(self, dm):
+        """Show the warning strip when vision_sort_check flags the files (cached)."""
+        try:
+            check = dm.vision_sort_check()
+            # "is True": test doubles return mocks, which are truthy.
+            mismatch = getattr(check, "mismatch", False) is True
+        except Exception:
+            logger.debug("vision_sort_check failed", exc_info=True)
+            mismatch = False
+        self.sort_warning.setVisible(mismatch)
+        if mismatch:
+            self.sort_warning.setToolTip(describe_sort_check(check))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Data loading  (single call per cell selection)
