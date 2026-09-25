@@ -30,11 +30,16 @@ Conventions
   the end of the stimulus.
 * Directions are normalized to [0, 360), so 0° and 360° are one direction.
 * Shuffle p-values are (k + 1) / (N + 1): never 0, smallest 1/(N+1).
+* The DS/OS gate is ONE test per cell per index across all its DSOS
+  conditions (max statistic, ``<key>_pvalue_fw``), so running more
+  conditions does not give an untuned cell more chances. Files without
+  trials fall back to Bonferroni over conditions (gate_pvalue).
 * Responses are in spikes/s ("F1 amplitude" of the rate, or "Δ rate").
 * GRATING_SCHEMA_VERSION tags each computed result. Cached rows from an
   older version are recomputed once.
 """
 
+import warnings
 from collections import defaultdict
 
 import numpy as np
@@ -84,7 +89,10 @@ OSI_THRESHOLD = 0.3  # OS classification cutoff, applied AFTER gating
 #   1 (untagged): timing from trial 0, p = k/N, raw orientation labels.
 #   2: per-trial timing, p = (k+1)/(N+1), directions mod 360,
 #      sd_response / n_trials / response_label added.
-GRATING_SCHEMA_VERSION = 2
+#   3: DSI_pvalue_fw / OSI_pvalue_fw (max statistic across the cell's DSOS
+#      conditions); the DS/OS gate uses them. Every DSOS condition is
+#      shuffled when any condition reaches the floor.
+GRATING_SCHEMA_VERSION = 3
 RESPONSE_METRICS = {"f1": "F1 amplitude", "delta": "Δ firing rate"}
 RESPONSE_UNITS = "spikes/s"
 PSTH_DISPLAY_BIN_MS = 50.0
@@ -205,13 +213,13 @@ def _permutation_p(null_indices, observed_index):
     return (k + 1.0) / (n + 1.0)
 
 
-def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng):
-    """Permutation test: shuffle trial responses across directions.
+def shuffle_null(directions, trial_responses_by_dir, harmonic, n_shuffles, rng):
+    """(observed index, null indices) for a permutation test of one condition.
 
-    Same shuffles as combined_grating_analysis.py. The p-value is
-    (k + 1) / (N + 1), not k / N: the observed labelling is itself one of
-    the permutations, and k / N reports p = 0 for any cell that beats all
-    200 shuffles.
+    The null shuffles trial responses across directions. Same shuffles as
+    combined_grating_analysis.py. The observed index is NaN when the
+    responses sum to <= 0; the null is then NaN too (a permutation keeps the
+    sum), and no random numbers are drawn.
     """
     directions = sorted(directions)
     sizes = [len(trial_responses_by_dir[d]) for d in directions]
@@ -226,7 +234,7 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
             np.array(directions), observed_means, harmonic
         )
         if not np.isfinite(observed_index):
-            return np.nan
+            return np.nan, np.full(n_shuffles, np.nan)
         null_indices = np.empty(n_shuffles)
         for s in range(n_shuffles):
             shuffled = rng.permutation(all_resp)
@@ -237,7 +245,7 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
                 ]
             )
             null_indices[s], _ = vector_sum_index(np.array(directions), means, harmonic)
-        return _permutation_p(null_indices, observed_index)
+        return observed_index, null_indices
 
     n_dir = len(directions)
     all_resp = np.concatenate([trial_responses_by_dir[d] for d in directions])
@@ -246,7 +254,7 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
     observed_means = np.array([np.mean(trial_responses_by_dir[d]) for d in directions])
     observed_index, _ = vector_sum_index(np.array(directions), observed_means, harmonic)
     if not np.isfinite(observed_index):
-        return np.nan
+        return np.nan, np.full(n_shuffles, np.nan)
 
     theta = np.deg2rad(np.array(directions)) * harmonic
     unit_vecs = np.exp(1j * theta)
@@ -260,7 +268,47 @@ def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng
     denom = means.sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         null_indices = np.abs(vec) / denom
-    return _permutation_p(null_indices, observed_index)
+    return observed_index, null_indices
+
+
+def shuffle_pvalue(directions, trial_responses_by_dir, harmonic, n_shuffles, rng):
+    """Permutation p-value for one condition.
+
+    The p-value is (k + 1) / (N + 1), not k / N: the observed labelling is
+    itself one of the permutations, and k / N reports p = 0 for any cell
+    that beats all 200 shuffles.
+    """
+    observed, null = shuffle_null(directions, trial_responses_by_dir, harmonic,
+                                  n_shuffles, rng)
+    if not np.isfinite(observed):
+        return np.nan
+    return _permutation_p(null, observed)
+
+
+def family_pvalues(observed, nulls):
+    """Max-statistic p-values across one cell's conditions (family-wise).
+
+    ``observed[c]`` is condition c's index; ``nulls[c]`` its N shuffled
+    indices (conditions are shuffled independently, so shuffle s of every
+    condition is one draw from the joint null). For each shuffle, keep the
+    largest index over conditions; condition c's p-value is where its own
+    index falls in that distribution: (k + 1) / (N + 1).
+
+    This is one test per cell for "tuned in any condition". The chance that
+    an untuned cell passes at alpha stays alpha however many conditions ran,
+    where testing each condition at alpha let it pass more often. With one
+    condition it equals the per-condition p-value.
+    """
+    nulls = np.asarray(nulls, dtype=float)
+    if nulls.ndim != 2 or nulls.shape[0] == 0:
+        return np.full(len(observed), np.nan)
+    with warnings.catch_warnings():
+        # An all-NaN column (no condition had a finite shuffle) becomes NaN,
+        # which _permutation_p skips.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        max_null = np.nanmax(nulls, axis=0)
+    return np.array([_permutation_p(max_null, o) if np.isfinite(o) else np.nan
+                     for o in observed])
 
 
 def direction_psth(spike_times_by_direction_ms, window, bin_ms=PSTH_DISPLAY_BIN_MS,
@@ -460,6 +508,7 @@ def compute_grating_response(
     condition_type = {g["key"]: g["condition_type"] for g in groups}
 
     result = {"schema_version": GRATING_SCHEMA_VERSION}
+    shuffle_inputs = []  # (condition, directions, trial responses) per DSOS condition
     for group in groups:
         bw, tf = group["key"]
         local_dirs = group["directions"]
@@ -537,30 +586,10 @@ def compute_grating_response(
             osi, pref_ori = vector_sum_index(
                 np.array(local_dirs), mean_resp, harmonic=2
             )
-            # Most cells are untuned. The shuffle is the expensive step and
-            # is only consumed when |DSI| or |OSI| could pass the slider.
-            need_shuffle = n_shuffles > 0 and (
-                (np.isfinite(dsi) and abs(dsi) >= SHUFFLE_INDEX_FLOOR)
-                or (np.isfinite(osi) and abs(osi) >= SHUFFLE_INDEX_FLOOR)
-            )
-            if need_shuffle:
-                dsi_p = shuffle_pvalue(
-                    local_dirs,
-                    trial_resp_by_dir,
-                    harmonic=1,
-                    n_shuffles=n_shuffles,
-                    rng=rng,
-                )
-                osi_p = shuffle_pvalue(
-                    local_dirs,
-                    trial_resp_by_dir,
-                    harmonic=2,
-                    n_shuffles=n_shuffles,
-                    rng=rng,
-                )
-            else:
-                dsi_p = 1.0
-                osi_p = 1.0
+            # p-values are filled in after the loop: the family-wise test
+            # needs every DSOS condition's shuffles.
+            shuffle_inputs.append(((bw, tf), local_dirs, trial_resp_by_dir))
+            dsi_p = osi_p = 1.0
 
             # peak_rate_hz: real evoked firing rate (Hz), independent of
             # response_metric ('f1' amplitude / 'delta' aren't in Hz units
@@ -580,6 +609,8 @@ def compute_grating_response(
                     "OSI": osi,
                     "preferred_orientation_deg": pref_ori,
                     "OSI_pvalue": osi_p,
+                    "DSI_pvalue_fw": dsi_p,
+                    "OSI_pvalue_fw": osi_p,
                     "peak_rate_hz": (
                         float(peak_rate_hz) if np.isfinite(peak_rate_hz) else np.nan
                     ),
@@ -605,6 +636,8 @@ def compute_grating_response(
 
         result[(bw, tf)] = entry
 
+    _fill_pvalues(result, shuffle_inputs, n_shuffles, rng)
+
     sf_bar_widths = sorted(
         set(bw for (bw, tf), typ in condition_type.items() if typ == "sf")
     )
@@ -622,6 +655,35 @@ def compute_grating_response(
         result["sf_tuning_curve"] = curve
 
     return result
+
+
+def _fill_pvalues(result, shuffle_inputs, n_shuffles, rng):
+    """Per-condition and family-wise (max-statistic) p for DSI and for OSI.
+
+    Most cells are untuned, and the shuffle is the expensive step. It runs
+    when any DSOS condition has |DSI| or |OSI| at or above the slider floor,
+    and then for EVERY DSOS condition: a condition skipped from the max would
+    make the family-wise null too small. Otherwise every p stays 1.0.
+    """
+    def index(cond, key):
+        v = result[cond][key]
+        return abs(v) if np.isfinite(v) else np.nan
+
+    if n_shuffles <= 0 or not any(
+            np.nanmax([index(c, "DSI"), index(c, "OSI"), -1.0]) >= SHUFFLE_INDEX_FLOOR
+            for c, _d, _r in shuffle_inputs):
+        return
+    for key, harmonic in (("DSI", 1), ("OSI", 2)):
+        observed, nulls = [], []
+        for cond, dirs, by_dir in shuffle_inputs:
+            obs, null = shuffle_null(dirs, by_dir, harmonic, n_shuffles, rng)
+            observed.append(obs)
+            nulls.append(null)
+        family = family_pvalues(observed, nulls)
+        for (cond, _d, _r), obs, null, p_fw in zip(shuffle_inputs, observed, nulls, family):
+            result[cond][f"{key}_pvalue"] = (
+                _permutation_p(null, obs) if np.isfinite(obs) else np.nan)
+            result[cond][f"{key}_pvalue_fw"] = p_fw
 
 
 def condition_amplitude(entry):
@@ -644,9 +706,27 @@ def condition_amplitude(entry):
     return 0.0
 
 
-def _pvalue_passes(entry, key, alpha):
-    """Shuffle p < alpha. Missing p (legacy files) does not veto."""
-    pval = entry.get(key, np.nan)
+def gate_pvalue(entry, key, n_conditions=1):
+    """The p-value the DS/OS gate uses for ``key`` ("DSI" or "OSI").
+
+    The family-wise p (``<key>_pvalue_fw``, one max-statistic test across
+    the cell's DSOS conditions) when the entry has one. Pre-analysed files
+    carry only per-condition p-values and no trials, so their p is
+    Bonferroni-corrected over the ``n_conditions`` DSOS conditions instead.
+    NaN when no p-value exists (it does not veto).
+    """
+    fw = entry.get(f"{key}_pvalue_fw", np.nan)
+    if fw is not None and np.isfinite(fw):
+        return float(fw)
+    raw = entry.get(f"{key}_pvalue", np.nan)
+    if raw is None or not np.isfinite(raw):
+        return np.nan
+    return min(1.0, float(raw) * max(int(n_conditions), 1))
+
+
+def _pvalue_passes(entry, key, alpha, n_conditions=1):
+    """Gate p < alpha. Missing p (legacy files) does not veto."""
+    pval = gate_pvalue(entry, key, n_conditions)
     if not np.isfinite(pval):
         return True
     return pval < alpha
@@ -735,12 +815,12 @@ def select_best_dsos_condition(
         dsi = entry.get("DSI", np.nan)
         osi = entry.get("OSI", np.nan)
         is_ds = (
-            _pvalue_passes(entry, "DSI_pvalue", alpha)
+            _pvalue_passes(entry, "DSI", alpha, len(dsos_conditions))
             and np.isfinite(dsi)
             and abs(dsi) > dsi_threshold
         )
         is_os = (
-            _pvalue_passes(entry, "OSI_pvalue", alpha)
+            _pvalue_passes(entry, "OSI", alpha, len(dsos_conditions))
             and np.isfinite(osi)
             and abs(osi) > osi_threshold
         )
@@ -756,7 +836,10 @@ def select_best_dsos_condition(
     best_cond, best_cls, _amp, _idx = max(
         classified, key=lambda item: (item[2], 1 if item[1] == "DS" else 0, item[3])
     )
-    return _selection_from_entry(best_cond, best_cls, data[best_cond])
+    sel = _selection_from_entry(best_cond, best_cls, data[best_cond])
+    sel["DSI_pvalue_gate"] = gate_pvalue(data[best_cond], "DSI", len(dsos_conditions))
+    sel["OSI_pvalue_gate"] = gate_pvalue(data[best_cond], "OSI", len(dsos_conditions))
+    return sel
 
 
 def pooled_direction_tuning_curve(data, n_bins=POOLED_CURVE_N_BINS):

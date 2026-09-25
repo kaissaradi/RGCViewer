@@ -150,9 +150,10 @@ def test_untuned_cells_skip_the_shuffle(monkeypatch):
 
     def _boom(*_a, **_k):
         calls.append(1)
-        raise AssertionError("shuffle_pvalue should be skipped")
+        raise AssertionError("the shuffle should be skipped")
 
-    monkeypatch.setattr(grating_calc, "shuffle_pvalue", _boom)
+    # The shuffle runs through shuffle_null (per-condition and family-wise p).
+    monkeypatch.setattr(grating_calc, "shuffle_null", _boom)
     params = _six_dir_params()
     spikes = {0: [np.array([400.0]) for _ in params]}
     result = grating_calc.compute_grating_response(
@@ -169,13 +170,13 @@ def test_untuned_cells_skip_the_shuffle(monkeypatch):
 
 def test_tuned_cells_still_run_the_shuffle(monkeypatch):
     calls = []
-    real = grating_calc.shuffle_pvalue
+    real = grating_calc.shuffle_null
 
     def _count(*a, **k):
         calls.append(1)
         return real(*a, **k)
 
-    monkeypatch.setattr(grating_calc, "shuffle_pvalue", _count)
+    monkeypatch.setattr(grating_calc, "shuffle_null", _count)
     params = _six_dir_params()
     grating_calc.compute_grating_response(
         0, _ds_spikes(params, pref=90.0), params, n_shuffles=8

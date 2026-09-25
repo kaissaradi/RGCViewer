@@ -425,8 +425,10 @@ class GratingPanel(QWidget):
         osi = display_entry.get("OSI", np.nan)
         pref_dir = display_entry.get("preferred_direction_deg", np.nan)
         pref_ori = display_entry.get("preferred_orientation_deg", np.nan)
-        dsi_p = display_entry.get("DSI_pvalue", np.nan)
-        osi_p = display_entry.get("OSI_pvalue", np.nan)
+        # The p the DS/OS decision uses: one test across all conditions.
+        n_dsos = len(dsos_conditions)
+        dsi_p = grating_calc.gate_pvalue(display_entry, "DSI", n_dsos)
+        osi_p = grating_calc.gate_pvalue(display_entry, "OSI", n_dsos)
 
         self._render_legend(dsos_conditions, display_cond, data)
         self._render_dsos_overlay(dsos_conditions, display_cond, data)
@@ -442,6 +444,11 @@ class GratingPanel(QWidget):
             # The DS/OS label is the cell's, decided at its best condition.
             best = grating_calc.format_condition_label(auto_cond, data[auto_cond])
             label += f" (at {best})"
+        self.stats_label.setToolTip(
+            "p: one shuffle test across all of this cell's conditions (the largest "
+            "index over conditions in each shuffle), so running more conditions "
+            "does not give an untuned cell more chances. Files without trials: "
+            "per-condition p × number of conditions.")
         self.stats_label.setText(
             f"{label}  Shown: {cond_label}   "
             f"DSI: {self._fmt(dsi)} (p={self._fmt(dsi_p, 3)})   "
