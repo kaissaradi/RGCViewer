@@ -1174,11 +1174,12 @@ class MainWindow(QMainWindow):
         tree is the authority on grouping — the same cluster_df is reused across
         regroupings, and anything cached would go stale the moment a cell moved.
         """
+        # A debounced call can land after the run (or a test's stand-in) is
+        # gone, so nothing about the DataManager is assumed.
+        df = getattr(self.data_manager, "cluster_df", None)
+        if df is None or getattr(df, "empty", True) or "cluster_id" not in df.columns:
+            return
         dm = self.data_manager
-        if dm is None or dm.cluster_df is None or dm.cluster_df.empty:
-            return
-        if "cluster_id" not in dm.cluster_df.columns:
-            return
 
         refresh_tree_group_counts(self.tree_model.invisibleRootItem())
         mapping = callbacks.build_cluster_group_map(self)

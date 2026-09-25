@@ -149,3 +149,17 @@ def test_type_atlas_dialog_builds_one_row_per_type(qtbot):
     qtbot.addWidget(dlg)
     assert set(dlg.plots) == set(prof)
     assert dlg.plots["ON brisk sustained"][2] == 2 and dlg.plots["OFF transient"][2] == 0
+
+
+def test_group_column_refresh_ignores_a_data_manager_without_a_table(qtbot):
+    """The debounced refresh can fire after a test's (or a closed run's) DataManager is gone."""
+    from src.gui.main_window import MainWindow
+    w = MainWindow()
+    try:
+        for dm in (object(), None):
+            w.data_manager = dm
+            w._refresh_group_column()                 # must not raise
+    finally:
+        w.data_manager = None
+        w.close()
+        w.deleteLater()
