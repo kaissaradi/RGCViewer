@@ -513,6 +513,35 @@ def scenario_narrow_window(s):
     log(json.dumps(out))
 
 
+def scenario_first_load_timeline(s):
+    """Q10: time every phase of a load until the physics and grating caches are done."""
+    w = s.w
+    bar = w.cache_progress
+    t0 = time.time()
+    w.load_directory(s.ks_dir, None)
+    events, last = [], None
+    grating_done = physics_done = False
+    while time.time() - t0 < 1500:
+        app.processEvents()
+        msg = w.status_bar.currentMessage()
+        st = (bar.isVisible(), bar.format() if bar.isVisible() else "", msg[:70])
+        if st != last:
+            dm = w.data_manager
+            events.append([round(time.time() - t0, 1), *st,
+                           len(getattr(dm, "grating_computed_cache", {}) or {}),
+                           int(getattr(dm, "_physics_done_count", 0) or 0)])
+            last = st
+        grating_done = grating_done or "Grating DS/OS tuning computed" in msg
+        physics_done = physics_done or "Physics Cache Ready" in msg
+        if grating_done and physics_done:
+            break
+        time.sleep(0.05)
+    dm = w.data_manager
+    log(json.dumps({"total_s": round(time.time() - t0, 1), "clusters": len(dm.cluster_df),
+                    "grating_cells": len(getattr(dm, "grating_computed_cache", {}) or {}),
+                    "events": events}))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """
