@@ -28,11 +28,41 @@ find_python() {
     return 1
 }
 
+# --- preflight (PLAN.md Q27) -------------------------------------------------
+# An update is `git pull --ff-only` under `set -e`: local edits or another
+# branch made it die with a bare git error. Say what is wrong instead.
+preflight_checkout() {
+    local dir="$1"
+    [ -d "$dir/.git" ] || return 0
+    if [ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]; then
+        fail "$dir has local changes, so it cannot be updated.
+  Keep them:    git -C \"$dir\" stash
+  Drop them:    git -C \"$dir\" checkout -- .
+  Then run the installer again."
+    fi
+    local branch
+    branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
+    if [ "$branch" != "main" ]; then
+        fail "$dir is on branch '$branch', not 'main'. Encore updates from 'main'.
+  Switch back:  git -C \"$dir\" checkout main
+  Then run the installer again."
+    fi
+}
+
+# A venv whose Python was removed or upgraded away cannot run pip.
+venv_is_usable() {
+    local venv="$1"
+    [ -x "$venv/bin/python" ] &&
+        "$venv/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null
+}
+
+main() {
 PYTHON=$(find_python) || fail "Python >= $MIN_PYTHON is required but not found. Install it first."
 info "Using $($PYTHON --version) at $(command -v "$PYTHON")"
 
 # --- clone or update -------------------------------------------------------
 if [ -d "$INSTALL_DIR/.git" ]; then
+    preflight_checkout "$INSTALL_DIR"
     info "Updating existing installation in $INSTALL_DIR"
     git -C "$INSTALL_DIR" pull --ff-only
 else
@@ -42,6 +72,10 @@ fi
 
 # --- virtual environment ---------------------------------------------------
 VENV="$INSTALL_DIR/.venv"
+if [ -d "$VENV" ] && ! venv_is_usable "$VENV"; then
+    warn "The virtual environment in $VENV cannot run (its Python is missing or too old). Rebuilding it."
+    [ -n "$INSTALL_DIR" ] && rm -rf "$VENV"
+fi
 if [ ! -d "$VENV" ]; then
     info "Creating virtual environment"
     "$PYTHON" -m venv "$VENV"
@@ -88,3 +122,10 @@ echo "    encore --debug"
 echo "    encore --kilosort-dir /path/to/run"
 echo "    encore --dat-file /path/to/raw.dat"
 echo ""
+}
+
+# Tests source this file with ENCORE_INSTALL_NO_MAIN=1 to call the functions.
+# (BASH_SOURCE cannot be used: `curl ... | bash` reads the script from stdin.)
+if [ "${ENCORE_INSTALL_NO_MAIN:-0}" != "1" ]; then
+    main "$@"
+fi

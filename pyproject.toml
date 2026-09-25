@@ -9,18 +9,21 @@ description = "Encore – inspect spike-sorted MEA recordings"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+# Upper bounds stop the installer's `pip install` from taking an untested
+# major release on the next update (PLAN.md Q27). Raise one after the unit
+# suite and the harness pass on it. torch was removed: it was used only for
+# one median in analysis_core.compute_ei.
 dependencies = [
-    "matplotlib",
-    "numpy",
-    "pandas",
-    "scikit-learn",
-    "scipy",
-    "PyQt6",
-    "pyqtgraph",
-    "QtPy",
-    "torch",
-    "umap-learn",
-    "hdbscan",
+    "matplotlib<4",
+    "numpy<3",
+    "pandas<4",
+    "scikit-learn<2",
+    "scipy<2",
+    "PyQt6<7",
+    "pyqtgraph<0.15",
+    "QtPy<3",
+    "umap-learn<0.6",
+    "hdbscan<0.9",
 ]
 
 [project.scripts]

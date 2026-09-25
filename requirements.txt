@@ -1,22 +1,22 @@
+# Same list as pyproject.toml [project] dependencies (the installer uses that).
+# Upper bounds: no untested major release on an update (PLAN.md Q27).
+
 # Core Data Science & Visualization
-matplotlib
-numpy
-pandas
-scikit-learn
-scipy
+matplotlib<4
+numpy<3
+pandas<4
+scikit-learn<2
+scipy<2
 
 # GUI & Visualization
 # qtpy is the abstraction layer; the app targets Qt6. Install a Qt6 binding
 # (PyQt6 shown here; PySide6 also works — qtpy uses whichever is present).
-PyQt6
-pyqtgraph
-QtPy
-
-# Deep Learning
-torch
+PyQt6<7
+pyqtgraph<0.15
+QtPy<3
 
 # UMAP
-umap-learn
+umap-learn<0.6
 
 # Clustering
-hdbscan
+hdbscan<0.9

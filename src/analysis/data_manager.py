@@ -1788,7 +1788,7 @@ class DataManager(QObject):
                 self.cluster_df["cluster_id"]
                 .map(d_result)
                 .fillna("Unknown")
-                .infer_objects(copy=False)
+                .infer_objects()
             )
             logger.debug("Loaded cell type file: %s", txt_file)
 
@@ -1904,7 +1904,7 @@ class DataManager(QObject):
         # Any cluster present in spike_clusters but absent from cluster_info.tsv
         # gets KSLabel=NaN from the left-merge. Fill with 'unsorted' so they are
         # never silently excluded when downstream code filters by KSLabel.
-        df["KSLabel"] = df["KSLabel"].fillna("unsorted").infer_objects(copy=False)
+        df["KSLabel"] = df["KSLabel"].fillna("unsorted").infer_objects()
 
         df["status"] = "Original"
         df["set"] = [set([cid]) for cid in df["cluster_id"]]
@@ -2003,7 +2003,7 @@ class DataManager(QObject):
             self.cluster_df["cluster_id"]
             .map(isi_pct_map)
             .fillna(0.0)
-            .infer_objects(copy=False)
+            .infer_objects()
         )
 
         # --- Release the sort scratch (this pass is its only consumer) ---

@@ -136,12 +136,15 @@ def baseline_correct(snips, pre_samples=20):
 
 
 def compute_ei(snips, pre_samples=20):
-    """Compute the Electrical Image (median waveform) from snippets."""
-    import torch
+    """Compute the Electrical Image (median waveform) from snippets.
 
+    The median over spikes (axis 2). With an even spike count it is the lower
+    of the two middle values, exactly as torch.median, which this replaced:
+    torch was a ~1 GB install used only here (PLAN.md Q27).
+    """
     snips = baseline_correct(snips, pre_samples=pre_samples)
-    snips_torch = torch.from_numpy(snips)
-    return torch.median(snips_torch, dim=2).values.numpy()
+    k = (snips.shape[2] - 1) // 2
+    return np.partition(snips, k, axis=2)[:, :, k]
 
 
 def select_channels(ei, min_chan=30, max_chan=80, threshold=15):

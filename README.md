@@ -87,11 +87,14 @@ Install dev dependencies first:
 pip install -r requirements-dev.txt
 ```
 
-Unit tests:
+Unit tests (headless):
 
 ```bash
-python -m pytest tests/unit/ -v
+QT_QPA_PLATFORM=offscreen python -m pytest tests/unit/ -q
 ```
+
+CI (`.github/workflows/tests.yml`) runs the unit suite on Python 3.10 and
+3.13 for every push to `main` / `dev-testing` and every pull request.
 
 Full suite (slow; some tests need lab mounts):
 
