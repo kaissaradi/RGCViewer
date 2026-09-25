@@ -301,3 +301,22 @@ def test_cache_temp_files_are_named_and_stale_ones_swept(tmp_path):
     os.utime(other, (old, old))
     assert DataManager.sweep_stale_temp_files(tmp_path) == 1
     assert not stale.exists() and fresh.exists() and other.exists()
+
+
+def test_mea_similarity_uses_the_current_table_position():
+    """A stale cluster_id_to_idx (built from a larger table) made cell 793 raise (data022)."""
+    import numpy as np
+    import pandas as pd
+    from src.analysis.data_manager import DataManager
+    dm = DataManager.__new__(DataManager)
+    dm.mea_sim_cache = {}
+    ids = [5, 10, 793]
+    dm.cluster_df = pd.DataFrame({"cluster_id": ids, "n_spikes": [10, 20, 30],
+                                  "x_um": [0.0, 30.0, 60.0], "y_um": [0.0, 0.0, 0.0]})
+    dm.similar_templates = np.eye(800)
+    dm.similar_templates[793, 10] = 0.9
+    dm.cluster_to_template = {5: 5, 10: 10, 793: 793}
+    dm.cluster_id_to_idx = {5: 0, 10: 1, 793: 793}          # stale: row 793 of a 3-row table
+    table = dm._get_mea_similarity_table(793)
+    assert list(table["cluster_id"])[0] == 10
+    assert np.isclose(table.loc[table.cluster_id == 10, "distance_um"].iloc[0], 30.0)

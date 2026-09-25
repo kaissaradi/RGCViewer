@@ -4575,7 +4575,11 @@ class DataManager(QObject):
         if "x_um" in self.cluster_df.columns and "y_um" in self.cluster_df.columns:
             x = self.cluster_df["x_um"].values.astype(float)
             y = self.cluster_df["y_um"].values.astype(float)
-            target_row = self.cluster_id_to_idx.get(int(cluster_id))
+            # Position in the CURRENT table. cluster_id_to_idx was built from an
+            # earlier, larger cluster_df on some runs (20260220A/data022: cell
+            # 793 mapped to row 793 of a 731-row table) and raised IndexError.
+            here = np.flatnonzero(cluster_ids == cluster_id)
+            target_row = int(here[0]) if here.size else None
             if target_row is not None:
                 dx = x[top_idx] - float(x[target_row])
                 dy = y[top_idx] - float(y[target_row])
