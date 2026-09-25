@@ -2,7 +2,7 @@
 
 Read `docs/AGENTS.md` before this file. This file is the pickup point.
 
-Last updated: 2026-09-24. Branch: `dev-testing`.
+Last updated: 2026-09-25. Branch: `dev-testing`.
 
 ## Active queue (2026-09 sweep)
 
