@@ -396,6 +396,19 @@ def _maybe_finalize_dataset_load(main_window):
     _finalize_dataset_load(main_window)
 
 
+def set_tab_available(main_window, panel, available):
+    """Enable or disable the analysis tab that holds ``panel``.
+
+    Never call show() or hide() on a QTabWidget page. A page shown by hand
+    stays visible on top of whichever tab is current: with STAs loaded, the
+    whole STA panel covered the Standard tab (PLAN.md Q29).
+    """
+    tabs = main_window.analysis_tabs
+    tabs.setTabEnabled(tabs.indexOf(panel), bool(available))
+    if hasattr(main_window, "sync_header_tab_enabled"):
+        main_window.sync_header_tab_enabled()
+
+
 def _finalize_dataset_load(main_window):
     """Attach every derived column, build the table once, and show the result.
 
@@ -441,10 +454,8 @@ def _finalize_dataset_load(main_window):
         main_window.refresh_table_model()
 
     # 2. Panels that depend on what actually loaded.
-    if getattr(dm, "vision_stas", None):
-        main_window.sta_panel.show()
-    else:
-        main_window.sta_panel.hide()
+    set_tab_available(main_window, main_window.sta_panel,
+                      bool(getattr(dm, "vision_stas", None)))
 
     if hasattr(main_window, "similarity_panel") and getattr(
         dm, "vision_available", False
@@ -819,9 +830,9 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     if hasattr(main_window, 'rebuild_cache_action'):
         main_window.rebuild_cache_action.setEnabled(True)
 
-    # --- Show STA panel if data is available ---
-    if main_window.data_manager.vision_stas:
-        main_window.sta_panel.show()
+    # --- STA tab only when there are STAs ---
+    set_tab_available(main_window, main_window.sta_panel,
+                      bool(main_window.data_manager.vision_stas))
 
     # Vision-native runs never go through the phase barrier — there is only one
     # load — but mark the dataset shown so a later hand-attached Vision load

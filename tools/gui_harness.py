@@ -355,6 +355,36 @@ def scenario_feature_defaults(s):
     dlg.close()
 
 
+def scenario_tab_overlay(s):
+    """Q29: switch every tab while changing cells; find widgets from other tabs."""
+    from qtpy.QtWidgets import QWidget
+    s.load()
+    w, tabs = s.w, s.w.analysis_tabs
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    pages = [tabs.widget(j) for j in range(tabs.count())]
+    found = []
+    for rep in range(3):
+        for i in range(tabs.count()):
+            tabs.setCurrentIndex(i)
+            s.select(ids[(rep * 11 + i * 7) % len(ids)], settle=0.6)
+            for wid in w.findChildren(QWidget):
+                if not wid.isVisible():
+                    continue
+                for j, page in enumerate(pages):
+                    if j != i and (wid is page or page.isAncestorOf(wid)):
+                        found.append({"tab": tabs.tabText(i), "from": tabs.tabText(j),
+                                      "widget": type(wid).__name__})
+            tops = [type(t).__name__ for t in QApplication.topLevelWidgets()
+                    if t.isVisible() and t is not w and t.isWindow()
+                    and type(t).__name__ not in ("QMenu", "QToolTip")]
+            if tops:
+                found.append({"tab": tabs.tabText(i), "top_level": tops})
+            if rep == 0:
+                s.shot(f"{i}_{tabs.tabText(i)}", w)
+    log(json.dumps({"switches": 3 * tabs.count(), "problems": found[:20],
+                    "n_problems": len(found)}))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

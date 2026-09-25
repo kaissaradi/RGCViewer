@@ -122,7 +122,11 @@ def test_table_is_built_exactly_once():
     mw.data_manager.attach_sta_quality_column.assert_called_once()
     mw.data_manager.attach_chirp_qi_column.assert_called_once()
     mw.data_manager.attach_chirp_onoff_column.assert_called_once()
-    mw.sta_panel.show.assert_called_once()
+    # The STA tab is enabled, never shown by hand (a shown page overlays
+    # the current tab, PLAN.md Q29).
+    mw.analysis_tabs.setTabEnabled.assert_any_call(
+        mw.analysis_tabs.indexOf.return_value, True)
+    mw.sta_panel.show.assert_not_called()
 
 
 def test_failed_stimulus_load_still_reveals():
