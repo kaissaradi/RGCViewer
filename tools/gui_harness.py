@@ -1021,10 +1021,15 @@ def scenario_umap_eval(s):
             hits += vote == lab[i]
         return hits / len(lab)
 
-    def evaluate(cfg):
+    def evaluate(cfg, polarity_weight=0.0):
         rb, vids, disc = dm.get_raw_feature_blocks(ids, panel.get_filter_config())
         m, _cols = analysis_core.build_feature_matrix(rb, cfg)
         m, vids, disc, rb = analysis_core.drop_empty_feature_rows(m, vids, disc, rb)
+        if polarity_weight:
+            from src.analysis.type_features import polarity
+            pol = np.array([polarity(t) for t in rb["temporal"]], dtype=float)
+            spread = np.nanmedian(np.nanstd(m, axis=0))
+            m = np.hstack([m, (pol * polarity_weight * spread)[:, None]])
         vids = [int(v) for v in vids]
         dist = analysis_core.observed_euclidean_distances(m)
         dist = np.where(np.isfinite(dist), dist, np.nanmax(dist[np.isfinite(dist)]) * 2)
@@ -1044,6 +1049,43 @@ def scenario_umap_eval(s):
            "chance": round(max(Counter(labels.values()).values()) / max(len(labels), 1), 3),
            "default_config": {k: v for k, v in base.items()}}
     out["default"] = evaluate(base)
+    # Q46: keep the time course's latency (no circular peak alignment).
+    _align = analysis_core.peak_align_timecourse
+    analysis_core.peak_align_timecourse = lambda tc: np.asarray(tc, dtype=np.float64).copy()
+    try:
+        out["default_no_peak_align"] = evaluate(base)
+        only_t = {k: (v if not k.startswith("use_") else k == "use_temporal") for k, v in base.items()}
+        out["only_temporal_no_peak_align"] = evaluate(only_t)
+        for pw in (2.0, 4.0):
+            out[f"no_peak_align_polarity_x{pw:g}"] = evaluate(base, polarity_weight=pw)
+    finally:
+        analysis_core.peak_align_timecourse = _align
+    # The pipeline as it is now (no alignment, polarity built in), and with
+    # PCs scaled by PC1's spread instead of each to unit variance.
+    out["pipeline_now"] = evaluate(base)
+    _pca = analysis_core._pca_block_valid_rows
+
+    def _relative(matrix, n_comp_max, weight, label_prefix):
+        from sklearn.decomposition import PCA
+        block, labels = _pca(matrix, n_comp_max, weight, label_prefix)
+        if block is None:
+            return block, labels
+        m = np.asarray(matrix, dtype=np.float64)
+        valid = analysis_core.non_sentinel_mask(m)
+        n_comp = block.shape[1]
+        sc = PCA(n_components=n_comp).fit_transform(m[valid])
+        sc = (sc - sc.mean(axis=0)) / (sc[:, 0].std() or 1.0)
+        out2 = np.full_like(block, np.nan)
+        out2[valid] = sc * float(weight)
+        return out2, labels
+    analysis_core._pca_block_valid_rows = _relative
+    try:
+        out["pipeline_pc_relative"] = evaluate(base)
+    finally:
+        analysis_core._pca_block_valid_rows = _pca
+    if os.environ.get("HARNESS_QUICK"):
+        log(json.dumps(out))
+        return
     for b in blocks:
         if base.get(b):
             out["without_" + b[4:]] = evaluate({**base, b: False})

@@ -53,11 +53,13 @@ from ...analysis.constants import (
     DEFAULT_USE_RF_DIAMETER,
     DEFAULT_USE_GRATING_DSOS,
     DEFAULT_USE_CHIRP,
+    DEFAULT_USE_POLARITY,
     DEFAULT_WEIGHT_TEMPORAL,
     DEFAULT_WEIGHT_ACG,
     DEFAULT_WEIGHT_RF_DIAMETER,
     DEFAULT_WEIGHT_GRATING_DSOS,
     DEFAULT_WEIGHT_CHIRP,
+    DEFAULT_WEIGHT_POLARITY,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,6 +119,15 @@ def umap_inputs_waiting(dm, feature_config):
 
 # Hover text for the feature checkboxes (PLAN.md Q25).
 FEATURE_TOOLTIPS = {
+    "use_polarity": (
+        "ON or OFF, from the sign of the STA lobe nearest the spike.\n"
+        "Keeps ON and OFF cells apart in the map: without it ACG and RF\n"
+        "size could put an ON cell among OFF cells (PLAN.md Q46)."
+    ),
+    "use_temporal": (
+        "The STA time course (PCA). Its timing is kept: time-to-peak\n"
+        "separates brisk transient from brisk sustained cells."
+    ),
     "use_rf_diameter": (
         "RF diameter from the Vision Gaussian fit, in stixels.\n"
         "Long = 2σ along the longer axis of the fitted ellipse.\n"
@@ -507,6 +518,13 @@ class UMAPPanel(QWidget):
                 "w_chirp",
                 DEFAULT_WEIGHT_CHIRP,
                 DEFAULT_USE_CHIRP,
+            ),
+            (
+                "ON / OFF polarity",
+                "use_polarity",
+                "w_polarity",
+                DEFAULT_WEIGHT_POLARITY,
+                DEFAULT_USE_POLARITY,
             ),
         ]
 

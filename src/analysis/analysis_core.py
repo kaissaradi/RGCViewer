@@ -861,10 +861,12 @@ def build_feature_matrix(raw_blocks, feature_config):
 
     Pipeline
     --------
-    1. **Temporal STA** (if enabled): peak-align each row via
-       :func:`peak_align_timecourse`, PCA to ``TEMPORAL_PCA_COMPONENTS``
+    1. **Temporal STA** (if enabled): PCA to ``TEMPORAL_PCA_COMPONENTS``
        components on cells that have an STA, multiply by ``w_temporal``.
-       Cells with no STA keep a NaN in those columns.
+       Cells with no STA keep a NaN in those columns. The rows are NOT
+       peak-aligned any more: time-to-peak is part of a type's signature
+       (brisk transient vs sustained), and within one run every cell shares
+       the frame time (PLAN.md Q46).
     2. **ACG** (if enabled): PCA to ``ACG_PCA_COMPONENTS`` components,
        multiply by ``w_acg``. Same sentinel rule.
     3. **Grating / chirp** (if enabled): same PCA-on-valid, NaN-if-missing
@@ -872,6 +874,11 @@ def build_feature_matrix(raw_blocks, feature_config):
     4. **RF diameters** (if enabled): ``RobustScaler`` on positive values;
        ``0`` / NaN stay missing.
     5. ``np.hstack`` all enabled blocks.
+    6. **Polarity** (if enabled): +1 ON / -1 OFF by the STA sign rule
+       (``type_features.polarity``), scaled to 2 x the matrix's median
+       column spread at the default weight; 0 without a time course.
+       On two labelled runs it lifted 5-NN type accuracy in the 2-D UMAP
+       from 0.94 / 0.84 to 0.96 / 0.99 and made ON / OFF never mix (Q46).
 
     A missing block does not drop the cell. UMAP should be run with
     :func:`observed_euclidean_distances` when the matrix contains NaN so
@@ -921,8 +928,6 @@ def build_feature_matrix(raw_blocks, feature_config):
         w = feature_config.get("w_temporal", DEFAULT_WEIGHT_TEMPORAL)
         tc_matrix = raw_blocks["temporal"].copy()
         if tc_matrix.shape[1] > 1 and np.any(non_sentinel_mask(tc_matrix)):
-            for i in range(tc_matrix.shape[0]):
-                tc_matrix[i] = peak_align_timecourse(tc_matrix[i])
             block, block_labels = _pca_block_valid_rows(
                 tc_matrix, TEMPORAL_PCA_COMPONENTS, w, "tc_pc"
             )
@@ -1071,6 +1076,32 @@ def build_feature_matrix(raw_blocks, feature_config):
         )
 
     matrix = np.hstack(blocks)
+
+    # ── Polarity ─────────────────────────────────────────────────────────────
+    from .constants import DEFAULT_USE_POLARITY, DEFAULT_WEIGHT_POLARITY
+    temporal = raw_blocks.get("temporal") if isinstance(raw_blocks, dict) else None
+    # Unset: on when the temporal block it comes from was built (the UMAP
+    # panel always sets it).
+    use_pol = feature_config.get(
+        "use_polarity",
+        DEFAULT_USE_POLARITY and any(str(l).startswith("tc_pc") for l in labels))
+    if use_pol and temporal is not None \
+            and temporal.shape[1] > 1:
+        from .type_features import polarity
+        real = non_sentinel_mask(temporal)
+        # A cell with no STA gets 0 ("neither"), not NaN. With NaN it is
+        # compared on ACG / RF only, sits near ON and OFF cells alike and
+        # bridges the two islands in the UMAP graph; measured on two runs,
+        # NaN gave 0.93 / 0.83 5-NN type accuracy in UMAP, 0 gave 0.96 / 0.99.
+        pol = np.array([float(polarity(row)) if ok else 0.0
+                        for row, ok in zip(temporal, real)])
+        with np.errstate(all="ignore"):
+            spread = np.nanmedian(np.nanstd(matrix, axis=0))
+        if np.isfinite(pol).any() and np.isfinite(spread) and spread > 0:
+            scale = 2.0 * spread * feature_config.get("w_polarity", DEFAULT_WEIGHT_POLARITY) \
+                / DEFAULT_WEIGHT_POLARITY
+            matrix = np.hstack([matrix, (pol * scale)[:, None]])
+            labels.append("polarity")
     return matrix, labels
 
 

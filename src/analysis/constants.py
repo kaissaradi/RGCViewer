@@ -136,6 +136,8 @@ DEFAULT_USE_ACG = True
 DEFAULT_USE_RF_DIAMETER = True
 DEFAULT_USE_GRATING_DSOS = False
 DEFAULT_USE_CHIRP = False
+# ON / OFF from the STA sign rule (PLAN.md Q46): keeps ON and OFF apart in UMAP.
+DEFAULT_USE_POLARITY = True
 
 DEFAULT_WEIGHT_TEMPORAL = 10.0
 DEFAULT_WEIGHT_ACG = 10.0
@@ -143,6 +145,8 @@ DEFAULT_WEIGHT_RF_DIAMETER = 10.0
 # Slider rest positions if the user turns these on. Not used at startup.
 DEFAULT_WEIGHT_GRATING_DSOS = 10.0
 DEFAULT_WEIGHT_CHIRP = 10.0
+# 10 = the measured setting: 2 x the matrix's median column spread.
+DEFAULT_WEIGHT_POLARITY = 10.0
 
 
 # cell type labels

@@ -208,6 +208,8 @@ class TestBuildFeatureMatrix:
 
     def test_zero_weight_omits_temporal(self, raw_blocks_10_cells, all_enabled_config):
         """Disabling temporal reduces matrix width by TEMPORAL_PCA_COMPONENTS."""
+        # Polarity (Q46) comes from the time course too; keep it out of this count.
+        all_enabled_config = {**all_enabled_config, 'use_polarity': False}
         matrix_full, _ = build_feature_matrix(raw_blocks_10_cells, all_enabled_config)
 
         config_no_tc = {**all_enabled_config, 'use_temporal': False}
@@ -678,3 +680,50 @@ class TestDefaultFeatureFlags:
         assert DEFAULT_WEIGHT_TEMPORAL == 10.0
         assert DEFAULT_WEIGHT_ACG == 10.0
         assert DEFAULT_WEIGHT_RF_DIAMETER == 10.0
+
+
+class TestPolarityFeature:
+    """ON / OFF from the STA sign rule keeps the two apart (PLAN.md Q46)."""
+
+    def _raw(self):
+        t = np.linspace(0, 1, 20)
+        on = np.exp(-((t - 0.8) / 0.1) ** 2)
+        temporal = np.vstack([on, on * 0.9, -on, -on * 1.1, np.zeros(20)])   # last: no STA
+        return {"temporal": temporal, "acg": np.random.RandomState(0).rand(5, 30),
+                "scalars": pd.DataFrame({"rf_long_diameter": [1.0] * 5,
+                                         "rf_short_diameter": [1.0] * 5})}
+
+    def test_polarity_column_signs_and_missing(self):
+        cfg = {"use_temporal": True, "use_acg": True, "use_rf_diameter": False,
+               "use_grating_dsos": False, "use_chirp": False, "use_polarity": True}
+        m, labels = build_feature_matrix(self._raw(), cfg)
+        assert labels[-1] == "polarity"
+        col = m[:, -1]
+        assert col[0] > 0 and col[1] > 0 and col[2] < 0 and col[3] < 0
+        assert col[4] == 0.0          # no STA: "neither" (NaN let it bridge ON and OFF)
+        assert np.isclose(col[0], -col[2])
+
+    def test_off_when_asked_and_follows_temporal_when_unset(self):
+        base = {"use_temporal": True, "use_acg": True, "use_rf_diameter": False,
+                "use_grating_dsos": False, "use_chirp": False}
+        _m, labels = build_feature_matrix(self._raw(), {**base, "use_polarity": False})
+        assert "polarity" not in labels
+        _m, labels = build_feature_matrix(self._raw(), base)
+        assert "polarity" in labels
+        _m, labels = build_feature_matrix(self._raw(), {**base, "use_temporal": False})
+        assert "polarity" not in labels
+
+    def test_time_courses_keep_their_latency(self):
+        """Peak alignment is gone: shapes that differ only in delay stay apart."""
+        rng = np.random.RandomState(3)
+        t = np.arange(20)
+        rows = [np.exp(-((t - (10 if i < 20 else 16)) / 1.5) ** 2) + 0.02 * rng.randn(20)
+                for i in range(40)]
+        raw = {"temporal": np.vstack(rows), "acg": np.ones((40, 5)),
+               "scalars": pd.DataFrame({"rf_long_diameter": [1.0] * 40})}
+        cfg = {"use_temporal": True, "use_acg": False, "use_rf_diameter": False,
+               "use_grating_dsos": False, "use_chirp": False, "use_polarity": False}
+        m, labels = build_feature_matrix(raw, cfg)
+        pc0 = m[:, labels.index("tc_pc0")]
+        gap = abs(pc0[:20].mean() - pc0[20:].mean())
+        assert gap > 3 * max(pc0[:20].std(), pc0[20:].std())   # aligned, they would coincide
