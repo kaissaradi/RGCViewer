@@ -1275,10 +1275,14 @@ def redraw_population_panels(main_window: MainWindow, subset=None):
     # (the standalone array-space DS/OS probe map) was removed — DS/OS is
     # now drawn directly on the Population Receptive Fields plot via
     # _draw_dsos_markers, called from draw_population_rfs_plot itself.
-    from .panels.population_panel import draw_population_acg_panel
+    from .panels.population_panel import (
+        draw_population_acg_panel,
+        draw_population_fr_panel,
+    )
 
     draw_population_timecourse_panel(main_window, subset_ids=subset)
     draw_population_acg_panel(main_window, subset_ids=subset)
+    draw_population_fr_panel(main_window, subset_ids=subset)
 
 
 def on_cluster_selection_changed(main_window: MainWindow):

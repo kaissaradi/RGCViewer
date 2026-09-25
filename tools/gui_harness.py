@@ -542,6 +542,21 @@ def scenario_first_load_timeline(s):
                     "events": events}))
 
 
+def scenario_population_fr(s):
+    """Q23: the population pane shows the group's firing rate over the recording."""
+    s.load()
+    w = s.w
+    w.toggle_population_split_view(True)
+    pump(1.0)
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    s.select(ids[3], settle=2.0)
+    state = getattr(w.pop_fr_canvas, "_fr_state", None)
+    log(json.dumps({"fr_drawn": state is not None,
+                    "n_traces": (len(state["shadow_lines"].get_segments()) if state else 0),
+                    "summary": w.pop_fr_summary.text()}))
+    s.shot("population_pane", w.pop_context_widget)
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

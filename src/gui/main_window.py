@@ -871,12 +871,16 @@ class MainWindow(QMainWindow):
         self.pop_mosaic_canvas.restyle(colors)
         self.pop_timecourse_canvas.restyle(colors)
         self.pop_acg_canvas.restyle(colors)
+        self.pop_fr_canvas.restyle(colors)
 
         # Update population header styles
         self.pop_tc_label.setStyleSheet(
             f"font-weight:bold; color: {colors['text_primary']};"
         )
         self.pop_acg_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
+        self.pop_fr_label.setStyleSheet(
             f"font-weight:bold; color: {colors['text_primary']};"
         )
 
@@ -1738,6 +1742,28 @@ class MainWindow(QMainWindow):
         acg_layout.addWidget(self.pop_acg_toolbar)
         self.pop_master_splitter.addWidget(self.pop_acg_widget)
 
+        # 4. Firing rate over the recording for every cell in the group
+        # (PLAN.md Q23). draw_population_fr_panel existed, but no
+        # canvas was ever made for it.
+        self.pop_fr_widget = QWidget()
+        fr_layout = QVBoxLayout(self.pop_fr_widget)
+        fr_layout.setContentsMargins(0, 0, 0, 0)
+        fr_hdr = QHBoxLayout()
+        self.pop_fr_label = QLabel("Population Firing Rate")
+        self.pop_fr_label.setStyleSheet(
+            f"font-weight:bold; color: {colors['text_primary']};"
+        )
+        self.pop_fr_summary = QLabel("n=0")
+        fr_hdr.addWidget(self.pop_fr_label)
+        fr_hdr.addStretch()
+        fr_hdr.addWidget(self.pop_fr_summary)
+        fr_layout.addLayout(fr_hdr)
+        self.pop_fr_canvas = MplCanvas(width=6, height=2, dpi=100)
+        fr_layout.addWidget(self.pop_fr_canvas)
+        self.pop_fr_toolbar = make_nav_toolbar(self.pop_fr_canvas, self.pop_fr_widget)
+        fr_layout.addWidget(self.pop_fr_toolbar)
+        self.pop_master_splitter.addWidget(self.pop_fr_widget)
+
         # Standalone "DS/OS Probe Map" panel removed — DS/OS is now shown
         # directly on the Population Receptive Fields plot (arrows/ticks at
         # each classified cell's RF center via _draw_dsos_markers), which
@@ -1748,7 +1774,7 @@ class MainWindow(QMainWindow):
         # 3 panes now (RF mosaic, timecourse, ACG) — was 4 before the
         # standalone DS/OS Probe Map pane was removed. Same proportions as
         # before (RF mosaic gets double weight), just one fewer entry.
-        self.pop_master_splitter.setSizes([400, 200, 200])
+        self.pop_master_splitter.setSizes([400, 200, 200, 200])
 
         # --- NEW: right-side splitter containing tabs and pop widget ---
         self.right_splitter = QSplitter(Qt.Orientation.Horizontal)

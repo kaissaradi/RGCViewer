@@ -56,7 +56,8 @@ def population_group_plots_cached(subset_ids):
     if not subset_ids:
         return False
     key = frozenset(subset_ids)
-    return key in _group_timecourse_cache and key in _group_acg_cache
+    return (key in _group_timecourse_cache and key in _group_acg_cache
+            and key in _group_fr_cache)
 
 
 def _first_plot_artist(plot_result):
