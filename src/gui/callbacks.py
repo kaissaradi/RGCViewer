@@ -241,6 +241,22 @@ def _retire_inflight_load(main_window):
     return parked
 
 
+def _forget_previous_dataset_views(main_window):
+    """Drop view caches that outlive a DataManager (PLAN.md Q13).
+
+    They are keyed by cluster ID, and cluster IDs repeat between runs, so
+    the next run's cell 5 would be drawn from the previous run's cell 5.
+    The Waveforms PCA cache and the EI map cache also key by
+    DataManager.generation, which covers a worker that finishes after this.
+    """
+    from .panels import waveforms_panel
+    waveforms_panel._PCA_CACHE.clear()
+    invalidate_population_caches()
+    ei_panel = getattr(main_window, "ei_panel", None)
+    if ei_panel is not None and hasattr(ei_panel, "reset_for_new_dataset"):
+        ei_panel.reset_for_new_dataset()
+
+
 def _release_previous_dataset(main_window):
     """Free the dataset that the next load replaces.
 
@@ -265,6 +281,7 @@ def _release_previous_dataset(main_window):
     # its Kilosort files load, see a warm cache, hide "Loading dataset..."
     # and announce "Physics Cache Ready" mid-load (PLAN.md Q19).
     stop_cache_progress_polling(main_window)
+    _forget_previous_dataset_views(main_window)
     parked = _retire_inflight_load(main_window)
 
     old_dm = getattr(main_window, "data_manager", None)

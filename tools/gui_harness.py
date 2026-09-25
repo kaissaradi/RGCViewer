@@ -433,6 +433,32 @@ def scenario_switch_mid_warmup(s):
     log(json.dumps({"after_switch": out}))
 
 
+def scenario_switch_state(s):
+    """Q13: after a run switch, cell N's Waveforms PCA is this run's, not the last."""
+    from src.gui.panels import waveforms_panel as wp
+    w = s.w
+    out = {}
+    runs = (("first", s.ks_dir, os.environ.get("HARNESS_DAT")),
+            ("second", os.environ["HARNESS_KS2"], os.environ.get("HARNESS_DAT2")))
+    for tag, ks, dat in runs:
+        w.load_directory(ks, dat or None)
+        wait_until(lambda: getattr(w, "_dataset_revealed", False), 300)
+        pump(1.0)
+        s.tab("Waveforms")
+        cid = 5
+        s.select(cid, settle=0.2)
+        wait_until(lambda: (w.waveforms_panel._last_pca_payload or {}).get("cluster_id") == cid, 90)
+        pay = w.waveforms_panel._last_pca_payload or {}
+        # pca_generation must equal dm_generation (or be None if no PCA came:
+        # the PCA needs the raw file; see "isolation").
+        out[tag] = {"dm_generation": w.data_manager.generation,
+                    "pca_generation": pay.get("_generation"),
+                    "isolation": w.waveforms_panel._isolation_label.text(),
+                    "cache_generations": sorted({k[0] for k in wp._PCA_CACHE}, key=str)}
+        s.shot(f"waveforms_{tag}", w)
+    log(json.dumps(out))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

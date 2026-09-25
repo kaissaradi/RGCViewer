@@ -32,7 +32,7 @@ from matplotlib.figure import Figure
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from .live_selectors import PopulationSelectionMixin
+from .live_selectors import PopulationSelectionMixin, _axes_ready
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +368,12 @@ class TraceStackWidget(PopulationSelectionMixin, QWidget):
         self.highlight([])
 
     def _blit(self):
+        # A hidden or collapsed canvas has a 0x0 figure, and drawing it raises
+        # "'box_aspect' and 'fig_aspect' must be positive" (AGENTS.md Law 5).
+        # That broke the second dataset load via umap_panel.reset_for_new_dataset.
+        # The next show/resize draws, and _on_draw re-blits.
+        if not _axes_ready(self._ax):
+            return
         if self._blit_bg is None:
             # No usable snapshot yet (first paint, or just after a resize).
             # draw() re-enters _on_draw, which snapshots and re-blits for us.

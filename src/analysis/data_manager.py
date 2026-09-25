@@ -1,5 +1,6 @@
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
+import itertools
 import threading
 import time
 import warnings
@@ -374,6 +375,11 @@ def sort_electrode_map(electrode_map: np.ndarray) -> np.ndarray:
     return sorted_indices
 
 
+# One number per DataManager, never reused. Caches outside the DataManager
+# key by it so a result from the previous run is never shown on this one
+# (cell IDs repeat between runs; PLAN.md Q13).
+_GENERATIONS = itertools.count(1)
+
 class DataManager(QObject):
     """
     Manages all data loading, processing, and caching.
@@ -472,6 +478,7 @@ class DataManager(QObject):
         # and the EI-correlation pickle carry the source they came from, so a
         # different Vision folder never reuses them (PLAN.md Q11).
         self._vision_source = None
+        self.generation = next(_GENERATIONS)
         # <vision dir>/<dataset>.params of the loaded Vision files, or None.
         # Ctrl+S writes the classification here (params_classification.py).
         self.vision_params_path = None

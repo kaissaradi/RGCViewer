@@ -162,6 +162,7 @@ class _CloudWorker(QRunnable):
             payload = _build_cloud_payload(
                 self.cluster_id, waveforms, self.median_trace, self.t_ms
             )
+            payload["_generation"] = getattr(self.dm, "generation", None)
             self.signals.cloud_ready.emit(self.cluster_id, payload)
         except Exception as exc:
             logger.exception("CloudWorker error cid=%d", self.cluster_id)
@@ -308,10 +309,12 @@ class _PCAWorker(QRunnable):
         unit_spike_indices: Optional[np.ndarray],
         signals: _WorkerSignals,
         bg_waves_by_cid: Optional[dict] = None,
+        generation=None,
     ):
         super().__init__()
         self.setAutoDelete(True)
         self.cluster_id = cluster_id
+        self.generation = generation  # DataManager.generation of the request
         self.unit_waves = unit_waves  # (n_unit, n_time)
         self.bg_waves = bg_waves  # (n_bg, n_time) or None
         self.unit_spike_indices = unit_spike_indices  # global indices for future lasso
@@ -328,6 +331,7 @@ class _PCAWorker(QRunnable):
                 self.unit_spike_indices,
                 self.bg_waves_by_cid,
             )
+            payload["_generation"] = self.generation
             self.signals.pca_ready.emit(self.cluster_id, payload)
         except Exception as exc:
             logger.exception("PCAWorker error cid=%d", self.cluster_id)
@@ -542,6 +546,7 @@ class _ChannelSnippetsWorker(QRunnable):
                 unit_indices,
                 self.signals,
                 bg_waves_by_cid=bg_waves_by_cid,
+                generation=getattr(self.dm, "generation", None),
             )
             QThreadPool.globalInstance().start(pca_worker)
 
@@ -1234,9 +1239,19 @@ class WaveformPanel(QWidget):
         self._pool.start(worker)
 
     @Slot(int, object)
-    def _on_cloud_ready(self, cluster_id: int, payload: dict):
+    def _generation(self):
+        return getattr(getattr(self.main_window, "data_manager", None), "generation", None)
+
+    def _is_stale(self, cluster_id, payload):
+        """Another cell, or the same cell ID in the previous run (PLAN.md Q13)."""
         if cluster_id != self._current_cluster_id:
-            return  # stale — user moved on
+            return True
+        return isinstance(payload, dict) and payload.get("_generation", self._generation()) \
+            != self._generation()
+
+    def _on_cloud_ready(self, cluster_id: int, payload: dict):
+        if self._is_stale(cluster_id, payload):
+            return  # stale — user moved on, or the run changed
         self._draw_cloud(payload)
 
     def _draw_cloud(self, payload: dict):
@@ -1277,10 +1292,11 @@ class WaveformPanel(QWidget):
                     falls back to an inline template synthesiser)
           Stage B: _PCAWorker              → runs PCA + computes isolation
 
-        LRU cache keyed by (cluster_id, dom_chan) to avoid recomputing
-        when the user re-visits a cluster.
+        LRU cache keyed by (DataManager.generation, cluster_id, dom_chan)
+        to avoid recomputing when the user re-visits a cluster. The generation
+        keeps another run's cluster 5 from answering for this run's.
         """
-        cache_key = (cluster_id, dom_chan)
+        cache_key = (getattr(dm, "generation", None), cluster_id, dom_chan)
         if cache_key in _PCA_CACHE:
             _PCA_CACHE.move_to_end(cache_key)
             self._on_pca_ready(cluster_id, _PCA_CACHE[cache_key])
@@ -1298,14 +1314,14 @@ class WaveformPanel(QWidget):
 
     @Slot(int, object)
     def _on_pca_ready(self, cluster_id: int, payload: dict):
-        if cluster_id != self._current_cluster_id:
+        if self._is_stale(cluster_id, payload):
             return
         if payload is None or payload.get("error"):
             self._isolation_label.setText("PCA: insufficient data")
             return
 
         # Update LRU cache
-        cache_key = (cluster_id, self._current_dom_chan)
+        cache_key = (payload.get("_generation"), cluster_id, self._current_dom_chan)
         _PCA_CACHE[cache_key] = payload
         _PCA_CACHE.move_to_end(cache_key)
         while len(_PCA_CACHE) > _PCA_CACHE_MAX:

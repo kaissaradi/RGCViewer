@@ -215,8 +215,11 @@ class EIPanel(QWidget):
         # sample index of the soma spike (Vision nl_points, or global trough)
         self._soma_frame: int = 0
 
-        # per-cluster ei_map cache: {cluster_id: ei_map_ndarray}
+        # per-cluster ei_map cache: {cluster_id: ei_map_ndarray}. Valid for
+        # one (DataManager.generation, Vision source): cluster IDs repeat
+        # between runs, and a new Vision folder changes the EIs (PLAN.md Q13).
         self._ei_map_cache: dict[int, np.ndarray] = {}
+        self._ei_map_cache_key = None
 
         # animation state
         self._anim_frame: int = 0
@@ -551,6 +554,11 @@ class EIPanel(QWidget):
             return
 
         ch_pos = self._resolve_channel_positions()
+        dm = self.main_window.data_manager
+        key = (getattr(dm, "generation", None), getattr(dm, "_vision_source", None))
+        if key != self._ei_map_cache_key:
+            self._ei_map_cache.clear()
+            self._ei_map_cache_key = key
         ei_maps, final_ids, final_ei, final_err = [], [], [], []
 
         for ei_data, orig_id, err_data in zip(valid_ei, valid_orig, valid_err):
@@ -1493,6 +1501,22 @@ class EIPanel(QWidget):
             logger.exception("Failed to load array image for EI panel overlay")
             self._overlay_image_rgba = None
             self._overlay_extent_um = None
+
+    def reset_for_new_dataset(self) -> None:
+        """Forget the previous run: its EI maps and its array photo (PLAN.md Q13).
+
+        Without this, Photo on the next run showed the previous run's image,
+        which _on_photo_toggled treats as already loaded.
+        """
+        self._ei_map_cache.clear()
+        self._ei_map_cache_key = None
+        self._overlay_image_rgba = None
+        self._overlay_extent_um = None
+        self._overlay_enabled = False
+        self.photo_btn.blockSignals(True)
+        self.photo_btn.setChecked(False)
+        self.photo_btn.blockSignals(False)
+        self.overlay_alpha_slider.setEnabled(False)
 
     # -----------------------------------------------------------------------
     # Photo overlay — slot handlers
