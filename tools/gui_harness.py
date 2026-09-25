@@ -385,6 +385,54 @@ def scenario_tab_overlay(s):
                     "n_problems": len(found)}))
 
 
+def scenario_reload_indicator(s):
+    """Q19: the load / cache progress bar on a reload and a dataset switch."""
+    w = s.w
+    bar = w.cache_progress
+    second = os.environ.get("HARNESS_KS2") or s.ks_dir
+
+    def sample(tag, secs):
+        out, last = [], None
+        end = time.time() + secs
+        t0 = time.time()
+        while time.time() < end:
+            app.processEvents()
+            st = (bar.isVisible(), bar.minimum(), bar.maximum(), bar.value(),
+                  bar.format(), w.status_bar.currentMessage()[:60],
+                  bool(getattr(w, "_dataset_revealed", False)),
+                  w.central_widget.isEnabled())
+            if st != last:
+                out.append([round(time.time() - t0, 2), *st])
+                last = st
+            time.sleep(0.05)
+        log(json.dumps({"phase": tag, "states": out}))
+
+    for tag, ks in (("first", s.ks_dir), ("reload_same", s.ks_dir), ("switch", second)):
+        w.load_directory(ks, os.environ.get("HARNESS_DAT") or None)
+        sample(tag, 45)
+
+
+def scenario_switch_mid_warmup(s):
+    """Q19: open a cold run, switch to HARNESS_KS2 while its caches still build."""
+    w = s.w
+    bar = w.cache_progress
+    w.load_directory(s.ks_dir, None)
+    wait_until(lambda: getattr(w, "_dataset_revealed", False), 300)
+    pump(1.5)
+    log(json.dumps({"cold_run_bar": [bar.isVisible(), bar.value(), bar.format()]}))
+    w.load_directory(os.environ["HARNESS_KS2"], None)
+    out, last, t0 = [], None, time.time()
+    while time.time() - t0 < 60:
+        app.processEvents()
+        st = (bar.isVisible(), bar.minimum(), bar.maximum(), bar.value(), bar.format(),
+              w.status_bar.currentMessage()[:50], bool(getattr(w, "_dataset_revealed", False)))
+        if st != last:
+            out.append([round(time.time() - t0, 2), *st])
+            last = st
+        time.sleep(0.05)
+    log(json.dumps({"after_switch": out}))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

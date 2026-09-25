@@ -113,6 +113,10 @@ def update_cache_progress(main_window):
     """Updates the main window progress bar based on actual cache state."""
     if not main_window.data_manager or main_window.data_manager.cluster_df.empty:
         return
+    # Until the dataset is revealed the bar is the load indicator, and it is
+    # not this function's to change (PLAN.md Q19).
+    if not getattr(main_window, "_dataset_revealed", True):
+        return
 
     dm = main_window.data_manager
     total = len(dm.cluster_df)
@@ -257,6 +261,10 @@ def _release_previous_dataset(main_window):
     that thread and reports it, and the release then waits for it to finish.
     """
     stop_worker(main_window)
+    # The old run's progress poll would read the NEW DataManager as soon as
+    # its Kilosort files load, see a warm cache, hide "Loading dataset..."
+    # and announce "Physics Cache Ready" mid-load (PLAN.md Q19).
+    stop_cache_progress_polling(main_window)
     parked = _retire_inflight_load(main_window)
 
     old_dm = getattr(main_window, "data_manager", None)
