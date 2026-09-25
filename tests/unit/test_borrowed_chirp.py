@@ -120,3 +120,46 @@ def test_grating_tab_shows_the_borrowed_cell_and_its_rasters(qtbot):
         w.data_manager = None
         w.close()
         w.deleteLater()
+
+
+# ---------------------------------------------------------------- population and table (Q58)
+
+def _dm_with_cells(bridge):
+    import pandas as pd
+    dm = _dm(bridge)
+    dm.grating_available = False                      # a white-noise run: no grating file
+    dm.cluster_df = pd.DataFrame({"cluster_id": [10, 11], "n_spikes": [100, 100]})
+    return dm
+
+
+def test_borrowed_grating_is_shown_only_once_scored_then_everywhere():
+    bridge = _raw_grating_bridge()
+    dm = _dm_with_cells(bridge)
+    assert dm.grating_entry_for_display(10) == (None, None)       # not scored: nothing computed here
+    assert bridge.precompute_gratings() == 1
+    entry, source = dm.grating_entry_for_display(10)
+    assert source == "borrowed" and entry is bridge.get_grating_entry(11)
+    assert dm.grating_entry_for_display(11) == (None, None)       # cluster 11 has no match
+
+    from types import SimpleNamespace
+    from src.gui.panels import population_panel as pp
+    mw = SimpleNamespace(data_manager=dm, dsos_threshold=None)
+    rows = list(pp._iter_dsos_population(mw, None))
+    assert [cid for cid, _sel in rows] == [10] and rows[0][1]["classification"] == "DS"
+
+    assert dm.attach_grating_columns() is True                    # used to return False here
+    row = dm.cluster_df.set_index("cluster_id").loc[10]
+    assert row["dsos"] == "DS" and row["dsi"] > 0.3
+
+
+def test_the_summary_says_what_was_borrowed_and_where():
+    from src.gui import callbacks
+    bridge = _raw_grating_bridge()
+    dm = _dm_with_cells(bridge)
+    bridge.precompute_gratings()
+    c = callbacks.borrow_counts(dm, bridge)
+    assert (c["cells"], c["matched"], c["high"], c["grating"], c["ds"]) == (2, 1, 1, 1, 1)
+    text = callbacks.borrow_summary(c, "data023")
+    assert "Matched 1 of 2 cells to data023" in text
+    assert "Drifting gratings: 1 cells" in text and "1 DS" in text and "arrows on the population" in text
+    assert "Chirp: none" in text

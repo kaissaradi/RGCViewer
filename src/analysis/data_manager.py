@@ -5358,7 +5358,9 @@ class DataManager(QObject):
         cells not computed yet get NaN / "". Call again when it finishes.
         Returns False (cluster_df untouched) when there is no grating data.
         """
-        if not getattr(self, "grating_available", False):
+        bridge = self._optional_attr("reference_bridge")
+        borrowing = bridge is not None and getattr(bridge, "has_any_grating", lambda: False)()
+        if not getattr(self, "grating_available", False) and not borrowing:
             return False
         if self.cluster_df is None or self.cluster_df.empty:
             return False
@@ -5370,7 +5372,8 @@ class DataManager(QObject):
         dsi = np.full(n, np.nan)
         osi = np.full(n, np.nan)
         for i, cid in enumerate(self.cluster_df["cluster_id"].to_numpy()):
-            data = self.get_grating_data_for_cluster(int(cid))
+            # The run's own result, else the matched reference cell's (Q58).
+            data, _source = self.grating_entry_for_display(int(cid))
             if not data:
                 continue
             sel = grating_calc.select_best_dsos_condition(
@@ -5733,6 +5736,28 @@ class DataManager(QObject):
                          "status": bridge.get_status(vid)},
             "_source": d,
         }
+
+    def grating_entry_for_display(self, cluster_id):
+        """(grating dict, "own" | "borrowed") for drawing many cells; (None, None) if neither.
+
+        The run's own result first, else the EI-matched reference cell's, but
+        only once the bridge has scored it (``precompute_gratings`` runs after
+        Map Reference Run), so this never computes on the GUI thread. The
+        population arrows and the table's DS/OS columns read it; they read the
+        run's own data only before (2026-09-25: no arrows after matching).
+        """
+        own = self.get_grating_data_for_cluster(int(cluster_id)) \
+            if getattr(self, "grating_available", False) else None
+        if own:
+            return own, "own"
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is None or not hasattr(bridge, "get_grating_entry_if_ready"):
+            return None, None
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
+        if vid is None or not bridge.has_match(vid):
+            return None, None
+        entry = bridge.get_grating_entry_if_ready(vid)
+        return (entry, "borrowed") if entry else (None, None)
 
     def get_borrowed_grating(self, cluster_id):
         """The matched reference cell's grating response, for a cell this run has none for.

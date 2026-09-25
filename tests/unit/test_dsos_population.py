@@ -53,7 +53,9 @@ def test_iter_dsos_population_does_not_need_sta():
             return _entry(dsi=0.05, osi=0.62)
         return None
 
-    mw.data_manager.get_grating_data_for_cluster.side_effect = grating
+    # The population reads the run's own result, else a matched cell's (Q58).
+    mw.data_manager.grating_entry_for_display.side_effect = \
+        lambda cid: (grating(cid), "own" if grating(cid) else None)
     rows = list(_iter_dsos_population(mw, None))
     by_id = {cid: sel["classification"] for cid, sel in rows}
     assert by_id == {0: "DS", 1: "OS"}
@@ -109,7 +111,7 @@ def test_population_without_sta_uses_orientation_polar():
     mw.data_manager.grating_status = "raw_only"
     mw.data_manager.is_vision_only = False
     mw.data_manager.cluster_df = pd.DataFrame({"cluster_id": [4]})
-    mw.data_manager.get_grating_data_for_cluster.return_value = _entry(dsi=0.5)
+    mw.data_manager.grating_entry_for_display.return_value = (_entry(dsi=0.5), "own")
 
     draw_population_rfs_plot(mw, subset_cell_ids=[4], canvas=canvas)
 

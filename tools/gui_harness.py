@@ -1106,13 +1106,24 @@ def scenario_borrowed_grating(s):
     ref = os.environ["HARNESS_REF"]
     s.load()
     w = s.w
+    shown = []
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
     QMessageBox.exec_ = lambda self: QMessageBox.StandardButton.Ok
-    QMessageBox.exec = lambda self: QMessageBox.StandardButton.Ok
+    QMessageBox.exec = lambda self: (shown.append(self.text()), QMessageBox.StandardButton.Ok)[1]
+    w.toggle_population_split_view(True)
     t = time.time()
     callbacks.map_reference_run(w, ref_dir=ref)
     dm = s.dm()
     ok = wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 900)
+    wait_until(lambda: any("What the matched" in x or "Matched " in x for x in shown), 120)
+    pump(2.0)
+    log("summary shown:\n" + next((x for x in shown if x.startswith("Matched ")), "(none)"))
+    ax = w.pop_mosaic_canvas.fig.axes[0] if w.pop_mosaic_canvas.fig.axes else None
+    arrows = 0 if ax is None else sum(1 for tx in ax.texts if getattr(tx, "arrow_patch", None) is not None)
+    calls = dm.cluster_df["dsos"].value_counts().to_dict() if "dsos" in dm.cluster_df.columns else {}
+    log(json.dumps({"population_ds_arrows": arrows, "table_dsos": calls,
+                    "rf_title": ax.get_title() if ax is not None else None}))
+    s.shot("population_after_match", w.pop_mosaic_canvas)
     bridge = dm.reference_bridge
     log(f"bridge installed={ok} in {time.time() - t:.0f}s: {bridge.summary() if bridge else None}")
     ids = [int(c) for c in dm.cluster_df["cluster_id"].values]

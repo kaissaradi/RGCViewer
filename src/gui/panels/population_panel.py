@@ -1026,12 +1026,19 @@ def _iter_dsos_population(main_window, subset_cell_ids):
     if threshold is not None:
         kwargs["dsi_threshold"] = float(threshold)
         kwargs["osi_threshold"] = float(threshold)
-    get = getattr(dm, "get_grating_data_for_cluster", None)
-    if not callable(get):
-        return
+    # The run's own grating result, else the EI-matched reference cell's once
+    # the bridge has scored it (Q58: matched white-noise runs drew no arrows).
+    get = getattr(dm, "grating_entry_for_display", None)
+    if callable(get):
+        def get_entry(cid):
+            return get(cid)[0]
+    else:
+        get_entry = getattr(dm, "get_grating_data_for_cluster", None)
+        if not callable(get_entry):
+            return
     for cid in cids:
         try:
-            entry = get(int(cid))
+            entry = get_entry(int(cid))
         except Exception:
             continue
         if not isinstance(entry, dict) or not entry:

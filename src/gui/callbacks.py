@@ -2809,17 +2809,28 @@ def _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vi
         main_window.status_bar.clearMessage()
         return
 
+    threshold = getattr(main_window, "dsos_threshold", None)
+
     def load():
-        return ReferenceBridge.from_matching_report(
+        bridge = ReferenceBridge.from_matching_report(
             report, ref_path, ref_dataset, load_stas=True, load_params=True,
             load_chirp=True, load_grating=True, ref_is_vision_only=ref_vision_only)
+        # Score every matched cell's grating now (~10 ms a cell), so the
+        # population arrows and table columns can read them at once (Q58).
+        bridge.precompute_gratings()
+        return bridge, borrow_counts(dm, bridge, threshold)
 
-    def loaded(bridge):
+    def loaded(result):
+        bridge, counts = result
         if main_window.data_manager is not dm:
             return
         dm.install_reference_bridge(bridge, report=report)
         main_window.status_bar.showMessage(f"Reference mapped: {bridge.summary()}", 8000)
         _after_bridge_installed(main_window)
+        box = QMessageBox(main_window)
+        box.setWindowTitle("What the matched run adds")
+        box.setText(borrow_summary(counts, ref_path.name))
+        box.exec()
 
     def load_failed(exc):
         main_window.status_bar.clearMessage()
@@ -2830,8 +2841,75 @@ def _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vi
     _run_in_background(main_window, load, loaded, load_failed)
 
 
+def borrow_counts(dm, bridge, dsos_threshold=None) -> dict:
+    """What the bridge adds, counted over this run's cells (runs in the background)."""
+    from ..analysis import grating_calc
+    thr = grating_calc.DSI_THRESHOLD if dsos_threshold is None else float(dsos_threshold)
+    c = {"cells": 0, "matched": 0, "high": 0, "marginal": 0, "grating": 0, "ds": 0, "os": 0,
+         "chirp": 0, "rf": 0, "own_grating": 0, "stimuli": list(getattr(bridge, "stimuli_loaded", ()))}
+    df = getattr(dm, "cluster_df", None)
+    ids = [] if df is None else [int(x) for x in df["cluster_id"].to_numpy()]
+    c["cells"] = len(ids)
+    for cid in ids:
+        vid = dm.get_vision_id_for_cluster(cid)
+        if vid is None or not bridge.has_match(vid):
+            continue
+        c["matched"] += 1
+        status = bridge.get_status(vid)
+        if status in ("high", "marginal"):
+            c[status] += 1
+        own = dm.get_grating_data_for_cluster(cid) if getattr(dm, "grating_available", False) else None
+        if own:
+            c["own_grating"] += 1
+        else:
+            entry = bridge.get_grating_entry_if_ready(vid)
+            if entry:
+                c["grating"] += 1
+                sel = grating_calc.select_best_dsos_condition(entry, dsi_threshold=thr, osi_threshold=thr)
+                if sel and sel["classification"] == "DS":
+                    c["ds"] += 1
+                elif sel and sel["classification"] == "OS":
+                    c["os"] += 1
+        if bridge.has_chirp(vid):
+            c["chirp"] += 1
+        try:
+            if bridge.get_rf_ellipse_params(vid) is not None:
+                c["rf"] += 1
+        except Exception:
+            pass
+    return c
+
+
+def borrow_summary(c: dict, ref_name: str) -> str:
+    """Plain words for borrow_counts: what was borrowed, for how many cells, and where it shows."""
+    lines = [f"Matched {c['matched']} of {c['cells']} cells to {ref_name} by their electrical "
+             f"images ({c['high']} high confidence, {c['marginal']} marginal).", "",
+             f"For matched cells that lack their own, Encore now shows {ref_name}'s:"]
+    if c["grating"]:
+        lines.append(f"• Drifting gratings: {c['grating']} cells, scored with the Grating tab's "
+                     f"test: {c['ds']} DS, {c['os']} OS. Shown in the Grating tab (with a "
+                     f"\"Borrowed from {ref_name}\" note and the reference cell's rasters), as "
+                     "arrows on the population RF map, and in the table's DS/OS columns.")
+    elif c["own_grating"]:
+        lines.append("• Drifting gratings: this run has its own for the matched cells.")
+    else:
+        lines.append(f"• Drifting gratings: none ({ref_name} has no grating file).")
+    lines.append(f"• Chirp: {c['chirp']} cells, in the Chirp tab with a note." if c["chirp"]
+                 else f"• Chirp: none ({ref_name} has no chirp file).")
+    lines.append(f"• Receptive fields and STA time courses: {c['rf']} cells, where this run has "
+                 "no fit of its own (population RF map, UMAP)." if c["rf"]
+                 else f"• Receptive fields and STAs: none ({ref_name} has no white-noise STA).")
+    lines += ["", "A cell's own data always comes first; borrowed values only fill what this run lacks."]
+    return "\n".join(lines)
+
+
 def _after_bridge_installed(main_window):
     """Re-gate the UMAP features and redraw the population RFs with borrowed cells."""
+    # DS/OS table columns now include the matched cells' borrowed calls (Q58).
+    try:
+        refresh_grating_columns(main_window)
+    except Exception:
+        logger.debug("grating columns after map failed", exc_info=True)
     # --- Re-gate UMAP feature checkboxes (effective chirp/grating) ---
     try:
         if hasattr(main_window, "umap_panel") and main_window.umap_panel is not None:
@@ -2846,7 +2924,21 @@ def _after_bridge_installed(main_window):
             draw_population_rfs_plot,
         )
         invalidate_population_caches()
-        draw_population_rfs_plot(main_window)
+        # Drop the canvases' plot state: with the same cell subset the redraw
+        # took the hot-swap path (highlight only) and never drew the borrowed
+        # DS/OS arrows (2026-09-25). Same reset as after the grating batch.
+        for name in ("pop_mosaic_canvas", "rf_canvas"):
+            canvas = getattr(main_window, name, None)
+            if canvas is not None and hasattr(canvas, "_pop_plot_state"):
+                try:
+                    del canvas._pop_plot_state
+                except Exception:
+                    canvas._pop_plot_state = {}
+        if getattr(main_window, "population_view_enabled", False) and \
+                hasattr(main_window, "_draw_population_panel_initial"):
+            QTimer.singleShot(0, main_window._draw_population_panel_initial)
+        else:
+            draw_population_rfs_plot(main_window)
     except Exception:
         logger.debug("Population RF redraw after map failed", exc_info=True)
     # The open cell may now have a borrowed response.

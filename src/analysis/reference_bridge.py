@@ -541,6 +541,35 @@ class ReferenceBridge:
             self._grating_computed[ref_cid] = entry
         return entry
 
+    def get_grating_entry_if_ready(self, current_vision_id: int, ref_is_vision_only: bool = False):
+        """The matched cell's grating dict if analysed or already scored; never computes.
+
+        For drawing many cells on the GUI thread (population arrows, table
+        columns): scoring is ~10 ms a cell, so it happens once, in the
+        background, in ``precompute_gratings``.
+        """
+        if not self.has_any_grating():
+            return None
+        ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
+        if ref_cid is None:
+            return None
+        if self._ref_grating_data and ref_cid in self._ref_grating_data:
+            return self._ref_grating_data[ref_cid]
+        with self._grating_lock:
+            return self._grating_computed.get(ref_cid)
+
+    def precompute_gratings(self, cancelled=None) -> int:
+        """Score every matched cell's raw grating trials once. Returns the number scored."""
+        n = 0
+        if not self._ref_grating_raw:
+            return n
+        for vid in list(self._mapping):
+            if cancelled is not None and cancelled():
+                break
+            if self.has_grating(vid) and self.get_grating_entry(vid) is not None:
+                n += 1
+        return n
+
     def get_grating_trials(self, current_vision_id: int, ref_is_vision_only: bool = False):
         """(trials, trial_parameters) of the matched cell, for rasters; None without raw trials."""
         raw = self._ref_grating_raw
