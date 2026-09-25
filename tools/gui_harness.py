@@ -557,6 +557,51 @@ def scenario_population_fr(s):
     s.shot("population_pane", w.pop_context_widget)
 
 
+def scenario_feature_presets(s):
+    """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
+    from qtpy.QtCore import QSettings
+    from src.gui import callbacks
+    from src.gui.panels import feature_presets as fp
+    tmp = QSettings(os.path.join(OUT, "presets_test.ini"), QSettings.Format.IniFormat)
+    tmp.clear()
+    fp._settings = lambda settings=None, _t=tmp: settings if settings is not None else _t
+    s.load()
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    shown = {}
+
+    def keep_open(dlg):
+        shown["dlg"] = dlg
+        return 0
+
+    orig = callbacks.FeatureExtractionWindow.exec
+    callbacks.FeatureExtractionWindow.exec = keep_open
+
+    def open_window():
+        callbacks.feature_extraction(s.w, ids)
+        dlg = shown["dlg"]
+        dlg.show()
+        wait_until(lambda: bool(dlg.catalog) and bool(dlg._panels), 300)
+        pump(0.5)
+        return dlg
+
+    try:
+        dlg = open_window()
+        first = [tuple(p) for p in dlg._panels]
+        mine = [first[1], first[0], first[3], first[2], first[5], first[4]]
+        fp.save_preset("harness", mine)
+        dlg._refresh_preset_combo("harness")
+        dlg._on_preset_chosen(0)
+        chosen = [tuple(p) for p in dlg._panels]
+        dlg.close()
+        dlg2 = open_window()
+        log(json.dumps({"default_first4": first[:4], "applied": chosen == mine,
+                        "reopened_with": dlg2.preset_combo.currentText(),
+                        "reopened_panels_match": [tuple(p) for p in dlg2._panels] == mine}))
+        dlg2.close()
+    finally:
+        callbacks.FeatureExtractionWindow.exec = orig
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

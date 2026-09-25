@@ -21,6 +21,8 @@ from qtpy.QtWidgets import (
     QComboBox,
     QCheckBox,
     QApplication,
+    QInputDialog,
+    QMessageBox,
 )
 from qtpy.QtGui import QCursor, QColor, QPalette
 from qtpy.QtCore import QThread, Signal, Qt
@@ -37,6 +39,7 @@ from .rf_map_widget import RFMapWidget
 from .trace_stack_widget import TraceStackWidget
 from .view_toggles import PopulationViewToggles
 from ...analysis import feature_catalog
+from . import feature_presets
 from ..theme import feature_palette
 
 if TYPE_CHECKING:
@@ -478,7 +481,8 @@ class FeatureExtractionWindow(QDialog):
         # each of the six panels currently shows. Empty until the worker
         # returns; draw_plots falls back to the fixed panels until then.
         self.catalog: dict = {}
-        self._panels = None
+        # The preset picked last (None = DEFAULT_PANELS), PLAN.md Q15.
+        self._panels = feature_presets.panels_for(feature_presets.current())
         self._include_contrast = False
         self._building_combos = False
         # Feature-selection mode: 'manual' names every axis, 'shuffle' draws
@@ -657,9 +661,80 @@ class FeatureExtractionWindow(QDialog):
         self.contrast_chk.toggled.connect(self._on_contrast_toggled)
         self._toolbar_row.addWidget(self.contrast_chk)
         row.addStretch()
+        self._build_preset_controls(row)
         self.main_layout.addWidget(self.axis_bar2)
         self.axis_bar.setEnabled(False)
         self.axis_bar2.setEnabled(False)
+
+    # ── Presets (PLAN.md Q15) ───────────────────────────────────────────────
+
+    def _build_preset_controls(self, row):
+        """Preset picker plus Save as / Delete, on the second axis row."""
+        lbl = QLabel("Preset:")
+        lbl.setStyleSheet(f"color: {PALETTE['text_muted']}; font-size: 11px;")
+        row.addWidget(lbl)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(120)
+        self.preset_combo.setStyleSheet("font-size: 11px;")
+        self.preset_combo.setToolTip(
+            "Saved sets of the six axis pairs. The one picked last opens next time.\n"
+            "Default: Temporal STA PC1 v PC2, ACG PC1 v PC2, Temporal STA PC1 v\n"
+            "ACG PC1, Temporal STA PC1 v RF area, and two random pairs.")
+        row.addWidget(self.preset_combo)
+        self.preset_save_btn = QPushButton("Save as…")
+        self.preset_save_btn.setObjectName("tool_btn")
+        self.preset_save_btn.clicked.connect(self._save_preset)
+        row.addWidget(self.preset_save_btn)
+        self.preset_delete_btn = QPushButton("Delete")
+        self.preset_delete_btn.setObjectName("tool_btn")
+        self.preset_delete_btn.clicked.connect(self._delete_preset)
+        row.addWidget(self.preset_delete_btn)
+        self._refresh_preset_combo(feature_presets.current())
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_chosen)
+
+    def _refresh_preset_combo(self, select):
+        combo = self.preset_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(feature_presets.DEFAULT_NAME)
+        for name in sorted(feature_presets.load_presets()):
+            combo.addItem(name)
+        idx = combo.findText(select)
+        combo.setCurrentIndex(max(idx, 0))
+        combo.blockSignals(False)
+        self.preset_delete_btn.setEnabled(combo.currentText() != feature_presets.DEFAULT_NAME)
+
+    def _on_preset_chosen(self, _index):
+        name = self.preset_combo.currentText()
+        feature_presets.set_current(name)
+        self.preset_delete_btn.setEnabled(name != feature_presets.DEFAULT_NAME)
+        # None means DEFAULT_PANELS; resolve_panels also fills any pair whose
+        # feature this run lacks.
+        self._panels = feature_presets.panels_for(name)
+        if self.catalog:
+            self._populate_axis_combos()
+            self.draw_plots()
+
+    def _save_preset(self):
+        if not self._panels:
+            return
+        name, ok = QInputDialog.getText(self, "Save preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        try:
+            feature_presets.save_preset(name, self._panels)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Preset not saved", str(exc))
+            return
+        self._refresh_preset_combo(name.strip())
+
+    def _delete_preset(self):
+        name = self.preset_combo.currentText()
+        if name == feature_presets.DEFAULT_NAME:
+            return
+        feature_presets.delete_preset(name)
+        self._refresh_preset_combo(feature_presets.DEFAULT_NAME)
+        self._on_preset_chosen(0)
 
     def _build_shuffle_bar(self):
         """Pick some feature families, draw n of their features, plot every pair.
