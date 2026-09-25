@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from qtpy.QtCore import Qt, QEvent, QRect
+from qtpy.QtCore import Qt, QEvent, QPointF, QRect
 from qtpy.QtGui import QStandardItem, QMouseEvent
 
 from src.gui.main_window import MainWindow, SIDEBAR_COLLAPSED_WIDTH
@@ -24,7 +24,7 @@ class TestUmapLayoutFix:
     def test_umap_layout_on_first_visit(self, qtbot, main_window_fixture):
         """First UMAP visit must not overlap toolbar rows."""
         win = main_window_fixture
-        win.analysis_tabs.setCurrentIndex(3)          # UMAP tab
+        win.analysis_tabs.setCurrentWidget(win.umap_panel)   # was index 3 before tabs were added
         qtbot.waitUntil(lambda: win.umap_panel.run_btn.isVisible(), timeout=2000)
 
         panel = win.umap_panel
@@ -44,12 +44,12 @@ class TestUmapLayoutFix:
         Small y‑offset differences (≤1 pixel) are tolerated due to offscreen rendering.
         """
         win = main_window_fixture
-        win.analysis_tabs.setCurrentIndex(3)
+        win.analysis_tabs.setCurrentWidget(win.umap_panel)
         qtbot.waitUntil(lambda: win.umap_panel.run_btn.isVisible(), timeout=2000)
         geo_before = win.umap_panel.run_btn.geometry()
 
-        win.analysis_tabs.setCurrentIndex(2)   # switch away
-        win.analysis_tabs.setCurrentIndex(3)   # back to UMAP
+        win.analysis_tabs.setCurrentWidget(win.standard_plots_panel)   # switch away
+        win.analysis_tabs.setCurrentWidget(win.umap_panel)   # back to UMAP
         qtbot.waitUntil(lambda: win.umap_panel.run_btn.isVisible(), timeout=2000)
         geo_after = win.umap_panel.run_btn.geometry()
 
@@ -172,7 +172,7 @@ class TestTreeBranchStyling:
         # Click at far right — nowhere near the toggle
         miss = QMouseEvent(
             QEvent.MouseButtonRelease,
-            QRect(290, 14, 1, 1).center(),
+            QPointF(QRect(290, 14, 1, 1).center()),   # PyQt6 wants a QPointF
             Qt.LeftButton,
             Qt.LeftButton,
             Qt.NoModifier,
