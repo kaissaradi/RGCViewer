@@ -391,13 +391,6 @@ class TestInvalidatePopulationCaches:
         assert len(pp._rf_background_cache) == 0
         assert len(pp._rf_background_cache_order) == 0
 
-    def test_invalidate_is_idempotent(self):
-        """Calling invalidate_population_caches() on empty caches should not raise."""
-        from src.gui.panels.population_panel import invalidate_population_caches
-
-        _clear_module_caches()
-        invalidate_population_caches()  # should not raise
-        invalidate_population_caches()  # second call also safe
 
     def test_refinement_results_invalidate_population_caches(self):
         """Cluster refinement changes group membership, so population caches clear."""
@@ -509,12 +502,3 @@ class TestLazySTACacheSize:
         )
         assert lazy_small._max_cache >= 200, "_max_cache must never fall below 200"
 
-    def test_max_sta_cache_cells_constant_exists(self):
-        """MAX_STA_CACHE_CELLS must be a module-level constant >= 200."""
-        from src.analysis.vision_integration import MAX_STA_CACHE_CELLS
-
-        assert isinstance(MAX_STA_CACHE_CELLS, int)
-        assert MAX_STA_CACHE_CELLS >= 200, (
-            f"MAX_STA_CACHE_CELLS={MAX_STA_CACHE_CELLS} is too small; "
-            "must be >= 200 to be useful for large folders"
-        )

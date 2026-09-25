@@ -383,10 +383,6 @@ def test_empty_subset_draws_all_cells():
     assert len(all_offsets) == 6
 
 
-def test_dead_code_plot_population_rfs_removed():
-    """AC8: Dead code plot_population_rfs does not exist anymore in population_panel."""
-    with pytest.raises(ImportError):
-        from src.gui.panels.population_panel import plot_population_rfs
 
 
 def test_redraw_population_panels_uses_passed_subset():

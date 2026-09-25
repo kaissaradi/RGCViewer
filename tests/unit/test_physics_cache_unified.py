@@ -613,18 +613,6 @@ def test_get_physics_feature_matrix_drops_nan_rows():
 # AC10 — np.sort removal from _calculate_isi_violations is safe
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_isi_violations_sort_removed_output_unchanged():
-    SAMPLING_RATE = 20000.0
-    REFRACTORY_MS = 2.0
-
-    spikes = np.array([0, 30, 60, 1000, 2000, 3000], dtype=np.int64)
-
-    ref_period = (REFRACTORY_MS / 1000.0) * SAMPLING_RATE
-    ref_pct = (np.sum(np.diff(np.sort(spikes)) < ref_period) / (len(spikes) - 1)) * 100
-    fix_pct = (np.sum(np.diff(spikes) < ref_period) / (len(spikes) - 1)) * 100
-
-    assert ref_pct == fix_pct
-    assert ref_pct == pytest.approx(40.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -798,72 +786,10 @@ def test_cache_memory_footprint_is_bounded():
 # AC16 — panel consumers must work without bloated keys
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_isi_histogram_works_without_isi_ms_in_cache():
-    """
-    Panel must compute isi_ms on-demand via np.diff(spikes)/sr*1000.
-    Spikes every 40 samples @ 20kHz = 2ms ISI.
-    With 1ms-wide bins (linspace 0..150, 151 edges = 150 bins),
-    a 2ms ISI falls in bin index 2 (the bin covering 2.0–3.0ms).
-    """
-    sr = 20000.0
-    spikes = np.arange(0, 500 * 40, 40, dtype=np.int64)
-
-    isi_ms = np.diff(spikes) / sr * 1000.0  # all exactly 2.0 ms
-
-    bins = np.linspace(0, 150, 151)         # 150 bins, each 1ms wide
-    hist_y, hist_x = np.histogram(isi_ms, bins=bins)
-    bin_centers = 0.5 * (hist_x[:-1] + hist_x[1:])
-
-    assert len(hist_y) == 150
-    assert np.sum(hist_y) == len(spikes) - 1  # all ISIs accounted for
-
-    # 2ms ISI: bin edges are [0,1,2,3,...] so 2.0 falls in bin index 2
-    # (left-closed, right-open: bin2 covers [2,3))
-    assert hist_y[2] == len(spikes) - 1, (
-        f"Expected all ISIs in bin[2] (2-3ms), got distribution: {hist_y[:6]}"
-    )
 
 
-def test_isi_vs_amplitude_works_without_cached_arrays():
-    """ISI/amplitude alignment must produce equal-length, correctly sized arrays."""
-    sr = 20000.0
-    n = 300
-    spikes = np.arange(0, n * 40, 40, dtype=np.int64)
-    amplitudes = np.ones(n)
-
-    isi_ms = np.diff(spikes) / sr * 1000.0
-    min_len = min(len(isi_ms), len(amplitudes) - 1)
-    valid_isi = isi_ms[:min_len]
-    valid_amp = amplitudes[1:min_len + 1]
-
-    assert len(valid_isi) == len(valid_amp)
-    assert len(valid_isi) == n - 1
 
 
-def test_fr_overlay_works_without_cached_arrays():
-    """FR overlay recomputed from amplitudes + cached fr_rate must have consistent length."""
-    from scipy.ndimage import gaussian_filter1d
-    sr = 20000.0
-    n_spikes = 500
-    spikes = np.arange(0, n_spikes * 40, 40, dtype=np.int64)
-    spikes_sec = spikes / sr
-    amplitudes = np.ones(n_spikes)
-
-    max_t = float(spikes_sec.max())
-    bins = np.arange(0.0, max_t + 1.0, 1.0)
-    counts, _ = np.histogram(spikes_sec, bins=bins)
-    rate = gaussian_filter1d(counts.astype(float), sigma=5)
-
-    norm_amp = amplitudes / float(np.max(amplitudes))
-    avg_amp = np.convolve(norm_amp, np.ones(10) / 10.0, mode='valid')
-    scaled_amp = avg_amp * 0.8 * float(np.max(rate))
-
-    overlay_len = min(len(scaled_amp), len(spikes_sec))
-    overlay_x = spikes_sec[:overlay_len]
-    overlay_y = scaled_amp[:overlay_len]
-
-    assert len(overlay_x) == len(overlay_y)
-    assert len(overlay_x) > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

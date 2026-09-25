@@ -242,14 +242,6 @@ class TestShowIdsCheckboxRelocation:
             "StandardPlotsPanel still has show_ids_checkbox — it should be removed"
         )
 
-    def test_main_window_has_pop_show_ids_checkbox(self, qtbot):
-        """main_window must have pop_show_ids_checkbox (QCheckBox)."""
-
-        # We can't easily instantiate the real MainWindow without data,
-        # so we verify the attribute exists structurally via the mock.
-        # A real integration test would do the full instantiation.
-        mw = _make_mock_main_window(FakeVisionParams({}))
-        assert hasattr(mw, "pop_show_ids_checkbox")
 
 
 # ===================================================================

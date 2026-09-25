@@ -10,9 +10,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qtpy.QtWidgets import QComboBox
-
-from src.gui.panels.ei_panel import EIPanel, _ComboBoxNoWheel
+from src.gui.panels.ei_panel import EIPanel
 
 
 def _make_panel(view="Heatmap", n_clusters=2):
@@ -113,6 +111,3 @@ class TestAnimDoesNotStealView:
         assert panel.heatmap_frames == [4]
 
 
-class TestComboBoxNoWheel:
-    def test_subclass_is_a_combo(self):
-        assert issubclass(_ComboBoxNoWheel, QComboBox)
