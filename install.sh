@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/kaissaradi/RGCViewer.git"
+REPO="${ENCORE_REPO:-https://github.com/kaissaradi/RGCViewer.git}"
 INSTALL_DIR="${ENCORE_HOME:-$HOME/.encore}"
+# Update channels. main is what every lab machine runs; beta gets the same
+# changes earlier, for testers. ENCORE_BRANCH=beta (or main) picks one.
+CHANNELS="main beta"
 BIN_DIR="${ENCORE_BIN:-$HOME/.local/bin}"
 MIN_PYTHON="3.10"
 
@@ -29,8 +32,8 @@ find_python() {
 }
 
 # --- preflight (PLAN.md Q27) -------------------------------------------------
-# An update is `git pull --ff-only` under `set -e`: local edits or another
-# branch made it die with a bare git error. Say what is wrong instead.
+# An update is a fast-forward under `set -e`: local edits or another branch
+# made it die with a bare git error. Say what is wrong instead.
 preflight_checkout() {
     local dir="$1"
     [ -d "$dir/.git" ] || return 0
@@ -40,13 +43,49 @@ preflight_checkout() {
   Drop them:    git -C \"$dir\" checkout -- .
   Then run the installer again."
     fi
-    local branch
-    branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
-    if [ "$branch" != "main" ]; then
-        fail "$dir is on branch '$branch', not 'main'. Encore updates from 'main'.
-  Switch back:  git -C \"$dir\" checkout main
-  Then run the installer again."
+}
+
+# The channel to install: ENCORE_BRANCH when set; else the channel the
+# install is already on; else main. A checkout moved by hand to any other
+# branch stops the update (PLAN.md Q35).
+resolve_branch() {
+    local dir="$1"
+    if [ -n "${ENCORE_BRANCH:-}" ]; then
+        echo "$ENCORE_BRANCH"
+        return
     fi
+    if [ ! -d "$dir/.git" ]; then
+        echo main
+        return
+    fi
+    local current
+    current=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
+    case " $CHANNELS " in
+        *" $current "*) echo "$current" ;;
+        *) fail "$dir is on branch '$current', not 'main'. Encore updates from 'main' ('beta' for testers).
+  Switch back:  git -C \"$dir\" checkout main
+  Then run the installer again." ;;
+    esac
+}
+
+# Put the checkout on origin's $branch: switch when needed, then fast-forward.
+update_checkout() {
+    local dir="$1" branch="$2"
+    git -C "$dir" fetch --quiet origin || fail "git fetch failed in $dir. Is the network reachable?"
+    git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null ||
+        fail "There is no '$branch' channel in $REPO. Use ENCORE_BRANCH=main or ENCORE_BRANCH=beta."
+    if [ "$(git -C "$dir" rev-parse --abbrev-ref HEAD)" != "$branch" ]; then
+        info "Switching $dir to the '$branch' channel"
+        if git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+            git -C "$dir" checkout --quiet "$branch"
+        else
+            git -C "$dir" checkout --quiet -b "$branch" --track "origin/$branch"
+        fi
+    fi
+    git -C "$dir" merge --ff-only --quiet "origin/$branch" ||
+        fail "$dir cannot be fast-forwarded to origin/$branch.
+  Start this channel fresh:  git -C \"$dir\" reset --hard origin/$branch
+  Then run the installer again."
 }
 
 # A venv whose Python was removed or upgraded away cannot run pip.
@@ -61,13 +100,14 @@ PYTHON=$(find_python) || fail "Python >= $MIN_PYTHON is required but not found. 
 info "Using $($PYTHON --version) at $(command -v "$PYTHON")"
 
 # --- clone or update -------------------------------------------------------
+preflight_checkout "$INSTALL_DIR"
+BRANCH=$(resolve_branch "$INSTALL_DIR")
 if [ -d "$INSTALL_DIR/.git" ]; then
-    preflight_checkout "$INSTALL_DIR"
-    info "Updating existing installation in $INSTALL_DIR"
-    git -C "$INSTALL_DIR" pull --ff-only
+    info "Updating existing installation in $INSTALL_DIR (channel: $BRANCH)"
+    update_checkout "$INSTALL_DIR" "$BRANCH"
 else
-    info "Cloning Encore into $INSTALL_DIR"
-    git clone "$REPO" "$INSTALL_DIR"
+    info "Cloning Encore into $INSTALL_DIR (channel: $BRANCH)"
+    git clone --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
 fi
 
 # --- virtual environment ---------------------------------------------------
@@ -121,6 +161,8 @@ echo "  Options:"
 echo "    encore --debug"
 echo "    encore --kilosort-dir /path/to/run"
 echo "    encore --dat-file /path/to/raw.dat"
+echo ""
+echo "  Channel: $BRANCH. Run the installer again to update this channel."
 echo ""
 }
 

@@ -24,9 +24,14 @@ ERROR_LOG = Path.home() / ".encore" / "logs" / "errors.log"
 
 def _write_log(text, path):
     try:
+        from src.build_info import describe
+        build = describe()
+    except Exception:
+        build = "unknown build"
+    try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} ===\n{text}")
+            f.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} · {build} ===\n{text}")
     except OSError:
         pass
 

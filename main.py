@@ -43,6 +43,8 @@ def main():
     args = parser.parse_args()
 
     setup_logging(args.debug)
+    from src.build_info import describe
+    logging.getLogger('encore').info('Encore %s', describe())
 
     try:
         QCoreApplication.setAttribute(Qt.AA_UseSoftwareOpenGL)

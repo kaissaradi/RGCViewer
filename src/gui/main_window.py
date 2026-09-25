@@ -1888,6 +1888,11 @@ class MainWindow(QMainWindow):
         self.rebuild_cache_action = file_menu.addAction("Re&build Physics Cache...")
         self.rebuild_cache_action.setEnabled(False)
 
+        # Which build this is (channel + commit), for bug reports (PLAN.md Q35).
+        file_menu.addSeparator()
+        self.about_action = file_menu.addAction("About Encore...")
+        self.about_action.triggered.connect(self._show_about)
+
         # --- Array Menu ---
         array_menu = QMenu("&Array", self)
         self.array_btn.setMenu(array_menu)
@@ -2217,6 +2222,14 @@ class MainWindow(QMainWindow):
             msg = f"Array views {array_orientation.describe(matrix)} to match the screen."
         self.status_bar.showMessage(msg, 8000)
         self.on_tab_changed(self.analysis_tabs.currentIndex())
+
+    def _show_about(self):
+        from ..build_info import describe
+        from .crash_guard import ERROR_LOG
+        QMessageBox.information(
+            self, "About Encore",
+            f"Encore\n\nBuild: {describe()}\n\nPut this line in a bug report. "
+            f"Errors are logged to {ERROR_LOG}.")
 
     def on_save_classification_action(self):
         """Wrapper to call the callback function."""

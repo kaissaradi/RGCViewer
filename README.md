@@ -25,6 +25,22 @@ installs all dependencies, and adds the `encore` command to your PATH.
 
 Run again to update an existing install.
 
+### Beta channel (testers)
+
+The `beta` channel gets changes before `main`. To move an install to it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kaissaradi/RGCViewer/beta/install.sh | ENCORE_BRANCH=beta bash
+```
+
+```powershell
+$env:ENCORE_BRANCH = "beta"; irm https://raw.githubusercontent.com/kaissaradi/RGCViewer/beta/install.ps1 | iex
+```
+
+The install then stays on `beta`. Run the same command again to update
+it. To go back, run the command with `ENCORE_BRANCH=main`. File ▸ About
+Encore shows the channel and commit; put that line in a bug report.
+
 ### After install
 
 ```bash

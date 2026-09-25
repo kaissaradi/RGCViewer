@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Repo       = "https://github.com/kaissaradi/RGCViewer.git"
+$Repo       = if ($env:ENCORE_REPO) { $env:ENCORE_REPO } else { "https://github.com/kaissaradi/RGCViewer.git" }
 $InstallDir = if ($env:ENCORE_HOME) { $env:ENCORE_HOME } else { Join-Path $env:USERPROFILE ".encore" }
 $BinDir     = Join-Path $env:USERPROFILE ".local\bin"
 $MinPython  = [version]"3.10"
@@ -8,6 +8,57 @@ $MinPython  = [version]"3.10"
 function Info  { param($msg) Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn  { param($msg) Write-Host "WARN: $msg" -ForegroundColor Yellow }
 function Fail  { param($msg) Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
+
+# Update channels (PLAN.md Q35). main is what every lab machine runs; beta
+# gets the same changes earlier, for testers. $env:ENCORE_BRANCH picks one.
+$Channels = @("main", "beta")
+
+# --- preflight (PLAN.md Q27, Q35) -------------------------------------------
+# An update is a fast-forward: local edits or another branch made it stop
+# with a bare git error. Say what is wrong instead.
+function Assert-CleanCheckout {
+    param($Dir)
+    if (-not (Test-Path (Join-Path $Dir ".git"))) { return }
+    $changes = git -C $Dir status --porcelain --untracked-files=no
+    if ($changes) {
+        Fail "$Dir has local changes, so it cannot be updated.`n  Keep them:    git -C `"$Dir`" stash`n  Drop them:    git -C `"$Dir`" checkout -- .`n  Then run the installer again."
+    }
+}
+
+# The channel to install: ENCORE_BRANCH when set; else the channel the
+# install is already on; else main. A checkout moved by hand to any other
+# branch stops the update.
+function Resolve-Branch {
+    param($Dir)
+    if ($env:ENCORE_BRANCH) { return $env:ENCORE_BRANCH }
+    if (-not (Test-Path (Join-Path $Dir ".git"))) { return "main" }
+    $current = git -C $Dir rev-parse --abbrev-ref HEAD
+    if ($Channels -contains $current) { return $current }
+    Fail "$Dir is on branch '$current', not 'main'. Encore updates from 'main' ('beta' for testers).`n  Switch back:  git -C `"$Dir`" checkout main`n  Then run the installer again."
+}
+
+# Put the checkout on origin's $Branch: switch when needed, then fast-forward.
+function Update-Checkout {
+    param($Dir, $Branch)
+    git -C $Dir fetch --quiet origin
+    if ($LASTEXITCODE -ne 0) { Fail "git fetch failed in $Dir. Is the network reachable?" }
+    git -C $Dir rev-parse --verify --quiet "refs/remotes/origin/$Branch" | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "There is no '$Branch' channel in $Repo. Use ENCORE_BRANCH=main or ENCORE_BRANCH=beta." }
+    if ((git -C $Dir rev-parse --abbrev-ref HEAD) -ne $Branch) {
+        Info "Switching $Dir to the '$Branch' channel"
+        git -C $Dir show-ref --verify --quiet "refs/heads/$Branch"
+        if ($LASTEXITCODE -eq 0) {
+            git -C $Dir checkout --quiet $Branch
+        } else {
+            git -C $Dir checkout --quiet -b $Branch --track "origin/$Branch"
+        }
+        if ($LASTEXITCODE -ne 0) { Fail "Could not switch $Dir to the '$Branch' channel." }
+    }
+    git -C $Dir merge --ff-only --quiet "origin/$Branch"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "$Dir cannot be fast-forwarded to origin/$Branch.`n  Start this channel fresh:  git -C `"$Dir`" reset --hard origin/$Branch`n  Then run the installer again."
+    }
+}
 
 # --- pick an environment manager --------------------------------------------
 # A plain venv built on top of an Anaconda python is broken on Windows: the venv
@@ -39,13 +90,14 @@ if ($UseConda) {
 }
 
 # --- clone or update --------------------------------------------------------
+Assert-CleanCheckout $InstallDir
+$Branch = Resolve-Branch $InstallDir
 if (Test-Path (Join-Path $InstallDir ".git")) {
-    Info "Updating existing installation in $InstallDir"
-    git -C $InstallDir pull --ff-only
-    if ($LASTEXITCODE -ne 0) { Fail "git pull failed in $InstallDir." }
+    Info "Updating existing installation in $InstallDir (channel: $Branch)"
+    Update-Checkout $InstallDir $Branch
 } else {
-    Info "Cloning Encore into $InstallDir"
-    git clone $Repo $InstallDir
+    Info "Cloning Encore into $InstallDir (channel: $Branch)"
+    git clone --branch $Branch $Repo $InstallDir
     if ($LASTEXITCODE -ne 0) { Fail "git clone failed. Is git installed and the network reachable?" }
 }
 
@@ -154,4 +206,6 @@ Write-Host "  Options:"
 Write-Host "    encore --debug"
 Write-Host "    encore --kilosort-dir C:\path\to\run"
 Write-Host "    encore --dat-file C:\path\to\raw.dat"
+Write-Host ""
+Write-Host "  Channel: $Branch. Run the installer again to update this channel."
 Write-Host ""
