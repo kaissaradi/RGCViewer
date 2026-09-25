@@ -187,3 +187,27 @@ def test_question_mark_types_in_search_and_opens_help_elsewhere(qtbot, win, monk
     assert bar.text() == "?" and opened == []
     qtbot.keyClick(win.tree_view, Qt.Key.Key_F1)
     assert opened == [1]
+
+
+def test_every_tab_has_an_explanation(win):
+    from src.gui.tab_help import TAB_HELP, html_for
+    names = [win.analysis_tabs.tabText(i) for i in range(win.analysis_tabs.count())]
+    assert set(names) == set(TAB_HELP), set(names) ^ set(TAB_HELP)
+    assert "refractory" in html_for("Standard") and "F1" in html_for("STA")
+
+
+def test_help_button_explains_the_shown_tab(win, qtbot, monkeypatch):
+    from qtpy.QtWidgets import QMessageBox
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec",
+                        lambda self: shown.append((self.windowTitle(), self.text())))
+    win.analysis_tabs.setCurrentIndex(0)
+    name = win.analysis_tabs.tabText(0)
+    win.help_btn.click()
+    assert shown[-1][0] == f"The {name} tab" and name in shown[-1][1]
+    win.analysis_tabs.setCurrentIndex(1)
+    qtbot.keyClick(win.tree_view, Qt.Key.Key_F1, Qt.KeyboardModifier.ShiftModifier)
+    assert shown[-1][0] == f"The {win.analysis_tabs.tabText(1)} tab"
+    win.central_stack.setCurrentWidget(win.welcome_panel)
+    win.help_btn.click()
+    assert "Getting started" in shown[-1][1]

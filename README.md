@@ -214,7 +214,8 @@ What the lab's type names mean, with references: `docs/design/rgc_types.md`.
 
 ## Keyboard shortcuts
 
-Press F1 (or ?) in Encore for this list. Shortcuts do not fire while you
+Press F1 (or ?) in Encore for this list, and Shift+F1 (or the ? button in the
+header) for what the current tab shows. Shortcuts do not fire while you
 type in a text field; Esc leaves the search bar.
 
 | Keys | Action |
@@ -246,6 +247,7 @@ type in a text field; Esc leaves the search bar.
 | Ctrl+O | Open a Kilosort run |
 | Ctrl+S | Save the classification to the Vision .params |
 | F1 / ? | Show these shortcuts |
+| Shift+F1 | Explain the current tab |
 
 ## Documents
 

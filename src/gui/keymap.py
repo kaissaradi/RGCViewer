@@ -63,6 +63,7 @@ BINDINGS: List[Binding] = [
     Binding(("Ctrl+O",), "Open a Kilosort run", "File", "open_run"),
     Binding(("Ctrl+S",), "Save the classification to the Vision .params", "File"),
     Binding(("F1", "?"), "Show these shortcuts", "File", "show_cheat_sheet"),
+    Binding(("Shift+F1",), "Explain the current tab", "File", "show_tab_help"),
 ]
 
 # Tab keys are generated, not one row each.
@@ -212,6 +213,22 @@ def next_suggestion(w):
 
 def open_run(w):
     w.load_directory()
+
+
+def show_tab_help(w):
+    from qtpy.QtWidgets import QMessageBox
+    from .tab_help import START_HELP, html_for
+    box = QMessageBox(w)
+    box.setTextFormat(Qt.TextFormat.RichText)
+    stack = getattr(w, "central_stack", None)
+    if stack is not None and stack.currentWidget() is not w.central_widget:
+        box.setWindowTitle("Encore")                                 # the welcome screen
+        box.setText(START_HELP)
+    else:
+        name = w.analysis_tabs.tabText(w.analysis_tabs.currentIndex())
+        box.setWindowTitle(f"The {name} tab")
+        box.setText(html_for(name))
+    box.exec()
 
 
 def show_cheat_sheet(w):

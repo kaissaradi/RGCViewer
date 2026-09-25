@@ -756,6 +756,13 @@ class MainWindow(QMainWindow):
         self.open_run_btn.clicked.connect(lambda: self.load_directory())
         layout.addWidget(self.open_run_btn)
 
+        # "?": what the current tab shows (Shift+F1), for new users (Q49).
+        self.help_btn = QPushButton("?")
+        self.help_btn.setToolTip("What does this tab show? (Shift+F1)  ·  F1: keyboard shortcuts")
+        self.help_btn.setFixedWidth(28)
+        self.help_btn.clicked.connect(lambda: keymap.show_tab_help(self))
+        layout.addWidget(self.help_btn)
+
         self.theme_btn = QPushButton("Light" if self.theme == "dark" else "Dark")
         self.theme_btn.setToolTip("Toggle light / dark mode")
         self.theme_btn.clicked.connect(self.toggle_theme)
