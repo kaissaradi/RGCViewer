@@ -33,4 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Unit tests
-        run: python -m pytest tests/unit -q
+        # -rs lists every skip and why (e.g. no pwsh for the install.ps1 tests).
+        run: |
+          pwsh --version || echo 'no pwsh on this runner'
+          python -m pytest tests/unit -q -rs
