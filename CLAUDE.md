@@ -39,7 +39,9 @@ slower, not faster. Encore writes its caches (`*.pkl`) into `ksfiles/` and
    known to fail: 20251212A/kilosort40/data018 (the harness default) and
    20250918A/kilosort40/data025. `DataManager.vision_sort_check()` tests
    the pairing from RF centre vs array position (PLAN.md Q32). A partial
-   ID overlap is normal and proves nothing.
+   ID overlap is normal and proves nothing. Also suspect (Q32, Q37):
+   20260721A/kilosort25 data006 and data007 (the STAs are noise, peak/RMS
+   ~4) and 20260715A/kilosort25/data003 (RFs follow the cells weakly).
 3. **Unmoved RF fits.** SigmaX = SigmaY = 1 exactly is Vision's first start
    value, not a fit (PLAN.md Q26). Up to 60 % of cells in some runs.
 4. **Fit frame.** Vision stores y0 with y up; the STA is drawn with row 0 at
