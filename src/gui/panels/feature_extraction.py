@@ -457,10 +457,10 @@ class FeatureExtractionWindow(QDialog):
 
     _PLOT_META = [
         ("Temporal PCA", "PC 1", "PC 2"),
-        ("RF vs Temporal PC1", "RF Diameter (µm)", "Temporal PC 1"),
-        ("Time to Peak vs RF", "RF Diameter (µm)", "Time to Peak (frames)"),
+        ("RF vs Temporal PC1", "RF Diameter (stixels)", "Temporal PC 1"),
+        ("Time to Peak vs RF", "RF Diameter (stixels)", "Time to Peak (frames)"),
         ("ACG PCA", "PC 1", "PC 2"),
-        ("RF vs ACG PC1", "RF Diameter (µm)", "ACG PC 1"),
+        ("RF vs ACG PC1", "RF Diameter (stixels)", "ACG PC 1"),
         ("Temporal vs ACG PC1", "Temporal PC 1", "ACG PC 1"),
     ]
 

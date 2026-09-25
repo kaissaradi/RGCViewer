@@ -61,6 +61,17 @@ from ...analysis.constants import (
 logger = logging.getLogger(__name__)
 
 
+# Hover text for the feature checkboxes (PLAN.md Q25).
+FEATURE_TOOLTIPS = {
+    "use_rf_diameter": (
+        "RF diameter from the Vision Gaussian fit, in stixels.\n"
+        "Long = 2σ along the longer axis of the fitted ellipse.\n"
+        "Short = 2σ along the shorter axis.\n"
+        "A round RF has long ≈ short; long ≫ short is an elongated RF."
+    ),
+}
+
+
 class UMAPPanel(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -450,6 +461,8 @@ class UMAPPanel(QWidget):
         ):
             chk = QCheckBox(label)
             chk.setChecked(default_on)
+            if use_key in FEATURE_TOOLTIPS:
+                chk.setToolTip(FEATURE_TOOLTIPS[use_key])
 
             # Slider (0-100 internal range) + read-only numeric readout,
             # replacing the old bare QDoubleSpinBox. Qt's QSlider is
