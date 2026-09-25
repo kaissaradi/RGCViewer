@@ -88,7 +88,7 @@ def _clear_module_caches():
     """Reset all module-level caches before each test that touches them."""
     import src.gui.panels.population_panel as pp
     # These attributes are added by the implementation; we clear them if present.
-    for attr in ('_group_timecourse_cache', '_group_acg_cache',
+    for attr in ('_group_timecourse_cache', '_group_acg_cache', '_group_fr_cache',
                  '_rf_background_cache', '_rf_background_cache_order'):
         cache = getattr(pp, attr, None)
         if isinstance(cache, dict):
@@ -447,7 +447,7 @@ class TestInvalidatePopulationCaches:
         assert len(pp._rf_background_cache_order) == 0
 
 
-def test_population_group_plots_cached_requires_both_caches():
+def test_population_group_plots_cached_requires_every_group_cache():
     import src.gui.panels.population_panel as pp
     from src.gui.panels.population_panel import population_group_plots_cached
 
@@ -460,6 +460,10 @@ def test_population_group_plots_cached_requires_both_caches():
     assert population_group_plots_cached(ids) is False
 
     pp._group_acg_cache[frozenset(ids)] = {"arr": np.zeros((3, 8))}
+    # The firing-rate pane (PLAN.md Q23) is part of the group view too.
+    assert population_group_plots_cached(ids) is False
+
+    pp._group_fr_cache[frozenset(ids)] = {"arr": np.zeros((3, 8))}
     assert population_group_plots_cached(ids) is True
     assert population_group_plots_cached([1, 2]) is False
 
