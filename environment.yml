@@ -1,0 +1,12 @@
+# conda env create -f environment.yml && conda activate encore
+# Same packages as requirements.txt (+ the test tools). On the lab machine
+# the equivalent env is named `rgcviewer`.
+name: encore
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - -r requirements.txt
+      - -r requirements-dev.txt

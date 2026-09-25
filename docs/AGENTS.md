@@ -18,7 +18,7 @@ Two ID spaces exist in a hybrid dataset:
 
 `DataManager.is_vision_only` is `True` only when no Kilosort data was loaded.
 
-Start the app with `python main.py` from environment `encore`. The window
+Start the app with `python main.py` from environment `encore` (`conda env create -f environment.yml`; on the lab machine the env is `rgcviewer`). The window
 opens empty. Do not reopen the last run at start.
 
 ---
