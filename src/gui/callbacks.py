@@ -257,6 +257,8 @@ def _forget_previous_dataset_views(main_window):
         ei_panel.reset_for_new_dataset()
     # Pinned cells are cluster IDs of the old run (PLAN.md Q45).
     main_window._pinned_cells = []
+    # A raw read queued for the old run's cell must not start on the new one.
+    main_window._feature_pending = None
     types_panel = getattr(main_window, "types_panel", None)
     if types_panel is not None:
         types_panel.reset_for_new_dataset()

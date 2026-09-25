@@ -1018,6 +1018,89 @@ def scenario_borrowed_chirp(s):
         s.shot("borrowed_chirp", w.chirp_panel)
 
 
+def scenario_smoke_all(s):
+    """Every tab x several cells x both themes, plus the new tools; report every ERROR/WARNING logged."""
+    import logging
+    import sys as _sys
+    from src.gui import keymap
+    records = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.WARNING:
+                records.append((record.levelname, record.name, record.getMessage()[:160]))
+    logging.getLogger().addHandler(Grab())
+    hook_errors = []
+    old_hook = _sys.excepthook
+    _sys.excepthook = lambda *a: (hook_errors.append(str(a[1])[:160]), old_hook(*a))
+    s.load()
+    w = s.w
+    dm = s.dm()
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    picks = [ids[i] for i in (0, len(ids) // 3, len(ids) // 2, -1)]
+    t0 = time.time()
+    for theme in ("dark", "light"):
+        for i in range(w.analysis_tabs.count()):
+            if not w.analysis_tabs.isTabEnabled(i):
+                continue
+            w.analysis_tabs.setCurrentIndex(i)
+            pump(0.3)
+            for cid in picks:
+                s.select(cid, settle=0.4)
+        w.toggle_population_split_view(True)
+        pump(1.0)
+        keymap.CheatSheet.exec = lambda self: self.show()
+        keymap.show_cheat_sheet(w)
+        pump(0.3)
+        w._pinned_cells = picks[:2]
+        s.select(picks[2], settle=0.6)
+        w.toggle_population_split_view(False)
+        w.toggle_theme()
+        pump(1.0)
+    log(json.dumps({"seconds": round(time.time() - t0), "tabs": w.analysis_tabs.count(),
+                    "cells": len(picks), "warnings_errors": len(records),
+                    "uncaught": hook_errors}))
+    seen = set()
+    for lvl, name, msg in records:
+        key = (lvl, name, msg[:60])
+        if key not in seen:
+            seen.add(key)
+            log(f"{lvl} {name}: {msg}")
+
+
+def scenario_rapid_select(s):
+    """Step through cells quickly with a raw file attached; the longest GUI stall (ms)."""
+    from qtpy.QtCore import QTimer
+    s.load()
+    w = s.w
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    s.tab("EI")
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.perf_counter()))
+    timer.start()
+    import logging
+    warned = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            if "didn't exit cleanly" in record.getMessage():
+                warned.append(1)
+    logging.getLogger().addHandler(Grab())
+    for cid in ids[100:120]:
+        w._select_cluster_in_tree(cid)
+        pump(0.15)
+    pump(3.0)
+    timer.stop()
+    gaps = np.diff(ticks) * 1000
+    log(json.dumps({"cells": 20, "max_stall_ms": round(float(gaps.max())),
+                    "p95_ms": round(float(np.percentile(gaps, 95))),
+                    "stalls_over_250ms": int((gaps > 250).sum()), "terminated_threads": len(warned),
+                    "last_cell_has_features": s.dm().get_lightweight_features(ids[119]) is not None,
+                    "first_cell_has_features": s.dm().get_lightweight_features(ids[100]) is not None}))
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

@@ -43,6 +43,9 @@ class _Host:
 
     _process_selection = MainWindow._process_selection
     _panels_needing_features = MainWindow._panels_needing_features
+    _start_feature_worker = MainWindow._start_feature_worker
+    _feature_thread_alive = MainWindow._feature_thread_alive
+    _feature_worker_done = MainWindow._feature_worker_done
 
     def __init__(self, current_tab_name):
         self.ei_panel = object()

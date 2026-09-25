@@ -1090,18 +1090,13 @@ class MainWindow(QMainWindow):
 
         # Only run FeatureWorker if dat_path is available
         if self.data_manager.dat_path is not None:
-            # Cleanup previous worker before starting a new one
-            self._cleanup_thread("feature_worker_thread")
-
-            self.feature_worker_thread = QThread()
-            self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
-            self.feature_worker.moveToThread(self.feature_worker_thread)
-            self.feature_worker.features_ready.connect(self.on_features_ready)
-            self.feature_worker.error.connect(
-                lambda msg: self.status_bar.showMessage(msg, 4000)
-            )
-            self.feature_worker_thread.started.connect(self.feature_worker.run)
-            self.feature_worker_thread.start()
+            # One raw read at a time, latest request wins. Waiting for (and then
+            # terminating) the previous read blocked the GUI up to 2 s per cell
+            # change on the network share (harness rapid_select: 2018 ms).
+            if getattr(self, "_feature_busy", False) and self._feature_thread_alive():
+                self._feature_pending = cluster_id
+            else:
+                self._start_feature_worker(cluster_id)
 
             # on_features_ready redraws only the tabs that read the snippet
             # features. Every other tab (STA, Grating, Chirp, ...) reads the
@@ -1114,6 +1109,45 @@ class MainWindow(QMainWindow):
                 "Raw data file not loaded: waveform plot disabled.", 4000
             )
             self._draw_plots(cluster_id, None)
+
+    def _start_feature_worker(self, cluster_id):
+        self._cleanup_thread("feature_worker_thread")     # finished: its loop quits at once
+        self._feature_busy = True
+        self._feature_pending = None
+        self.feature_worker_thread = QThread()
+        self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
+        self.feature_worker.moveToThread(self.feature_worker_thread)
+        self.feature_worker.features_ready.connect(self.on_features_ready)
+        self.feature_worker.features_ready.connect(self._feature_worker_done)
+        self.feature_worker.error.connect(
+            lambda msg: self.status_bar.showMessage(msg, 4000)
+        )
+        self.feature_worker.error.connect(self._feature_worker_done)
+        self.feature_worker_thread.started.connect(self.feature_worker.run)
+        self.feature_worker_thread.start()
+
+    def _feature_thread_alive(self) -> bool:
+        thread = getattr(self, "feature_worker_thread", None)
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _feature_worker_done(self, *_args):
+        """A raw read ended: start the latest request that came in meanwhile."""
+        self._feature_busy = False
+        thread = getattr(self, "feature_worker_thread", None)
+        try:
+            if thread is not None:
+                thread.quit()          # run() has returned; stop its event loop
+        except RuntimeError:
+            pass
+        pending, self._feature_pending = getattr(self, "_feature_pending", None), None
+        dm = getattr(self, "data_manager", None)
+        if pending is None or dm is None or getattr(dm, "dat_path", None) is None:
+            return
+        if pending == self._get_selected_cluster_id():
+            self._start_feature_worker(pending)
 
     def _schedule_group_column_refresh(self, *_args):
         """Debounce tree edits into one group-column update.
