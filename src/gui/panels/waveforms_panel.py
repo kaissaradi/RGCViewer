@@ -98,6 +98,51 @@ _C = {
     "axis_text": "#5A5E70",
 }
 
+
+def _rgba(hex_color, alpha):
+    h = str(hex_color).lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
+
+
+def palette_from_theme(colors):
+    """``_C`` from the theme tokens (docs/design/palette.md).
+
+    The panel used its own fixed dark palette, so light mode left the whole
+    Waveforms tab near-black (PLAN.md Q16). Mean traces are ink, ensembles
+    blue, the compared cell red, as on every other panel.
+    """
+    ens = colors["plot_ensemble"]
+    return {
+        "bg_main": colors["plot_bg"],
+        "bg_right": colors["bg_panel"],
+        "bg_card": colors["bg_elevated"],
+        "bg_card_hover": colors["bg_elevated"],
+        "border_subtle": colors["border_subtle"],
+        "border_default": colors["border_default"],
+        "text_primary": colors["text_primary"],
+        "text_secondary": colors["text_secondary"],
+        "text_dim": colors["text_disabled"],
+        "median": colors["plot_mean"],
+        "envelope": _rgba(ens, 30),
+        "cloud_0": _rgba(ens, 35),
+        "cloud_1": _rgba(ens, 45),
+        "cloud_2": _rgba(ens, 55),
+        "cloud_3": _rgba(ens, 65),
+        "cloud_4": _rgba(ens, 80),
+        "pca_bg": _rgba(colors["plot_shadow"], 55),
+        "pca_unit": colors["plot_highlight"],
+        "pca_ellipse": colors["plot_highlight"],
+        "pca_compare": colors["plot_compare"],
+        "pca_cmp_ell": colors["plot_compare"],
+        "badge_good": colors["accent_positive"],
+        "badge_warn": colors["status_mua_text"],
+        "badge_bad": colors["status_noise_text"],
+        "badge_neutral": colors["text_secondary"],
+        "zero_line": colors["border_strong"],
+        "axis_pen": colors["border_strong"],
+        "axis_text": colors["text_secondary"],
+    }
+
 # Snippet window pre-spike samples (must match extract_snippets call in analysis_core)
 _PRE_SAMPLES = 20
 
@@ -761,6 +806,11 @@ class WaveformPanel(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        # Build in the current theme's colours (a test double may not have them).
+        try:
+            _C.update(palette_from_theme(main_window.get_current_colors()))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            logger.debug("theme colours unavailable; using the built-in palette")
 
         # Threading
         self._pool = QThreadPool.globalInstance()
@@ -787,6 +837,7 @@ class WaveformPanel(QWidget):
         root.setSpacing(0)
 
         splitter = QSplitter(Qt.Horizontal)
+        self._splitter = splitter
         splitter.setHandleWidth(3)
         splitter.setStyleSheet(f"""
             QSplitter::handle {{ background: {_C['border_subtle']}; }}
@@ -796,6 +847,7 @@ class WaveformPanel(QWidget):
 
         # ── LEFT: waveform ─────────────────────────────────────────────────
         left = QWidget()
+        self._left_pane = left
         left.setStyleSheet(f"background: {_C['bg_main']};")
         lv = QVBoxLayout(left)
         lv.setContentsMargins(8, 8, 4, 8)
@@ -814,6 +866,7 @@ class WaveformPanel(QWidget):
 
         # ── RIGHT: PCA + stats ─────────────────────────────────────────────
         right = QFrame()
+        self._right_pane = right
         right.setStyleSheet(f"""
             QFrame {{
                 background: {_C['bg_right']};
@@ -839,6 +892,7 @@ class WaveformPanel(QWidget):
         self._compare_strip_layout.setContentsMargins(0, 0, 0, 0)
         self._compare_strip_layout.setSpacing(4)
         cmp_lbl = QLabel("Compare:")
+        self._cmp_label = cmp_lbl
         cmp_lbl.setStyleSheet(
             f"color: {_C['text_secondary']}; font-size: 9px; font-weight: 600;"
         )
@@ -862,6 +916,7 @@ class WaveformPanel(QWidget):
 
         # Divider
         div = QFrame()
+        self._divider = div
         div.setFrameShape(QFrame.HLine)
         div.setStyleSheet(f"border: none; border-top: 1px solid {_C['border_subtle']};")
         div.setFixedHeight(1)
@@ -902,7 +957,7 @@ class WaveformPanel(QWidget):
         self._env_fill = pg.FillBetweenItem(
             self._env_curve_lo,
             self._env_curve_hi,
-            brush=pg.mkBrush(*[int(x) for x in [58, 64, 96, 30]]),
+            brush=pg.mkBrush(*_C["envelope"]),
         )
         pw.addItem(self._env_curve_lo)
         pw.addItem(self._env_curve_hi)
@@ -995,6 +1050,7 @@ class WaveformPanel(QWidget):
 
         self._stat_badges: dict[str, QLabel] = {}
         self._stat_values: dict[str, QLabel] = {}
+        self._stat_names: list[QLabel] = []
 
         for i, (key, label, badge_key, _) in enumerate(self._stat_defs):
             row, col_offset = divmod(i, 2)
@@ -1005,6 +1061,7 @@ class WaveformPanel(QWidget):
 
             lbl = QLabel(label)
             lbl.setStyleSheet(f"color: {_C['text_secondary']}; font-size: 10px;")
+            self._stat_names.append(lbl)
 
             val = QLabel("—")
             val.setStyleSheet(
@@ -1035,7 +1092,57 @@ class WaveformPanel(QWidget):
         self._render_tier1(cluster_id)
 
     def restyle_plots(self, colors: dict):
-        """Legacy compatibility — theme colours are applied on next update_all."""
+        """Re-colour the panel for a theme switch (PLAN.md Q16)."""
+        _C.update(palette_from_theme(colors))
+        self._splitter.setStyleSheet(f"""
+            QSplitter::handle {{ background: {_C['border_subtle']}; }}
+            QSplitter::handle:hover {{ background: {_C['border_default']}; }}
+        """)
+        self._left_pane.setStyleSheet(f"background: {_C['bg_main']};")
+        self._right_pane.setStyleSheet(f"""
+            QFrame {{
+                background: {_C['bg_right']};
+                border-left: 1px solid {_C['border_subtle']};
+            }}
+        """)
+        self._cluster_header.setStyleSheet(
+            f"color: {_C['text_primary']}; font-size: 13px; font-weight: 600;")
+        self._cmp_label.setStyleSheet(
+            f"color: {_C['text_secondary']}; font-size: 9px; font-weight: 600;")
+        self._isolation_label.setStyleSheet(
+            f"color: {_C['text_secondary']}; font-size: 10px;")
+        self._divider.setStyleSheet(
+            f"border: none; border-top: 1px solid {_C['border_subtle']};")
+        for lbl in self._stat_names:
+            lbl.setStyleSheet(f"color: {_C['text_secondary']}; font-size: 10px;")
+        for val in self._stat_values.values():
+            val.setStyleSheet(
+                f"color: {_C['text_primary']}; font-size: 12px; font-weight: 600;")
+        for badge in self._stat_badges.values():
+            badge.setStyleSheet(f"color: {_C['badge_neutral']}; font-size: 10px;")
+
+        _plot_style(self._wave_plot)
+        self._pca_plot.setBackground(_C["bg_main"])
+        for plot, (bottom, left) in ((self._wave_plot, ("Time", "Amplitude")),
+                                     (self._pca_plot, ("PC1", "PC2"))):
+            for axis in ("bottom", "left"):
+                ax = plot.getAxis(axis)
+                ax.setPen(pg.mkPen(_C["axis_pen"], width=1))
+                ax.setTextPen(pg.mkPen(_C["axis_text"]))
+        style = {"color": _C["axis_text"], "font-size": "9pt"}
+        self._wave_plot.setLabel("bottom", "Time", units="ms", **style)
+        self._wave_plot.setLabel("left", "Amplitude", units="µV", **style)
+        self._pca_plot.setLabel("bottom", "PC1", **style)
+        self._pca_plot.setLabel("left", "PC2", **style)
+        self._zero_line.setPen(pg.mkPen(_C["zero_line"], width=1, style=Qt.DashLine))
+        self._env_fill.setBrush(pg.mkBrush(*_C["envelope"]))
+        for i, item in enumerate(self._cloud_items):
+            item.setPen(pg.mkPen(color=_C[f"cloud_{i}"], width=1))
+        self._median_item.setPen(pg.mkPen(_C["median"], width=2.5))
+        self._wave_title.setColor(_C["text_secondary"])
+        self._pca_bg_scatter.setBrush(pg.mkBrush(*_C["pca_bg"]))
+        self._pca_unit_scatter.setBrush(pg.mkBrush(_C["pca_unit"]))
+        self._pca_cmp_scatter.setBrush(pg.mkBrush(_C["pca_compare"]))
 
     # -----------------------------------------------------------------------
     # Tier 1 — synchronous, median + basic stats (< 5 ms)

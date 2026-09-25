@@ -459,6 +459,37 @@ def scenario_switch_state(s):
     log(json.dumps(out))
 
 
+def scenario_light_mode(s):
+    """Q16: light theme on every tab; report the share of near-black pixels."""
+    from qtpy.QtGui import QImage
+    s.load()
+    w = s.w
+    cid = next(int(c) for c in s.dm().cluster_df["cluster_id"]
+               if s.dm().get_vision_id_for_cluster(int(c)) in (s.dm().vision_stas or {}))
+    s.select(cid, settle=0.5)
+    w.toggle_theme()
+    pump(0.8)
+    tabs = w.analysis_tabs
+    report = {}
+    for i in range(tabs.count()):
+        if not tabs.isTabEnabled(i):
+            continue
+        tabs.setCurrentIndex(i)
+        pump(2.0)
+        img = tabs.currentWidget().grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
+        ptr = img.constBits()
+        ptr.setsize(img.sizeInBytes())
+        a = np.frombuffer(ptr, dtype=np.uint8).reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :img.width(), :3]
+        lum = a.mean(axis=2)
+        report[tabs.tabText(i)] = round(float((lum < 70).mean()), 3)
+        s.shot(f"{i}_{tabs.tabText(i)}", w)
+    for name, widget in (("sidebar", w.left_content if hasattr(w, "left_content") else None),
+                         ("status_bar", w.status_bar)):
+        if widget is not None:
+            s.shot(name, widget)
+    log(json.dumps({"dark_pixel_share": report}))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """
