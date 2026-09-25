@@ -118,13 +118,13 @@ from src.gui import theme  # noqa: E402
 
 
 def test_locked_palette_tokens():
-    # Light values softened 2026-09-25 (docs/design/palette.md).
+    # Light values darkened again 2026-09-25 (docs/design/palette.md).
     assert PALETTE_LIGHT == {
-        "bg": "#F4F2EC",
-        "surface": "#FBFAF7",
+        "bg": "#DEDAD0",
+        "surface": "#E8E5DD",
         "ink": "#26241F",
-        "muted": "#77736A",
-        "rule": "#E4E0D6",
+        "muted": "#625E55",
+        "rule": "#D2CDC2",
         "red": "#C8322B",
         "yellow": "#E9B520",
         "blue": "#1B4E9B",
@@ -149,7 +149,7 @@ def test_semantic_roles_map_onto_locked_palette():
     assert LIGHT_COLORS["text_secondary"] == PALETTE_LIGHT["muted"]
     assert LIGHT_COLORS["border_default"] == PALETTE_LIGHT["rule"]
     assert LIGHT_COLORS["accent"] == PALETTE_LIGHT["blue"]
-    assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
+    assert LIGHT_COLORS["plot_fr"] == theme._YELLOW_TEXT_LIGHT   # #E9B520 lines are 1.5:1 on light paper
     # Plot data uses a softer blue and ink than the chrome (2026-09-25).
     assert LIGHT_COLORS["plot_acg"] == theme._BLUE_PLOT_LIGHT
     assert LIGHT_COLORS["plot_line"] == theme._INK_PLOT_LIGHT
@@ -185,7 +185,7 @@ def test_light_and_dark_plot_roles_are_designed_separately():
 
 def test_light_plots_use_bauhaus_primaries_not_only_black():
     assert LIGHT_COLORS["plot_acg"] == theme._BLUE_PLOT_LIGHT
-    assert LIGHT_COLORS["plot_fr"] == PALETTE_LIGHT["yellow"]
+    assert LIGHT_COLORS["plot_fr"] == theme._YELLOW_TEXT_LIGHT   # #E9B520 lines are 1.5:1 on light paper
     assert LIGHT_COLORS["plot_ensemble"] == theme._BLUE_PLOT_LIGHT
     assert LIGHT_COLORS["plot_isi"] != LIGHT_COLORS["plot_fr"]
 

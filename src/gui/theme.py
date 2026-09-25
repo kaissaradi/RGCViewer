@@ -18,11 +18,13 @@ APP_NAME = "ENCORE"
 # every line, dot, number and word stood out): off-white surface instead of
 # pure white, softer ink, lighter hairlines. docs/design/palette.md.
 PALETTE_LIGHT = {
-    "bg": "#F4F2EC",  # warm paper, not white
-    "surface": "#FBFAF7",  # off-white; pure white read as glare
-    "ink": "#26241F",  # warm black, never #000 (14.9:1 on surface)
-    "muted": "#77736A",  # 4.5:1 on surface (AA body text)
-    "rule": "#E4E0D6",
+    # Darker paper 2026-09-25: the user found #F4F2EC / #FBFAF7 still "too
+    # white, hurts the eyes". Surface luminance 0.96 -> 0.78.
+    "bg": "#DEDAD0",  # warm grey paper
+    "surface": "#E8E5DD",  # plot and panel field
+    "ink": "#26241F",  # warm black, never #000 (12.3:1 on surface)
+    "muted": "#625E55",  # 5.1:1 on surface (AA body text)
+    "rule": "#D2CDC2",
     "red": "#C8322B",
     "yellow": "#E9B520",
     "blue": "#1B4E9B",
@@ -40,14 +42,15 @@ PALETTE_DARK = {
 }
 
 # Functional extras (not Bauhaus primaries). Used for status / AA fills.
-_GOOD_LIGHT = "#1F7A4D"
+_GOOD_LIGHT = "#1A6B43"  # 5.2:1 on the light surface
 _GOOD_DARK = "#5DCAA0"
-_YELLOW_TEXT_LIGHT = "#8A6500"  # #E9B520 fails AA as 12px text on white
+_YELLOW_TEXT_LIGHT = "#7A5900"  # #E9B520 fails AA as text; 5.1:1 on the light surface
+_RED_TEXT_LIGHT = "#AE2A24"  # red as text: #C8322B is 4.2:1 on the light surface
 _BLUE_PLOT_DARK = "#6B9BE0"  # #4A82D6 is 4.13:1 on #232220
 _BLUE_FILL_DARK = "#1B4E9B"  # #4A82D6 + white is 3.85:1
 _RED_TEXT_DARK = "#F28A82"  # #E8564A is 4.44:1 on #232220
-_BLUE_PLOT_LIGHT = "#4A72B8"  # data blue on the light field: 4.6:1, softer than #1B4E9B
-_TICK_LIGHT = "#948F85"  # axis tick numbers only (plot_tick): 3.1:1, they recede
+_BLUE_PLOT_LIGHT = "#3E63A6"  # data blue on the light field: 4.7:1, softer than #1B4E9B
+_TICK_LIGHT = "#7D786E"  # axis tick numbers only (plot_tick): 3.5:1, they recede
 _INK_PLOT_LIGHT = "#3B3934"  # mean traces: 11:1, not full ink
 
 
@@ -107,7 +110,7 @@ LIGHT_COLORS = {
     "bg_base": PALETTE_LIGHT["bg"],
     "bg_panel": PALETTE_LIGHT["surface"],
     "bg_surface": PALETTE_LIGHT["bg"],
-    "bg_elevated": "#ECE9E1",
+    "bg_elevated": "#EFECE5",
     "bg_overlay": "rgba(27,27,27,0.32)",
     "bg_tooltip": PALETTE_LIGHT["surface"],
     "accent": PALETTE_LIGHT["blue"],
@@ -120,18 +123,18 @@ LIGHT_COLORS = {
     "text_primary": PALETTE_LIGHT["ink"],
     "text_secondary": PALETTE_LIGHT["muted"],
     "text_tertiary": PALETTE_LIGHT["muted"],
-    "text_disabled": "#ADA89E",
+    "text_disabled": "#98928A",
     "text_tooltip": PALETTE_LIGHT["ink"],
     "border_subtle": PALETTE_LIGHT["rule"],
     "border_default": PALETTE_LIGHT["rule"],
-    "border_strong": "#CFCABF",
+    "border_strong": "#BDB7AB",
     "border_focus": PALETTE_LIGHT["blue"],
     "status_good_bg": "rgba(31, 122, 77, 0.12)",
     "status_good_text": _GOOD_LIGHT,
     "status_mua_bg": "rgba(138, 101, 0, 0.14)",
     "status_mua_text": _YELLOW_TEXT_LIGHT,
     "status_noise_bg": "rgba(200, 50, 43, 0.12)",
-    "status_noise_text": PALETTE_LIGHT["red"],
+    "status_noise_text": _RED_TEXT_LIGHT,
     "status_unsort_bg": "rgba(27, 78, 155, 0.12)",
     "status_unsort_text": PALETTE_LIGHT["blue"],
     "selection_bg": "rgba(27, 78, 155, 0.16)",
@@ -144,11 +147,11 @@ LIGHT_COLORS = {
     "plot_ensemble": _BLUE_PLOT_LIGHT,
     "plot_fill": _BLUE_PLOT_LIGHT,
     "plot_mean": _INK_PLOT_LIGHT,
-    "plot_peak": PALETTE_LIGHT["yellow"],
+    "plot_peak": _YELLOW_TEXT_LIGHT,  # #E9B520 is 1.5:1 on the light field
     "plot_highlight": PALETTE_LIGHT["blue"],
     "plot_acg": _BLUE_PLOT_LIGHT,
     "plot_isi": _BLUE_PLOT_LIGHT,
-    "plot_fr": PALETTE_LIGHT["yellow"],
+    "plot_fr": _YELLOW_TEXT_LIGHT,
     "plot_overlay": _BLUE_PLOT_LIGHT,
     "plot_compare": PALETTE_LIGHT["red"],
     "plot_waveform_shadow": PALETTE_LIGHT["rule"],
@@ -159,15 +162,15 @@ LIGHT_COLORS = {
 PLOT_CATEGORICAL = [
     (_BLUE_PLOT_DARK, PALETTE_LIGHT["blue"]),
     (PALETTE_DARK["yellow"], _YELLOW_TEXT_LIGHT),
-    (_RED_TEXT_DARK, PALETTE_LIGHT["red"]),
+    (_RED_TEXT_DARK, _RED_TEXT_LIGHT),
     (PALETTE_DARK["ink"], PALETTE_LIGHT["ink"]),
     (_GOOD_DARK, _GOOD_LIGHT),
-    ("#F0A050", "#B45309"),
+    ("#F0A050", "#9C4707"),
     ("#B794F4", "#6D28D9"),
     ("#F472B6", "#BE185D"),
     ("#A3E635", "#3F6212"),
-    ("#67C4E8", "#0E7490"),
-    ("#E9B520", "#A16207"),
+    ("#67C4E8", "#0B6680"),
+    ("#E9B520", "#8C5506"),
     ("#FB7185", "#9F1239"),
 ]
 
@@ -335,16 +338,29 @@ def apply_plot_theme(target, colors: dict) -> None:
         _style_mpl_axes(target, colors)
 
 
+# pyqtgraph axes otherwise use the app font, about twice the 8 pt ticks of
+# the matplotlib plots next to them (Standard tab, 2026-09-25).
+TICK_POINT_SIZE = 8.0
+AXIS_LABEL_POINT_SIZE = 9.0
+
+
 def _style_pg_plot_item(plot_item, colors: dict) -> None:
+    from qtpy.QtGui import QFont
     spine = pg.mkPen(colors["border_default"])
     tick = pg.mkPen(colors.get("plot_tick", colors["text_secondary"]))
-    for name in ("bottom", "left"):
+    tick_font, label_font = QFont(), QFont()
+    tick_font.setPointSizeF(TICK_POINT_SIZE)
+    label_font.setPointSizeF(AXIS_LABEL_POINT_SIZE)
+    for name in ("bottom", "left", "right"):
         try:
             axis = plot_item.getAxis(name)
         except Exception:
             continue
-        axis.setPen(spine)
-        axis.setTextPen(tick)
+        if name != "right":
+            axis.setPen(spine)
+            axis.setTextPen(tick)
+        axis.setTickFont(tick_font)
+        axis.label.setFont(label_font)      # kept across later setLabel calls
     try:
         plot_item.showAxis("top", False)
         plot_item.showAxis("right", False)

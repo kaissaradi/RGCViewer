@@ -418,6 +418,12 @@ class StandardPlotsPanel(QWidget):
             if isinstance(item, pg.TextItem):
                 item.setPos(item.pos().x(), top)
 
+    def _small_title(self, text):
+        """The tab's one title style: small tracked capitals in the tertiary ink."""
+        c = resolve_theme_colors(self.main_window.get_current_colors())
+        return (f"<span style='color:{c['text_tertiary']}; font-size:10px; "
+                f"letter-spacing:0.06em;'>{text}</span>")
+
     def _style_plot(self, plot_widget, colors=None):
         if colors is None:
             colors = resolve_theme_colors(self.main_window.get_current_colors())
@@ -882,9 +888,8 @@ class StandardPlotsPanel(QWidget):
                                         self._ccg_bar.setVisible(True)
                                         self._acg_line.setVisible(False)
                                         self._acg_zero_line.setVisible(True)
-                                        self.acg_plot.setTitle(
-                                            f"CCG: {cluster_id} vs {similar_id}"
-                                        )
+                                        self.acg_plot.setTitle(self._small_title(
+                                            f"CCG: {cluster_id} VS {similar_id}"))
                                         showing_ccg = True
                         except Exception as exc:
                             # Say so on the plot. A silent fallback showed the
@@ -905,9 +910,9 @@ class StandardPlotsPanel(QWidget):
                 self._ccg_bar.setVisible(False)
                 self._acg_zero_line.setVisible(False)
                 self.acg_plot.setXRange(0, float(time_lags[mask].max()), padding=0.02)
-                self.acg_plot.setTitle(
-                    "Autocorrelation" if ccg_error is None
-                    else f"CCG failed ({ccg_error}); showing autocorrelation")
+                self.acg_plot.setTitle(self._small_title(
+                    "AUTOCORRELATION" if ccg_error is None
+                    else f"CCG FAILED ({ccg_error}); SHOWING AUTOCORRELATION"))
             else:
                 self._acg_line.setData([], [])
                 self._ccg_bar.setVisible(False)
