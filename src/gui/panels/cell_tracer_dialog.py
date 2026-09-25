@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from .ei_panel import EIPanel
 
 import logging
+from .. import array_orientation
 
 logger = logging.getLogger(__name__)
 
@@ -823,9 +824,10 @@ class CellTracerDialog(QDialog):
         dm = self._get_dm()
         if dm is None:
             return None
-        if dm.vision_channel_positions is not None:
-            return dm.vision_channel_positions
-        return dm.channel_positions
+        raw = (dm.vision_channel_positions if dm.vision_channel_positions is not None
+               else dm.channel_positions)
+        # Drawn the way the screen is oriented, like the EI panel (Q20).
+        return array_orientation.to_display(raw, array_orientation.display_matrix(dm))
 
     def _get_dm(self):
         if self.ei_panel is None:

@@ -711,6 +711,43 @@ def scenario_orientation_check(s):
     log(json.dumps(out))
 
 
+def scenario_array_alignment(s):
+    """Q20: array views turned to the screen; numbers + EI screenshots off/on."""
+    from src.analysis import rf_geometry, vision_sort_check as vsc
+    from src.gui import array_orientation as ao
+    s.load()
+    w, dm = s.w, s.dm()
+    check = dm.vision_sort_check()
+    df = dm.cluster_df
+    rf, pos = [], []
+    for c, x, y in zip(df["cluster_id"], df["x_um"], df["y_um"]):
+        f = rf_geometry.raw_rf_fit(dm.vision_params, dm.get_vision_id_for_cluster(int(c)))
+        if f is not None and np.isfinite(x) and np.isfinite(y):
+            rf.append((f.x0, f.y0))
+            pos.append((x, y))
+    rf, pos = np.array(rf), np.array(pos)
+    shown = ao.to_display(pos, check.screen_turn or ao.IDENTITY)
+    coef, *_ = np.linalg.lstsq(np.c_[shown, np.ones(len(shown))], rf, rcond=None)
+    log(json.dumps({"screen_turn": check.screen_turn, "described": ao.describe(check.screen_turn or ao.IDENTITY),
+                    "turn_left_after_display": vsc.nearest_quarter_turn(coef[:2].T),
+                    "n_cells": len(rf)}))
+    cid = max((int(c) for c in df["cluster_id"]
+               if rf_geometry.raw_rf_fit(dm.vision_params, dm.get_vision_id_for_cluster(int(c)))
+               and dm.get_vision_id_for_cluster(int(c)) in dm.vision_stas),
+              key=lambda c: rf_geometry.raw_rf_fit(dm.vision_params, dm.get_vision_id_for_cluster(c)).x0)
+    w.toggle_population_split_view(True)
+    for state in (False, True):
+        w.align_array_action.setChecked(state)
+        s.tab("EI")
+        s.select(cid, settle=3.0)
+        s.shot(f"ei_align_{'on' if state else 'off'}", w.ei_panel)
+    s.tab("STA")
+    s.select(cid, settle=2.0)
+    s.shot("sta_same_cell", w.sta_panel.rf_canvas)
+    s.shot("mosaic_same_cell", w.pop_mosaic_canvas)
+    log(json.dumps({"cell": cid, "rf_x0": round(rf_geometry.raw_rf_fit(dm.vision_params, dm.get_vision_id_for_cluster(cid)).x0, 1)}))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """

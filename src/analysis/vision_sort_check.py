@@ -28,7 +28,7 @@ this check looks at the content instead.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -42,6 +42,15 @@ class SortCheck:
     n_cells: int            # cells with both an RF centre and an array position
     r2: float               # all paired cells
     r2_robust: float        # after dropping the worst 10 %
+    # Array → screen orientation from the robust fit, snapped to the nearest
+    # quarter turn / mirror: (m00, m01, m10, m11), screen ≈ M · array. None
+    # when there is no fit. On the lab rig it is a −90° turn (PLAN.md Q20).
+    screen_matrix: Optional[Tuple[int, int, int, int]] = None
+
+    @property
+    def screen_turn(self) -> Optional[Tuple[int, int, int, int]]:
+        """screen_matrix, but only when the pairing itself can be trusted."""
+        return self.screen_matrix if self.decided and not self.mismatch else None
 
     @property
     def decided(self) -> bool:
@@ -55,13 +64,30 @@ class SortCheck:
 NO_CHECK = SortCheck(0, float("nan"), float("nan"))
 
 
-def _r2(p: np.ndarray, q: np.ndarray) -> Tuple[float, np.ndarray]:
+def _r2(p: np.ndarray, q: np.ndarray, return_coef=False):
     x = np.c_[p, np.ones(len(p))]
     coef, *_ = np.linalg.lstsq(x, q, rcond=None)
     res = q - x @ coef
     ss_tot = ((q - q.mean(0)) ** 2).sum()
-    return (1.0 - (res ** 2).sum() / ss_tot if ss_tot > 0 else float("nan"),
-            np.linalg.norm(res, axis=1))
+    out = (1.0 - (res ** 2).sum() / ss_tot if ss_tot > 0 else float("nan"),
+           np.linalg.norm(res, axis=1))
+    return out + (coef,) if return_coef else out
+
+
+_SIGNED_PERMUTATIONS = [(a, 0, 0, b) for a in (1, -1) for b in (1, -1)] + \
+                       [(0, a, b, 0) for a in (1, -1) for b in (1, -1)]
+
+
+def nearest_quarter_turn(a_matrix) -> Tuple[int, int, int, int]:
+    """The rotation / mirror by quarter turns closest to the 2×2 map ``a_matrix``.
+
+    The polar factor R = U·Vᵀ of A removes scale and shear; the signed
+    permutation M that maximises trace(Mᵀ·R) is the closest of the eight.
+    """
+    u, _s, vt = np.linalg.svd(np.asarray(a_matrix, dtype=float))
+    r = u @ vt
+    return max(_SIGNED_PERMUTATIONS,
+               key=lambda m: m[0] * r[0, 0] + m[1] * r[0, 1] + m[2] * r[1, 0] + m[3] * r[1, 1])
 
 
 def check_pairing(rf_centres: Dict[int, Tuple[float, float]],
@@ -80,8 +106,9 @@ def check_pairing(rf_centres: Dict[int, Tuple[float, float]],
         return SortCheck(len(p), float("nan"), float("nan"))
     r2_all, err = _r2(p, q)
     keep = err <= np.quantile(err, KEEP_FRACTION)
-    r2_keep, _ = _r2(p[keep], q[keep])
-    return SortCheck(len(p), float(r2_all), float(r2_keep))
+    r2_keep, _, coef = _r2(p[keep], q[keep], return_coef=True)
+    a_matrix = coef[:2].T                       # q ≈ A · p + b
+    return SortCheck(len(p), float(r2_all), float(r2_keep), nearest_quarter_turn(a_matrix))
 
 
 def describe(check: SortCheck) -> str:

@@ -77,6 +77,7 @@ from .panels.raw_panel import RawPanel
 from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
+from . import array_orientation
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
 from .theme import (
@@ -1893,6 +1894,11 @@ class MainWindow(QMainWindow):
         self.calibrate_array_action = array_menu.addAction("Map Image to Array...")
         self.calibrate_array_action.setEnabled(False)  # Enabled after data loads
         self.calibrate_array_action.triggered.connect(self._open_array_calibration)
+        # Draw array views the way the screen is oriented (PLAN.md Q20).
+        self.align_array_action = array_menu.addAction("Align Array Views to the Screen")
+        self.align_array_action.setCheckable(True)
+        self.align_array_action.setChecked(array_orientation.enabled())
+        self.align_array_action.toggled.connect(self._on_align_array_toggled)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -2197,6 +2203,20 @@ class MainWindow(QMainWindow):
                 return None
 
         return None
+
+    def _on_align_array_toggled(self, on):
+        array_orientation.set_enabled(on)
+        dm = self.data_manager
+        matrix = array_orientation.display_matrix(dm)
+        if not on:
+            msg = "Array views use the array's own orientation."
+        elif tuple(matrix) == array_orientation.IDENTITY:
+            msg = ("No array/screen orientation for this run (the Vision files do not "
+                   "pair reliably with this sort), so the array is drawn as stored.")
+        else:
+            msg = f"Array views {array_orientation.describe(matrix)} to match the screen."
+        self.status_bar.showMessage(msg, 8000)
+        self.on_tab_changed(self.analysis_tabs.currentIndex())
 
     def on_save_classification_action(self):
         """Wrapper to call the callback function."""

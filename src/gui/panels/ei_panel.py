@@ -49,6 +49,7 @@ class _ComboBoxNoWheel(QComboBox):
 import pyqtgraph as pg
 
 from ..widgets.widgets import MplCanvas
+from .. import array_orientation
 from .cell_tracer_dialog import CellTracerDialog
 
 from typing import TYPE_CHECKING
@@ -555,7 +556,8 @@ class EIPanel(QWidget):
 
         ch_pos = self._resolve_channel_positions()
         dm = self.main_window.data_manager
-        key = (getattr(dm, "generation", None), getattr(dm, "_vision_source", None))
+        key = (getattr(dm, "generation", None), getattr(dm, "_vision_source", None),
+               tuple(self._array_matrix()))
         if key != self._ei_map_cache_key:
             self._ei_map_cache.clear()
             self._ei_map_cache_key = key
@@ -622,7 +624,8 @@ class EIPanel(QWidget):
 
         # store minimal state so animation / 3-D / waveform still work
         ei_data = lw["median_ei"]
-        ch_pos = self.main_window.data_manager.channel_positions
+        ch_pos = array_orientation.to_display(
+            self.main_window.data_manager.channel_positions, self._array_matrix())
         self.current_ei_data = [ei_data]
         self.current_ei_error = [None]
         self.current_cluster_ids = [primary_id]
@@ -759,16 +762,7 @@ class EIPanel(QWidget):
             and self._overlay_image_rgba is not None
             and self._overlay_extent_um is not None
         ):
-            xl, xr_img, yb, yt = self._overlay_extent_um
-            ax.imshow(
-                self._overlay_image_rgba,
-                aspect="auto",
-                origin="upper",
-                extent=(xl, xr_img, yb, yt),
-                alpha=self._overlay_alpha,
-                interpolation="bilinear",
-                zorder=0,
-            )
+            self._draw_photo(ax)
         # ── end photo underlay ─────────────────────────────────────────────
 
         # colour mapping
@@ -1143,16 +1137,7 @@ class EIPanel(QWidget):
             and self._overlay_image_rgba is not None
             and self._overlay_extent_um is not None
         ):
-            xl, xr_img, yb, yt = self._overlay_extent_um
-            ax.imshow(
-                self._overlay_image_rgba,
-                aspect="auto",
-                origin="upper",
-                extent=(xl, xr_img, yb, yt),
-                alpha=self._overlay_alpha,
-                interpolation="bilinear",
-                zorder=0,
-            )
+            self._draw_photo(ax)
 
         pitch = self._get_electrode_pitch(ch_pos)
         # box geometry in µm. Box spans ~1.6× pitch so waveform shape is
@@ -1580,14 +1565,35 @@ class EIPanel(QWidget):
     # Helpers
     # -----------------------------------------------------------------------
 
+    def _array_matrix(self):
+        """Quarter turn that lines the array up with the screen (array_orientation.py)."""
+        return array_orientation.display_matrix(self.main_window.data_manager)
+
     def _resolve_channel_positions(self) -> np.ndarray:
-        """Single source of truth for channel positions."""
+        """Single source of truth for channel positions, turned for display."""
         dm = self.main_window.data_manager
         if dm is None:
             return np.zeros((0, 2))
-        if dm.vision_channel_positions is not None:
-            return dm.vision_channel_positions
-        return dm.channel_positions
+        raw = (dm.vision_channel_positions if dm.vision_channel_positions is not None
+               else dm.channel_positions)
+        return array_orientation.to_display(raw, self._array_matrix())
+
+    def _draw_photo(self, ax):
+        """The calibrated array photo, in array µm, turned like the electrodes."""
+        xl, xr_img, yb, yt = self._overlay_extent_um
+        image = ax.imshow(
+            self._overlay_image_rgba,
+            aspect="auto",
+            origin="upper",
+            extent=(xl, xr_img, yb, yt),
+            alpha=self._overlay_alpha,
+            interpolation="bilinear",
+            zorder=0,
+        )
+        matrix = self._array_matrix()
+        if tuple(matrix) != array_orientation.IDENTITY:
+            image.set_transform(array_orientation.mpl_transform(ax, matrix))
+        return image
 
     def _get_top_electrodes(
         self,

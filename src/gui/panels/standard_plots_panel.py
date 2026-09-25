@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QFrame,
 )
 from qtpy.QtCore import Qt
+from .. import array_orientation
 from ..theme import apply_plot_theme, opaque_brush, plot_field, plot_stroke, resolve_theme_colors
 import logging
 
@@ -505,7 +506,8 @@ class StandardPlotsPanel(QWidget):
                 and cluster_id < dm.templates.shape[0]
             ):
                 template = dm.templates[cluster_id]
-                pos = np.array(dm.channel_positions)
+                pos = array_orientation.to_display(
+                    np.array(dm.channel_positions), array_orientation.display_matrix(dm))
             elif (
                 getattr(dm, "vision_eis", None) is not None
                 and dm.channel_positions is not None
@@ -514,7 +516,8 @@ class StandardPlotsPanel(QWidget):
                 ei_container = dm.vision_eis.get(vid)
                 if ei_container is not None:
                     template = ei_container.ei.T
-                    pos = np.array(dm.channel_positions)
+                    pos = array_orientation.to_display(
+                        np.array(dm.channel_positions), array_orientation.display_matrix(dm))
                     n_ch = min(template.shape[1], len(pos))
                     template = template[:, :n_ch]
                     pos = pos[:n_ch]
