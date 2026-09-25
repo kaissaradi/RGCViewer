@@ -19,10 +19,16 @@ def _dm(raw=True):
         for t in ts:
             data[t - 20:t + 60, 0] += amp[c][0] * shape
             data[t - 20:t + 60, 1] += amp[c][1] * shape
+    # An unsorted cell: big spikes on channel 0 that no unit owns.
+    for t in np.arange(620, 19000, 900):
+        data[t - 20:t + 60, 0] += 2.0 * shape
     st = np.concatenate([times[c] for c in (0, 1, 2)])
     owner = np.concatenate([np.full(len(times[c]), c) for c in (0, 1, 2)])
+    order = np.argsort(st, kind="stable")          # Kilosort's spike_times are in time order
+    st, owner = st[order], owner[order]
     dm = DataManager.__new__(DataManager)
     dm.spike_times = st
+    dm.spike_clusters = owner
     dm.cluster_df = pd.DataFrame({"cluster_id": [0, 1, 2], "best_chan": [0, 1, 3]})
     dm.channel_positions = np.column_stack([np.arange(n_ch) * 30.0, np.zeros(n_ch)])
     dm.get_cluster_spike_indices = lambda cid: np.flatnonzero(owner == cid)
@@ -49,10 +55,13 @@ def test_pca_reads_the_cell_even_off_its_template_channel_and_neighbours_by_dist
     assert dm.pca_neighbours(0, 0) == [1]                 # 30 µm away; cell 2 sits at 90 µm
     r = dm.get_channel_all_snippets(0, 2)                  # cell 2's template channel is 3
     assert r["source"] == "raw" and len(r["unit_waves"]) == len(dm.get_cluster_spike_indices(2))
-    assert r["unit_waves"].shape[1] == 4 * 80              # 4 channels × 80 samples, µV
+    assert r["unit_waves"].shape[1] == 4 * 30              # 4 channels × (−0.5 … +1 ms), µV
+    # every unit that fires on channel 0 is there, labelled; the unowned spikes are "unsorted"
     assert sorted(r["bg_waves_by_cid"]) == [0, 1]
-    trough = r["unit_waves"][:, 20].mean()                 # channel 0 at the spike time
+    assert len(r["unsorted_waves"]) >= 15 and r["unsorted_waves"][:, 10].mean() < -60
+    trough = r["unit_waves"][:, 10].mean()                 # channel 0 at the spike time
     assert trough < -40                                    # real amplitude, not z-scored
+    assert r["threshold_uv"] < 0
 
 
 def test_no_raw_file_gives_no_made_up_waveforms():
@@ -88,3 +97,29 @@ def test_pair_dprime_is_the_separation_in_standard_deviations():
     b = rng.normal(0, 1, (4000, 3)) + np.array([4.0, 0.0, 0.0])
     assert abs(wp._pair_dprime(a, b) - 4.0) < 0.15
     assert wp._pair_dprime(a, a + 0) == 0.0
+
+
+def test_payload_counts_unsorted_events_that_look_like_the_cell():
+    from src.gui.panels import waveforms_panel as wp
+    rng = np.random.default_rng(3)
+    unit = rng.normal(0, 1, (200, 12)) + 10
+    other = rng.normal(0, 1, (200, 12)) - 10
+    uns = np.vstack([rng.normal(0, 1, (30, 12)) + 10, rng.normal(0, 1, (40, 12)) + 30])
+    p = wp._build_pca_payload(5, unit, other, None, {7: other}, unsorted_waves=uns)
+    assert len(p["unsorted_coords"]) == 70
+    assert 25 <= p["n_unsorted_inside"] <= 30          # the 30 look-alikes, not the other 40
+    assert p["dprime_by_cid"][7] > 5
+
+
+def test_a_far_unit_firing_at_the_same_moment_does_not_claim_the_crossing():
+    dm = _dm()
+    far = np.arange(622, 19000, 900)                   # 2 samples after each unowned spike
+    st = np.concatenate([dm.spike_times, far])
+    owner = np.concatenate([dm.spike_clusters, np.full(len(far), 3)])
+    order = np.argsort(st, kind="stable")
+    dm.spike_times, dm.spike_clusters = st[order], owner[order]
+    dm.cluster_df = pd.DataFrame({"cluster_id": [0, 1, 2, 3], "best_chan": [0, 1, 3, 5]})
+    dm.get_cluster_spike_indices = lambda cid: np.flatnonzero(dm.spike_clusters == cid)
+    r = dm.get_channel_all_snippets(0, 2)
+    assert 3 not in r["bg_waves_by_cid"]                # cell 3 sits 150 µm away
+    assert len(r["unsorted_waves"]) >= 15

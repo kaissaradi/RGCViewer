@@ -1081,8 +1081,15 @@ def scenario_waveforms_pca(s):
                         "pca_s": round(t_pca, 1), "pca_ok": got_pca,
                         "header": wp._cluster_header.text(), "isolation": wp._isolation_label.text(),
                         "n_spikes": stats.get("n_spikes"), "mean_fr": stats.get("mean_fr"),
+                        "chips": [str(k) for k in wp._compare_buttons],
+                        "chips_visible": [b.isVisible() for b in wp._compare_buttons.values()],
                         "pca_points": None if wp._last_pca_payload is None else
                         [len(wp._last_pca_payload["unit_coords"]), len(wp._last_pca_payload["bg_coords"])]}))
+        def cloud_drawn():
+            x = wp._cloud_items[0].getData()[0]
+            return x is not None and len(x) > 0
+        got_cloud = wait_until(cloud_drawn, 120)
+        log(json.dumps({"cell": cid, "cloud_s": round(time.time() - t, 1), "cloud_ok": got_cloud}))
         s.shot(f"waveforms_{cid}", wp)
 
 

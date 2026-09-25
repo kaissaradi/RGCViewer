@@ -129,8 +129,8 @@ def palette_from_theme(colors):
         "cloud_2": _rgba(ens, 55),
         "cloud_3": _rgba(ens, 65),
         "cloud_4": _rgba(ens, 80),
-        "pca_bg": _rgba(colors["plot_shadow"], 55),
-        "pca_unit": colors["plot_highlight"],
+        "pca_bg": _rgba(colors["plot_shadow"], 120),   # unsorted crossings: visible, recessive
+        "pca_unit": colors["plot_compare"],   # this cell red, as the selected cell everywhere
         "pca_ellipse": colors["plot_highlight"],
         "pca_compare": colors["plot_compare"],
         "pca_cmp_ell": colors["plot_compare"],
@@ -355,9 +355,11 @@ class _PCAWorker(QRunnable):
         signals: _WorkerSignals,
         bg_waves_by_cid: Optional[dict] = None,
         generation=None,
+        unsorted_waves: Optional[np.ndarray] = None,
     ):
         super().__init__()
         self.setAutoDelete(True)
+        self.unsorted_waves = unsorted_waves
         self.cluster_id = cluster_id
         self.generation = generation  # DataManager.generation of the request
         self.unit_waves = unit_waves  # (n_unit, n_time)
@@ -375,6 +377,7 @@ class _PCAWorker(QRunnable):
                 self.bg_waves,
                 self.unit_spike_indices,
                 self.bg_waves_by_cid,
+                unsorted_waves=self.unsorted_waves,
             )
             payload["_generation"] = self.generation
             self.signals.pca_ready.emit(self.cluster_id, payload)
@@ -384,7 +387,8 @@ class _PCAWorker(QRunnable):
 
 
 def _build_pca_payload(
-    cluster_id, unit_waves, bg_waves, unit_spike_indices, bg_waves_by_cid=None
+    cluster_id, unit_waves, bg_waves, unit_spike_indices, bg_waves_by_cid=None,
+    unsorted_waves=None,
 ):
     """
     Pure numpy/sklearn — safe off GUI thread.
@@ -432,6 +436,14 @@ def _build_pca_payload(
         bg_sub = None
         n_time = unit_sub.shape[1]
 
+    # Threshold crossings no unit claims are part of the fit too: the axes
+    # should describe everything on the channel (label 2).
+    has_unsorted = unsorted_waves is not None and len(unsorted_waves) > 0
+    if has_unsorted:
+        uns = unsorted_waves.astype(np.float32)[:, :n_time]
+        combined = np.vstack([combined, uns])
+        labels = np.concatenate([labels, np.full(len(uns), 2.0)])
+
     if len(combined) < 4:
         return {"cluster_id": cluster_id, "error": "too_few_spikes"}
 
@@ -451,6 +463,19 @@ def _build_pca_payload(
     bg_coords = coords[bg_mask] if has_bg else np.empty((0, 2))
     unit_coords = coords[unit_mask]
     unit3 = coords3[unit_mask]
+    unsorted_coords = coords[labels == 2]
+
+    # Unsorted crossings inside the cell's own 95 % region (Mahalanobis in
+    # the 3 PCs, χ²₃ = 7.81): spikes it may be missing.
+    n_unsorted_inside = 0
+    if has_unsorted and len(unit3) >= 10 and coords3.shape[1] == 3:
+        try:
+            mu = unit3.mean(axis=0)
+            icov = np.linalg.inv(np.cov(unit3.T) + np.eye(3) * 1e-6)
+            dx = coords3[labels == 2] - mu
+            n_unsorted_inside = int(np.sum(np.einsum("ij,jk,ik->i", dx, icov, dx) < 7.81))
+        except np.linalg.LinAlgError:
+            pass
 
     # --- Project each per-cluster bg set into the SAME PCA space -----------
     # This is the key step for the compare feature: we project bg_waves_by_cid
@@ -481,14 +506,16 @@ def _build_pca_payload(
     # first 3 PCs: d′ = |Δmean| / sqrt((var_cell + var_neighbour) / 2). Against
     # all neighbours pooled, as before, the score mixed several cells' spread
     # and moved from 0.64 to 0.32 between two samples of one cell (2026-09-25).
-    isolation_label = "N/A (no neighbouring cells within 60 µm)"
+    isolation_label = "N/A (no other unit fires on this channel)"
     dprime = None
     closest = None
+    dprime_by_cid = {}
     if len(unit3) >= 10:
         for cid, c3 in bg3_by_cid.items():
             if len(c3) < 10:
                 continue
             d = _pair_dprime(unit3, c3)
+            dprime_by_cid[cid] = d
             if dprime is None or d < dprime:
                 dprime, closest = d, cid
     if dprime is not None:
@@ -510,6 +537,9 @@ def _build_pca_payload(
         "dprime": dprime,
         "ellipse": ellipse,
         "has_bg": has_bg,
+        "unsorted_coords": unsorted_coords,
+        "n_unsorted_inside": n_unsorted_inside,
+        "dprime_by_cid": dprime_by_cid,
     }
 
 
@@ -609,6 +639,7 @@ class _ChannelSnippetsWorker(QRunnable):
                 self.signals,
                 bg_waves_by_cid=r.get("bg_waves_by_cid", {}),
                 generation=getattr(self.dm, "generation", None),
+                unsorted_waves=r.get("unsorted_waves"),
             )
             QThreadPool.globalInstance().start(pca_worker)
         except Exception as exc:
@@ -772,34 +803,32 @@ class WaveformPanel(QWidget):
         )
         rv.addWidget(self._cluster_header)
 
-        # Compare selector strip
-        self._compare_strip_container = QWidget()
-        self._compare_strip_container.setStyleSheet("background: transparent;")
-        self._compare_strip_layout = QHBoxLayout(self._compare_strip_container)
-        self._compare_strip_layout.setContentsMargins(0, 0, 0, 0)
-        self._compare_strip_layout.setSpacing(4)
-        cmp_lbl = QLabel("Compare:")
-        self._cmp_label = cmp_lbl
-        cmp_lbl.setStyleSheet(
-            f"color: {_C['text_secondary']}; font-size: 9px; font-weight: 600;"
-        )
-        cmp_lbl.setFixedWidth(56)
-        self._compare_strip_layout.addWidget(cmp_lbl)
-        self._compare_strip_layout.addStretch()
-        self._compare_buttons: dict[int, QPushButton] = {}
-        rv.addWidget(self._compare_strip_container)
-
-        # PCA plot
+        # PCA plot: every event on the channel, coloured by unit (QA view)
         self._pca_plot = self._make_pca_plot()
         rv.addWidget(self._pca_plot, stretch=3)
 
-        # Isolation metric label
+        # Isolation metric label (wraps: it names a neighbour and a count)
         self._isolation_label = QLabel("Isolation: —")
         self._isolation_label.setStyleSheet(
             f"color: {_C['text_secondary']}; font-size: 10px;"
         )
+        self._isolation_label.setWordWrap(True)
+        self._isolation_label.setMinimumHeight(30)          # two lines: neighbour, then misses
         self._isolation_label.setAlignment(Qt.AlignCenter)
         rv.addWidget(self._isolation_label)
+
+        # Legend: one chip per unit on this channel, in its colour; click to
+        # highlight it. A grid of two columns (a single row overflowed the
+        # narrow column with 10–16 units and hid every chip).
+        self._compare_strip_container = QWidget()
+        self._compare_strip_container.setStyleSheet("background: transparent;")
+        self._compare_strip_layout = QGridLayout(self._compare_strip_container)
+        self._compare_strip_layout.setContentsMargins(0, 0, 0, 0)
+        self._compare_strip_layout.setHorizontalSpacing(4)
+        self._compare_strip_layout.setVerticalSpacing(2)
+        self._cmp_label = QLabel("")
+        self._compare_buttons: dict = {}
+        rv.addWidget(self._compare_strip_container)
 
         # Divider
         div = QFrame()
@@ -879,7 +908,7 @@ class WaveformPanel(QWidget):
 
         # Pre-allocated scatter items
         self._pca_bg_scatter = pg.ScatterPlotItem(
-            size=3, pen=None, brush=pg.mkBrush(*_C["pca_bg"]), hoverable=False
+            size=4, pen=None, brush=pg.mkBrush(*_C["pca_bg"]), hoverable=False
         )
         self._pca_unit_scatter = pg.ScatterPlotItem(
             size=5,
@@ -1340,48 +1369,39 @@ class WaveformPanel(QWidget):
         self._draw_pca(payload)
 
     def _rebuild_compare_strip(self, payload: dict):
-        """Repopulate the compare buttons from bg_coords_by_cid."""
-        # Remove old buttons
-        for btn in self._compare_buttons.values():
-            self._compare_strip_layout.removeWidget(btn)
-            btn.deleteLater()
-        self._compare_buttons.clear()
+        """Legend chips: every unit with events on this channel, then the unsorted count.
 
-        bg_by_cid = payload.get("bg_coords_by_cid", {})
-        if not bg_by_cid:
-            return
-
-        dm = self.main_window.data_manager
-        for cid in sorted(bg_by_cid.keys()):
-            row = dm.cluster_df[dm.cluster_df.cluster_id == cid]
-            n = int(row["n_spikes"].values[0]) if not row.empty else 0
-            label = f"C{cid}·{n//1000}k" if n >= 1000 else f"C{cid}·{n}"
-
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setChecked(self._compare_cluster_id == cid)
+        Each chip is in its unit's colour and shows its events here and its d′
+        to this cell; clicking one highlights that unit in the PCA.
+        """
+        self._clear_compare_buttons()
+        by_cid = payload.get("bg_coords_by_cid", {}) or {}
+        colours = self._unit_colours(by_cid)
+        dmap = payload.get("dprime_by_cid", {}) or {}
+        chips = [(None, f"this cell · {len(payload['unit_coords'])}", _C["pca_unit"])]
+        for cid in sorted(by_cid, key=lambda c: dmap.get(c, 99.0)):   # closest first
+            d = f" · d′ {dmap[cid]:.1f}" if cid in dmap else ""
+            chips.append((cid, f"cell {cid} · {len(by_cid[cid])}{d}", colours[cid]))
+        uns = payload.get("unsorted_coords")
+        if uns is not None and len(uns):
+            chips.append(("unsorted", f"unsorted · {len(uns)}", _C["text_secondary"]))
+        for key, label, colour in chips:
+            btn = QPushButton(f"● {label}")
+            btn.setCheckable(key not in (None, "unsorted"))
+            btn.setChecked(self._compare_cluster_id == key)
             btn.setFixedHeight(20)
+            btn.setToolTip("Highlight this unit in the PCA" if btn.isCheckable() else "")
             btn.setStyleSheet(
-                f"QPushButton {{"
-                f"  background: {_C['bg_card']};"
-                f"  color: {_C['text_secondary']};"
-                f"  border: 1px solid {_C['border_default']};"
-                f"  border-radius: 3px;"
-                f"  font-size: 9px;"
-                f"  padding: 0 5px;"
-                f"}}"
-                f"QPushButton:checked {{"
-                f"  background: {_C['pca_compare']}22;"
-                f"  color: {_C['pca_compare']};"
-                f"  border-color: {_C['pca_compare']};"
-                f"}}"
-            )
-            # Capture cid in closure
-            btn.clicked.connect(lambda checked, c=cid: self._on_compare_selected(c))
-            # Insert before the trailing stretch
-            stretch_idx = self._compare_strip_layout.count() - 1
-            self._compare_strip_layout.insertWidget(stretch_idx, btn)
-            self._compare_buttons[cid] = btn
+                f"QPushButton {{ background: {_C['bg_card']}; color: {colour};"
+                f" border: 1px solid {_C['border_default']}; border-radius: 3px;"
+                f" font-size: 9px; padding: 0 5px; }}"
+                f"QPushButton:checked {{ border-color: {colour}; font-weight: 600; }}")
+            if btn.isCheckable():
+                btn.clicked.connect(lambda checked, c=key: self._on_compare_selected(c))
+            n = len(self._compare_buttons)
+            self._compare_strip_layout.addWidget(btn, n // 2, n % 2)
+            btn.show()
+            self._compare_buttons[key] = btn
 
     def _on_compare_selected(self, cid: int):
         """Toggle compare cluster. Clicking the active one deselects it."""
@@ -1398,12 +1418,28 @@ class WaveformPanel(QWidget):
         if self._last_pca_payload is not None:
             self._draw_pca(self._last_pca_payload)
 
+    def _unit_colours(self, cids) -> dict:
+        """One theme colour per other unit, stable by ID order; red stays this cell's."""
+        from ..theme import categorical
+        colors = self.main_window.get_current_colors()
+        out, k = {}, 0
+        for cid in sorted(cids):
+            if k % 12 == 2:                       # the categorical red: kept for this cell
+                k += 1
+            out[cid] = categorical(k, colors)
+            k += 1
+        return out
+
     def _draw_pca(self, payload: dict):
-        # --- Clear all dynamic items -------------------------------------
+        """Every event on the channel, coloured by who owns it (QA view).
+
+        This cell red, each other unit its own colour, threshold crossings no
+        unit claims small and grey. A chip in the strip above highlights one
+        unit (the rest fade) and gives its d′ to this cell.
+        """
         self._pca_bg_scatter.clear()
         self._pca_cmp_scatter.clear()
         self._pca_unit_scatter.clear()
-
         for attr in ("_pca_ellipse_item", "_pca_cmp_ellipse_item"):
             item = getattr(self, attr, None)
             if item is not None:
@@ -1413,109 +1449,75 @@ class WaveformPanel(QWidget):
                     pass
                 setattr(self, attr, None)
 
-        bg_coords = payload["bg_coords"]
-        bg_coords_by_cid = payload.get("bg_coords_by_cid", {})
+        by_cid = payload.get("bg_coords_by_cid", {}) or {}
         unit_coords = payload["unit_coords"]
+        unsorted = payload.get("unsorted_coords")
         var = payload["var"]
         unit_sidx = payload.get("unit_spike_idx")
-        cmp_cid = self._compare_cluster_id
+        focus = self._compare_cluster_id
+        colours = self._unit_colours(by_cid)
 
-        # --- Gray background cloud (all bg, minus compare if active) -----
-        # From the per-cell sets, so the compared cell is left out exactly.
-        # (It dropped the first N grey points, right only when that cell
-        # happened to come first.)
-        if payload["has_bg"] and len(bg_coords) > 0:
-            if bg_coords_by_cid:
-                parts = [c for cid, c in bg_coords_by_cid.items() if cid != cmp_cid and len(c)]
-                rest = np.vstack(parts) if parts else np.empty((0, 2))
-            else:
-                rest = bg_coords
-            if len(rest) > 0:
-                self._pca_bg_scatter.addPoints(x=rest[:, 0].tolist(), y=rest[:, 1].tolist())
+        # Unsorted crossings: small and grey, underneath everything.
+        if unsorted is not None and len(unsorted):
+            self._pca_bg_scatter.addPoints(x=unsorted[:, 0].tolist(), y=unsorted[:, 1].tolist())
 
-        # --- Coral compare cluster ----------------------------------------
-        if cmp_cid is not None and cmp_cid in bg_coords_by_cid:
-            cmp_coords = bg_coords_by_cid[cmp_cid]
-            if len(cmp_coords) > 0:
-                self._pca_cmp_scatter.addPoints(
-                    x=cmp_coords[:, 0].tolist(), y=cmp_coords[:, 1].tolist()
-                )
-                # 2-sigma ellipse for compare cluster
-                cmp_ellipse = _compute_ellipse(cmp_coords)
-                if cmp_ellipse is not None:
-                    ell = _ellipse_item(cmp_ellipse, pg.mkPen(_C["pca_cmp_ell"], width=1.5,
-                                                              style=Qt.DashLine))
-                    self._pca_plot.addItem(ell)
-                    self._pca_cmp_ellipse_item = ell
+        # Other units, one colour each; faded when another unit is in focus.
+        spots = []
+        for cid, c in by_cid.items():
+            if not len(c):
+                continue
+            col = pg.mkColor(colours[cid])
+            if focus is not None and focus != cid:
+                col.setAlpha(60)
+            brush = pg.mkBrush(col)
+            size = 7 if focus == cid else 5
+            spots += [{"pos": (float(x), float(y)), "brush": brush, "size": size, "data": int(cid)}
+                      for x, y in c[:, :2]]
+        if spots:
+            self._pca_cmp_scatter.addPoints(spots)
+        if focus is not None and focus in by_cid and len(by_cid[focus]) >= 4:
+            e = _compute_ellipse(by_cid[focus][:, :2])
+            if e is not None:
+                ell = _ellipse_item(e, pg.mkPen(colours[focus], width=1.5, style=Qt.DashLine))
+                self._pca_plot.addItem(ell)
+                self._pca_cmp_ellipse_item = ell
 
-        # --- Unit cloud (amber) -------------------------------------------
+        # This cell, on top.
         if len(unit_coords) > 0:
             if unit_sidx is not None and len(unit_sidx) == len(unit_coords):
-                pts = [
-                    {
-                        "pos": (float(unit_coords[i, 0]), float(unit_coords[i, 1])),
-                        "data": int(unit_sidx[i]),
-                    }
-                    for i in range(len(unit_coords))
-                ]
-                self._pca_unit_scatter.addPoints(pts)
+                self._pca_unit_scatter.addPoints([
+                    {"pos": (float(unit_coords[i, 0]), float(unit_coords[i, 1])),
+                     "data": int(unit_sidx[i])} for i in range(len(unit_coords))])
             else:
                 self._pca_unit_scatter.addPoints(
-                    x=unit_coords[:, 0].tolist(), y=unit_coords[:, 1].tolist()
-                )
-
-        # --- Unit 2-sigma ellipse -----------------------------------------
+                    x=unit_coords[:, 0].tolist(), y=unit_coords[:, 1].tolist())
         unit_ellipse = payload.get("ellipse")
         if unit_ellipse is not None:
-            ell = _ellipse_item(unit_ellipse, pg.mkPen(_C["pca_ellipse"], width=1.5,
-                                                       style=Qt.DashLine))
+            ell = _ellipse_item(unit_ellipse, pg.mkPen(_C["pca_unit"], width=1.5, style=Qt.DashLine))
             self._pca_plot.addItem(ell)
             self._pca_ellipse_item = ell
 
-        # --- Axis labels ---------------------------------------------------
         if len(var) >= 2:
-            self._pca_plot.setLabel(
-                "bottom",
-                f"PC1  ({var[0]:.1%})",
-                **{"color": _C["axis_text"], "font-size": "9pt"},
-            )
-            self._pca_plot.setLabel(
-                "left",
-                f"PC2  ({var[1]:.1%})",
-                **{"color": _C["axis_text"], "font-size": "9pt"},
-            )
+            style = {"color": _C["axis_text"], "font-size": "9pt"}
+            self._pca_plot.setLabel("bottom", f"PC1  ({var[0]:.1%})", **style)
+            self._pca_plot.setLabel("left", f"PC2  ({var[1]:.1%})", **style)
 
-        # --- Isolation label — pairwise when compare is active ------------
-        if cmp_cid is not None and cmp_cid in bg_coords_by_cid:
-            cmp_c = bg_coords_by_cid[cmp_cid]
-            if len(unit_coords) > 3 and len(cmp_c) > 3:
-                try:
-                    um = unit_coords.mean(axis=0)
-                    cm = cmp_c.mean(axis=0)
-                    pooled = np.sqrt(
-                        (np.trace(np.cov(unit_coords.T)) + np.trace(np.cov(cmp_c.T)))
-                        / 4.0
-                    )
-                    dp = float(np.linalg.norm(um - cm) / pooled) if pooled > 0 else 0.0
-                    sym = "✓" if dp > 3 else ("~" if dp > 1.5 else "✗")
-                    self._isolation_label.setText(
-                        f"C{self._current_cluster_id} vs C{cmp_cid}:  "
-                        f"d' = {dp:.2f}  {sym}"
-                    )
-                except Exception:
-                    self._isolation_label.setText(payload["isolation_label"])
-            else:
-                self._isolation_label.setText(payload["isolation_label"])
+        # Isolation line: the focused unit, else the closest one; plus misses.
+        dmap = payload.get("dprime_by_cid", {}) or {}
+        if focus is not None and focus in dmap:
+            d = dmap[focus]
+            verdict = "✓ well isolated" if d > 3 else "~ marginal" if d > 1.5 else "✗ poor"
+            text = f"this cell vs cell {focus}: d' = {d:.1f}  {verdict}"
         else:
-            self._isolation_label.setText(f"Isolation:  {payload['isolation_label']}")
+            text = payload.get("isolation_label", "")
+        n_in = int(payload.get("n_unsorted_inside", 0) or 0)
+        n_uns = 0 if unsorted is None else len(unsorted)
+        if n_uns:
+            text += (f"\n{n_in} of {n_uns} unsorted crossings fall inside this cell's "
+                     f"cluster (95 %)" if n_in else
+                     f"\n{n_uns} unsorted crossings, none inside this cell's cluster")
+        self._isolation_label.setText(text)
 
-        # -- Future hook: lasso-split prototype --------
-        # self._pca_unit_scatter.sigClicked.connect(self._on_spike_clicked)
-
-    # -----------------------------------------------------------------------
-    # Worker error
-    # -----------------------------------------------------------------------
-    @Slot(int, str)
     def _on_worker_error(self, cluster_id: int, msg: str):
         if cluster_id != self._current_cluster_id:
             return

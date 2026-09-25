@@ -3781,6 +3781,22 @@ class DataManager(QObject):
         d = np.hypot(*(pos - pos[int(dom_chan)]).T)
         return [int(c) for c in np.argsort(d, kind="stable")[:n]]
 
+    def _units_near(self, dom_chan: int, radius_um: float) -> list:
+        """Cluster IDs whose template channel lies within ``radius_um`` of ``dom_chan``."""
+        df = self.cluster_df
+        if df is None or "best_chan" not in df.columns:
+            return []
+        chans = df["best_chan"].to_numpy(dtype=int)
+        pos = getattr(self, "channel_positions", None)
+        if pos is None:
+            near = chans == int(dom_chan)
+        else:
+            pos = np.asarray(pos, dtype=float)
+            ok = (chans >= 0) & (chans < len(pos))
+            near = np.zeros(len(chans), dtype=bool)
+            near[ok] = np.hypot(*(pos[chans[ok]] - pos[int(dom_chan)]).T) <= radius_um
+        return [int(c) for c in df["cluster_id"].to_numpy(dtype=int)[near]]
+
     def pca_neighbours(self, dom_chan: int, target_cluster_id: int) -> list:
         """Other cells whose template channel lies within PCA_NEIGHBOUR_UM of ``dom_chan``."""
         df = self.cluster_df
@@ -3798,18 +3814,45 @@ class DataManager(QObject):
         ids = df["cluster_id"].to_numpy(dtype=int)[near]
         return [int(c) for c in ids if int(c) != int(target_cluster_id)]
 
-    def _pca_snippets_from_blocks(self, source, idx_of, target, chans, window, rng, cancelled):
-        """Snippets of every cell in ``idx_of`` inside a few 1 s blocks, plus seeks if too few.
+    # Detection for the channel view: negative peaks below THRESH_SD × σ
+    # (σ = MAD / 0.6745 of the block), at least 1 ms apart; a crossing belongs
+    # to the unit whose sorted spike lies within MATCH_SAMPLES of it.
+    PCA_THRESH_SD = 4.5
+    PCA_DEAD_SAMPLES = 20
+    PCA_MATCH_SAMPLES = 15
+    PCA_UNSORTED_SPIKES = 600
+    # Only units whose template channel lies this close can own a crossing
+    # here. Matching against every unit on the array (15,000 spikes/s on
+    # data022) paired nearly every crossing with some far-away unit.
+    PCA_MATCH_UM = 100.0
+    # PCA features: −0.5 … +1 ms around the trough on each channel. The rest
+    # of the 4 ms snippet is baseline noise; dropping it roughly doubled d′
+    # between overlapping units on data022 (397 vs 413: 0.8 → 1.9, 159 vs
+    # 160: 0.5 → 1.8) and left a well-isolated cell as it was (643: 3.6–4.1).
+    PCA_FEATURE_SAMPLES = (-10, 20)
 
-        Returns (snips (n, len(chans), snip_len), owner cluster per row, spike index per row).
+    def _channel_events_from_blocks(self, source, target, chans, window, rng, cancelled):
+        """Every event on ``chans[0]`` in a few 1 s blocks, labelled by who owns it.
+
+        Events: threshold crossings on the dominant channel, plus the target
+        cell's own spikes that did not cross. Label: the unit whose sorted
+        spike is within PCA_MATCH_SAMPLES, else -1 (unsorted). Each snippet is
+        centred on its trough on the dominant channel. Returns (snips (n,
+        len(chans), snip_len), label per row, spike index per row (-1 for
+        unsorted), threshold in µV).
         """
+        from scipy.signal import find_peaks
         from . import analysis_core
         pre, post = -int(window[0]), int(window[1])
         snip_len = pre + post
         total = analysis_core.recording_length(source)
         fs = float(getattr(self, "sampling_rate", 20000.0) or 20000.0)
         half = int(self.PCA_BLOCK_S * fs) // 2
-        unit_t = np.asarray(self.spike_times[idx_of[target]], dtype=np.int64)
+        st = np.ravel(np.asarray(self.spike_times, dtype=np.int64))
+        sc = np.ravel(np.asarray(self.spike_clusters, dtype=np.int64))
+        near = np.array(sorted(set(self._units_near(chans[0], self.PCA_MATCH_UM)) | {int(target)}))
+        unit_idx = np.asarray(self.get_cluster_spike_indices(target), dtype=np.int64)
+        unit_t = st[unit_idx]
         centres = np.sort(rng.choice(unit_t, min(self.PCA_BLOCKS, len(unit_t)), replace=False))
         spans = []
         for c in centres:                                   # merge overlapping blocks
@@ -3818,40 +3861,67 @@ class DataManager(QObject):
                 spans[-1][1] = max(spans[-1][1], b)
             else:
                 spans.append([a, b])
-        all_idx = np.concatenate(list(idx_of.values()))
-        all_who = np.concatenate([np.full(len(v), c) for c, v in idx_of.items()])
-        all_t = np.asarray(self.spike_times[all_idx], dtype=np.int64)
-        out_s, out_w, out_i = [], [], []
+        out_s, out_l, out_i, thresholds = [], [], [], []
+        m = self.PCA_MATCH_SAMPLES
         for a, b in spans:
             if cancelled is not None and cancelled():
                 break
-            inside = (all_t - pre >= a) & (all_t + post <= b)
-            if not inside.any():
-                continue
             block = analysis_core.read_channel_block(source, a, b - a, chans)
-            for t, w, i in zip(all_t[inside], all_who[inside], all_idx[inside]):
-                s0 = int(t) - pre - a
-                out_s.append(block[:, s0:s0 + snip_len])
-                out_w.append(w)
-                out_i.append(i)
-        n_unit = sum(1 for w in out_w if w == target)
+            dom = block[0] - np.median(block[0])
+            sigma = float(np.median(np.abs(dom)) / 0.6745) or 1.0
+            thr = -self.PCA_THRESH_SD * sigma
+            thresholds.append(thr * float(self.uV_per_bit))
+            peaks, _ = find_peaks(-dom, height=-thr, distance=self.PCA_DEAD_SAMPLES)
+            peaks = peaks[(peaks >= pre) & (peaks + post <= len(dom))]
+            # sorted spikes in (and a little around) this block
+            lo, hi = np.searchsorted(st, [a - m, b + m])
+            bt, bc, bi = st[lo:hi] - a, sc[lo:hi], np.arange(lo, hi)
+            mine = np.isin(bc, near)
+            bt, bc, bi = bt[mine], bc[mine], bi[mine]
+            used = np.zeros(len(bt), dtype=bool)
+            for pk in peaks:
+                k = np.searchsorted(bt, pk)
+                best, best_d = -1, m + 1
+                for kk in (k - 1, k):
+                    if 0 <= kk < len(bt) and abs(int(bt[kk]) - int(pk)) < best_d:
+                        best, best_d = kk, abs(int(bt[kk]) - int(pk))
+                if best >= 0:
+                    used[best] = True
+                    out_l.append(int(bc[best]))
+                    out_i.append(int(bi[best]))
+                else:
+                    out_l.append(-1)
+                    out_i.append(-1)
+                out_s.append(block[:, pk - pre:pk + post])
+            # the target's own spikes that did not cross: its small-amplitude tail
+            for kk in np.flatnonzero((bc == target) & ~used):
+                t0 = int(bt[kk])
+                if t0 - pre - 5 < 0 or t0 + post + 5 > len(dom):
+                    continue
+                t0 = t0 - 5 + int(np.argmin(dom[t0 - 5:t0 + 6]))   # align to its trough
+                out_s.append(block[:, t0 - pre:t0 + post])
+                out_l.append(int(target))
+                out_i.append(int(bi[kk]))
+        n_unit = sum(1 for lab in out_l if lab == target)
         if n_unit < self.PCA_MIN_UNIT and (cancelled is None or not cancelled()):
-            got = set(out_i)
-            more = np.array([i for i in idx_of[target] if i not in got], dtype=np.int64)
+            got = set(i for i in out_i if i >= 0)
+            more = np.array([i for i in unit_idx if int(i) not in got], dtype=np.int64)
             if len(more):
                 more = np.sort(rng.choice(more, min(len(more), self.PCA_MIN_UNIT - n_unit),
                                           replace=False))
                 s_more, kept = analysis_core.extract_channel_snippets(
-                    source, self.spike_times[more], chans, window=window, cancelled=cancelled)
+                    source, st[more], chans, window=window, cancelled=cancelled)
                 for srow, ok, i in zip(s_more, kept, more):
                     if ok:
                         out_s.append(srow)
-                        out_w.append(target)
-                        out_i.append(i)
+                        out_l.append(int(target))
+                        out_i.append(int(i))
+        thr_uv = float(np.median(thresholds)) if thresholds else float("nan")
         if not out_s:
-            return (np.empty((0, len(chans), snip_len), np.float32),
-                    np.empty(0, int), np.empty(0, np.int64))
-        return np.stack(out_s).astype(np.float32), np.asarray(out_w), np.asarray(out_i, np.int64)
+            return (np.empty((0, len(chans), snip_len), np.float32), np.empty(0, int),
+                    np.empty(0, np.int64), thr_uv)
+        return (np.stack(out_s).astype(np.float32), np.asarray(out_l),
+                np.asarray(out_i, np.int64), thr_uv)
 
     def get_channel_all_snippets(
         self,
@@ -3861,79 +3931,84 @@ class DataManager(QObject):
         snippet_window=(-20, 60),
         cancelled=None,
     ) -> dict:
-        """Real spike waveforms for the Waveforms-tab PCA: the cell and its neighbours.
+        """Every spike on ``dom_chan`` for the Waveforms-tab PCA, labelled by unit (QA view).
 
-        Each row is one spike on ``pca_channels(dom_chan)`` (the dominant
-        channel and its 3 nearest), baseline-subtracted, in µV, channels
-        concatenated. The cell is always read; neighbours are the cells of
-        ``pca_neighbours``. At most PCA_UNIT_SPIKES of the cell and
-        ``max_bg_spikes`` (PCA_BG_SPIKES) of the neighbours, read in time
-        order under the raw read lock. Raw data only: with no raw file, or
-        nothing read, ``source`` is "none" and the arrays are empty.
+        Events are threshold crossings on the dominant channel in 8 × 1 s
+        blocks centred on the cell's spikes, plus the cell's own spikes that
+        did not cross (``_channel_events_from_blocks``). Each is labelled with
+        the unit that owns it, or as unsorted. Rows: the dominant channel and
+        its 3 nearest, baseline-subtracted µV, −0.5 … +1 ms around the trough
+        (PCA_FEATURE_SAMPLES), concatenated. At most
+        PCA_UNIT_SPIKES of the cell, ``max_bg_spikes`` (PCA_BG_SPIKES) of the
+        other units together, PCA_UNSORTED_SPIKES unsorted. Raw data only:
+        with no raw file ``source`` is "none" and the arrays are empty.
 
-        Returns {"unit_waves", "bg_waves", "bg_waves_by_cid", "unit_indices",
-        "channels", "source": "raw" | "none" | "cancelled"}.
+        Returns {"unit_waves", "unit_indices", "bg_waves_by_cid" (every other
+        unit with events here), "bg_waves" (those stacked), "unsorted_waves",
+        "threshold_uv", "channels", "source": "raw" | "none" | "cancelled"}.
         """
-        from . import analysis_core
-
         max_bg = int(max_bg_spikes or self.PCA_BG_SPIKES)
         chans = self.pca_channels(dom_chan)
-        snip_len = int(snippet_window[1] - snippet_window[0])
-        width = snip_len * len(chans)
+        a, b = self.PCA_FEATURE_SAMPLES
+        width = (b - a) * len(chans)
         empty = {
             "unit_waves": np.empty((0, width), dtype=np.float32),
             "bg_waves": np.empty((0, width), dtype=np.float32),
             "bg_waves_by_cid": {},
+            "unsorted_waves": np.empty((0, width), dtype=np.float32),
             "unit_indices": np.empty((0,), dtype=np.int64),
+            "threshold_uv": float("nan"),
             "channels": chans,
             "source": "none",
         }
         source = self.raw_reader if self.raw_reader is not None else self.raw_data_memmap
         if source is None or self.cluster_df is None:
             return empty
-
-        rng = np.random.default_rng(int(target_cluster_id))
-        neighbours = self.pca_neighbours(dom_chan, target_cluster_id)
-        cells = [int(target_cluster_id)] + neighbours
-        idx_of = {}
-        for cid in cells:
-            idx = self.get_cluster_spike_indices(cid)
-            if idx is not None and len(idx):
-                idx_of[cid] = np.asarray(idx, dtype=np.int64)
-        if int(target_cluster_id) not in idx_of:
+        target = int(target_cluster_id)
+        idx = self.get_cluster_spike_indices(target)
+        if idx is None or len(idx) == 0:
             return empty
+        rng = np.random.default_rng(target)
         try:
-            snips, who, gi = self._pca_snippets_from_blocks(
-                source, idx_of, int(target_cluster_id), chans, snippet_window, rng, cancelled)
+            snips, label, gi, thr_uv = self._channel_events_from_blocks(
+                source, target, chans, snippet_window, rng, cancelled)
         except Exception:
-            logger.exception("PCA snippet read failed cid=%d chan=%d", target_cluster_id, dom_chan)
+            logger.exception("PCA snippet read failed cid=%d chan=%d", target, dom_chan)
             return empty
         if cancelled is not None and cancelled():
             out = dict(empty)
             out["source"] = "cancelled"
             return out
-        # Cap per cell: the cell PCA_UNIT_SPIKES, the neighbours max_bg together.
-        quota = max(20, max_bg // max(1, len(neighbours)))
-        keep = np.zeros(len(who), dtype=bool)
-        for cid in np.unique(who):
-            rows_c = np.flatnonzero(who == cid)
-            n_max = self.PCA_UNIT_SPIKES if cid == int(target_cluster_id) else quota
+        # Cap: the cell, the other units together, the unsorted events.
+        others = [c for c in np.unique(label) if c not in (target, -1)]
+        quota = max(20, max_bg // max(1, len(others)))
+        keep = np.zeros(len(label), dtype=bool)
+        for c in np.unique(label):
+            rows_c = np.flatnonzero(label == c)
+            n_max = (self.PCA_UNIT_SPIKES if c == target else
+                     self.PCA_UNSORTED_SPIKES if c == -1 else quota)
             if len(rows_c) > n_max:
                 rows_c = rng.choice(rows_c, n_max, replace=False)
             keep[rows_c] = True
-        snips, who, gi = snips[keep], who[keep], gi[keep]
+        snips, label, gi = snips[keep], label[keep], gi[keep]
         pre = max(1, -int(snippet_window[0]) // 2)      # baseline: the first samples
         snips = (snips - snips[:, :, :pre].mean(axis=2, keepdims=True)) * float(self.uV_per_bit)
+        t0 = -int(snippet_window[0])                     # the trough's sample in the snippet
+        a, b = self.PCA_FEATURE_SAMPLES
+        snips = snips[:, :, max(0, t0 + a):t0 + b]
         rows = snips.reshape(len(snips), -1).astype(np.float32)
-        unit = who == int(target_cluster_id)
+        unit = label == target
         if not unit.any():
             return empty
-        by_cid = {int(c): rows[who == c] for c in np.unique(who[~unit])}
+        by_cid = {int(c): rows[label == c] for c in others if (label == c).any()}
         return {
             "unit_waves": rows[unit],
-            "bg_waves": rows[~unit],
-            "bg_waves_by_cid": by_cid,
             "unit_indices": gi[unit],
+            "bg_waves_by_cid": by_cid,
+            "bg_waves": (np.vstack(list(by_cid.values())) if by_cid
+                         else np.empty((0, width), dtype=np.float32)),
+            "unsorted_waves": rows[label == -1],
+            "threshold_uv": thr_uv,
             "channels": chans,
             "source": "raw",
         }

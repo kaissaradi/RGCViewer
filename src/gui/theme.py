@@ -175,6 +175,15 @@ PLOT_CATEGORICAL = [
 ]
 
 
+def categorical(i: int, colors: dict) -> str:
+    """The i-th PLOT_CATEGORICAL colour for this theme (dark variant on a dark field)."""
+    field = resolve_theme_colors(colors).get("plot_bg", "#000000").lstrip("#")
+    r, g, b = (int(field[k:k + 2], 16) for k in (0, 2, 4))
+    dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) < 128
+    pair = PLOT_CATEGORICAL[i % len(PLOT_CATEGORICAL)]
+    return pair[0] if dark else pair[1]
+
+
 SP_1 = 4
 SP_2 = 8
 SP_3 = 12
