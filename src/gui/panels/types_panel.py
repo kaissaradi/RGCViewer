@@ -189,6 +189,26 @@ class TypesPanel(QWidget):
         self.refresh_btn.clicked.connect(lambda: self.refresh(force=True))
         head.addWidget(self.refresh_btn)
         outer.addLayout(head)
+
+        # Suggested classes (PLAN.md Q36): learned from the lab's labelled runs.
+        sug = QHBoxLayout()
+        self.suggest_btn = QPushButton("Suggest classes")
+        self.suggest_btn.setToolTip(
+            "Suggest a class for every cell from the cells the lab has already "
+            "classified (5 types). The first run reads the lab's .params files (~1–2 min).")
+        self.suggest_btn.clicked.connect(self._suggest)
+        sug.addWidget(self.suggest_btn)
+        self.accept_btn = QPushButton("Accept confident")
+        self.accept_btn.setToolTip("Move every unclassified cell with a confident suggestion "
+                                   "to its class. Cells you classified are not moved.")
+        self.accept_btn.setEnabled(False)
+        self.accept_btn.clicked.connect(self._accept_confident)
+        sug.addWidget(self.accept_btn)
+        self.suggest_summary = QLabel("Ctrl+J: next cell to review · Ctrl+Enter: accept its suggestion")
+        self.suggest_summary.setObjectName("mutedLabel")
+        self.suggest_summary.setWordWrap(True)
+        sug.addWidget(self.suggest_summary, 1)
+        outer.addLayout(sug)
         self.status = QLabel("")
         self.status.setObjectName("mutedLabel")
         outer.addWidget(self.status)
@@ -221,6 +241,15 @@ class TypesPanel(QWidget):
         self._poll.setInterval(3000)
         self._poll.timeout.connect(lambda: self.refresh(force=False))
         self.restyle_plots(main_window.get_current_colors())
+
+    def _suggest(self):
+        from .. import suggestions
+        suggestions.start(self.main_window)
+
+    def _accept_confident(self):
+        from .. import suggestions
+        if suggestions.accept_confident(self.main_window):
+            self.refresh(force=True)
 
     # -- lifecycle ------------------------------------------------------------------
 

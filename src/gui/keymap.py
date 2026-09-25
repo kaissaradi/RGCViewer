@@ -48,6 +48,8 @@ BINDINGS: List[Binding] = [
             "Mark Duplicate / Clean / Edge / Unsure / Contaminated / Off Array", "Cells"),
     Binding(("Ctrl+Shift+N",), "Mark Noisy", "Cells"),
     Binding(("Space",), "Next row of the similarity table", "Cells"),
+    Binding(("Ctrl+Return", "Ctrl+Enter"), "Accept the suggested class, go to the next cell to review", "Cells", "accept_suggestion"),
+    Binding(("Ctrl+J",), "Next cell to review (suggested classes)", "Cells", "next_suggestion"),
     Binding(("F2",), "Rename the selected group", "Groups", "rename_group"),
     Binding(("Ctrl+Shift+F",), "Feature Extraction on the selection", "Groups", "feature_extraction"),
     Binding(("Ctrl+1", "Ctrl+9"), "Go to analysis tab 1 … 9 (Ctrl+0: tab 10)", "Views"),
@@ -196,6 +198,16 @@ def clear_pins(w):
     pc.clear_pins(w)
     callbacks.refresh_population_overlays(w)
     w.status_bar.showMessage("Pinned cells cleared.", 3000)
+
+
+def accept_suggestion(w):
+    from . import suggestions
+    suggestions.accept(w)
+
+
+def next_suggestion(w):
+    from . import suggestions
+    suggestions.next_to_review(w)
 
 
 def open_run(w):

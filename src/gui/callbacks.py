@@ -260,6 +260,10 @@ def _forget_previous_dataset_views(main_window):
     types_panel = getattr(main_window, "types_panel", None)
     if types_panel is not None:
         types_panel.reset_for_new_dataset()
+    main_window._suggestions = None          # suggestions belong to the old run (Q36)
+    label = getattr(main_window, "suggestion_label", None)
+    if label is not None:
+        label.hide()
 
 
 def _release_previous_dataset(main_window):

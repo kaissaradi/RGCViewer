@@ -755,6 +755,66 @@ def scenario_types_tab(s):
     pump(0.5)
 
 
+def scenario_suggest(s):
+    """Q36: suggested classes end to end on a labelled run (its own prep left out of training).
+
+    HARNESS_TYPE_LIBRARY points at a scratch library cache, so ~/.encore is not written.
+    """
+    from pathlib import Path
+    from qtpy.QtCore import Qt
+    from qtpy.QtTest import QTest
+    from qtpy.QtWidgets import QMessageBox
+    from src.analysis import type_library as tl
+    from src.gui import callbacks, suggestions
+    if os.environ.get("HARNESS_TYPE_LIBRARY"):
+        tl.CACHE_PATH = Path(os.environ["HARNESS_TYPE_LIBRARY"])
+    else:
+        tl.CACHE_PATH = Path(OUT) / "type_library.npz"
+    shown = []
+    QMessageBox.information = staticmethod(lambda *a, **k: shown.append(a[2] if len(a) > 2 else ""))
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    s.load()
+    w = s.w
+    callbacks.load_classification_from_params(w)
+    wait_until(lambda: any("brisk" in p.lower() for p, _ in callbacks.collect_group_items(w)), 120)
+    s.tab("Types")
+    t = time.time()
+    w.types_panel.suggest_btn.click()
+    ok = wait_until(lambda: getattr(w, "_suggestions", None) is not None, 600)
+    log(f"suggestions ready={ok} in {time.time() - t:.1f}s")
+    st = w._suggestions
+    log(shown[-1] if shown else "(no summary)")
+    classes = suggestions.folder_classes(w)
+    named = [(c, classes[c], st.by_cell[c]) for c in st.by_cell if classes.get(c)]
+    agree = [sg.best is not None and sg.best[0] == here for _c, here, sg in named]
+    from src.gui.panels.types_panel import tree_groups
+    group_of, _ = tree_groups(w)
+    weak = [st.by_cell[c] for c, g in group_of.items() if g.startswith("weak") and c in st.by_cell]
+    log(json.dumps({
+        "cells": len(st.by_cell), "trained_on": st.n_train,
+        "named_cells": len(named), "agree_with_label": round(sum(agree) / max(len(named), 1), 3),
+        "weak_cells": len(weak), "weak_novel": round(sum(x.novel for x in weak) / max(len(weak), 1), 3),
+        "weak_confident": round(sum(x.confident for x in weak) / max(len(weak), 1), 3),
+        "review_queue": len(suggestions.review_queue(w))}))
+    w.tree_view.setFocus()
+    QTest.keyClick(w.tree_view, Qt.Key.Key_J, Qt.KeyboardModifier.ControlModifier)
+    pump(1.5)
+    cid = w._get_selected_cluster_id()
+    log(f"Ctrl+J -> cell {cid}: {w.suggestion_label.text()}")
+    before = suggestions.folder_class(w, cid)
+    QTest.keyClick(w.tree_view, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    pump(1.0)
+    log(f"Ctrl+Enter: cell {cid} {before} -> {suggestions.folder_class(w, cid)}; "
+        f"now at {w._get_selected_cluster_id()}")
+    s.shot("suggest_sidebar", w)
+    n = suggestions.accept_confident(w)
+    pump(0.5)
+    log(f"accept confident moved {n} cells")
+    w.types_panel.refresh(force=True)
+    pump(0.5)
+    s.shot("suggest_types_after", w)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

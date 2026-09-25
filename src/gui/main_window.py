@@ -78,6 +78,7 @@ from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
 from . import keymap
+from . import suggestions
 from . import array_orientation
 from qtpy.QtGui import QColor
 from .panels.umap_panel import UMAPPanel
@@ -1067,6 +1068,9 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
 
+        if getattr(self, "_suggestions", None) is not None:
+            suggestions.refresh_line(self, cluster_id)
+
         # Same group: move the selected-cell line now (~20 ms), without
         # waiting for the raw-file features below (PLAN.md Q45).
         if getattr(self, "population_view_enabled", False):
@@ -1556,6 +1560,14 @@ class MainWindow(QMainWindow):
         left_content_layout.addWidget(self.cluster_search_bar)
 
         left_content_layout.addWidget(self.view_stack)
+
+        # The selected cell's suggested class, under the list, from any tab
+        # (PLAN.md Q36). Hidden until Types ▸ Suggest classes has run.
+        self.suggestion_label = QLabel("")
+        self.suggestion_label.setObjectName("suggestionLabel")
+        self.suggestion_label.setWordWrap(True)
+        self.suggestion_label.hide()
+        left_content_layout.addWidget(self.suggestion_label)
 
         # --- Similarity Panel ---
         self.similarity_panel = SimilarityPanel(self)

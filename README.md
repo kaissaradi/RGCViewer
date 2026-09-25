@@ -177,6 +177,18 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   (NNND ≈ 2). Red outlines: two cells of one type overlap too much (a split
   unit, a duplicate, or a mixed group). Grey rings: unclassified cells that
   look like the type and sit in a gap of its mosaic. Click one to select it.
+- **Suggested classes.** Types tab → Suggest classes. Encore learns the 5 types
+  the lab names most (ON/OFF brisk sustained, ON/OFF brisk transient, OFF
+  transient) from every classified run on the lab share, leaving out the run
+  you are checking, and suggests a class for each cell. The first time it
+  reads the lab's .params files (~1–2 min); later it uses a cache in
+  `~/.encore`. The line under the cell list shows the selected cell's
+  suggestion from any tab. Ctrl+J goes to the next cell to review (least
+  confident first, and classified cells that a confident suggestion
+  disagrees with); Ctrl+Enter accepts. "Accept confident" moves every
+  unclassified cell with a suggestion ≥ 80 % — except one whose RF would sit
+  on top of a cell already in that class (a type should tile). Cells unlike
+  any labelled cell get no suggestion. Nothing is saved until Ctrl+S.
 - **Compare a cell with its population.** Ctrl+P opens the population pane.
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.
@@ -199,6 +211,8 @@ type in a text field; Esc leaves the search bar.
 | Ctrl+D / Ctrl+C / Ctrl+E / Ctrl+W / Ctrl+X / Ctrl+A | Mark Duplicate / Clean / Edge / Unsure / Contaminated / Off Array |
 | Ctrl+Shift+N | Mark Noisy |
 | Space | Next row of the similarity table |
+| Ctrl+Return / Ctrl+Enter | Accept the suggested class, go to the next cell to review |
+| Ctrl+J | Next cell to review (suggested classes) |
 | **Groups** | |
 | F2 | Rename the selected group |
 | Ctrl+Shift+F | Feature Extraction on the selection |
