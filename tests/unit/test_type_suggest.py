@@ -163,3 +163,19 @@ def test_group_column_refresh_ignores_a_data_manager_without_a_table(qtbot):
         w.data_manager = None
         w.close()
         w.deleteLater()
+
+
+def test_library_uses_the_session_copy_then_the_cache_before_scanning(monkeypatch, tmp_path):
+    """The atlas waited 9–17 s while every lab .params was checked (2026-09-25)."""
+    from src.analysis import type_library as tl
+    calls = []
+    monkeypatch.setattr(tl, "_SESSION", {})
+    monkeypatch.setattr(tl, "_load_cache", lambda path: {"f": {"stamp": (1,), "data": None}})
+    monkeypatch.setattr(tl, "assemble", lambda runs, exclude_runs=(): ("from cache", len(runs)))
+    monkeypatch.setattr(tl, "build_library", lambda *a, **k: calls.append("scan") or ("scanned",))
+    got = tl.library(root="r", cache_path=tmp_path / "c.npz", background_check=False)
+    assert got == ("from cache", 1) and calls == []          # no share scan before returning
+    assert tl.library(root="r", cache_path=tmp_path / "c.npz") is got   # session copy
+    monkeypatch.setattr(tl, "_load_cache", lambda path: {})
+    assert tl.library(root="other", cache_path=tmp_path / "d.npz") == ("scanned",)
+    assert calls == ["scan"]                                  # no cache: one full build

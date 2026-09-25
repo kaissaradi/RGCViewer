@@ -50,7 +50,7 @@ def _compute(dm, progress):
     from ..analysis import type_features as tf
     from ..analysis import type_library as tl
     from ..analysis.type_suggest import Suggester
-    full = tl.build_library(progress=progress)
+    full = tl.library(progress=progress)
     # Never learn from the run being checked (its own labels would agree).
     own = tl.prep_of(getattr(dm, "vision_params_path", None) or getattr(dm, "kilosort_dir", "") or "")
     lib = full.without_prep(own)

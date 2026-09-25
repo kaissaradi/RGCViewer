@@ -23,6 +23,7 @@ import glob
 import logging
 import os
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,6 +176,51 @@ def build_library(root: str = DEFAULT_ROOT, cache_path: Optional[Path] = None,
     _save_cache(cache_path, runs)
     logger.info("type library: %d files in %.0f s", len(files), time.time() - t0)
     return assemble(runs, exclude_runs)
+
+
+# One library per session. Checking the cache against the share lists and
+# stats ~1,000 .params files: 8.8 s warm, 16.7 s cold on 2026-09-25, and the
+# Type atlas and Suggest classes waited for it every time.
+_SESSION: Dict[tuple, Library] = {}
+_SESSION_LOCK = threading.Lock()
+
+
+def library(root: str = DEFAULT_ROOT, cache_path: Optional[Path] = None,
+            progress: Optional[Callable[[int, int], None]] = None,
+            background_check: bool = True) -> Library:
+    """The lab library, fast: this session's copy, else the cache, else a full build.
+
+    From the cache it returns at once and re-checks the share in a background
+    thread (``build_library``), so a run labelled since the last check is in
+    the next call's library, not this one's.
+    """
+    cache_path = Path(cache_path) if cache_path is not None else CACHE_PATH
+    key = (str(root), str(cache_path))
+    with _SESSION_LOCK:
+        lib = _SESSION.get(key)
+    if lib is not None:
+        return lib
+    cached = _load_cache(cache_path)
+    if cached:
+        lib = assemble(cached)
+        with _SESSION_LOCK:
+            _SESSION[key] = lib
+
+        def recheck():
+            try:
+                fresh = build_library(root, cache_path)
+            except Exception:
+                logger.info("type library re-check failed", exc_info=True)
+                return
+            with _SESSION_LOCK:
+                _SESSION[key] = fresh
+        if background_check:
+            threading.Thread(target=recheck, name="type-library-check", daemon=True).start()
+        return lib
+    lib = build_library(root, cache_path, progress=progress)
+    with _SESSION_LOCK:
+        _SESSION[key] = lib
+    return lib
 
 
 def assemble(runs: Dict[str, dict], exclude_runs=()) -> Library:
