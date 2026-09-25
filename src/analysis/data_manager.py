@@ -5963,7 +5963,8 @@ class DataManager(QObject):
         df = self._optional_attr("cluster_df")
         vp = self._optional_attr("vision_params")
         key = (self._optional_attr("_vision_source"), id(vp),
-               0 if df is None else len(df))
+               0 if df is None else len(df),
+               df is not None and "sta_snr" in df.columns)
         cached = self._optional_attr("_sort_check_cache")
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -5980,6 +5981,10 @@ class DataManager(QObject):
             pos = {self.get_vision_id_for_cluster(int(c)): (float(x), float(y))
                    for c, x, y in zip(df["cluster_id"], df["x_um"], df["y_um"])}
             result = vision_sort_check.check_pairing(rf, pos)
+            snr = df["sta_snr"].to_numpy(dtype=float) if "sta_snr" in df.columns else None
+            if snr is not None and np.isfinite(snr).sum() >= vision_sort_check.MIN_CELLS:
+                import dataclasses
+                result = dataclasses.replace(result, sta_snr_median=float(np.nanmedian(snr)))
         self._sort_check_cache = (key, result)
         return result
 

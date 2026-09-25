@@ -632,12 +632,21 @@ class STAPanel(QWidget):
         try:
             check = dm.vision_sort_check()
             # "is True": test doubles return mocks, which are truthy.
-            mismatch = getattr(check, "mismatch", False) is True
+            mismatch = getattr(check, "warn", False) is True
         except Exception:
             logger.debug("vision_sort_check failed", exc_info=True)
             mismatch = False
         self.sort_warning.setVisible(mismatch)
         if mismatch:
+            if check.noisy_stas:
+                text = "⚠ These STAs are mostly noise, so the RF shown may not be this cell's."
+            elif check.mismatch:
+                text = ("⚠ These STAs may belong to other cells: the Vision files do not "
+                        "match this sort (see the status bar).")
+            else:
+                text = ("⚠ The Vision files match this sort only weakly: some STAs may "
+                        "belong to other cells (see the status bar).")
+            self.sort_warning.setText(text)
             self.sort_warning.setToolTip(describe_sort_check(check))
 
     # ──────────────────────────────────────────────────────────────────────────

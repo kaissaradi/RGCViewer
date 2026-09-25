@@ -959,6 +959,18 @@ def scenario_empty_states(s):
         s.shot(f"empty_{name.lower()}", panel)
 
 
+def scenario_sort_check(s):
+    """Q32 / Q37: what Encore's own sort check says about a run."""
+    s.load()
+    chk = s.dm().vision_sort_check()
+    from src.analysis.vision_sort_check import describe
+    log(json.dumps({"n_cells": chk.n_cells, "r2": round(chk.r2, 3), "r2_robust": round(chk.r2_robust, 3),
+                    "mismatch": chk.mismatch, "doubtful": chk.doubtful, "sta_snr": chk.sta_snr_median,
+                    "short": chk.short, "screen_turn": chk.screen_turn}))
+    if chk.warn:
+        log(describe(chk))
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

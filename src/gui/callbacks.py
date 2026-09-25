@@ -950,15 +950,15 @@ def _show_vision_sort_check(main_window, check):
         label = QLabel()
         main_window.status_bar.addPermanentWidget(label)
         main_window.vision_sort_warning_label = label
-    label.setVisible(check.mismatch)
-    if check.mismatch:
+    label.setVisible(check.warn)
+    if check.warn:
         msg = describe_sort_check(check)
         logger.warning("%s (%s)", msg, getattr(dm, "_vision_source", None))
         # status_mua_text: the palette's AA-safe yellow text (docs/design/palette.md)
         get_colors = getattr(main_window, "get_current_colors", None)
         colors = resolve_theme_colors(get_colors() if callable(get_colors) else None)
         label.setStyleSheet(f"color: {colors['status_mua_text']}; padding: 0 8px;")
-        label.setText("⚠ Vision files may be from another sort")
+        label.setText(check.short)
         label.setMinimumWidth(label.sizeHint().width())
         label.setToolTip(msg)
         main_window.status_bar.showMessage(f"Warning: {msg}", 30000)

@@ -34,6 +34,14 @@ import numpy as np
 
 MIN_CELLS = 30          # fewer paired cells: no verdict
 MISMATCH_R2 = 0.15      # robust R² below this: the pairing is wrong
+# Below this (but above MISMATCH_R2): doubtful. Every matched folder so far
+# scored 0.38 or more; 20260715A/data003 scored 0.22 and its RF centres do
+# not agree with the same cells in data010 (PLAN.md Q37).
+DOUBTFUL_R2 = 0.30
+# Median STA peak/RMS below this: the STAs are mostly noise (20260721A
+# data006 / data007: 4.0 / 4.5; good runs 7–12), so no RF follows its cell
+# whatever the pairing.
+NOISY_STA_SNR = 5.5
 KEEP_FRACTION = 0.9     # fraction of cells kept for the robust refit
 
 
@@ -46,6 +54,7 @@ class SortCheck:
     # quarter turn / mirror: (m00, m01, m10, m11), screen ≈ M · array. None
     # when there is no fit. On the lab rig it is a −90° turn (PLAN.md Q20).
     screen_matrix: Optional[Tuple[int, int, int, int]] = None
+    sta_snr_median: Optional[float] = None   # median STA peak/RMS of the run, when known
 
     @property
     def screen_turn(self) -> Optional[Tuple[int, int, int, int]]:
@@ -59,6 +68,29 @@ class SortCheck:
     @property
     def mismatch(self) -> bool:
         return self.decided and self.r2_robust < MISMATCH_R2
+
+    @property
+    def doubtful(self) -> bool:
+        return self.decided and MISMATCH_R2 <= self.r2_robust < DOUBTFUL_R2
+
+    @property
+    def noisy_stas(self) -> bool:
+        return self.sta_snr_median is not None and self.sta_snr_median < NOISY_STA_SNR
+
+    @property
+    def warn(self) -> bool:
+        """Anything worth a warning: a mismatch, a doubtful pairing, or noise STAs."""
+        return self.mismatch or self.doubtful or (self.decided and self.noisy_stas
+                                                  and self.r2_robust < DOUBTFUL_R2)
+
+    @property
+    def short(self) -> str:
+        """A few words for the status bar."""
+        if not self.warn:
+            return ""
+        if self.noisy_stas:
+            return "⚠ STAs look like noise"
+        return "⚠ Vision files may be from another sort" if self.mismatch else "⚠ Weak Vision/sort pairing"
 
 
 NO_CHECK = SortCheck(0, float("nan"), float("nan"))
@@ -112,8 +144,16 @@ def check_pairing(rf_centres: Dict[int, Tuple[float, float]],
 
 
 def describe(check: SortCheck) -> str:
-    """One sentence for the log, the status bar and the Ctrl+S dialog."""
-    return (f"The Vision RF centres do not follow the cells' array positions "
-            f"(R² = {check.r2_robust:.2f} over {check.n_cells} cells; matched folders "
-            f"give 0.4–0.9). The .sta/.params files probably come from a different "
-            f"sort, so their IDs point at other cells.")
+    """One or two sentences for the log, the status bar and the Ctrl+S dialog."""
+    fit = (f"R² = {check.r2_robust:.2f} over {check.n_cells} cells; matched folders "
+           f"give 0.4–0.9")
+    if check.noisy_stas and check.r2_robust < DOUBTFUL_R2:
+        return (f"The STAs are mostly noise (median peak/RMS {check.sta_snr_median:.1f}; good "
+                f"runs 7–12), so their RF centres do not follow the cells ({fit}). The white-"
+                f"noise analysis may have used the wrong movie or frame timing.")
+    if check.mismatch:
+        return (f"The Vision RF centres do not follow the cells' array positions ({fit}). "
+                f"The .sta/.params files probably come from a different sort, so their IDs "
+                f"point at other cells.")
+    return (f"The Vision RF centres follow the cells' array positions only weakly ({fit}). "
+            f"Some STAs and classes may belong to other cells: compare a few with their EIs.")
