@@ -36,6 +36,15 @@ from ..theme import apply_plot_theme, plot_field, resolve_theme_colors
 logger = logging.getLogger(__name__)
 
 FEATURES = ("STA time course", "Autocorrelation", "Chirp response")
+# What the barcode colours mean, per row type (shown under the barcode).
+LEGEND = {
+    "STA time course": "Red: the screen got brighter before the spike (ON); blue: darker (OFF). "
+                       "Time runs from 30 frames before the spike (left) to the spike (right).",
+    "Autocorrelation": "Bright: many spikes at that lag after a spike. A bright band at a few ms "
+                       "means bursts; a dark start is the refractory period.",
+    "Chirp response": "Bright: high firing rate during the chirp (flash, frequency and contrast "
+                      "sweeps, left to right).",
+}
 ATLAS_COLUMNS = 3
 MIN_ATLAS_CELLS = 3
 HOLE_MIN_R = 0.8        # a gap candidate must also look like the type
@@ -217,6 +226,9 @@ class TypesPanel(QWidget):
         self.status = QLabel("")
         self.status.setObjectName("mutedLabel")
         outer.addWidget(self.status)
+        self.legend = QLabel(LEGEND[FEATURES[0]])
+        self.legend.setObjectName("mutedLabel")
+        self.legend.setWordWrap(True)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self.bar_widget = pg.GraphicsLayoutWidget()
@@ -240,6 +252,7 @@ class TypesPanel(QWidget):
         split.addWidget(self.atlas_widget)
         split.setSizes([600, 500])
         outer.addWidget(split, 1)
+        outer.addWidget(self.legend)
 
         # While caches fill, look again every few seconds (only when shown).
         self._poll = QTimer(self)
@@ -306,6 +319,7 @@ class TypesPanel(QWidget):
             return
         group_of, order = tree_groups(w)
         feature = self.feature_combo.currentText()
+        self.legend.setText(LEGEND.get(feature, ""))
         rows, signed, xlabel = feature_rows(dm, list(group_of), feature)
         signature = (getattr(dm, "generation", None), tuple(sorted(group_of.items())),
                      feature, len(rows))
