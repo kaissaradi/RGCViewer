@@ -595,15 +595,10 @@ def _on_kilosort_loaded(main_window, success, message, ks_dir_name, dat_file):
     # --- GUI UPDATES (Safe because we are back on the main thread) ---
     _ui_t0 = time.perf_counter()
 
-    # 1. Raw Tab Management
-    if dat_file is not None:
-        main_window.analysis_tabs.setTabEnabled(
-            main_window.analysis_tabs.indexOf(main_window.raw_panel), True
-        )
-    else:
-        main_window.analysis_tabs.setTabEnabled(
-            main_window.analysis_tabs.indexOf(main_window.raw_panel), False
-        )
+    # 1. Raw Tab: always on. Without a raw file it shows spike rasters (Q38).
+    main_window.analysis_tabs.setTabEnabled(
+        main_window.analysis_tabs.indexOf(main_window.raw_panel), True
+    )
     if hasattr(main_window, "sync_header_tab_enabled"):
         main_window.sync_header_tab_enabled()
 
@@ -836,9 +831,9 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
         main_window.status_bar.showMessage("Loading failed.", 5000)
         return
 
-    # --- Disable raw tab: no .bin data in Vision-native mode ---
+    # --- Raw tab: no .bin in Vision-native mode, so it shows spike rasters (Q38) ---
     main_window.analysis_tabs.setTabEnabled(
-        main_window.analysis_tabs.indexOf(main_window.raw_panel), False
+        main_window.analysis_tabs.indexOf(main_window.raw_panel), True
     )
 
     # --- Populate tree and tables ---

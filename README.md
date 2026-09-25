@@ -145,6 +145,11 @@ folder. Chirp is precomputed. Grating may be a raw
 `*DSOS*.npy`). The GUI then computes DSI/OSI for each `(bar width, TF)`
 that was actually run and stores `grating_computed_cache.pkl`.
 
+Without a raw voltage file the Raw tab shows spike rasters instead: one row
+per cell, the selected cell on top, the whole recording, with stimulus
+blocks shaded. Zoom in below a few seconds to see every spike. File → Load
+Raw Data File switches it to voltage traces.
+
 ## Save the classification for Vision
 
 **Ctrl+S** (File → Save Classification to Vision .params) writes the tree

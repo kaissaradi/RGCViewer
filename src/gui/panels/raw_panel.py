@@ -35,6 +35,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -234,8 +235,10 @@ class RawPanel(QWidget):
 
         dm = self.main_window.data_manager
         if not self._dm_has_raw(dm):
-            self.status_message.emit("No raw data file loaded.")
+            self._pages.setCurrentWidget(self.raster)
+            self.raster.show_cell(cluster_id)
             return
+        self._pages.setCurrentWidget(self._trace_page)
 
         # ── Resolve dominant channel ──────────────────────────────────────────
         dom_chan, neighbour_chans = self._resolve_channels(dm, cluster_id)
@@ -285,6 +288,8 @@ class RawPanel(QWidget):
 
     def restyle_plots(self, colors: dict) -> None:
         """Called by MainWindow when the theme changes."""
+        if hasattr(self, "raster"):
+            self.raster.restyle_plots(colors)
         bg = colors.get("bg_panel", "#18191C")
         ax_pen = pg.mkPen(colors.get("border_default", "#3D3F48"))
         text_pen = pg.mkPen(colors.get("text_secondary", "#9B9DA6"))
@@ -306,7 +311,18 @@ class RawPanel(QWidget):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        # Page 0: voltage traces; page 1: spike rasters when there is no raw
+        # file (PLAN.md Q38).
+        from .raster_view import SessionRaster
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._pages = QStackedWidget()
+        outer.addWidget(self._pages)
+        self._trace_page = QWidget()
+        self._pages.addWidget(self._trace_page)
+        self.raster = SessionRaster(self.main_window)
+        self._pages.addWidget(self.raster)
+        root = QVBoxLayout(self._trace_page)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 

@@ -906,6 +906,38 @@ def scenario_std_fill(s):
         pump(10)
 
 
+def scenario_raster(s):
+    """Q38: the Raw tab without a raw file shows spike rasters; zoom from the hour to seconds."""
+    s.load()
+    w = s.w
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    tab = w.analysis_tabs
+    log(f"raw tab enabled: {tab.isTabEnabled(tab.indexOf(w.raw_panel))}")
+    s.tab("Raw")
+    t = time.time()
+    s.select(ids[5], settle=0.0)
+    ok = wait_until(lambda: w.raw_panel._pages.currentWidget() is w.raw_panel.raster
+                    and bool(w.raw_panel.raster._cells), 30)
+    r = w.raw_panel.raster
+    log(f"raster shown={ok} in {time.time() - t:.2f}s: {len(r._cells)} rows, "
+        f"{sum(x.size for x in r._times)} spikes, duration {r._duration:.0f}s")
+    s.shot("raster_full", w.raw_panel)
+    for x0, x1 in ((600, 900), (700, 704)):
+        t = time.time()
+        r.plot.setXRange(x0, x1, padding=0)
+        r._render()
+        log(f"window {x1 - x0}s rendered in {1000 * (time.time() - t):.0f} ms; "
+            f"ticks={r.tick_curve.isVisible()} image={r.image.isVisible()}")
+    s.shot("raster_zoom", w.raw_panel)
+    r.rows_combo.setCurrentIndex(1)
+    pump(0.5)
+    t = time.time()
+    r.plot.setXRange(0, r._duration, padding=0)
+    r._render()
+    log(f"all cells ({len(r._cells)} rows) full recording: {1000 * (time.time() - t):.0f} ms")
+    s.shot("raster_all", w.raw_panel)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings
