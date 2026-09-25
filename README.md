@@ -194,6 +194,9 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   unclassified cell with a suggestion ≥ 80 % — except one whose RF would sit
   on top of a cell already in that class (a type should tile). Cells unlike
   any labelled cell get no suggestion. Nothing is saved until Ctrl+S.
+- **Type atlas.** Types tab → Type atlas shows what each named type looks like
+  across the lab (mean ± 1 SD of every classified cell), with this run's
+  cells of that type on top.
 - **Compare a cell with its population.** Ctrl+P opens the population pane.
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.

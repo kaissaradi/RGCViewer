@@ -43,3 +43,15 @@ def test_window_opens_on_the_welcome_page_and_leaves_it_for_a_load(qtbot, settin
         w.data_manager = None
         w.close()
         w.deleteLater()
+
+
+def test_empty_stimulus_tabs_say_what_would_fill_them():
+    from src.analysis.data_manager import DataManager
+    from src.gui import empty_states
+    for kind, key in (("chirp", "Chirp"), ("grating", "DSOS"), ("contrast", "contrast")):
+        text = empty_states.no_stimulus(kind)
+        assert key in text and "ksfiles/" in text and "Map Reference Run" in text
+    # the names it promises match what DataManager actually searches for
+    globs = DataManager._ANALYSIS_GLOBS
+    assert globs["chirp"] == ("*Chirp*.npy",) and "*DSOS*.npy" in globs["grating"]
+    assert "Cell 7 has no chirp response" in empty_states.no_cell_response("chirp", 7)

@@ -946,6 +946,19 @@ def scenario_raster(s):
     s.shot("raster_all", w.raw_panel)
 
 
+def scenario_empty_states(s):
+    """Q49: what an empty stimulus tab tells a new user."""
+    s.load()
+    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
+    s.select(ids[3], settle=1.0)
+    for name, panel in (("Chirp", s.w.chirp_panel), ("Grating", s.w.grating_panel),
+                        ("Contrast", s.w.contrast_panel)):
+        s.tab(name)
+        pump(0.8)
+        log(f"{name}: {panel.placeholder_label.text()!r} visible={panel.placeholder_label.isVisible()}")
+        s.shot(f"empty_{name.lower()}", panel)
+
+
 def scenario_feature_presets(s):
     """Q15: save a preset, reopen the window, the preset is back. Temp settings only."""
     from qtpy.QtCore import QSettings

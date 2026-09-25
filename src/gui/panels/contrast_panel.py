@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..theme import apply_plot_theme, plot_grid_alpha, resolve_theme_colors
+from .. import empty_states
 from ...analysis import contrast_calc
 
 logger = logging.getLogger(__name__)
@@ -151,8 +152,9 @@ class ContrastPanel(QWidget):
 
         placeholder = QWidget()
         pl = QVBoxLayout(placeholder)
-        self.placeholder_label = QLabel("No contrast-response data")
+        self.placeholder_label = QLabel(empty_states.no_stimulus("contrast"))
         self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setWordWrap(True)
         pl.addWidget(self.placeholder_label)
         self.stack.addWidget(placeholder)
         self.stack.setCurrentIndex(1)
@@ -218,7 +220,7 @@ class ContrastPanel(QWidget):
         dm = self.main_window.data_manager
         if dm is None or not getattr(dm, "contrast_available", False):
             self.stack.setCurrentIndex(1)
-            self.placeholder_label.setText("No contrast-response data loaded")
+            self.placeholder_label.setText(empty_states.no_stimulus("contrast"))
             return
         self.stack.setCurrentIndex(0)
         self._clear_curves()

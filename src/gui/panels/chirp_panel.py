@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
+from .. import empty_states
 from ...analysis import chirp_calc
 
 logger = logging.getLogger(__name__)
@@ -155,8 +156,9 @@ class ChirpPanel(QWidget):
 
         placeholder = QWidget()
         pl = QVBoxLayout(placeholder)
-        self.placeholder_label = QLabel("No chirp data")
+        self.placeholder_label = QLabel(empty_states.no_stimulus("chirp"))
         self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setWordWrap(True)
         pl.addWidget(self.placeholder_label)
         self.stack.addWidget(placeholder)
         self.stack.setCurrentIndex(1)
@@ -197,8 +199,8 @@ class ChirpPanel(QWidget):
         if data is None:
             self.stack.setCurrentIndex(1)
             self.placeholder_label.setText(
-                f"No chirp response for cluster {cluster_id}"
-                if getattr(dm, "chirp_available", False) else "No chirp data")
+                empty_states.no_cell_response("chirp", cluster_id)
+                if getattr(dm, "chirp_available", False) else empty_states.no_stimulus("chirp"))
             return
 
         self.stack.setCurrentIndex(0)

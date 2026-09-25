@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..theme import apply_plot_theme, plot_grid_alpha, plot_stroke, resolve_theme_colors
+from .. import empty_states
 from ..workers.workers import GratingComputeWorker
 from ...analysis import grating_calc
 from .polar_raster_view import PolarRasterView
@@ -200,8 +201,9 @@ class GratingPanel(QWidget):
         # ---------------------------------------------------------
         placeholder_page = QWidget()
         placeholder_layout = QVBoxLayout(placeholder_page)
-        self.placeholder_label = QLabel("No grating data")
+        self.placeholder_label = QLabel(empty_states.no_stimulus("grating"))
         self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setWordWrap(True)
         placeholder_layout.addWidget(self.placeholder_label)
         self.stack.addWidget(placeholder_page)
 
@@ -255,7 +257,7 @@ class GratingPanel(QWidget):
             not getattr(dm, "grating_available", False)
             or dm.grating_status == "missing"
         ):
-            self._show_placeholder("No grating data")
+            self._show_placeholder(empty_states.no_stimulus("grating"))
             return
 
         data = dm.get_grating_data_for_cluster(cluster_id)
@@ -264,7 +266,7 @@ class GratingPanel(QWidget):
             if dm.grating_status == "raw_only":
                 self._ensure_computing(cluster_id)
             else:
-                self._show_placeholder(f"No grating response for cluster {cluster_id}")
+                self._show_placeholder(empty_states.no_cell_response("grating", cluster_id))
             return
 
         self._render_cluster_data(cluster_id, data)
@@ -317,7 +319,7 @@ class GratingPanel(QWidget):
             return
 
         if not success:
-            self._show_placeholder(f"No grating response for cluster {cluster_id}")
+            self._show_placeholder(empty_states.no_cell_response("grating", cluster_id))
             return
 
         self.update_all(cluster_id)
