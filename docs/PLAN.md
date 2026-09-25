@@ -66,11 +66,19 @@ are one-offs).
 
 ## Next (user order, 2026-09-25)
 
+User 2026-09-25 approved ideas Q39–Q44. "Cell against its type" already exists: the population panel overlays the selected cell on its group.
+
 | # | Item | Notes |
 |---|---|---|
-| Q36 | Suggested cell classes from labelled runs | User: "the killer idea". Propose a class and a confidence for each cell from runs the lab already classified; the user confirms; Ctrl+S (Q31) writes it. Evidence so far: Q28 leave-one-out 5-NN 0.92 / 0.97 within a run, chance ~0.3, but the labels were made from similar features. First step: measure train-on-one-prep, test-on-another accuracy offline before any GUI. |
+| Q36 | Suggested cell classes from labelled runs (+ review queue) | User: "the killer idea". Review queue: least-confident first, one key to accept or pick from the top 3 (user: "decent"; faster workflow needed, see Q39). Propose a class and a confidence for each cell from runs the lab already classified; the user confirms; Ctrl+S (Q31) writes it. Evidence so far: Q28 leave-one-out 5-NN 0.92 / 0.97 within a run, chance ~0.3, but the labels were made from similar features. First step: measure train-on-one-prep, test-on-another accuracy offline before any GUI. |
 | Q37 | Match cells across runs | Was parked (tester request). Not from scratch: File ▸ Map Reference Run already matches cells by EI (`cross_run_matcher.py`, KS-template fallback, RF-position check, JSON sidecar) and borrows the reference run's STA / chirp / grating (`reference_bridge.py`, spec `docs/specs/cross_run_stimulus_bridge.md`, stages 0–4 done). Open: stage 5 (show borrowed curves in the single-cell Chirp / Grating panels) and the lab acceptance on real data, never run. First step: run it on two runs of one prep and measure match quality. |
 | Q38 | Spike rasters when there is no raw file | Was parked ("Stimulus / epoch rasters"). User: in the Raw tab when no `.bin` is loaded, or a new tab. Design not started. |
+| Q39 | Keyboard workflow | User 2026-09-25: shortcuts for trash, feature extraction, open, save, create / move to group, switch tabs; keep the ones that exist. Start from an inventory of every shortcut and the widgets that swallow keys. |
+| Q40 | Type barcode | One row per cell, its chirp PSTH (or grating tuning / ACG) as colour, rows grouped by class. A mislabelled cell is a stripe that does not match its band. |
+| Q41 | Stability strip | Per cell: spike amplitude and firing rate across the whole recording, stimulus blocks shaded. Answers "was the cell still there when this stimulus ran". |
+| Q42 | Mosaic atlas with gap finding | One small mosaic per class with coverage / overlap scores. A hole lists unclassified cells whose RF sits there; two same-class RFs on top of each other suggest a split or a wrong label. |
+| Q43 | Retina orientation from axons | EI propagation gives each cell's axon direction; axons run to the optic disc, so all cells together locate it. Check on 20260220A/data022 that the EIs are clean enough first. |
+| Q44 | Type atlas from the lab's classified runs | Per class, mean and spread of timecourse and ACG across preps, from `.params` alone (`RedTimeCourse`, `Auto`, `acfBinning`). Also a name harmonizer. Scan 2026-09-25 (all 413 `.params`, read-only): 411 readable; 90 runs from 51 preps have ≥ 20 classified cells (37,231 cells), but 465 distinct class names: case variants (ON/on, UNCLASSIFIED/unclassified/unclasssified), hyphen variants (brisk-sustained), numbered clusters (`nc22`), junk bins (weak, huge, misfit). After lower-casing, hyphen → space and dropping unclassified / nc / junk: 5 named classes seen in ≥ 16 preps — off/transient 713 cells (21 preps), on/brisk sustained 562 (20), off/brisk sustained 514 (22), off/brisk transient 456 (20), on/brisk transient 428 (16), plus the hyphen variants (~230 cells). This is the training set for Q36. Caveat: timecourse frame interval and stixel size differ between runs; convert to ms / µm before comparing. |
 
 This file lists standing decisions, fragile code, and open defects. It is
 not a roadmap. The full UX redesign spec is still parked except the
