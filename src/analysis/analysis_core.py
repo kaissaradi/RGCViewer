@@ -419,7 +419,11 @@ def compute_sta_metrics(sta_data, stafit, vision_params, cell_id):
         }
 
     # ── Spatial block ────────────────────────────────────────────────────────
-    if stafit:
+    if stafit and rf_geometry.fit_is_unmoved(stafit.std_x, stafit.std_y):
+        # Vision's fit never left its start value; say so, show no numbers.
+        metrics["RF σx (stix)"] = "no fit"
+        metrics["RF σy (stix)"] = "no fit"
+    elif stafit:
         sx, sy = stafit.std_x, stafit.std_y
 
         orientation_deg = np.rad2deg(stafit.rot) % 180  # keep in [0, 180)

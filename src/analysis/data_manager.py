@@ -11,6 +11,7 @@ from pathlib import Path
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QStandardItem
 from . import analysis_core
+from . import rf_geometry
 from . import cache_persistence
 from . import storage
 from . import vision_integration
@@ -2529,6 +2530,11 @@ class DataManager(QObject):
         current = self._optional_attr("_vision_source")
         if src is not None and current is not None and src != current:
             return False
+        # Saved before unmoved Vision fits (σ = 1, 1) became "no fit": their
+        # area is exactly π·1·1, which no real fit gives. Recompute once (Q26).
+        area = entry.get("rf_area")
+        if isinstance(area, float) and abs(area - np.pi) < 1e-12:
+            return False
         if entry.get("timecourse") is not None:
             return True
         if not self._sta_source_available(cluster_id):
@@ -2636,7 +2642,9 @@ class DataManager(QObject):
             try:
                 if params is not None:
                     stafit = params.get_stafit_for_cell(vid)
-                    if stafit:
+                    # An unmoved fit (σ = 1, 1) keeps the 0.0 no-fit
+                    # sentinel: its numbers are Vision's start value (Q26).
+                    if stafit and not rf_geometry.fit_is_unmoved(stafit.std_x, stafit.std_y):
                         rf_area = np.pi * stafit.std_x * stafit.std_y
                         if stafit.std_x > 0:
                             ellipticity = stafit.std_y / stafit.std_x
@@ -2725,7 +2733,8 @@ class DataManager(QObject):
                 sta_data = bridge.get_sta(vid) if bridge.has_sta(vid) else None
                 stafit = bridge.get_stafit(vid)
 
-                if stafit is not None:
+                if stafit is not None and not rf_geometry.fit_is_unmoved(
+                        stafit.std_x, stafit.std_y):
                     try:
                         rf_area = np.pi * stafit.std_x * stafit.std_y
                         if stafit.std_x > 0:

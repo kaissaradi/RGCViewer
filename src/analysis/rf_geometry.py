@@ -27,6 +27,22 @@ import numpy as np
 
 RFFit = namedtuple("RFFit", ["x0", "y0", "std_x", "std_y", "theta"])
 
+# vision7 ImageFrame.fit starts the Gaussian at every (σx, σy) on a grid
+# from 1 to 3 in steps of 0.5 and keeps the best result. A fit that never
+# moved from its first start stays at exactly (1, 1); it is not a
+# measurement. 2026-09-24: 23/303 cells on 20251212A/data018, 25/578 on
+# 20260220A/data022, 351/584 on 20260529A/data017 (PLAN.md Q26).
+UNMOVED_SIGMA = 1.0
+
+
+def fit_is_unmoved(std_x, std_y):
+    """True when σx and σy are both exactly Vision's first start value."""
+    try:
+        return (abs(abs(float(std_x)) - UNMOVED_SIGMA) < 1e-9
+                and abs(abs(float(std_y)) - UNMOVED_SIGMA) < 1e-9)
+    except (TypeError, ValueError):
+        return False
+
 
 def raw_rf_fit(vision_params, cell_id):
     """Return Vision's stored fit as an ``RFFit``, or None if unusable.
@@ -60,6 +76,8 @@ def rf_fit_from_stafit(fit, runtimemovie_params=None):
         y = float(runtimemovie_params.height) - (y - 0.5)
     if not np.all(np.isfinite([x, y, sx, sy, rot])) or sx <= 0 or sy <= 0:
         return None
+    if fit_is_unmoved(sx, sy):
+        return None
     return RFFit(x, y, sx, sy, rot)
 
 
@@ -72,6 +90,8 @@ def rf_fit_from_params(params):
     except (KeyError, TypeError, ValueError):
         return None
     if not np.all(np.isfinite(vals)) or vals[2] <= 0 or vals[3] <= 0:
+        return None
+    if fit_is_unmoved(vals[2], vals[3]):
         return None
     return RFFit(*vals)
 
