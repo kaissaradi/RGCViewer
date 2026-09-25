@@ -96,6 +96,25 @@ class _HScrollArea(QScrollArea):
         self.sync_height()
 
 
+def umap_inputs_waiting(dm, feature_config):
+    """What the UMAP still waits for, or "" when every selected input is ready.
+
+    Physics rows alone were checked. The ACG comes from the standard-plots
+    pass, so a run started before that pass finished dropped the ACG block
+    without a word (PLAN.md Q28).
+    """
+    total = len(dm.cluster_df)
+    feature_cache = getattr(dm, "feature_cache", {}) or {}
+    physics = sum(1 for v in feature_cache.values() if v.get("_computed"))
+    if physics < total:
+        return f"Ready: {physics} / {total} cells."
+    if feature_config.get("use_acg"):
+        spike_plots = len(getattr(dm, "standard_plot_cache", {}) or {})
+        if spike_plots < total:
+            return f"Autocorrelograms ready: {spike_plots} / {total} cells."
+    return ""
+
+
 # Hover text for the feature checkboxes (PLAN.md Q25).
 FEATURE_TOOLTIPS = {
     "use_rf_diameter": (
@@ -933,15 +952,12 @@ class UMAPPanel(QWidget):
 
     def run_umap(self):
         dm = self.main_window.data_manager
-        total_clusters = len(dm.cluster_df)
-        feature_cache = getattr(dm, "feature_cache", {})
-        valid_cached = sum(1 for v in feature_cache.values() if v.get("_computed"))
-        if valid_cached < total_clusters:
+        waiting = umap_inputs_waiting(dm, self.get_feature_config())
+        if waiting:
             QMessageBox.warning(
                 self,
                 "Cache Warming Up",
-                f"Please wait for background caching to finish.\n\n"
-                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                f"Please wait for background caching to finish.\n\n{waiting}\n"
                 f"Check the progress bar in the bottom right.",
             )
             return
@@ -999,15 +1015,12 @@ class UMAPPanel(QWidget):
 
     def run_umap_3d(self):
         dm = self.main_window.data_manager
-        total_clusters = len(dm.cluster_df)
-        feature_cache = getattr(dm, "feature_cache", {})
-        valid_cached = sum(1 for v in feature_cache.values() if v.get("_computed"))
-        if valid_cached < total_clusters:
+        waiting = umap_inputs_waiting(dm, self.get_feature_config())
+        if waiting:
             QMessageBox.warning(
                 self,
                 "Cache Warming Up",
-                f"Please wait for background caching to finish.\n\n"
-                f"Ready: {valid_cached} / {total_clusters} cells.\n"
+                f"Please wait for background caching to finish.\n\n{waiting}\n"
                 f"Check the progress bar in the bottom right.",
             )
             return

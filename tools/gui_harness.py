@@ -602,6 +602,78 @@ def scenario_feature_presets(s):
         callbacks.FeatureExtractionWindow.exec = orig
 
 
+def scenario_umap_eval(s):
+    """Q28: how well do the UMAP features separate the run's Vision cell types?
+
+    Labels: the named types (>= 8 cells) in the run's .params classID.
+    Score: leave-one-out 5-nearest-neighbour accuracy among labelled cells,
+    in the feature space (the observed-Euclidean distance the app uses) and
+    in a 2D UMAP of all cells. Chance = the largest class share.
+    """
+    import umap
+    from collections import Counter
+    from src.analysis import analysis_core
+    from src.analysis import params_classification as pc
+
+    s.load()
+    dm, panel = s.dm(), s.w.umap_panel
+    classes = pc.read_classes(dm.vision_params_path)
+    raw = {dm.get_cluster_id_for_vision(v): c.lower() for v, c in classes.items()}
+    counts = Counter(raw.values())
+    named = {c for c, n in counts.items() if n >= 8 and c != "all"
+             and not any(t in c for t in ("unclass", "/nc", "weak", "trash"))}
+    labels = {cid: c for cid, c in raw.items() if c in named}
+    ids = [int(c) for c in dm.cluster_df["cluster_id"]]
+    dm.ensure_physics_cache(ids)
+    # The ACG comes from the standard-plots pass; evaluate only once it is done.
+    wait_until(lambda: len(dm.standard_plot_cache) >= len(ids), 900)
+    base = panel.get_feature_config()
+    blocks = [k for k in base if k.startswith("use_")]
+
+    def knn(dist, lab, k=5):
+        hits = 0
+        for i in range(len(lab)):
+            d = dist[i].copy()
+            d[i] = np.inf
+            nn = np.argsort(d)[:k]
+            vote = Counter(lab[j] for j in nn).most_common(1)[0][0]
+            hits += vote == lab[i]
+        return hits / len(lab)
+
+    def evaluate(cfg):
+        rb, vids, disc = dm.get_raw_feature_blocks(ids, panel.get_filter_config())
+        m, _cols = analysis_core.build_feature_matrix(rb, cfg)
+        m, vids, disc, rb = analysis_core.drop_empty_feature_rows(m, vids, disc, rb)
+        vids = [int(v) for v in vids]
+        dist = analysis_core.observed_euclidean_distances(m)
+        dist = np.where(np.isfinite(dist), dist, np.nanmax(dist[np.isfinite(dist)]) * 2)
+        emb = umap.UMAP(n_neighbors=15, min_dist=0.1, metric="precomputed",
+                        random_state=0).fit_transform(dist)
+        idx = [i for i, v in enumerate(vids) if v in labels]
+        lab = [labels[vids[i]] for i in idx]
+        sub = dist[np.ix_(idx, idx)]
+        e = emb[idx]
+        edist = np.linalg.norm(e[:, None] - e[None], axis=2)
+        pol = [l.split("/")[1] for l in lab]
+        return {"n_cells": len(vids), "n_labelled": len(idx), "cols": int(m.shape[1]),
+                "knn_features": round(knn(sub, lab), 3), "knn_umap": round(knn(edist, lab), 3),
+                "polarity_knn_umap": round(knn(edist, pol), 3)}
+
+    out = {"types": dict(Counter(labels.values())),
+           "chance": round(max(Counter(labels.values()).values()) / max(len(labels), 1), 3),
+           "default_config": {k: v for k, v in base.items()}}
+    out["default"] = evaluate(base)
+    for b in blocks:
+        if base.get(b):
+            out["without_" + b[4:]] = evaluate({**base, b: False})
+        only = {k: (v if not k.startswith("use_") else k == b) for k, v in base.items()}
+        try:
+            out["only_" + b[4:]] = evaluate(only)
+        except Exception as exc:          # a block this run lacks
+            out["only_" + b[4:]] = f"n/a ({type(exc).__name__})"
+    log(json.dumps(out))
+
+
 VISION_JAR = os.environ.get("VISION_JAR", os.path.expanduser(
     "~/Documents/Development/MEA-fieldlab/src/vision7_symphony/Vision.jar"))
 _CHECK_PARAMS_JAVA = """
