@@ -2653,20 +2653,20 @@ def load_raw_data(main_window):
             main_window.raw_panel.load_data(cluster_id)
 
 
-def map_reference_run(main_window):
+def map_reference_run(main_window, ref_dir=None):
     """
     Menu action: Map Reference Run.
 
-    Opens a directory picker for the reference Vision analysis directory,
-    runs EI-based cross-run matching, shows a summary dialog, and installs
-    the ReferenceBridge on the DataManager.
+    Lets the user pick another run of this experiment (``run_picker``; a
+    folder dialog for anything else), runs EI-based cross-run matching, shows
+    a summary dialog, and installs the ReferenceBridge on the DataManager.
+    ``ref_dir`` skips the picker (harness, tests).
     """
     from ..analysis.cross_run_matcher import (
         CrossRunMatcher,
         MatchingReport,
         get_mapping_path,
     )
-    from ..analysis.reference_bridge import ReferenceBridge
 
     dm = main_window.data_manager
     if dm is None:
@@ -2685,12 +2685,15 @@ def map_reference_run(main_window):
         )
         return
 
-    # --- Pick reference directory ---
-    ref_dir = QFileDialog.getExistingDirectory(
-        main_window,
-        "Select Reference Run (Vision Analysis Directory)",
-        recent_paths.last_dir(main_window, "reference"),
-    )
+    # --- Pick the reference run: this experiment's runs first (PLAN.md Q52) ---
+    if ref_dir is None:
+        from .panels.ds_compare_dialog import current_run_dir
+        from .panels.run_picker import pick_reference_run
+        has = [k for k, flag in (("chirp", "chirp_available"), ("grating", "grating_available"),
+                                 ("contrast", "contrast_available"))
+               if getattr(dm, flag, False)]
+        ref_dir = pick_reference_run(main_window, current_run_dir(dm), has,
+                                     recent_paths.last_dir(main_window, "reference"))
     if not ref_dir:
         return
 
@@ -2740,69 +2743,53 @@ def map_reference_run(main_window):
                 )
                 report = None
 
-    # --- Run matching if needed ---
-    if report is None:
-        main_window.status_bar.showMessage("Running cross-run EI matching...")
-        QApplication.processEvents()
+    # --- Run matching if needed: in the background (13 s on data022 → data023) ---
+    ref_vision_only = bool(getattr(dm, "is_vision_only", False))
+    if report is not None:
+        _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vision_only)
+        return
 
+    def match():
+        from ..analysis.vision_integration import load_ei_data
+        ref_ei_bundle = load_ei_data(ref_path, ref_dataset)
+        ref_eis = ref_ei_bundle.get("ei_data") if ref_ei_bundle else None
+        if ref_eis is None:
+            raise RuntimeError("Could not load EI data from the reference run.")
+        result = CrossRunMatcher(
+            current_eis=dm.vision_eis,
+            reference_eis=ref_eis,
+            current_run_path=current_run_path,
+            reference_run_path=ref_dir,
+        ).run()
         try:
-            # Detect current dataset name
-            current_dataset = None
-            if hasattr(dm, 'vision_dataset_name'):
-                current_dataset = dm.vision_dataset_name
-            else:
-                # Try to detect from existing vision dir
-                current_vision_dir = getattr(dm, 'vision_dir', None)
-                if current_vision_dir:
-                    current_ei_files = list(Path(current_vision_dir).glob("*.ei"))
-                    if current_ei_files:
-                        current_dataset = current_ei_files[0].stem
+            result.save(mapping_path)
+        except Exception:
+            logger.warning("could not save the mapping JSON %s", mapping_path, exc_info=True)
+        return result
 
-            # Build matcher from already-loaded EIs + reference directory
-            from ..analysis.vision_integration import load_ei_data
-            ref_ei_bundle = load_ei_data(ref_path, ref_dataset)
-            ref_eis = ref_ei_bundle.get("ei_data") if ref_ei_bundle else None
-
-            if ref_eis is None:
-                QMessageBox.warning(
-                    main_window, "EI Load Failed",
-                    "Could not load EI data from the reference run.",
-                )
-                return
-
-            matcher = CrossRunMatcher(
-                current_eis=dm.vision_eis,
-                reference_eis=ref_eis,
-                current_run_path=current_run_path,
-                reference_run_path=ref_dir,
-            )
-            report = matcher.run()
-
-            # Save mapping JSON
-            try:
-                report.save(mapping_path)
-            except Exception as e:
-                main_window.status_bar.showMessage(
-                    f"Warning: could not save mapping JSON: {e}", 5000
-                )
-
-        except Exception as e:
-            QMessageBox.critical(
-                main_window, "Matching Failed",
-                f"Cross-run matching failed:\n{e}",
-            )
+    def matched(result):
+        if main_window.data_manager is not dm:          # another run was opened meanwhile
             return
+        _show_matching_result(main_window, dm, result, ref_path, ref_dataset, ref_vision_only)
 
-    # --- Show summary dialog ---
+    def match_failed(exc):
+        main_window.status_bar.clearMessage()
+        QMessageBox.critical(main_window, "Matching Failed", f"Cross-run matching failed:\n{exc}")
+
+    main_window.status_bar.showMessage(
+        f"Matching cells to {ref_path.name} by their EIs… (you can keep working)")
+    _run_in_background(main_window, match, matched, match_failed)
+
+
+def _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vision_only):
+    """Summary dialog, then load the reference data in the background and install the bridge."""
+    from ..analysis.reference_bridge import ReferenceBridge
+
     summary = report.summary()
-    n_high = len(report.high_confidence)
     n_marginal = len(report.marginal)
-    n_unmatched = len(report.unmatched)
-    n_conflicts = len(report.conflicts)
-
     detail_lines = [summary, ""]
     if n_marginal > 0:
-        detail_lines.append(f"Marginal matches (review recommended):")
+        detail_lines.append("Marginal matches (review recommended):")
         for m in report.marginal[:20]:  # show first 20
             detail_lines.append(
                 f"  {m.current_id} → {m.reference_id}  "
@@ -2818,39 +2805,33 @@ def map_reference_run(main_window):
     msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
     msg.setDefaultButton(QMessageBox.Ok)
     msg.button(QMessageBox.Ok).setText("Accept && Load RFs")
-    result = msg.exec_()
-
-    if result != QMessageBox.Ok:
+    if msg.exec_() != QMessageBox.Ok:
+        main_window.status_bar.clearMessage()
         return
 
-    # --- Install ReferenceBridge (STA/params + chirp/grating if present) ---
-    main_window.status_bar.showMessage(
-        "Loading reference stimuli (STA/RF, chirp, grating)..."
-    )
-    QApplication.processEvents()
+    def load():
+        return ReferenceBridge.from_matching_report(
+            report, ref_path, ref_dataset, load_stas=True, load_params=True,
+            load_chirp=True, load_grating=True, ref_is_vision_only=ref_vision_only)
 
-    try:
-        bridge = ReferenceBridge.from_matching_report(
-            report,
-            ref_path,
-            ref_dataset,
-            load_stas=True,
-            load_params=True,
-            load_chirp=True,
-            load_grating=True,
-            ref_is_vision_only=bool(getattr(dm, "is_vision_only", False)),
-        )
+    def loaded(bridge):
+        if main_window.data_manager is not dm:
+            return
         dm.install_reference_bridge(bridge, report=report)
-        main_window.status_bar.showMessage(
-            f"Reference mapped: {bridge.summary()}", 8000
-        )
-    except Exception as e:
-        QMessageBox.critical(
-            main_window, "Bridge Failed",
-            f"Could not load reference data:\n{e}",
-        )
-        return
+        main_window.status_bar.showMessage(f"Reference mapped: {bridge.summary()}", 8000)
+        _after_bridge_installed(main_window)
 
+    def load_failed(exc):
+        main_window.status_bar.clearMessage()
+        QMessageBox.critical(main_window, "Bridge Failed", f"Could not load reference data:\n{exc}")
+
+    main_window.status_bar.showMessage(
+        f"Loading {ref_path.name}'s STAs, chirp and grating… (you can keep working)")
+    _run_in_background(main_window, load, loaded, load_failed)
+
+
+def _after_bridge_installed(main_window):
+    """Re-gate the UMAP features and redraw the population RFs with borrowed cells."""
     # --- Re-gate UMAP feature checkboxes (effective chirp/grating) ---
     try:
         if hasattr(main_window, "umap_panel") and main_window.umap_panel is not None:
@@ -2868,3 +2849,11 @@ def map_reference_run(main_window):
         draw_population_rfs_plot(main_window)
     except Exception:
         logger.debug("Population RF redraw after map failed", exc_info=True)
+    # The open cell may now have a borrowed response.
+    try:
+        cid = main_window._get_selected_cluster_id()
+        if cid is not None:
+            main_window.grating_panel.update_all(cid)
+            main_window.chirp_panel.update_all(cid)
+    except Exception:
+        logger.debug("redraw of the open cell after map failed", exc_info=True)

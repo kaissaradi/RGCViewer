@@ -19,6 +19,7 @@ Typical lifecycle:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -97,6 +98,7 @@ class ReferenceBridge:
         ref_chirp_data=None,
         ref_chirp_id_to_row: Optional[Dict[int, int]] = None,
         ref_grating_data: Optional[dict] = None,
+        ref_grating_raw: Optional[dict] = None,
         stimuli_loaded: Optional[Tuple[str, ...]] = None,
         full_matches=None,
     ):
@@ -119,6 +121,13 @@ class ReferenceBridge:
 
         # Grating: analyzed per-cell dict keyed by reference cluster_id
         self._ref_grating_data = ref_grating_data
+        # Or the raw trials (every lab grating file is raw, 2026-09-25):
+        # {"spike_times_by_trial": {ref cluster_id: trials}, "trial_parameters",
+        # "source"}. A matched cell's DS/OS is computed once, on first use,
+        # with the Grating tab's own test (grating_calc).
+        self._ref_grating_raw = ref_grating_raw
+        self._grating_computed: Dict[int, Optional[dict]] = {}
+        self._grating_lock = threading.Lock()
 
         self.stimuli_loaded: Tuple[str, ...] = stimuli_loaded or ()
 
@@ -199,12 +208,12 @@ class ReferenceBridge:
             if ref_chirp_data is not None:
                 stimuli.append("chirp")
 
-        ref_grating_data = None
+        ref_grating_data = ref_grating_raw = None
         if load_grating:
-            ref_grating_data = cls._try_load_grating(
+            ref_grating_data, ref_grating_raw = cls._try_load_grating_files(
                 ref_dir, ref_is_vision_only=ref_is_vision_only
             )
-            if ref_grating_data is not None:
+            if ref_grating_data is not None or ref_grating_raw is not None:
                 stimuli.append("grating")
 
         confidence: Dict[int, float] = {}
@@ -235,6 +244,7 @@ class ReferenceBridge:
             ref_chirp_data=ref_chirp_data,
             ref_chirp_id_to_row=ref_chirp_id_to_row,
             ref_grating_data=ref_grating_data,
+            ref_grating_raw=ref_grating_raw,
             stimuli_loaded=tuple(stimuli),
             full_matches=list(report.matches),
         )
@@ -279,47 +289,48 @@ class ReferenceBridge:
     def _try_load_grating(
         ref_dir: Path, ref_is_vision_only: bool = False
     ) -> Optional[dict]:
-        """Load analyzed *Grating*/*DSOS* npy if present. Raw-only skipped for MVP."""
+        """The analysed grating dict only (see _try_load_grating_files)."""
+        return ReferenceBridge._try_load_grating_files(ref_dir, ref_is_vision_only)[0]
+
+    @staticmethod
+    def _try_load_grating_files(ref_dir: Path, ref_is_vision_only: bool = False):
+        """(analysed, raw) from the reference run's *Grating*/*DSOS* npy files, one read each.
+
+        analysed: {ref cluster_id: per-condition dict}. raw: {"spike_times_by_trial":
+        {ref cluster_id: trials}, "trial_parameters", "source"}. Either may be None.
+        The files are keyed by Vision ID; cluster_id = Vision ID − 1 unless the
+        reference was opened Vision-only (CLAUDE.md trap 1).
+        """
+        ref_dir = Path(ref_dir)
+        shift = 0 if ref_is_vision_only else 1
         try:
             candidates = sorted(set(
                 list(ref_dir.glob("*Grating*.npy")) + list(ref_dir.glob("*DSOS*.npy"))
             ))
-            if not candidates:
-                logger.info("No grating file in reference dir %s", ref_dir)
-                return None
-
-            analyzed = None
-            for p in candidates:
-                try:
-                    mdic = np.load(p, allow_pickle=True).item()
-                except Exception:
-                    continue
-                if not ReferenceBridge._grating_looks_analyzed(mdic):
-                    continue
+        except OSError:
+            return None, None
+        if not candidates:
+            logger.info("No grating file in reference dir %s", ref_dir)
+        analyzed = raw = None
+        for p in candidates:
+            try:
+                mdic = np.load(p, allow_pickle=True).item()
+            except Exception:
+                continue
+            if not isinstance(mdic, dict):
+                continue
+            if ReferenceBridge._grating_looks_analyzed(mdic):
                 if analyzed is None or "_combined" in p.name:
-                    analyzed = (p, mdic)
-
-            if analyzed is None:
-                logger.info(
-                    "Grating file(s) in %s but none analyzed (raw_only not bridged)",
-                    ref_dir,
-                )
-                return None
-
-            path, mdic = analyzed
-            out = {}
-            for k, v in mdic.items():
-                if isinstance(k, (int, np.integer)):
-                    ks_id = int(k) if ref_is_vision_only else int(k) - 1
-                    out[ks_id] = v
-
-            logger.info(
-                "Reference grating loaded from %s (%d cells)", path.name, len(out)
-            )
-            return out
-        except Exception as e:
-            logger.warning("Failed to load reference grating: %s", e)
-            return None
+                    analyzed = {int(k) - shift: v for k, v in mdic.items()
+                                if isinstance(k, (int, np.integer))}
+                    logger.info("Reference grating loaded from %s (%d cells)", p.name, len(analyzed))
+            elif raw is None and "trial_parameters" in mdic and "spike_times_by_trial" in mdic:
+                raw = {"spike_times_by_trial": {int(k) - shift: v
+                                                for k, v in mdic["spike_times_by_trial"].items()},
+                       "trial_parameters": mdic["trial_parameters"], "source": p.name}
+                logger.info("Reference grating trials from %s (%d cells)", p.name,
+                            len(raw["spike_times_by_trial"]))
+        return analyzed, raw
 
     @staticmethod
     def _grating_looks_analyzed(mdic) -> bool:
@@ -460,7 +471,7 @@ class ReferenceBridge:
         )
 
     def has_any_grating(self) -> bool:
-        return bool(self._ref_grating_data)
+        return bool(self._ref_grating_data) or bool(self._ref_grating_raw)
 
     def _ref_cluster_id(self, current_vision_id: int, ref_is_vision_only: bool = False) -> Optional[int]:
         """Map current vision id → reference cluster_id used in chirp/grating maps."""
@@ -503,16 +514,40 @@ class ReferenceBridge:
         ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
         if ref_cid is None:
             return False
-        return ref_cid in self._ref_grating_data
+        if self._ref_grating_data and ref_cid in self._ref_grating_data:
+            return True
+        raw = self._ref_grating_raw
+        return bool(raw) and ref_cid in raw["spike_times_by_trial"]
 
     def get_grating_entry(self, current_vision_id: int, ref_is_vision_only: bool = False):
-        """Return analyzed grating per-condition dict for matched cell, or None."""
+        """The matched cell's per-condition grating dict (analysed, or computed from trials)."""
         if not self.has_any_grating():
             return None
         ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
         if ref_cid is None:
             return None
-        return self._ref_grating_data.get(ref_cid)
+        if self._ref_grating_data and ref_cid in self._ref_grating_data:
+            return self._ref_grating_data[ref_cid]
+        raw = self._ref_grating_raw
+        if not raw or ref_cid not in raw["spike_times_by_trial"]:
+            return None
+        with self._grating_lock:
+            if ref_cid in self._grating_computed:
+                return self._grating_computed[ref_cid]
+        from . import grating_calc
+        entry = grating_calc.compute_grating_response(
+            ref_cid, raw["spike_times_by_trial"], raw["trial_parameters"])
+        with self._grating_lock:
+            self._grating_computed[ref_cid] = entry
+        return entry
+
+    def get_grating_trials(self, current_vision_id: int, ref_is_vision_only: bool = False):
+        """(trials, trial_parameters) of the matched cell, for rasters; None without raw trials."""
+        raw = self._ref_grating_raw
+        ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
+        if not raw or ref_cid is None or ref_cid not in raw["spike_times_by_trial"]:
+            return None
+        return raw["spike_times_by_trial"][ref_cid], raw["trial_parameters"]
 
     # ------------------------------------------------------------------
     # Bulk accessors

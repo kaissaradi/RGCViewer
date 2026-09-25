@@ -5698,6 +5698,33 @@ class DataManager(QObject):
             "_source": d,
         }
 
+    def get_borrowed_grating(self, cluster_id):
+        """The matched reference cell's grating response, for a cell this run has none for.
+
+        Map Reference Run matches cells by EI (PLAN.md Q37). Returns
+        ``{"data": per-condition dict (as get_grating_data_for_cluster),
+        "trials": (trials, trial_parameters) or None, "borrowed": {...}}``,
+        or None without a bridge, a match or a reference grating file. A raw
+        reference file is scored on first use with the Grating tab's own test
+        (about 10 ms a cell) and kept on the bridge.
+        """
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is None or not bridge.has_any_grating():
+            return None
+        vid = self.get_vision_id_for_cluster(int(cluster_id))
+        if vid is None or not bridge.has_match(vid):
+            return None
+        entry = bridge.get_grating_entry(vid)
+        if not entry:
+            return None
+        raw = getattr(bridge, "_ref_grating_raw", None) or {}
+        return {"data": entry, "trials": bridge.get_grating_trials(vid),
+                "borrowed": {"run": str(bridge.ref_run_path),
+                             "reference_id": bridge.get_reference_id(vid),
+                             "confidence": float(bridge.get_confidence(vid)),
+                             "status": bridge.get_status(vid),
+                             "source": raw.get("source", "")}}
+
     def get_chirp_trials_for_cluster(self, cluster_id):
         """Per-trial binned spikes for one cell, labelled by source run.
 

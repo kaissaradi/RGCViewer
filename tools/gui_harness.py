@@ -1041,7 +1041,7 @@ def scenario_borrowed_chirp(s):
     QMessageBox.exec_ = lambda self: QMessageBox.StandardButton.Ok
     QMessageBox.exec = lambda self: QMessageBox.StandardButton.Ok
     t = time.time()
-    callbacks.map_reference_run(w)
+    callbacks.map_reference_run(w, ref_dir=ref)
     dm = s.dm()
     ok = wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 600)
     bridge = dm.reference_bridge
@@ -1054,6 +1054,47 @@ def scenario_borrowed_chirp(s):
         s.select(borrowed[len(borrowed) // 2], settle=2.0)
         log(f"note: {w.chirp_panel.borrow_note.text()!r}; drawn={w.chirp_panel.stack.currentIndex() == 0}")
         s.shot("borrowed_chirp", w.chirp_panel)
+
+
+def scenario_borrowed_grating(s):
+    """Q52: Map Reference Run to the prep's grating run; matched cells show its DS tuning.
+
+    HARNESS_REF: the grating run's folder (e.g. 20260220A/kilosort25/data023 for data022).
+    Also checks the matched cells' borrowed preferred direction against ds_pool's own
+    reading of the same file (the reference cell's DS test run directly).
+    """
+    from qtpy.QtWidgets import QMessageBox
+    from src.gui import callbacks
+    from src.analysis import grating_calc as gc
+    ref = os.environ["HARNESS_REF"]
+    s.load()
+    w = s.w
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+    QMessageBox.exec_ = lambda self: QMessageBox.StandardButton.Ok
+    QMessageBox.exec = lambda self: QMessageBox.StandardButton.Ok
+    t = time.time()
+    callbacks.map_reference_run(w, ref_dir=ref)
+    dm = s.dm()
+    ok = wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 900)
+    bridge = dm.reference_bridge
+    log(f"bridge installed={ok} in {time.time() - t:.0f}s: {bridge.summary() if bridge else None}")
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    t = time.time()
+    got = {c: dm.get_borrowed_grating(c) for c in ids}
+    got = {c: g for c, g in got.items() if g}
+    per_cell = (time.time() - t) / max(1, len(got))
+    ds = {c: gc.select_best_dsos_condition(g["data"]) for c, g in got.items()}
+    ds = {c: sel for c, sel in ds.items() if sel and sel["classification"] == "DS"}
+    log(f"cells with a borrowed grating: {len(got)} of {len(ids)} ({per_cell * 1000:.1f} ms each); "
+        f"DS among them: {len(ds)}")
+    if ds:
+        c = sorted(ds, key=lambda k: -ds[k]["DSI"])[len(ds) // 3]
+        s.tab("Grating")
+        s.select(c, settle=2.5)
+        gp = w.grating_panel
+        log(f"cell {c}: note {gp.borrow_note.text()!r}; drawn={gp.stack.currentIndex() == 0}; "
+            f"DSI {ds[c]['DSI']:.2f} pref {ds[c]['preferred_direction_deg']:.0f}")
+        s.shot("borrowed_grating", gp)
 
 
 def scenario_smoke_all(s):

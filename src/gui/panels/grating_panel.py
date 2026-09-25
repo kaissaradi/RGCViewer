@@ -123,6 +123,15 @@ class GratingPanel(QWidget):
         header.addWidget(self.compare_runs_btn)
         self._condition_override = None
         data_layout.addLayout(header)
+        # "Borrowed from <run>": this run has no grating response for the
+        # cell, so its EI-matched cell of the reference run is shown (Q37, Q52).
+        self.borrow_note = QLabel("")
+        self.borrow_note.setWordWrap(True)
+        self.borrow_note.setStyleSheet(
+            f"color: {colors.get('status_mua_text', '#7A5900')}; font-size: 11px;")
+        self.borrow_note.hide()
+        data_layout.addWidget(self.borrow_note)
+        self._borrowed = None
 
         # Condition legend — replaces the old dropdown. All conditions are
         # rendered simultaneously (see _CONDITION_COLORS), this just labels
@@ -243,6 +252,8 @@ class GratingPanel(QWidget):
         self._sf_curve.setPen(
             pg.mkPen(colors.get("plot_overlay", "c"), width=plot_stroke(colors))
         )
+        self.borrow_note.setStyleSheet(
+            f"color: {colors.get('status_mua_text', '#7A5900')}; font-size: 11px;")
         if self._current_cluster_id is not None:
             self.update_all(self._current_cluster_id)
 
@@ -258,24 +269,61 @@ class GratingPanel(QWidget):
         dm = self.main_window.data_manager
         if dm is None:
             return
+        self._borrowed = None
+        self._show_borrow_note(None)
 
         if (
             not getattr(dm, "grating_available", False)
             or dm.grating_status == "missing"
         ):
-            self._show_placeholder(empty_states.no_stimulus("grating"))
+            self._borrow_or_placeholder(cluster_id, empty_states.no_stimulus("grating"))
             return
 
         data = dm.get_grating_data_for_cluster(cluster_id)
 
         if data is None:
-            if dm.grating_status == "raw_only":
+            raw = getattr(dm, "grating_raw_data", None) or {}
+            in_file = cluster_id in (raw.get("spike_times_by_trial") or {})
+            if dm.grating_status == "raw_only" and in_file:
                 self._ensure_computing(cluster_id)
             else:
-                self._show_placeholder(empty_states.no_cell_response("grating", cluster_id))
+                self._borrow_or_placeholder(
+                    cluster_id, empty_states.no_cell_response("grating", cluster_id))
             return
 
         self._render_cluster_data(cluster_id, data)
+
+    def _borrow_or_placeholder(self, cluster_id, text):
+        """The matched reference cell's grating (Map Reference Run), else ``text``."""
+        dm = self.main_window.data_manager
+        borrowed = None
+        if hasattr(dm, "get_borrowed_grating"):
+            try:
+                borrowed = dm.get_borrowed_grating(cluster_id)
+            except Exception:
+                logger.warning("borrowed grating failed for %s", cluster_id, exc_info=True)
+        if not borrowed:
+            self._show_placeholder(text)
+            return
+        self._borrowed = borrowed
+        self._show_borrow_note(borrowed)
+        self._render_cluster_data(cluster_id, borrowed["data"])
+
+    def _show_borrow_note(self, borrowed):
+        if not borrowed:
+            self.borrow_note.hide()
+            return
+        b = borrowed["borrowed"]
+        from pathlib import Path
+        run = Path(b["run"]).name or b["run"]
+        self.borrow_note.setText(
+            f"Borrowed from {run}: matched cell {b['reference_id']} "
+            f"(EI match {b['confidence']:.2f}, {b['status']})")
+        self.borrow_note.setToolTip(
+            "This run has no grating response for this cell. File ▸ Map Reference Run "
+            "matched it by its electrical image to a cell of the reference run; these are "
+            f"that cell's responses, scored with this tab's test.\n{b['run']}")
+        self.borrow_note.show()
 
     def _show_placeholder(self, text):
         self.stack.setCurrentIndex(1)
@@ -325,7 +373,8 @@ class GratingPanel(QWidget):
             return
 
         if not success:
-            self._show_placeholder(empty_states.no_cell_response("grating", cluster_id))
+            self._borrow_or_placeholder(
+                cluster_id, empty_states.no_cell_response("grating", cluster_id))
             return
 
         self.update_all(cluster_id)
@@ -543,10 +592,16 @@ class GratingPanel(QWidget):
 
     def _draw_rasters(self, cluster_id, cond, entry, pref_dir_deg):
         dm = self.main_window.data_manager
-        raw = getattr(dm, "grating_raw_data", None)
-        trials = None
-        if raw is not None:
-            trials = raw.get("spike_times_by_trial", {}).get(int(cluster_id))
+        raw, trials = None, None
+        if self._borrowed is not None:
+            pack = self._borrowed.get("trials")
+            if pack is not None:
+                trials, params = pack
+                raw = {"trial_parameters": params}
+        else:
+            raw = getattr(dm, "grating_raw_data", None)
+            if raw is not None:
+                trials = raw.get("spike_times_by_trial", {}).get(int(cluster_id))
         if trials is None:
             self.raster_view.clear_rasters(
                 "Rasters need per-trial spikes (the raw grating file). "

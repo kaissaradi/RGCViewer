@@ -185,6 +185,8 @@ class ChirpPanel(QWidget):
             self._style_plot(p, colors)
         for lbl in (self.lbl_max_fr, self.lbl_rate, self.lbl_onoff, self.lbl_qi):
             lbl.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
+        self.borrow_note.setStyleSheet(
+            f"color: {colors.get('status_mua_text', '#7A5900')}; font-size: 11px;")
         self.update_all(self._cluster_id)
 
     @staticmethod
