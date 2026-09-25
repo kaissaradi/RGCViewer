@@ -280,3 +280,24 @@ def test_ensure_physics_cache_refreshes_sticky_none_timecourse(tmp_path):
     entry = dm.feature_cache[3]
     assert entry.get("timecourse") is not None
     assert entry.get("_sta_checked") is True
+
+
+def test_cache_temp_files_are_named_and_stale_ones_swept(tmp_path):
+    """A killed write left bare 'tmpXXXX' files on the lab share (2026-08-14)."""
+    import os
+    import time as _time
+    from src.analysis.data_manager import DataManager
+    dm = DataManager.__new__(DataManager)
+    target = tmp_path / "feature_cache.pkl"
+    dm._save_pickle_with_fallback({"a": 1}, str(target))
+    assert target.exists() and not [p for p in tmp_path.iterdir() if p.name != target.name]
+    stale = tmp_path / ("feature_cache.pkl.x1" + DataManager.TEMP_SUFFIX)
+    fresh = tmp_path / ("feature_cache.pkl.x2" + DataManager.TEMP_SUFFIX)
+    other = tmp_path / "tmpabcdef"                     # not ours by name: left alone
+    for f in (stale, fresh, other):
+        f.write_bytes(b"x")
+    old = _time.time() - 2 * 86400
+    os.utime(stale, (old, old))
+    os.utime(other, (old, old))
+    assert DataManager.sweep_stale_temp_files(tmp_path) == 1
+    assert not stale.exists() and fresh.exists() and other.exists()

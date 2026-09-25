@@ -609,21 +609,56 @@ class DataManager(QObject):
             if callable(tree_fn):
                 tree_fn()
 
+    # Temp files are "<cache name>.<random>.encore-tmp" so a leftover from a
+    # killed write (the lab share had nine bare "tmpXXXX" files, 2026-08-14)
+    # can be recognised and removed; see sweep_stale_temp_files.
+    TEMP_SUFFIX = ".encore-tmp"
+
     def _save_pickle_with_fallback(self, data, path):
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(path), prefix=os.path.basename(path) + ".",
+            suffix=self.TEMP_SUFFIX)
         os.close(tmp_fd)
         try:
             with open(tmp_path, "wb") as f:
                 pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp_path, path)  # atomic move
             return path
-        except Exception:
+        except BaseException:          # also KeyboardInterrupt / SystemExit
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
             raise
+
+    @classmethod
+    def sweep_stale_temp_files(cls, folder, older_than_s=86400):
+        """Remove this app's own leftover temp files (killed writes) from ``folder``.
+
+        Only names ending in TEMP_SUFFIX and older than ``older_than_s``; a
+        write in progress in another Encore window is younger. Returns the
+        number removed.
+        """
+        n = 0
+        now = time.time()
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return 0
+        for name in names:
+            if not name.endswith(cls.TEMP_SUFFIX):
+                continue
+            full = os.path.join(folder, name)
+            try:
+                if now - os.path.getmtime(full) > older_than_s:
+                    os.remove(full)
+                    n += 1
+            except OSError:
+                continue
+        if n:
+            logger.info("Removed %d stale Encore temp file(s) from %s", n, folder)
+        return n
 
     def _sanitize_ei_dict(self, ei_dict):
         """
@@ -781,6 +816,8 @@ class DataManager(QObject):
         import pandas as pd
 
         ks = self.kilosort_dir
+        # Leftovers of killed cache writes (worker thread; one listdir).
+        self.sweep_stale_temp_files(ks)
 
         # --- stimulus timing (DataJoint) — safe here because we're on a background thread ---
         import threading
