@@ -2538,6 +2538,25 @@ class DataManager(QObject):
             else:
                 existing["acg"] = acg_norm
 
+    def _backfill_acg(self, cluster_id):
+        """Copy the ACG from standard_plot_cache into a physics row that lacks one.
+
+        _write_acg_into_feature_cache runs only when _compute_standard_plots
+        computes an ACG. A warm open restores standard_plot_cache.pkl instead,
+        so a physics row saved without "acg" stayed without it, and the ACG
+        block vanished from Feature Extraction and the UMAP (PLAN.md Q34).
+        The two locks are taken one after the other, never nested.
+        """
+        lock = self._optional_attr("_standard_plot_lock")
+        cache = self._optional_attr("standard_plot_cache") or {}
+        if lock is None:
+            return
+        with lock:
+            entry = cache.get(cluster_id)
+            acg = entry.get("acg_norm") if entry else None
+        if acg is not None:
+            self._write_acg_into_feature_cache(cluster_id, acg)
+
     def get_cell_physics(self, cluster_id, allow_std_compute=True):
         """
         Single Source of Truth for a cell's physical metrics.
@@ -2558,8 +2577,11 @@ class DataManager(QObject):
         # 1. Fast path: check feature cache under lock.
         with self._feature_lock:
             cached = self.feature_cache.get(cluster_id)
-            if self._physics_entry_is_fresh(cluster_id, cached):
-                return cached
+            fresh = self._physics_entry_is_fresh(cluster_id, cached)
+        if fresh:
+            if cached.get("acg") is None:
+                self._backfill_acg(cluster_id)
+            return cached
 
         # 2. Per-cell in-flight lock to prevent redundant computation
         with self._physics_cell_locks_lock:
