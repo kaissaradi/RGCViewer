@@ -1296,7 +1296,8 @@ def scenario_borrowed_features(s):
             e = dm.feature_cache.get(c) or {}
             n += e.get("timecourse") is not None
         return n
-    log(json.dumps({"before_match_timecourses_cached": count_tc(),
+    served = sum(1 for c in ids if (dm.get_cell_physics(c) or {}).get("timecourse") is not None)
+    log(json.dumps({"before_match_timecourses_cached": count_tc(), "before_match_served": served,
                     "umap_temporal_enabled": w.umap_panel.feature_widgets["use_temporal"][0].isEnabled()}))
     callbacks.map_reference_run(w, ref_dirs=refs)
     wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 1800)

@@ -66,3 +66,30 @@ def test_caveats_prefer_a_real_match():
     cav = multi.build_ui_caveats()
     assert set(cav) == {10}
     assert cav[10].status == "high"
+
+
+def test_cached_borrowed_physics_is_good_only_while_its_run_is_matched():
+    """A saved session's borrowed time course must not come back as this run's own."""
+    import threading
+    from types import SimpleNamespace
+    dm = DataManager.__new__(DataManager)
+    dm.is_vision_only = False
+    dm._feature_lock = threading.Lock()
+    entry = {"_computed": True, "timecourse": np.ones(30), "rf_area": 5.0,
+             "provenance": {"timecourse": "reference", "rf_geometry": "reference"},
+             "_reference_run": "/x/data022"}
+
+    def bridge(path):
+        b = SimpleNamespace(ref_run_path=path, has_match=lambda vid: vid == 11)
+        b.pick = lambda vid, kind: b if vid == 11 and kind in ("rf", "match") else None
+        return b
+
+    dm.reference_bridge = None
+    assert not dm._physics_entry_is_fresh(10, entry)          # reopened, nothing matched
+    dm.reference_bridge = bridge("/x/data022")
+    assert dm._physics_entry_is_fresh(10, entry)              # the same run matched again
+    dm.reference_bridge = bridge("/x/data006")
+    assert not dm._physics_entry_is_fresh(10, entry)          # matched to another run
+    own = dict(entry, provenance={"timecourse": "current", "rf_geometry": "current"})
+    dm.reference_bridge = None
+    assert dm._physics_entry_is_fresh(10, own)                # the run's own data: unaffected

@@ -2630,6 +2630,16 @@ class DataManager(QObject):
             return bool(bridge.has_sta(vid) or bridge.has_rf(vid))
         return False
 
+    def _sta_borrow_source(self, vid):
+        """The matched run that supplies this cell's STA / RF, or None (Q62)."""
+        bridge = self._optional_attr("reference_bridge")
+        if bridge is None or not bridge.has_match(vid):
+            return None
+        pick = getattr(bridge, "pick", None)
+        if not callable(pick):
+            return bridge
+        return pick(vid, "sta") or pick(vid, "rf") or pick(vid, "match")
+
     def _physics_entry_is_fresh(self, cluster_id, entry):
         """A cache hit is valid unless Vision arrived after a None-timecourse write.
 
@@ -2651,6 +2661,15 @@ class DataManager(QObject):
         current = self._optional_attr("_vision_source")
         if src is not None and current is not None and src != current:
             return False
+        # Borrowed from a matched run (Match Runs): good only while that same
+        # run is matched. A saved session's borrowed time courses were served
+        # as the run's own after a reopen with no match, or with another run.
+        prov = entry.get("provenance") or {}
+        if "reference" in (prov.get("timecourse"), prov.get("rf_geometry")):
+            vid = self.get_vision_id_for_cluster(cluster_id)
+            sub = self._sta_borrow_source(vid)
+            if sub is None or str(sub.ref_run_path) != entry.get("_reference_run"):
+                return False
         # Saved before unmoved Vision fits (σ = 1, 1) became "no fit": their
         # area is exactly π·1·1, which no real fit gives. Recompute once (Q26).
         area = entry.get("rf_area")
@@ -2838,6 +2857,7 @@ class DataManager(QObject):
                         exc_info=True,
                     )
 
+            borrowed_from = None
             # --- Fallback: borrow STA/RF from reference bridge ---
             # Mapping keys are Vision IDs. Params timecourse lookup MUST use
             # the reference Vision ID (not current vid) — Law 1 on ref table.
@@ -2851,9 +2871,8 @@ class DataManager(QObject):
             ):
                 # The run that has an STA or RF for this cell (Match Runs can
                 # hold several, Q62); its reference ID goes with it.
-                bridge = (self.reference_bridge.pick(vid, "sta")
-                          or self.reference_bridge.pick(vid, "rf")
-                          or self.reference_bridge.pick(vid, "match"))
+                bridge = self._sta_borrow_source(vid)
+                borrowed_from = str(bridge.ref_run_path)
                 ref_id = bridge.get_reference_id(vid)
                 stafit = bridge.get_stafit(vid)
 
@@ -2950,6 +2969,9 @@ class DataManager(QObject):
                 "rf_short_diameter": rf_short_diameter,
                 "time_to_peak": time_to_peak,
                 "provenance": provenance,
+                # The matched run a "reference" value came from: the cache
+                # entry is good only while that run is matched (Q62).
+                "_reference_run": borrowed_from if "reference" in provenance.values() else None,
                 "match_status": match_status,
                 "match_confidence": match_confidence,
                 "reference_id": reference_id,
