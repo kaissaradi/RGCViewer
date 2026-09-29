@@ -177,3 +177,51 @@ def test_needs_vision_neurons(tmp_path):
     dm.cluster_df = pd.DataFrame({"cluster_id": [1]})
     with pytest.raises(ls.LispStimulusError, match="Vision"):
         dm.read_lisp_grating(Path(tmp_path) / "s02")
+
+
+# ---------------------------------------------------------------- MATLAB s-files (2026-05-14-0)
+
+MG = """(:class :MG :spatial_modulation :sine :frames 360 :x_start 0 :x_end 800 :y_start 0 :y_end 600)
+(:DIRECTION 0 :TEMPORAL_PERIOD 30 :SPATIAL_PERIOD 75 :RGB #(0.48 0.48 0.48) :BACK_RGB #(0.25 0.25 0.25))
+(:DIRECTION 0 :TEMPORAL_PERIOD 30 :SPATIAL_PERIOD 12 :RGB #(0.48 0.48 0.48) :BACK_RGB #(0.5 0.5 0.5))
+(:DIRECTION 0 :TEMPORAL_PERIOD 30 :SPATIAL_PERIOD 12 :RGB #(0.48 0.48 0.48) :BACK_RGB #(0.25 0.25 0.25))
+(:DIRECTION 0 :TEMPORAL_PERIOD 30 :SPATIAL_PERIOD 75 :RGB #(0.48 0.48 0.48) :BACK_RGB #(0.5 0.5 0.5))
+"""
+
+
+def test_matlab_s_file_is_a_moving_grating_at_60_hz(tmp_path):
+    seq = _seq(tmp_path, MG, "s15.txt")
+    assert seq.source == "matlab" and seq.stim_type == "DRIFTING-SINUSOID"
+    assert ls.default_refresh_hz(seq) == 60.0
+    assert seq.varying_extras() == {"BACK_RGB": [(0.25, 0.25, 0.25), (0.5, 0.5, 0.5)]}
+    with pytest.raises(ls.LispStimulusError, match="BACK_RGB"):
+        ls.build_grating_trials(seq, _triggers(4), {1: np.zeros(0)}, FS)
+    g = ls.build_grating_trials(seq, _triggers(4), {1: np.zeros(0)}, FS,
+                                select={"BACK_RGB": (0.5, 0.5, 0.5)})
+    assert [p["barWidth"] for p in g.trial_parameters] == [12.0, 75.0]      # trials 2 and 4
+    assert g.trial_parameters[0]["stimTime"] == pytest.approx(6000.0)       # 360 frames at 60 Hz
+    assert g.trial_parameters[0]["temporalFrequency"] == pytest.approx(2.0)
+    assert g.summary["n_conditions"] == 2 and "BACK_RGB = (0.5 0.5 0.5)" in ls.describe(g.summary)
+
+
+def test_matlab_mat_file_reads_as_the_text_file(tmp_path):
+    import scipy.io as sio
+    txt = _seq(tmp_path, MG, "s15.txt")
+    trials = np.zeros(len(txt.trials), dtype=object)
+    for i, t in enumerate(txt.trials):
+        trials[i] = {k: (np.array(v) if isinstance(v, tuple) else v) for k, v in t.items()}
+    header = {"class": "MG", "spatial_modulation": "sine", "frames": 360.0, "x_start": 0.0,
+              "x_end": 800.0, "y_start": 0.0, "y_end": 600.0}
+    sio.savemat(tmp_path / "s15.mat", {"parameters": header, "variable_parameters": trials})
+    mat = ls.read_sequence(tmp_path / "s15.mat")
+    assert mat.header == txt.header and mat.trials == txt.trials
+
+
+def test_scripts_and_time_stamps_are_refused(tmp_path):
+    import scipy.io as sio
+    (tmp_path / "2026-05-14-0.m").write_text("%% data015\nparameters.class = 'MG';\n")
+    with pytest.raises(ls.LispStimulusError, match="experiment script"):
+        ls.read_sequence(tmp_path / "2026-05-14-0.m")
+    sio.savemat(tmp_path / "data020_time_stamps.mat", {"time_stamps": np.zeros(3)})
+    with pytest.raises(ls.LispStimulusError, match="not a stimulus sequence"):
+        ls.read_sequence(tmp_path / "data020_time_stamps.mat")

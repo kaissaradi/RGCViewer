@@ -2762,14 +2762,23 @@ def load_lisp_stimulus(main_window, path=None):
         start = str(found[0]) if found else (str(dirs[0]) if dirs else
                                              recent_paths.last_dir(main_window, "lisp"))
         path, _ = QFileDialog.getOpenFileName(
-            main_window, f"Stimulus sequence for {src[1]} (s02 for data002)", start,
-            "Stimulus sequence (s[0-9]* *.txt *.lisp);;All files (*)")
+            main_window, f"Stimulus sequence for {src[1]} (s02, s15.txt or s15.mat)", start,
+            "Stimulus sequence (s[0-9]* *.txt *.mat *.lisp);;All files (*)")
         if not path:
             return
     recent_paths.remember_dir(Path(path).parent, "lisp")
+    try:
+        seq = ls.read_sequence(path)
+    except ls.LispStimulusError as exc:
+        QMessageBox.warning(main_window, "Stimulus File", str(exc))
+        return
+    choice = _confirm_stimulus_file(main_window, seq, src[1])
+    if choice is None:
+        return
+    refresh_hz, select = choice
 
     def read():
-        return dm.read_lisp_grating(path)
+        return dm.read_lisp_grating(path, refresh_hz=refresh_hz, select=select)
 
     def done(trials):
         if main_window.data_manager is not dm:
@@ -2791,6 +2800,73 @@ def load_lisp_stimulus(main_window, path=None):
 
     main_window.status_bar.showMessage(f"Reading {Path(path).name} and the run's triggers…")
     _run_in_background(main_window, read, done, failed)
+
+
+def _confirm_stimulus_file(main_window, seq, dataset):
+    """(frame rate, {key: value}) the user confirms for a stimulus file, or None.
+
+    The frame rate is not in the file: 120 Hz for the Lisp rig, 60 Hz for the
+    MATLAB one (its scripts write frames as seconds × 60). A trial parameter
+    beyond the grating's (the background, BACK_RGB) is analysed one value at a
+    time: Encore's conditions do not keep two backgrounds apart.
+    """
+    from qtpy.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                                QFormLayout, QLabel, QVBoxLayout)
+    from ..analysis import lisp_stimulus as ls
+    if seq.stim_type not in ls.GRATING_TYPES:
+        QMessageBox.warning(main_window, "Stimulus File",
+                            f"{seq.path.name} is a {seq.stim_type.lower() or 'unknown'} stimulus; "
+                            "Encore reads drifting gratings from these files.")
+        return None
+    dlg = QDialog(main_window)
+    dlg.setWindowTitle("Stimulus file")
+    lay = QVBoxLayout(dlg)
+    kind = "MATLAB stimulus file" if seq.source == "matlab" else "Lisp stimulus file"
+    frames = seq.header.get("FRAMES")
+    intro = QLabel(f"{seq.path.name} ({kind}) for {dataset}: {seq.stim_type.lower().replace('-', ' ')}, "
+                   f"{len(seq.combinations)} conditions, {len(seq.trials)} trials of {frames} frames.")
+    intro.setWordWrap(True)
+    lay.addWidget(intro)
+    form = QFormLayout()
+    rate = QDoubleSpinBox()
+    rate.setRange(10.0, 500.0)
+    rate.setDecimals(2)
+    rate.setSuffix(" Hz")
+    rate.setValue(ls.default_refresh_hz(seq))
+    rate.setToolTip("The display's frame rate. It sets the trial length (frames / rate) and the "
+                    "temporal frequency (rate / temporal period). Lisp rig: 120 Hz; MATLAB rig "
+                    "(OLED): 60 Hz.")
+    form.addRow("Display frame rate:", rate)
+    length = QLabel("")
+    form.addRow("Trial length:", length)
+
+    def show_length():
+        if isinstance(frames, (int, float)):
+            length.setText(f"{float(frames) / rate.value():.2f} s")
+    rate.valueChanged.connect(lambda _v: show_length())
+    show_length()
+    combos = {}
+    for key, values in seq.varying_extras().items():
+        box = QComboBox()
+        for v in values:
+            n = sum(1 for t in seq.trials if t.get(key, seq.header.get(key)) == v)
+            box.addItem(f"{ls._fmt_value(v)}  ({n} trials)", v)
+        combos[key] = box
+        form.addRow(f"Analyse {key}:", box)
+    lay.addLayout(form)
+    if combos:
+        note = QLabel("The trials also differ in the values above. One value is analysed at a "
+                      "time; load the file again for another.")
+        note.setWordWrap(True)
+        note.setObjectName("mutedLabel")
+        lay.addWidget(note)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    lay.addWidget(buttons)
+    if not dlg.exec():
+        return None
+    return rate.value(), {k: box.currentData() for k, box in combos.items()}
 
 
 def map_reference_run(main_window, ref_dir=None, ref_dirs=None, rematch=False):

@@ -234,7 +234,12 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
   ended early keeps whole repeats. The Grating tab, the table's DS/OS columns
   and the population arrows then work as for any grating run. The spatial
   value is the period in pixels; directions are the file's `:DIRECTION`
-  values (which way that moves the bars is not checked).
+  values (which way that moves the bars is not checked). The newer MATLAB
+  stimulus code writes the same thing as `s15.txt` and `s15.mat` (moving
+  grating, `:class :MG`); either loads. Encore asks for the display frame
+  rate (the file does not say it: 120 Hz for the Lisp rig, 60 Hz for the
+  MATLAB one) and, when the trials also vary the background (`BACK_RGB`),
+  which background to analyse.
 - **Optic disc direction.** Array → Find the Optic Disc fits each cell's axon in
   its EI and shows where the axons converge: a disc point when the fit is
   clear, else a direction only, else nothing. It works best on the 512 array.

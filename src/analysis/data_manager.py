@@ -6142,7 +6142,7 @@ class DataManager(QObject):
         return (self._optional_attr("_native_vision_source")
                 or self._optional_attr("_vision_neurons_source"))
 
-    def read_lisp_grating(self, sequence_path):
+    def read_lisp_grating(self, sequence_path, refresh_hz=None, select=None):
         """Grating trials from a Lisp stimulus sequence (PLAN.md Q61). No state change.
 
         Triggers and spike times both come from this run's ``.neurons``, so
@@ -6167,7 +6167,8 @@ class DataManager(QObject):
         by_cell = {int(v) + offset: s for v, s in spikes.items() if int(v) + offset in ids}
         ends = [int(s[-1]) for s in spikes.values() if len(s)]
         end = max(ends) if ends else None
-        return ls.build_grating_trials(seq, ttl, by_cell, fs, recording_end_samples=end)
+        return ls.build_grating_trials(seq, ttl, by_cell, fs, refresh_hz=refresh_hz,
+                                       recording_end_samples=end, select=select)
 
     def apply_lisp_grating(self, trials):
         """Make ``read_lisp_grating``'s result this run's grating data (GUI thread)."""

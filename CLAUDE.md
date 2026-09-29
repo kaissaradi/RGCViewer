@@ -62,7 +62,9 @@ slower, not faster. Encore writes its caches (`*.pkl`) into `ksfiles/` and
 10. **Lisp grating runs** (older Chichilnisky-lab analyses) keep the trial
    sequence in `<prep>/stimuli/sNN` and the trial starts as TTLs in the
    `.neurons`. The rules are MATLAB `load_stim.m`'s (PLAN.md Q61); the
-   `:DIRECTION` convention is not checked.
+   `:DIRECTION` convention is not checked. The MATLAB stimulus code writes
+   the same format as `sNN.txt` / `sNN.mat` (2026-05-14-0) for a 60 Hz OLED;
+   the frame rate is not in the file.
 11. **`.params` is shared with Vision.** Vision opens it read-write and saves
    it in place. Encore never edits it in place (`params_classification.py`,
    PLAN.md Q30–Q31). Close a run in Vision before Ctrl+S in Encore.

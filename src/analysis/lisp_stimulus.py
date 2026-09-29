@@ -30,6 +30,16 @@ baseline. The DS/OS statistics use the stimulus window only, as MATLAB does.
 
 What ``:DIRECTION`` means on the retina (which way the bars move, and in
 which screen frame) is not verified here. Encore shows the value as it is.
+
+The lab's MATLAB stimulus code (``write_s_file``, 2026-05-14-0) writes the
+same format as ``sNN.txt``, with a ``(:class :MG :spatial_modulation :sine
+:frames 360 …)`` header ("moving grating"), and its trials may vary more than
+the grating (``:BACK_RGB``). Its display runs at 60 Hz (the script writes
+``parameters.frames = 6*60`` for 6 s); the frame rate is not in the file, so
+the user confirms it (``default_refresh_hz``). Trials that differ in anything
+but the spatial period, temporal period and direction are analysed one value
+at a time (``select``): Encore's conditions are (spatial value, TF) pairs, and
+pooling two backgrounds would mix two stimuli.
 """
 
 from __future__ import annotations
@@ -41,7 +51,9 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-REFRESH_HZ = 120.0
+REFRESH_HZ = 120.0              # the Lisp rig (CRT)
+MATLAB_REFRESH_HZ = 60.0        # the MATLAB rig (OLED; 2026-05-14-0.m writes frames as s × 60)
+GRATING_KEYS = ("SPATIAL_PERIOD", "TEMPORAL_PERIOD", "DIRECTION")
 TRIGGER_ITI_THR = 2.0          # load_stim.m: trigger_iti_thr
 PAD_MS = 1000.0                # context kept before / after each trial
 GRATING_TYPES = ("DRIFTING-SINUSOID", "DRIFTING-SQUAREWAVE")
@@ -121,8 +133,33 @@ class StimulusSequence:
     trial_list: List[int] = field(default_factory=list)   # index into combinations
 
     @property
+    def source(self) -> str:
+        """"lisp" (a :TYPE header) or "matlab" (a :class header)."""
+        return "matlab" if "CLASS" in self.header and "TYPE" not in self.header else "lisp"
+
+    @property
     def stim_type(self) -> str:
+        if self.source == "matlab":
+            cls = str(self.header.get("CLASS", "")).upper()
+            if cls == "MG":             # moving grating
+                square = str(self.header.get("SPATIAL_MODULATION", "")).upper() == "SQUARE"
+                return "DRIFTING-SQUAREWAVE" if square else "DRIFTING-SINUSOID"
+            return cls
         return str(self.header.get("TYPE", "")).upper()
+
+    def varying_extras(self) -> Dict[str, list]:
+        """Trial keys other than the grating's that take more than one value: {key: values}."""
+        out = {}
+        keys = sorted({k for t in self.trials for k in t} - set(GRATING_KEYS))
+        for k in keys:
+            vals = []
+            for t in self.trials:
+                v = t.get(k, self.header.get(k))
+                if v not in vals:
+                    vals.append(v)
+            if len(vals) > 1:
+                out[k] = vals
+        return out
 
     @property
     def repetitions(self) -> float:
@@ -132,20 +169,71 @@ class StimulusSequence:
 def read_sequence(path) -> StimulusSequence:
     """The header and trials of a stimulus sequence file (``s02``)."""
     path = Path(path)
+    if path.suffix.lower() == ".mat":
+        return read_sequence_mat(path)
+    if path.suffix.lower() == ".m":
+        raise LispStimulusError(
+            f"{path.name} is the experiment script. Pick the file written for the run, "
+            "named after it: s15.txt or s15.mat for data015.")
     try:
         text = path.read_text(errors="replace")
     except OSError as exc:
         raise LispStimulusError(f"Could not read {path}: {exc}") from exc
     forms = read_forms(text)
-    if not forms or not isinstance(forms[0], list) or _key(forms[0][0] if forms[0] else None) != "TYPE":
+    first = _key(forms[0][0]) if forms and isinstance(forms[0], list) and forms[0] else None
+    if first not in ("TYPE", "CLASS"):
         raise LispStimulusError(
             f"{path.name} is not a stimulus sequence. A sequence file starts with "
-            "(:TYPE ...); a file that starts with (let ...) is the script that ran it. "
-            "Pick the file the run wrote, named after the run (s02 for data002).")
+            "(:TYPE ...) or (:class ...); a file that starts with (let ...) is the script "
+            "that ran it. Pick the file the run wrote, named after the run (s02 for data002).")
     header = _plist(forms[0])
     trials = [_plist(f) for f in forms[1:]]
     if not trials:
         raise LispStimulusError(f"{path.name} lists no trials after the header.")
+    combos: List[Dict[str, object]] = []
+    trial_list = []
+    for t in trials:
+        try:
+            trial_list.append(combos.index(t))
+        except ValueError:
+            combos.append(t)
+            trial_list.append(len(combos) - 1)
+    return StimulusSequence(path, header, trials, combos, trial_list)
+
+
+def _mat_value(v):
+    """A MATLAB value as the text file writes it: arrays → tuples, strings upper case."""
+    if isinstance(v, str):
+        return v.upper()
+    arr = np.asarray(v)
+    if arr.ndim == 0:
+        x = arr.item()
+        return int(x) if float(x).is_integer() else float(x)
+    return tuple(int(x) if float(x).is_integer() else float(x) for x in arr.ravel())
+
+
+def read_sequence_mat(path) -> StimulusSequence:
+    """``sNN.mat`` from the MATLAB stimulus code: ``parameters`` (the header) and
+    ``variable_parameters`` (one struct per trial, in the order shown)."""
+    import scipy.io as sio
+    path = Path(path)
+    try:
+        m = sio.loadmat(str(path), squeeze_me=True, struct_as_record=False)
+    except Exception as exc:
+        raise LispStimulusError(f"Could not read {path.name} as a MATLAB file: {exc}") from exc
+    if "parameters" not in m or "variable_parameters" not in m:
+        raise LispStimulusError(
+            f"{path.name} has no 'parameters' / 'variable_parameters': not a stimulus "
+            "sequence (time stamps and movie files are not read here).")
+
+    def as_dict(s):
+        return {str(k).upper(): _mat_value(getattr(s, k)) for k in s._fieldnames}
+
+    header = as_dict(m["parameters"])
+    rows = np.atleast_1d(m["variable_parameters"])
+    trials = [as_dict(r) for r in rows]
+    if not trials:
+        raise LispStimulusError(f"{path.name} lists no trials.")
     combos: List[Dict[str, object]] = []
     trial_list = []
     for t in trials:
@@ -194,17 +282,35 @@ def _trial_value(trial, header, key, default=None):
     return trial.get(key, header.get(key, default))
 
 
+def default_refresh_hz(seq: StimulusSequence) -> float:
+    """The display's frame rate for this file's rig (the file does not say)."""
+    return MATLAB_REFRESH_HZ if seq.source == "matlab" else REFRESH_HZ
+
+
 def build_grating_trials(seq: StimulusSequence, triggers_samples, spikes_by_id: Dict[int, np.ndarray],
-                         fs: float, refresh_hz: float = REFRESH_HZ,
-                         pad_ms: float = PAD_MS, recording_end_samples=None) -> GratingTrials:
+                         fs: float, refresh_hz: Optional[float] = None,
+                         pad_ms: float = PAD_MS, recording_end_samples=None,
+                         select: Optional[Dict[str, object]] = None) -> GratingTrials:
     """Per-trial spike times (ms, from each trial's window start) for every cell.
 
     ``spikes_by_id`` is sample numbers per cell, on the same clock as the triggers.
+    ``select`` keeps only trials with these values (e.g. {"BACK_RGB": (0.5, 0.5, 0.5)});
+    it is required for every key in ``seq.varying_extras()``.
     """
+    if refresh_hz is None:
+        refresh_hz = default_refresh_hz(seq)
+    refresh_hz = float(refresh_hz)
     if seq.stim_type not in GRATING_TYPES:
         raise LispStimulusError(
             f"{seq.path.name} is a {seq.stim_type.lower() or 'unknown'} stimulus. "
-            "Encore reads drifting gratings (drifting-sinusoid, drifting-squarewave) from Lisp files.")
+            "Encore reads drifting gratings from stimulus files (Lisp drifting-sinusoid or "
+            "drifting-squarewave, MATLAB class MG).")
+    extras = seq.varying_extras()
+    select = dict(select or {})
+    unset = [k for k in extras if k not in select]
+    if unset:
+        raise LispStimulusError(
+            f"{seq.path.name} also varies {', '.join(unset)}; pick one value of each to analyse.")
     missing = [k for k in ("SPATIAL_PERIOD", "TEMPORAL_PERIOD", "DIRECTION")
                if any(_trial_value(t, seq.header, k) is None for t in seq.trials)]
     if missing:
@@ -255,6 +361,20 @@ def build_grating_trials(seq: StimulusSequence, triggers_samples, spikes_by_id: 
     if short:
         notes.append(f"{short} trial(s) run past the end of the recording.")
 
+    # The trials of the chosen background (etc.) only, after the trigger pairing.
+    keep_idx = [i for i, t in enumerate(trials)
+                if all(t.get(k, seq.header.get(k)) == v for k, v in select.items())]
+    if select:
+        notes.append("Only trials with " + ", ".join(
+            f"{k} = {_fmt_value(v)}" for k, v in select.items())
+            + f": {len(keep_idx)} of {len(trials)}.")
+    if not keep_idx:
+        raise LispStimulusError("No trial has the chosen values.")
+    trials = [trials[i] for i in keep_idx]
+    pre_ms, stim_ms, tail_ms = pre_ms[keep_idx], stim_ms[keep_idx], tail_ms[keep_idx]
+    start_ms, end_ms = start_ms[keep_idx], end_ms[keep_idx]
+    n_combo = len({tuple(sorted((k, str(v)) for k, v in t.items())) for t in trials})
+
     params = []
     for t, pre, stim, tail in zip(trials, pre_ms, stim_ms, tail_ms):
         sp = float(_trial_value(t, seq.header, "SPATIAL_PERIOD"))
@@ -265,7 +385,7 @@ def build_grating_trials(seq: StimulusSequence, triggers_samples, spikes_by_id: 
             "orientation": float(_trial_value(t, seq.header, "DIRECTION")),
             "preTime": float(pre), "stimTime": float(stim), "tailTime": float(tail),
             "spatialPeriod_px": sp, "temporalPeriod_frames": tp,
-            "stimulusType": seq.stim_type.lower(), "source": "lisp",
+            "stimulusType": seq.stim_type.lower(), "source": seq.source,
         })
 
     win0 = (start_ms - pre_ms) / 1000.0 * fs      # window edges in samples
@@ -283,7 +403,8 @@ def build_grating_trials(seq: StimulusSequence, triggers_samples, spikes_by_id: 
     sps = sorted({p["spatialPeriod_px"] for p in params})
     dirs = sorted({p["orientation"] for p in params})
     summary = {
-        "path": str(seq.path), "type": seq.stim_type.lower(),
+        "path": str(seq.path), "type": seq.stim_type.lower(), "source": seq.source,
+        "select": {k: _fmt_value(v) for k, v in select.items()},
         "n_trials_file": n_file, "n_trials": len(params), "n_conditions": n_combo,
         "repetitions": len(params) // max(1, n_combo),
         "repetitions_file": seq.repetitions,
@@ -296,6 +417,12 @@ def build_grating_trials(seq: StimulusSequence, triggers_samples, spikes_by_id: 
     return GratingTrials(by_cell, params, summary)
 
 
+def _fmt_value(v) -> str:
+    if isinstance(v, (tuple, list)):
+        return "(" + " ".join(f"{x:g}" if isinstance(x, (int, float)) else str(x) for x in v) + ")"
+    return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
 def describe(summary: Dict[str, object]) -> str:
     """One paragraph for the status bar / dialog."""
     s = summary
@@ -304,7 +431,7 @@ def describe(summary: Dict[str, object]) -> str:
     text = (f"{Path(str(s['path'])).name}: {s['type'].replace('-', ' ')}, "
             f"{s['n_conditions']} conditions (spatial period {sps} px; temporal period {tps} "
             f"frames; {len(s['directions_deg'])} directions), {s['repetitions']} repeats, "
-            f"{s['n_trials']} trials of {s['stim_ms'] / 1000:.2f} s.")
+            f"{s['n_trials']} trials of {s['stim_ms'] / 1000:.2f} s at {s['refresh_hz']:g} Hz.")
     for n in s.get("notes") or []:
         text += " " + n
     return text
@@ -316,12 +443,12 @@ _RUN_NUMBER = re.compile(r"data(\d{3})", re.IGNORECASE)
 
 
 def sequence_file_names(dataset_name: str) -> List[str]:
-    """``data002`` → ``["s02", "s02.txt", "s002", "s002.txt"]``."""
+    """``data002`` → ``["s02", "s02.txt", "s02.mat", "s002", "s002.txt"]``."""
     m = _RUN_NUMBER.search(str(dataset_name or ""))
     if not m:
         return []
     n = int(m.group(1))
-    return [f"s{n:02d}", f"s{n:02d}.txt", f"s{n:03d}", f"s{n:03d}.txt"]
+    return [f"s{n:02d}", f"s{n:02d}.txt", f"s{n:02d}.mat", f"s{n:03d}", f"s{n:03d}.txt"]
 
 
 def find_sequence_files(run_dir, dataset_name, levels: int = 4) -> List[Path]:

@@ -923,6 +923,7 @@ def scenario_raster(s):
     """
     from qtpy.QtWidgets import QFileDialog
     from src.gui import callbacks
+    _auto_confirm_stimulus_file()
     vision = os.environ.get("HARNESS_VISION")
     w = s.w
     if vision:
@@ -1147,6 +1148,14 @@ def scenario_vision_native(s):
         f"{w.sta_panel.sort_warning.isVisible()}")
 
 
+def _auto_confirm_stimulus_file():
+    """The harness has no one to click OK: default frame rate, first value of each extra key."""
+    from src.gui import callbacks
+    from src.analysis import lisp_stimulus as ls
+    callbacks._confirm_stimulus_file = lambda w, seq, ds: (
+        ls.default_refresh_hz(seq), {k: v[0] for k, v in seq.varying_extras().items()})
+
+
 def scenario_lisp_grating(s):
     """Q61: a Vision-native grating run plus its Lisp sequence file → Grating tab, table, arrows.
 
@@ -1155,6 +1164,7 @@ def scenario_lisp_grating(s):
     """
     from qtpy.QtWidgets import QFileDialog
     from src.gui import callbacks
+    _auto_confirm_stimulus_file()
     base = "/mnt/lab/Chichilnisky/Analysis/controls/oldercontrols/2012-10-15-0"
     folder = os.environ.get("HARNESS_VISION", base + "/data002/data002-map")
     lisp = os.environ.get("HARNESS_LISP", base + "/stimuli/s02")
@@ -1210,6 +1220,7 @@ def scenario_match_runs(s):
     """
     from qtpy.QtWidgets import QFileDialog, QMessageBox
     from src.gui import callbacks
+    _auto_confirm_stimulus_file()
     base = "/mnt/lab/Chichilnisky/Analysis/controls/oldercontrols/2012-10-15-0"
     folder = os.environ.get("HARNESS_VISION", base + "/data002/data002-map")
     lisp = os.environ.get("HARNESS_LISP", base + "/stimuli/s02")
@@ -1252,6 +1263,57 @@ def scenario_match_runs(s):
         s.tab("Standard")
         s.select(with_rf[len(with_rf) // 2], settle=2.5)
         s.shot("match_runs_standard", w)
+
+
+def scenario_borrowed_features(s):
+    """After Match Runs to a white-noise run: do matched cells reach UMAP / Feature Extraction?
+
+    HARNESS_VISION (native open) or the Kilosort run (s.load()); HARNESS_REFS: runs to match.
+    Defaults: 2012-10-15-0 data002 → data002/data000-map.
+    """
+    from qtpy.QtWidgets import QFileDialog, QMessageBox
+    from src.gui import callbacks
+    from src.analysis import feature_catalog
+    base = "/mnt/lab/Chichilnisky/Analysis/controls/oldercontrols/2012-10-15-0"
+    vision = os.environ.get("HARNESS_VISION", base + "/data002/data002-map")
+    refs = os.environ.get("HARNESS_REFS", base + "/data002/data000-map").split(":")
+    w = s.w
+    QMessageBox.exec = lambda self: QMessageBox.StandardButton.Ok
+    if vision != "ks":
+        QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: vision)
+        callbacks.load_vision_directory(w)
+        wait_until(lambda: w.data_manager is not None and getattr(w.data_manager, "cluster_df", None)
+                   is not None and w.tree_model.invisibleRootItem().rowCount() > 0, 600)
+    else:
+        s.load()
+    pump(2.0)
+    dm = s.dm()
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+
+    def count_tc():
+        n = 0
+        for c in ids:
+            e = dm.feature_cache.get(c) or {}
+            n += e.get("timecourse") is not None
+        return n
+    log(json.dumps({"before_match_timecourses_cached": count_tc(),
+                    "umap_temporal_enabled": w.umap_panel.feature_widgets["use_temporal"][0].isEnabled()}))
+    callbacks.map_reference_run(w, ref_dirs=refs)
+    wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 1800)
+    pump(3.0)
+    t = time.time()
+    phys = {c: dm.get_cell_physics(c) for c in ids}
+    with_tc = [c for c, p in phys.items() if p and p.get("timecourse") is not None]
+    prov = {}
+    for c in with_tc:
+        k = (phys[c].get("provenance") or {}).get("timecourse")
+        prov[k] = prov.get(k, 0) + 1
+    log(json.dumps({"physics_s": round(time.time() - t, 1), "cells": len(ids),
+                    "with_timecourse": len(with_tc), "timecourse_from": prov}))
+    vids, cat = feature_catalog.build_catalog(dm, ids)
+    log(json.dumps({"catalog_cells": len(vids), "catalog_features": list(cat)[:40]}))
+    log(json.dumps({"umap_temporal_enabled": w.umap_panel.feature_widgets["use_temporal"][0].isEnabled(),
+                    "umap_temporal_checked": w.umap_panel.feature_widgets["use_temporal"][0].isChecked()}))
 
 
 def scenario_borrowed_grating(s):
