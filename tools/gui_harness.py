@@ -1315,6 +1315,16 @@ def scenario_borrowed_features(s):
     log(json.dumps({"catalog_cells": len(vids), "catalog_features": list(cat)[:40]}))
     log(json.dumps({"umap_temporal_enabled": w.umap_panel.feature_widgets["use_temporal"][0].isEnabled(),
                     "umap_temporal_checked": w.umap_panel.feature_widgets["use_temporal"][0].isChecked()}))
+    w.toggle_population_split_view(True)
+    pump(5.0)
+    figs = {}
+    for name in ("pop_mosaic_canvas", "pop_timecourse_canvas", "pop_acg_canvas", "pop_fr_canvas"):
+        canvas = getattr(w, name, None)
+        if canvas is not None and getattr(canvas, "fig", None) is not None and canvas.fig.axes:
+            ax = canvas.fig.axes[0]
+            figs[name] = {"title": ax.get_title(), "lines": len(ax.lines), "patches": len(ax.patches)}
+    log(json.dumps({"population": figs}))
+    s.shot("borrowed_population", w)
 
 
 def scenario_borrowed_grating(s):

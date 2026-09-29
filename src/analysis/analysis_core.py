@@ -291,7 +291,12 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
         green_tc = vision_params.get_data_for_cell(cell_id, "GreenTimeCourse")
         blue_tc = vision_params.get_data_for_cell(cell_id, "BlueTimeCourse")
         if red_tc is not None and green_tc is not None and blue_tc is not None:
-            timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
+            m = np.stack([np.asarray(red_tc, dtype=float), np.asarray(green_tc, dtype=float),
+                          np.asarray(blue_tc, dtype=float)], axis=1)
+            # A .params written without STA fits keeps empty time courses
+            # (20260514A/data000: 0 samples): that is no time course (Q64).
+            if m.size and np.isfinite(m).any() and np.any(m[np.isfinite(m)] != 0):
+                timecourse_matrix = m
     except Exception:
         pass
 
@@ -301,6 +306,10 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
 
         fit = rf_geometry.rf_fit_from_stafit(
             stafit, getattr(vision_params, "runtimemovie_params", None))
+        if fit is None:
+            # No Vision fit: fit the STA itself so the time course is the
+            # RF centre's, not one noisy pixel's (Q64).
+            fit = rf_geometry.fit_from_sta(sta_data)
         if fit is not None:
             # Vision's y0 points up; the STA array's first axis is rows, and
             # x0 = col + 0.5, H - y0 = row + 0.5 (see rf_geometry).
@@ -321,7 +330,8 @@ def get_sta_timecourse_data(sta_data, stafit, vision_params, cell_id):
 
         timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
 
-    if timecourse_matrix is None:
+    if timecourse_matrix is None or not np.isfinite(timecourse_matrix).any():
+        # An all-NaN STA (Vision run without a stimulus) has no time course.
         return None, None, None
 
     n_timepoints = timecourse_matrix.shape[0]

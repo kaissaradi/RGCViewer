@@ -99,16 +99,15 @@ class GratingPanel(QWidget):
         data_layout.setSpacing(8)
 
         header = QHBoxLayout()
-        title = QLabel(
-            f"<span style='color:{colors['text_tertiary']}; font-size:10px; "
-            f"letter-spacing:0.06em;'>DIRECTION TUNING</span>"
-        )
-        header.addWidget(title)
+        self.title_label = QLabel("")
+        self._set_title("DIRECTION TUNING", colors)
+        header.addWidget(self.title_label)
         header.addStretch()
         # Which (bw, tf) the stats, rasters and error bars describe. "Auto"
         # follows select_best_dsos_condition. A manual pick sticks across
         # cells while that condition exists, so one condition can be scanned.
-        header.addWidget(QLabel("Condition:"))
+        self.condition_label = QLabel("Condition:")
+        header.addWidget(self.condition_label)
         self.condition_combo = QComboBox()
         self.condition_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.condition_combo.setToolTip(
@@ -187,7 +186,18 @@ class GratingPanel(QWidget):
         )  # PlotCurveItems for non-best conditions, rebuilt per cluster
         plots_row.addWidget(self.hist_plot, stretch=2)
 
-        data_layout.addLayout(plots_row, stretch=4)
+        # A widget, not a bare layout, so the spatial view can hide it whole.
+        self.plots_box = QWidget()
+        self.plots_box.setLayout(plots_row)
+        plots_row.setContentsMargins(0, 0, 0, 0)
+        data_layout.addWidget(self.plots_box, stretch=4)
+
+        # Spatial-frequency protocols (one direction, many periods): their own
+        # view instead of an empty polar plot (Q65).
+        from .sf_tuning_view import SpatialTuningView
+        self.sf_view = SpatialTuningView(colors)
+        self.sf_view.hide()
+        data_layout.addWidget(self.sf_view, stretch=4)
 
         # What the rings, bars and error bars mean, in words and units.
         self.units_label = QLabel("")
@@ -240,6 +250,35 @@ class GratingPanel(QWidget):
 
         self.stack.setCurrentIndex(1)
 
+    def _set_title(self, text, colors=None):
+        self._title_text = text
+        colors = resolve_theme_colors(colors or self.main_window.get_current_colors())
+        self.title_label.setText(
+            f"<span style='color:{colors['text_tertiary']}; font-size:10px; "
+            f"letter-spacing:0.06em;'>{text}</span>")
+
+    def _set_sf_mode(self, on: bool):
+        """Spatial-frequency layout (tuning curves + rasters) or the direction layout."""
+        self._set_title("SPATIAL TUNING" if on else "DIRECTION TUNING")
+        for w in (self.plots_box, self.legend_label, self.units_label,
+                  self.stats_label, self.condition_label, self.condition_combo):
+            w.setVisible(not on)
+        self.sf_view.setVisible(on)
+        if on:
+            self.sf_plot.setVisible(False)
+            self.sf_label.setVisible(False)
+
+    def _trials_for(self, cluster_id):
+        """(per-trial spikes, trial_parameters) of the shown cell (own or borrowed), or (None, None)."""
+        if self._borrowed is not None:
+            pack = self._borrowed.get("trials")
+            return pack if pack is not None else (None, None)
+        raw = getattr(self.main_window.data_manager, "grating_raw_data", None)
+        if not raw:
+            return None, None
+        trials = raw.get("spike_times_by_trial", {}).get(int(cluster_id))
+        return (trials, raw.get("trial_parameters")) if trials is not None else (None, None)
+
     # ------------------------------------------------------------------
     # Styling
     # ------------------------------------------------------------------
@@ -258,6 +297,8 @@ class GratingPanel(QWidget):
         self._style_plot(self.hist_plot, colors)
         self._style_plot(self.sf_plot, colors)
         self.raster_view.restyle(colors)
+        self.sf_view.restyle(colors)
+        self._set_title(self._title_text, colors)
         self._polar_pref_line.setPen(
             pg.mkPen(
                 colors.get("plot_compare", "r"),
@@ -442,6 +483,20 @@ class GratingPanel(QWidget):
                 if isinstance(k, tuple) and data[k].get("condition_type") == "dsos"
             ),
         )
+        sf_only = not dsos_conditions and any(
+            isinstance(k, tuple) and isinstance(v, dict) and v.get("condition_type") == "sf"
+            for k, v in data.items())
+        self._set_sf_mode(sf_only)
+        if sf_only:
+            trials, params = self._trials_for(cluster_id)
+            if self._borrowed is not None:
+                spatial = self._borrowed.get("spatial")
+            else:
+                spatial = getattr(self.main_window.data_manager, "grating_spatial_label", None)
+            entry = next(v for k, v in data.items() if isinstance(k, tuple) and isinstance(v, dict)
+                         and v.get("condition_type") == "sf")
+            self.sf_view.show_cell(data, trials, params, spatial, self._response_axis_label(entry))
+            return
 
         # SF tuning curve (aggregate, independent of the dsos overlay).
         if "sf_tuning_curve" in data and "sf_bar_widths" in data:

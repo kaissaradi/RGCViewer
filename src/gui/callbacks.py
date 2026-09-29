@@ -49,9 +49,12 @@ def _show_load_progress(main_window, msg):
     bar = getattr(main_window, "status_bar", None)
     if bar is not None:
         bar.showMessage(msg)
-        # Only the status bar. processEvents() here re-enters matplotlib
-        # canvas paintEvent and Qt logs "Recursive repaint detected".
-        bar.repaint()
+        # update(), not repaint(): the worker waits on this call, not the GUI
+        # thread, so the bar paints on the next pass of the event loop. An
+        # immediate repaint() landing inside another widget's paint logged
+        # "Recursive repaint detected" / "paintEngine: Should no longer be
+        # called" on a Vision-native open (2026-09-29).
+        bar.update()
 
 
 def _cache_progress_state(total, std_done, physics_done, expect_physics):
@@ -2963,6 +2966,11 @@ def map_reference_run(main_window, ref_dir=None, ref_dirs=None, rematch=False):
         # Score every matched cell's grating now (~10 ms a cell), so the
         # population arrows and table columns can read them at once (Q58).
         bridge.precompute_gratings()
+        # And fit the STAs of matched cells the reference .params has no fit
+        # for (20260514A/data000: none at all), off the GUI thread (Q64).
+        n_fit = bridge.precompute_rf_fits()
+        if n_fit:
+            logger.info("Fitted %d reference STAs without a Vision fit (%s)", n_fit, ref_path.name)
         return report, bridge, reused
 
     def next_run():
@@ -3118,8 +3126,11 @@ def borrow_summary(c: dict, ref_name: str) -> str:
         lines.append(f"• Drifting gratings: none ({ref_name} has no grating file).")
     lines.append(f"• Chirp: {c['chirp']} cells{_from_runs(c, 'chirp')}, in the Chirp tab with a note."
                  if c["chirp"] else f"• Chirp: none ({ref_name} has no chirp file).")
+    empty = "sta-empty" in (c.get("stimuli") or [])
     lines.append(f"• Receptive fields and STA time courses: {c['rf']} cells{_from_runs(c, 'rf')}, "
                  "where this run has no fit of its own (population RF map, UMAP)." if c["rf"]
+                 else f"• Receptive fields and STAs: none ({ref_name}'s STA file is empty: every "
+                      "value is NaN, as Vision writes it for a run without a stimulus)." if empty
                  else f"• Receptive fields and STAs: none ({ref_name} has no white-noise STA).")
     lines += ["", "A cell's own data always comes first; borrowed values only fill what this run lacks."]
     return "\n".join(lines)

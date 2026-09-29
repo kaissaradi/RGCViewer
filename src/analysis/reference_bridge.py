@@ -134,6 +134,9 @@ class ReferenceBridge:
         self._ref_grating_raw = ref_grating_raw
         self._grating_computed: Dict[int, Optional[dict]] = {}
         self._grating_lock = threading.Lock()
+        # RF fits from the reference STAs where its .params has none (Q64).
+        self._sta_fits: Dict[int, Optional[rf_geometry.RFFit]] = {}
+        self._sta_fit_lock = threading.Lock()
 
         self.stimuli_loaded: Tuple[str, ...] = stimuli_loaded or ()
         # Set when the reference gratings came from a Lisp file (Q61).
@@ -180,8 +183,16 @@ class ReferenceBridge:
             logger.warning("visionloader not available; ReferenceBridge STA/params empty")
         else:
             if load_stas:
+                from .vision_integration import sta_is_empty
+                sta_path = ref_dir / f"{ref_dataset}.sta"
                 try:
-                    ref_stas = load_sta_data(ref_dir, ref_dataset)
+                    if sta_path.exists() and sta_is_empty(sta_path):
+                        # Written without a stimulus (NaN refresh, NaN values):
+                        # nothing to borrow, and its .params fits are NaN too.
+                        logger.info("Reference STAs are empty (NaN): %s", sta_path)
+                        stimuli.append("sta-empty")
+                    else:
+                        ref_stas = load_sta_data(ref_dir, ref_dataset)
                     if ref_stas is not None:
                         stimuli.append("sta")
                         logger.info(
@@ -465,14 +476,53 @@ class ReferenceBridge:
             return False
         return ref_id in self._ref_stas
 
-    def get_stafit(self, current_vision_id: int):
-        ref_id = self._mapping.get(int(current_vision_id))
-        if ref_id is None or self._ref_params is None:
+    def _fallback_fit(self, ref_id) -> Optional[rf_geometry.RFFit]:
+        """The RF fitted to the reference STA (cached), for cells its .params has no fit for."""
+        if ref_id is None or self._ref_stas is None or ref_id not in self._ref_stas:
             return None
+        with self._sta_fit_lock:
+            if ref_id in self._sta_fits:
+                return self._sta_fits[ref_id]
         try:
-            return self._ref_params.get_stafit_for_cell(ref_id)
+            fit = rf_geometry.fit_from_sta(self._ref_stas[ref_id])
         except Exception:
+            logger.debug("STA fit failed for reference %s", ref_id, exc_info=True)
+            fit = None
+        with self._sta_fit_lock:
+            self._sta_fits[ref_id] = fit
+        return fit
+
+    def _params_fit(self, ref_id) -> Optional[rf_geometry.RFFit]:
+        return rf_geometry.raw_rf_fit(self._ref_params, ref_id) if self._ref_params is not None else None
+
+    def get_stafit(self, current_vision_id: int):
+        """Vision's fit of the matched cell, else one fitted to its STA (Q64), else None."""
+        ref_id = self._mapping.get(int(current_vision_id))
+        if ref_id is None:
             return None
+        stafit = None
+        if self._ref_params is not None:
+            try:
+                stafit = self._ref_params.get_stafit_for_cell(ref_id)
+            except Exception:
+                stafit = None
+        if self._params_fit(ref_id) is not None:
+            return stafit
+        fallback = self._fallback_fit(ref_id)
+        if fallback is not None:
+            return rf_geometry.as_stafit(
+                fallback, getattr(self._ref_params, "runtimemovie_params", None))
+        return stafit
+
+    def precompute_rf_fits(self, cancelled=None) -> int:
+        """Fit the STA of every matched cell whose .params has no fit (background). Returns fits."""
+        n = 0
+        for vid, ref_id in list(self._mapping.items()):
+            if cancelled is not None and cancelled():
+                break
+            if self._params_fit(ref_id) is None and self._fallback_fit(ref_id) is not None:
+                n += 1
+        return n
 
     def has_rf(self, current_vision_id: int) -> bool:
         stafit = self.get_stafit(current_vision_id)
@@ -503,9 +553,9 @@ class ReferenceBridge:
         whatever the reference table was loaded with.
         """
         ref_id = self._mapping.get(int(current_vision_id))
-        if ref_id is None or self._ref_params is None:
+        if ref_id is None:
             return None
-        return rf_geometry.raw_rf_fit(self._ref_params, ref_id)
+        return self._params_fit(ref_id) or self._fallback_fit(ref_id)
 
     def get_rf_ellipse_params(self, current_vision_id: int):
         """
@@ -891,6 +941,9 @@ class MultiBridge:
 
     def precompute_gratings(self, cancelled=None) -> int:
         return sum(b.precompute_gratings(cancelled) for b in self._bridges)
+
+    def precompute_rf_fits(self, cancelled=None) -> int:
+        return sum(b.precompute_rf_fits(cancelled) for b in self._bridges)
 
     def first_with(self, kind: str) -> Optional[ReferenceBridge]:
         """The first run that has any ``kind`` ("chirp" or "grating") at all."""

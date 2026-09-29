@@ -82,3 +82,20 @@ def test_picker_returns_the_ticked_runs_never_the_open_one(qtbot, tmp_path):
     assert not (dlg.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
     dlg.set_checked([])
     assert not dlg.match_btn.isEnabled()
+
+
+def test_a_run_with_an_empty_sta_is_not_white_noise(tmp_path):
+    """20260514A/data000 was recorded without a stimulus: NaN refresh, NaN STAs (Q64)."""
+    import struct
+    prep = tmp_path / "20260514A"
+    for run, refresh in (("data000", float("nan")), ("data031", None), ("data034", 16.58)):
+        d = prep / "kilosort25" / run
+        d.mkdir(parents=True)
+        (d / f"{run}.ei").write_bytes(b"")
+        if refresh is not None:
+            (d / f"{run}.sta").write_bytes(struct.pack(">iiiii", 32, 1, 16, 16, 30)
+                                           + struct.pack(">dd", 50.0, refresh))
+    runs = rp.list_runs(prep, prep / "kilosort25" / "data031")
+    has = {r.name: r.stimuli for r in runs}
+    assert has["data000"] == ["STA empty"] and has["data034"] == ["white noise"]
+    assert [runs[i].name for i in rp.preferred_indices(runs, [])] == ["data034"]

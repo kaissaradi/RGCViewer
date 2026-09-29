@@ -480,6 +480,35 @@ def load_vision_data(vision_dir: Path, dataset_name: str):
     }
 
 
+def sta_header(path):
+    """``{height, width, depth, stixel, refresh_ms}`` from a .sta file's first 44 bytes, or None.
+
+    Layout as visionloader.STAReader: five big-endian int32 (version,
+    entries, height, width, depth), then two float64 (stixel size, refresh).
+    """
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(36)
+        _v, _n, h, w, d = struct.unpack(">iiiii", head[:20])
+        stixel, refresh = struct.unpack(">dd", head[20:36])
+    except (OSError, struct.error):
+        return None
+    return {"height": h, "width": w, "depth": d, "stixel": stixel, "refresh_ms": refresh}
+
+
+def sta_is_empty(path) -> bool:
+    """True for a .sta Vision wrote without a stimulus: NaN refresh time.
+
+    20260514A/data000 ("No stim + phys focus" in the lab's script): a 16×16
+    grid, refresh NaN, every value NaN, and a .params with NaN fits (Q64).
+    """
+    h = sta_header(path)
+    if h is None:
+        return False
+    return not np.isfinite(h["refresh_ms"]) or h["width"] * h["height"] * h["depth"] <= 0
+
+
 def load_ei_data(vision_dir: Path, dataset_name: str):
     """Opens the .ei file for on-demand reads.
 

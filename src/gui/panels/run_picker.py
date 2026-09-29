@@ -91,7 +91,10 @@ def _run_at(d: Path, names: Sequence[str], prep_dir: Path, seq_names, current) -
     stem = eis[0][:-3]
     stimuli = []
     if f"{stem}.sta" in names:
-        stimuli.append("white noise")
+        from ...analysis.vision_integration import sta_is_empty
+        # One 36-byte read: a run recorded without a stimulus has an empty
+        # (NaN) STA, and matching to it borrows nothing (20260514A/data000).
+        stimuli.append("STA empty" if sta_is_empty(d / f"{stem}.sta") else "white noise")
     for kind, globs in STIMULUS_GLOBS.items():
         if any(fnmatch.fnmatch(n, g) for n in names for g in globs):
             stimuli.append(kind)
@@ -146,14 +149,23 @@ def preferred_indices(runs: List[RunInfo], current_stimuli) -> List[int]:
 
     Nearest: a folder next to the open run first (the same sort; in the old
     layout ``data002/data000-map`` is data000 mapped with data002's sort),
-    then the shortest path.
+    then the run recorded closest to it (cells drift over an experiment, so
+    the EIs match best nearby), then the shortest path.
     """
     cur = next((r for r in runs if r.is_current), None)
+
+    def run_number(r):
+        m = re.search(r"data(\d{3})", r.dataset or r.name)
+        return int(m.group(1)) if m else None
+
+    here = run_number(cur) if cur is not None else None
 
     def rank(i):
         r = runs[i]
         sibling = cur is not None and r.path.parent == cur.path.parent
-        return (0 if sibling else 1, r.label.count("/"), len(r.label), r.label)
+        n = run_number(r)
+        gap = abs(n - here) if n is not None and here is not None else 10_000
+        return (0 if sibling else 1, gap, r.label.count("/"), len(r.label), r.label)
 
     order = sorted((i for i, r in enumerate(runs) if not r.is_current), key=rank)
     picks = []
