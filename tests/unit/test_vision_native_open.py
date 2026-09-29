@@ -11,22 +11,30 @@ class _Stop(Exception):
 
 def test_vision_native_open_leaves_the_welcome_screen(qtbot, monkeypatch, tmp_path):
     """The load ran behind the welcome page, so the window looked empty after "loaded"."""
+    from qtpy.QtCore import QSettings
     from qtpy.QtWidgets import QFileDialog
-    from src.gui import callbacks
+    from src.gui import callbacks, recent_paths
     from src.gui.main_window import MainWindow
-    w = MainWindow()
-    qtbot.addWidget(w)
-    assert w.central_stack.currentWidget() is w.welcome_panel
+    # Never the user's own settings file: the load remembers the folder.
+    settings = QSettings(str(tmp_path / "encore.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path)))
     seen = {}
 
     def stop_here(mw):
-        seen["page"] = mw.central_stack.currentWidget()
+        seen["on_analysis_view"] = mw.central_stack.currentWidget() is mw.central_widget
         raise _Stop()
     monkeypatch.setattr(callbacks, "_release_previous_dataset", stop_here)
-    with pytest.raises(_Stop):
-        callbacks.load_vision_directory(w)
-    assert seen["page"] is w.central_widget
+    w = MainWindow()
+    try:
+        assert w.central_stack.currentWidget() is w.welcome_panel
+        with pytest.raises(_Stop):
+            callbacks.load_vision_directory(w)
+        assert seen["on_analysis_view"]
+    finally:
+        w.data_manager = None
+        w.close()
+        w.deleteLater()
 
 
 def _native_dm():
@@ -66,4 +74,7 @@ def test_tree_channel_column_updates_in_place(qtbot):
     model.invisibleRootItem().appendRow(g)
     mw = SimpleNamespace(tree_model=model)
     assert callbacks.update_tree_channels(mw, {1: 7, 2: 352}) == 2
-    assert [g[0].child(r, TREE_COL_CH).text() for r in range(2)] == ["7", "352"]
+    group = model.invisibleRootItem().child(0, 0)
+    assert [group.child(r, TREE_COL_CH).text() for r in range(2)] == ["7", "352"]
+    del g, group                              # let the model own and free its items
+    model.clear()
