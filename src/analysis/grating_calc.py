@@ -438,10 +438,15 @@ def grating_entry_needs_recompute(
     return False
 
 
-def format_condition_label(cond, entry=None):
-    """Legend / stats text: the (bw, tf) that ran, plus how many directions."""
+def format_condition_label(cond, entry=None, spatial=None):
+    """Legend / stats text: the (bw, tf) that ran, plus how many directions.
+
+    ``spatial`` names the first value when it is not a bar width, e.g.
+    ``("period", "px")`` for a Lisp grating's spatial period.
+    """
     bw, tf = cond
-    label = f"bw={bw:g} tf={tf:g}Hz"
+    name, unit = spatial if spatial else ("bw", "")
+    label = f"{name}={bw:g}{unit} tf={tf:.3g}Hz"
     dirs = (entry or {}).get("directions_deg")
     if dirs is not None:
         n = len(np.asarray(dirs))

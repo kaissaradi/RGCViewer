@@ -2737,200 +2737,251 @@ def load_raw_data(main_window):
             main_window.raw_panel.load_data(cluster_id)
 
 
-def map_reference_run(main_window, ref_dir=None):
-    """
-    Menu action: Map Reference Run.
+def load_lisp_stimulus(main_window, path=None):
+    """File ▸ Load Stimulus File (Lisp): this run's gratings from its sequence file (Q61).
 
-    Lets the user pick another run of this experiment (``run_picker``; a
-    folder dialog for anything else), runs EI-based cross-run matching, shows
-    a summary dialog, and installs the ReferenceBridge on the DataManager.
-    ``ref_dir`` skips the picker (harness, tests).
+    The user picks the file; the dialog opens in the ``stimuli/`` folder
+    above the run and preselects ``sNN`` when there is one. Reading runs in
+    the background (the ``.neurons`` is read again for its triggers).
     """
-    from ..analysis.cross_run_matcher import (
-        CrossRunMatcher,
-        MatchingReport,
-        get_mapping_path,
-    )
+    from ..analysis import lisp_stimulus as ls
+    dm = main_window.data_manager
+    if dm is None or getattr(dm, "cluster_df", None) is None:
+        QMessageBox.information(main_window, "Load Stimulus File", "Open a run first.")
+        return
+    src = dm.vision_neurons_source() if hasattr(dm, "vision_neurons_source") else None
+    if src is None:
+        QMessageBox.information(
+            main_window, "Load Stimulus File",
+            "This run has no Vision .neurons file loaded. Its trial triggers are in that "
+            "file: open the run's Vision folder first (File ▸ Load Vision Files).")
+        return
+    if path is None:
+        found = ls.find_sequence_files(src[0], src[1])
+        dirs = ls.stimulus_dirs(src[0])
+        start = str(found[0]) if found else (str(dirs[0]) if dirs else
+                                             recent_paths.last_dir(main_window, "lisp"))
+        path, _ = QFileDialog.getOpenFileName(
+            main_window, f"Stimulus sequence for {src[1]} (s02 for data002)", start,
+            "Stimulus sequence (s[0-9]* *.txt *.lisp);;All files (*)")
+        if not path:
+            return
+    recent_paths.remember_dir(Path(path).parent, "lisp")
+
+    def read():
+        return dm.read_lisp_grating(path)
+
+    def done(trials):
+        if main_window.data_manager is not dm:
+            return
+        dm.apply_lisp_grating(trials)
+        text = ls.describe(trials.summary)
+        logger.info("Lisp stimulus loaded: %s", text)
+        main_window.status_bar.showMessage(f"Gratings from {text}", 12000)
+        _after_bridge_installed(main_window)
+        maybe_fill_grating_cache(main_window)
+
+    def failed(exc):
+        main_window.status_bar.clearMessage()
+        if isinstance(exc, ls.LispStimulusError):
+            QMessageBox.warning(main_window, "Stimulus File", str(exc))
+        else:
+            logger.warning("Lisp stimulus load failed", exc_info=exc)
+            QMessageBox.critical(main_window, "Stimulus File", f"Could not read {Path(path).name}:\n{exc}")
+
+    main_window.status_bar.showMessage(f"Reading {Path(path).name} and the run's triggers…")
+    _run_in_background(main_window, read, done, failed)
+
+
+def map_reference_run(main_window, ref_dir=None, ref_dirs=None, rematch=False):
+    """File ▸ Match Runs: match this run's cells to one or more other runs by EI (Q52, Q62).
+
+    The user ticks runs of this experiment (``run_picker``). Each run is
+    matched in turn in the background (sequential: the share is CIFS), its
+    STAs, chirp and gratings are loaded (a Lisp sequence file too, Q61), and
+    the bridges are installed together: a cell takes each response from the
+    first ticked run that has it. A saved match (``_mapping_to_*.json``) is
+    reused unless ``rematch``. ``ref_dir`` / ``ref_dirs`` skip the picker
+    (harness, tests). One summary at the end says what came from where.
+    """
+    from ..analysis.cross_run_matcher import CrossRunMatcher, MatchingReport, get_mapping_path
+    from ..analysis.reference_bridge import MultiBridge, ReferenceBridge
+    from .panels.run_picker import current_run_dir, pick_runs
 
     dm = main_window.data_manager
     if dm is None:
-        QMessageBox.warning(
-            main_window, "No Data", "Load a dataset first."
-        )
+        QMessageBox.warning(main_window, "No Data", "Load a dataset first.")
         return
-
-    # --- Check for existing EIs in current run ---
     if dm.vision_eis is None:
         QMessageBox.warning(
-            main_window,
-            "No EI Data",
+            main_window, "No EI Data",
             "The current run has no EI data loaded.\n"
-            "Load Vision files for the current run first, or ensure the .ei file exists.",
-        )
+            "Load Vision files for the current run first, or ensure the .ei file exists.")
         return
 
-    # --- Pick the reference run: this experiment's runs first (PLAN.md Q52) ---
-    if ref_dir is None:
-        from .panels.ds_compare_dialog import current_run_dir
-        from .panels.run_picker import pick_reference_run
+    if ref_dirs is None and ref_dir:
+        ref_dirs = [ref_dir]
+    if ref_dirs is None:
         has = [k for k, flag in (("chirp", "chirp_available"), ("grating", "grating_available"),
                                  ("contrast", "contrast_available"))
                if getattr(dm, flag, False)]
-        ref_dir = pick_reference_run(main_window, current_run_dir(dm), has,
-                                     recent_paths.last_dir(main_window, "reference"))
-    if not ref_dir:
+        if getattr(dm, "vision_stas", None):
+            has.append("white noise")
+        held = getattr(dm, "reference_bridge", None)
+        already = [str(b.ref_run_path) for b in getattr(held, "bridges", [])] if held else []
+        ref_dirs, rematch = pick_runs(main_window, current_run_dir(dm), has,
+                                      recent_paths.last_dir(main_window, "reference"), already)
+    if not ref_dirs:
+        return
+    recent_paths.remember_dir(Path(ref_dirs[0]).parent, "reference")
+
+    jobs, skipped = [], []
+    for d in ref_dirs:
+        eis = sorted(Path(d).glob("*.ei"))
+        (jobs.append((Path(d), eis[0].stem)) if eis else skipped.append(Path(d).name))
+    if not jobs:
+        QMessageBox.warning(main_window, "No EI File",
+                            "None of the chosen folders has an .ei file:\n" + "\n".join(map(str, ref_dirs)))
         return
 
-    recent_paths.remember_dir(Path(ref_dir).parent, "reference")
-
-    ref_path = Path(ref_dir)
-
-    # Detect dataset name (Vision convention: files named <dataset_name>.ei, etc.)
-    ei_files = list(ref_path.glob("*.ei"))
-    if not ei_files:
-        QMessageBox.warning(
-            main_window,
-            "No EI File",
-            f"No .ei file found in:\n{ref_dir}\n\n"
-            "Select a directory containing Vision analysis output.",
-        )
-        return
-
-    ref_dataset = ei_files[0].stem
-
-    # --- Check for existing mapping JSON ---
-    current_run_path = str(dm.kilosort_dir) if hasattr(dm, 'kilosort_dir') else str(ref_path)
-    mapping_path = get_mapping_path(current_run_path, ref_dir)
-
-    report = None
-    if mapping_path.exists():
-        reply = QMessageBox.question(
-            main_window,
-            "Existing Mapping Found",
-            f"A saved mapping to this reference run already exists:\n"
-            f"{mapping_path.name}\n\n"
-            "Use the existing mapping, or re-run matching?",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-        )
-        if reply == QMessageBox.Cancel:
-            return
-        if reply == QMessageBox.Yes:
-            try:
-                report = MatchingReport.load(mapping_path)
-                main_window.status_bar.showMessage(
-                    f"Loaded existing mapping: {report.summary()}", 5000
-                )
-            except Exception as e:
-                QMessageBox.warning(
-                    main_window, "Load Failed",
-                    f"Could not load saved mapping:\n{e}\n\nRe-running matching.",
-                )
-                report = None
-
-    # --- Run matching if needed: in the background (13 s on data022 → data023) ---
+    current_run_path = str(dm.kilosort_dir) if getattr(dm, "kilosort_dir", None) else str(jobs[0][0])
     ref_vision_only = bool(getattr(dm, "is_vision_only", False))
-    if report is not None:
-        _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vision_only)
-        return
-
-    def match():
-        from ..analysis.vision_integration import load_ei_data
-        ref_ei_bundle = load_ei_data(ref_path, ref_dataset)
-        ref_eis = ref_ei_bundle.get("ei_data") if ref_ei_bundle else None
-        if ref_eis is None:
-            raise RuntimeError("Could not load EI data from the reference run.")
-        result = CrossRunMatcher(
-            current_eis=dm.vision_eis,
-            reference_eis=ref_eis,
-            current_run_path=current_run_path,
-            reference_run_path=ref_dir,
-        ).run()
-        try:
-            result.save(mapping_path)
-        except Exception:
-            logger.warning("could not save the mapping JSON %s", mapping_path, exc_info=True)
-        return result
-
-    def matched(result):
-        if main_window.data_manager is not dm:          # another run was opened meanwhile
-            return
-        _show_matching_result(main_window, dm, result, ref_path, ref_dataset, ref_vision_only)
-
-    def match_failed(exc):
-        main_window.status_bar.clearMessage()
-        QMessageBox.critical(main_window, "Matching Failed", f"Cross-run matching failed:\n{exc}")
-
-    main_window.status_bar.showMessage(
-        f"Matching cells to {ref_path.name} by their EIs… (you can keep working)")
-    _run_in_background(main_window, match, matched, match_failed)
-
-
-def _show_matching_result(main_window, dm, report, ref_path, ref_dataset, ref_vision_only):
-    """Summary dialog, then load the reference data in the background and install the bridge."""
-    from ..analysis.reference_bridge import ReferenceBridge
-
-    summary = report.summary()
-    n_marginal = len(report.marginal)
-    detail_lines = [summary, ""]
-    if n_marginal > 0:
-        detail_lines.append("Marginal matches (review recommended):")
-        for m in report.marginal[:20]:  # show first 20
-            detail_lines.append(
-                f"  {m.current_id} → {m.reference_id}  "
-                f"(corr={m.confidence:.3f}, next={m.next_best_corr:.3f})"
-            )
-        if n_marginal > 20:
-            detail_lines.append(f"  ... and {n_marginal - 20} more")
-
-    msg = QMessageBox(main_window)
-    msg.setWindowTitle("Cross-Run Matching Results")
-    msg.setText(summary)
-    msg.setDetailedText("\n".join(detail_lines))
-    msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-    msg.setDefaultButton(QMessageBox.Ok)
-    msg.button(QMessageBox.Ok).setText("Accept && Load RFs")
-    if msg.exec_() != QMessageBox.Ok:
-        main_window.status_bar.clearMessage()
-        return
-
     threshold = getattr(main_window, "dsos_threshold", None)
+    state = {"i": 0, "done": [], "errors": [(n, "no .ei file") for n in skipped]}
 
-    def load():
+    def saved_report(ref_path):
+        path = get_mapping_path(current_run_path, ref_path)
+        if rematch or not path.exists():
+            return None
+        try:
+            report = MatchingReport.load(path)
+        except Exception:
+            logger.warning("saved mapping %s unreadable; matching again", path, exc_info=True)
+            return None
+        # The file name is per folder name; a same-named run of another sort is not it.
+        try:
+            same = Path(report.reference_run_path).resolve() == Path(ref_path).resolve()
+        except OSError:
+            same = False
+        return report if same else None
+
+    def work(ref_path, ref_dataset):
+        report = saved_report(ref_path)
+        reused = report is not None
+        if report is None:
+            from ..analysis.vision_integration import load_ei_data
+            bundle = load_ei_data(ref_path, ref_dataset)
+            ref_eis = bundle.get("ei_data") if bundle else None
+            if ref_eis is None:
+                raise RuntimeError("could not load its EIs")
+            report = CrossRunMatcher(current_eis=dm.vision_eis, reference_eis=ref_eis,
+                                     current_run_path=current_run_path,
+                                     reference_run_path=str(ref_path)).run()
+            try:
+                report.save(get_mapping_path(current_run_path, ref_path))
+            except Exception:
+                logger.warning("could not save the mapping JSON for %s", ref_path, exc_info=True)
         bridge = ReferenceBridge.from_matching_report(
             report, ref_path, ref_dataset, load_stas=True, load_params=True,
             load_chirp=True, load_grating=True, ref_is_vision_only=ref_vision_only)
         # Score every matched cell's grating now (~10 ms a cell), so the
         # population arrows and table columns can read them at once (Q58).
         bridge.precompute_gratings()
-        return bridge, borrow_counts(dm, bridge, threshold)
+        return report, bridge, reused
 
-    def loaded(result):
-        bridge, counts = result
-        if main_window.data_manager is not dm:
+    def next_run():
+        if main_window.data_manager is not dm:          # another run was opened meanwhile
             return
-        dm.install_reference_bridge(bridge, report=report)
-        main_window.status_bar.showMessage(f"Reference mapped: {bridge.summary()}", 8000)
+        i = state["i"]
+        if i >= len(jobs):
+            finish()
+            return
+        ref_path, ref_dataset = jobs[i]
+        main_window.status_bar.showMessage(
+            f"Matching cells to {ref_path.name} ({i + 1} of {len(jobs)}) by their EIs, then "
+            "loading its STAs, chirp and gratings… (you can keep working)")
+
+        def ok(result):
+            state["done"].append((ref_path, *result))
+            state["i"] += 1
+            next_run()
+
+        def bad(exc):
+            logger.warning("matching to %s failed", ref_path, exc_info=exc)
+            state["errors"].append((ref_path.name, str(exc)))
+            state["i"] += 1
+            next_run()
+
+        _run_in_background(main_window, lambda: work(ref_path, ref_dataset), ok, bad)
+
+    def finish():
+        done = state["done"]
+        if not done:
+            main_window.status_bar.clearMessage()
+            QMessageBox.critical(main_window, "Matching Failed", "\n".join(
+                f"{n}: {e}" for n, e in state["errors"]) or "No run could be matched.")
+            return
+        bridges = [b for _p, _r, b, _u in done]
+        bridge = bridges[0] if len(bridges) == 1 else MultiBridge(bridges)
+        dm.install_reference_bridge(bridge, report=done[0][1])
+        main_window.status_bar.showMessage(
+            f"Matched to {', '.join(p.name for p, *_ in done)}.", 8000)
         _after_bridge_installed(main_window)
-        box = QMessageBox(main_window)
-        box.setWindowTitle("What the matched run adds")
-        box.setText(borrow_summary(counts, ref_path.name))
-        box.exec()
 
-    def load_failed(exc):
-        main_window.status_bar.clearMessage()
-        QMessageBox.critical(main_window, "Bridge Failed", f"Could not load reference data:\n{exc}")
+        def counted(c):
+            if main_window.data_manager is not dm:
+                return
+            box = QMessageBox(main_window)
+            box.setWindowTitle("What the matched runs add")
+            name = " + ".join(p.name for p, *_ in done)
+            text = borrow_summary(c, name)
+            if state["errors"]:
+                text += "\n\nNot matched: " + "; ".join(f"{n} ({e})" for n, e in state["errors"])
+            box.setText(text)
+            box.setDetailedText(_matching_details(done))
+            box.exec()
 
-    main_window.status_bar.showMessage(
-        f"Loading {ref_path.name}'s STAs, chirp and grating… (you can keep working)")
-    _run_in_background(main_window, load, loaded, load_failed)
+        _run_in_background(main_window, lambda: borrow_counts(dm, bridge, threshold), counted,
+                           lambda exc: logger.warning("borrow counts failed", exc_info=exc))
+
+    next_run()
+
+
+def _matching_details(done) -> str:
+    """Per run: the matcher's summary, whether it was a saved match, and marginal pairs."""
+    lines = []
+    for ref_path, report, _bridge, reused in done:
+        lines.append(f"{ref_path.name}{' (saved match)' if reused else ''}: {report.summary()}")
+        marginal = list(report.marginal)
+        if marginal:
+            lines.append("  Marginal matches (review recommended):")
+            for m in marginal[:20]:
+                lines.append(f"    {m.current_id} → {m.reference_id}  "
+                             f"(corr={m.confidence:.3f}, next={m.next_best_corr:.3f})")
+            if len(marginal) > 20:
+                lines.append(f"    ... and {len(marginal) - 20} more")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def borrow_counts(dm, bridge, dsos_threshold=None) -> dict:
-    """What the bridge adds, counted over this run's cells (runs in the background)."""
+    """What the bridge adds, counted over this run's cells (runs in the background).
+
+    ``by_run`` says which matched run supplied each kind (Match Runs can hold several).
+    """
     from ..analysis import grating_calc
     thr = grating_calc.DSI_THRESHOLD if dsos_threshold is None else float(dsos_threshold)
     c = {"cells": 0, "matched": 0, "high": 0, "marginal": 0, "grating": 0, "ds": 0, "os": 0,
-         "chirp": 0, "rf": 0, "own_grating": 0, "stimuli": list(getattr(bridge, "stimuli_loaded", ()))}
+         "chirp": 0, "rf": 0, "own_grating": 0, "stimuli": list(getattr(bridge, "stimuli_loaded", ())),
+         "by_run": {}}
+    pick = getattr(bridge, "pick", None)
+
+    def credit(vid, kind):
+        b = pick(vid, kind) if callable(pick) else bridge
+        name = Path(str(getattr(b, "ref_run_path", ""))).name if b is not None else ""
+        row = c["by_run"].setdefault(name, {"grating": 0, "chirp": 0, "rf": 0})
+        row[kind] += 1
+
     df = getattr(dm, "cluster_df", None)
     ids = [] if df is None else [int(x) for x in df["cluster_id"].to_numpy()]
     c["cells"] = len(ids)
@@ -2949,6 +3000,7 @@ def borrow_counts(dm, bridge, dsos_threshold=None) -> dict:
             entry = bridge.get_grating_entry_if_ready(vid)
             if entry:
                 c["grating"] += 1
+                credit(vid, "grating")
                 sel = grating_calc.select_best_dsos_condition(entry, dsi_threshold=thr, osi_threshold=thr)
                 if sel and sel["classification"] == "DS":
                     c["ds"] += 1
@@ -2956,12 +3008,22 @@ def borrow_counts(dm, bridge, dsos_threshold=None) -> dict:
                     c["os"] += 1
         if bridge.has_chirp(vid):
             c["chirp"] += 1
+            credit(vid, "chirp")
         try:
             if bridge.get_rf_ellipse_params(vid) is not None:
                 c["rf"] += 1
+                credit(vid, "rf")
         except Exception:
             pass
     return c
+
+
+def _from_runs(c: dict, kind: str) -> str:
+    """" (from data002)" or " (data000: 12, data002: 30)" when several runs supplied ``kind``."""
+    rows = [(name, row[kind]) for name, row in (c.get("by_run") or {}).items() if row.get(kind)]
+    if len(rows) < 2:
+        return ""
+    return " (" + ", ".join(f"{n}: {k}" for n, k in rows) + ")"
 
 
 def borrow_summary(c: dict, ref_name: str) -> str:
@@ -2970,18 +3032,18 @@ def borrow_summary(c: dict, ref_name: str) -> str:
              f"images ({c['high']} high confidence, {c['marginal']} marginal).", "",
              f"For matched cells that lack their own, Encore now shows {ref_name}'s:"]
     if c["grating"]:
-        lines.append(f"• Drifting gratings: {c['grating']} cells, scored with the Grating tab's "
-                     f"test: {c['ds']} DS, {c['os']} OS. Shown in the Grating tab (with a "
-                     f"\"Borrowed from {ref_name}\" note and the reference cell's rasters), as "
+        lines.append(f"• Drifting gratings: {c['grating']} cells{_from_runs(c, 'grating')}, scored "
+                     f"with the Grating tab's test: {c['ds']} DS, {c['os']} OS. Shown in the Grating "
+                     "tab (with a \"Borrowed from\" note and the reference cell's rasters), as "
                      "arrows on the population RF map, and in the table's DS/OS columns.")
     elif c["own_grating"]:
         lines.append("• Drifting gratings: this run has its own for the matched cells.")
     else:
         lines.append(f"• Drifting gratings: none ({ref_name} has no grating file).")
-    lines.append(f"• Chirp: {c['chirp']} cells, in the Chirp tab with a note." if c["chirp"]
-                 else f"• Chirp: none ({ref_name} has no chirp file).")
-    lines.append(f"• Receptive fields and STA time courses: {c['rf']} cells, where this run has "
-                 "no fit of its own (population RF map, UMAP)." if c["rf"]
+    lines.append(f"• Chirp: {c['chirp']} cells{_from_runs(c, 'chirp')}, in the Chirp tab with a note."
+                 if c["chirp"] else f"• Chirp: none ({ref_name} has no chirp file).")
+    lines.append(f"• Receptive fields and STA time courses: {c['rf']} cells{_from_runs(c, 'rf')}, "
+                 "where this run has no fit of its own (population RF map, UMAP)." if c["rf"]
                  else f"• Receptive fields and STAs: none ({ref_name} has no white-noise STA).")
     lines += ["", "A cell's own data always comes first; borrowed values only fill what this run lacks."]
     return "\n".join(lines)

@@ -110,17 +110,19 @@ class GratingPanel(QWidget):
         # cells while that condition exists, so one condition can be scanned.
         header.addWidget(QLabel("Condition:"))
         self.condition_combo = QComboBox()
+        self.condition_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.condition_combo.setToolTip(
             "Condition shown in the stats line, rasters and error bars.\n"
             "Auto = the strongest significant condition for this cell."
         )
         self.condition_combo.activated.connect(self._on_condition_picked)
         header.addWidget(self.condition_combo)
-        self.compare_runs_btn = QPushButton("Compare DS runs…")
-        self.compare_runs_btn.setToolTip(
-            "Every DS grating run of this prep, or of every prep, in one frame (Array menu too)")
-        self.compare_runs_btn.clicked.connect(lambda: self.main_window._compare_ds_runs())
-        header.addWidget(self.compare_runs_btn)
+        self.lisp_btn = QPushButton("Stimulus file…")
+        self.lisp_btn.setToolTip(
+            "Read this run's gratings from its Lisp stimulus file (s02 for data002). "
+            "File menu too.")
+        self.lisp_btn.clicked.connect(lambda: self.main_window.load_lisp_stimulus())
+        header.addWidget(self.lisp_btn)
         self._condition_override = None
         data_layout.addLayout(header)
         # "Borrowed from <run>": this run has no grating response for the
@@ -131,6 +133,12 @@ class GratingPanel(QWidget):
             f"color: {colors.get('status_mua_text', '#7A5900')}; font-size: 11px;")
         self.borrow_note.hide()
         data_layout.addWidget(self.borrow_note)
+        # Where a Lisp run's trials came from and what was dropped (Q61).
+        self.source_note = QLabel("")
+        self.source_note.setWordWrap(True)
+        self.source_note.setObjectName("mutedLabel")
+        self.source_note.hide()
+        data_layout.addWidget(self.source_note)
         self._borrowed = None
 
         # Condition legend — replaces the old dropdown. All conditions are
@@ -220,6 +228,14 @@ class GratingPanel(QWidget):
         self.placeholder_label.setAlignment(Qt.AlignCenter)
         self.placeholder_label.setWordWrap(True)
         placeholder_layout.addWidget(self.placeholder_label)
+        # Older runs keep their grating trials in a Lisp stimulus file.
+        self.placeholder_lisp_btn = QPushButton("Load stimulus file (Lisp)…")
+        self.placeholder_lisp_btn.setToolTip(
+            "Pick the sequence file the stimulus program wrote for this run "
+            "(s02 for data002, in the prep's stimuli folder).")
+        self.placeholder_lisp_btn.clicked.connect(lambda: self.main_window.load_lisp_stimulus())
+        self.placeholder_lisp_btn.hide()
+        placeholder_layout.addWidget(self.placeholder_lisp_btn, 0, Qt.AlignCenter)
         self.stack.addWidget(placeholder_page)
 
         self.stack.setCurrentIndex(1)
@@ -328,6 +344,23 @@ class GratingPanel(QWidget):
     def _show_placeholder(self, text):
         self.stack.setCurrentIndex(1)
         self.placeholder_label.setText(text)
+        dm = self.main_window.data_manager
+        can_lisp = (dm is not None and not getattr(dm, "grating_available", False)
+                    and callable(getattr(dm, "vision_neurons_source", None))
+                    and dm.vision_neurons_source() is not None)
+        self.placeholder_lisp_btn.setVisible(bool(can_lisp))
+
+    def _show_source_note(self):
+        dm = self.main_window.data_manager
+        src = getattr(dm, "grating_source", None) if self._borrowed is None else None
+        if not src:
+            self.source_note.hide()
+            return
+        from ...analysis import lisp_stimulus
+        self.source_note.setText(
+            lisp_stimulus.describe(src) + " Directions are the file's :DIRECTION values.")
+        self.source_note.setToolTip(src.get("path", ""))
+        self.source_note.show()
 
     # ------------------------------------------------------------------
     # On-demand compute lifecycle
@@ -400,6 +433,7 @@ class GratingPanel(QWidget):
     def _render_cluster_data(self, cluster_id, data):
         self.stack.setCurrentIndex(0)
         self._current_data = data
+        self._show_source_note()
 
         dsos_conditions = sorted(
             (
@@ -414,6 +448,10 @@ class GratingPanel(QWidget):
             bar_widths = np.asarray(data["sf_bar_widths"], dtype=float)
             curve = np.asarray(data["sf_tuning_curve"], dtype=float)
             self._sf_curve.setData(bar_widths, curve)
+            spatial = (self._borrowed or {}).get("spatial") if self._borrowed is not None else \
+                getattr(self.main_window.data_manager, "grating_spatial_label", None)
+            self.sf_plot.setLabel("bottom", f"Spatial {spatial[0]} ({spatial[1]})" if spatial
+                                  else "Bar width")
             self.sf_plot.setVisible(True)
             self.sf_label.setVisible(True)
             self.sf_plot.enableAutoRange()
@@ -491,7 +529,7 @@ class GratingPanel(QWidget):
         self._render_dsos_overlay(dsos_conditions, display_cond, data)
         self._render_hist(dsos_conditions, display_cond, data)
 
-        cond_label = grating_calc.format_condition_label(display_cond, display_entry)
+        cond_label = self._cond_label(display_cond, display_entry)
         pref_angle = pref_dir if classification == "DS" else pref_ori
         if classification == "none":
             label = "[not significant]"
@@ -499,7 +537,7 @@ class GratingPanel(QWidget):
             label = f"[{classification}]"
         if display_cond != auto_cond:
             # The DS/OS label is the cell's, decided at its best condition.
-            best = grating_calc.format_condition_label(auto_cond, data[auto_cond])
+            best = self._cond_label(auto_cond, data[auto_cond])
             label += f" (at {best})"
         self.stats_label.setToolTip(
             "p: one shuffle test across all of this cell's conditions (the largest "
@@ -516,16 +554,24 @@ class GratingPanel(QWidget):
         self._draw_rasters(cluster_id, display_cond, display_entry, pref_dir)
         self._update_units_label(display_entry)
 
+    def _cond_label(self, cond, entry=None):
+        """Condition text in the units of whichever run the data came from."""
+        if self._borrowed is not None:
+            spatial = self._borrowed.get("spatial")
+        else:
+            spatial = getattr(self.main_window.data_manager, "grating_spatial_label", None)
+        return grating_calc.format_condition_label(cond, entry, spatial)
+
     # -- Condition selector ----------------------------------------------
     def _populate_condition_combo(self, conditions, auto_cond, data):
         combo = self.condition_combo
         combo.blockSignals(True)
         combo.clear()
         if auto_cond is not None:
-            auto_label = grating_calc.format_condition_label(auto_cond, data.get(auto_cond))
+            auto_label = self._cond_label(auto_cond, data.get(auto_cond))
             combo.addItem(f"Auto ({auto_label})", None)
         for cond in conditions:
-            combo.addItem(grating_calc.format_condition_label(cond, data.get(cond)), cond)
+            combo.addItem(self._cond_label(cond, data.get(cond)), cond)
         index = 0
         if self._condition_override in conditions:
             index = 1 + conditions.index(self._condition_override)
@@ -621,7 +667,7 @@ class GratingPanel(QWidget):
         parts = []
         for i, cond in enumerate(conditions):
             color = _CONDITION_COLORS[i % len(_CONDITION_COLORS)]
-            cond_label = grating_calc.format_condition_label(cond, data.get(cond))
+            cond_label = self._cond_label(cond, data.get(cond))
             is_best = cond == best_cond
             weight = "bold" if is_best else "normal"
             marker = "●" if is_best else "○"

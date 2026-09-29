@@ -101,8 +101,14 @@ class ReferenceBridge:
         ref_grating_raw: Optional[dict] = None,
         stimuli_loaded: Optional[Tuple[str, ...]] = None,
         full_matches=None,
+        ref_id_shift: int = 1,
     ):
         self._mapping = mapping  # {current_vision_id: ref_vision_id}
+        # The chirp/grating maps are keyed by reference Vision ID − this shift:
+        # 1 (Kilosort cluster IDs) or 0 (a Vision-only session keeps Vision IDs).
+        # Lookups must use the shift the maps were loaded with; a per-call
+        # default of 1 served the neighbouring cell in Vision-only sessions.
+        self._ref_id_shift = int(ref_id_shift)
         self._reverse = {v: k for k, v in mapping.items()}
         self._ref_stas = ref_stas
         self._ref_params = ref_params
@@ -130,6 +136,9 @@ class ReferenceBridge:
         self._grating_lock = threading.Lock()
 
         self.stimuli_loaded: Tuple[str, ...] = stimuli_loaded or ()
+        # Set when the reference gratings came from a Lisp file (Q61).
+        self.grating_source = None
+        self.grating_spatial_label = None
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -209,10 +218,15 @@ class ReferenceBridge:
                 stimuli.append("chirp")
 
         ref_grating_data = ref_grating_raw = None
+        lisp_summary = None
         if load_grating:
             ref_grating_data, ref_grating_raw = cls._try_load_grating_files(
                 ref_dir, ref_is_vision_only=ref_is_vision_only
             )
+            if ref_grating_data is None and ref_grating_raw is None:
+                # An older run: its gratings are in a Lisp sequence file (Q61).
+                ref_grating_raw, lisp_summary = cls._try_load_lisp_grating(
+                    ref_dir, ref_dataset, ref_is_vision_only=ref_is_vision_only)
             if ref_grating_data is not None or ref_grating_raw is not None:
                 stimuli.append("grating")
 
@@ -232,7 +246,7 @@ class ReferenceBridge:
                 confidence[m.current_id] = m.confidence
                 statuses[m.current_id] = m.status
 
-        return cls(
+        bridge = cls(
             mapping=report.mapping,
             ref_stas=ref_stas,
             ref_params=ref_params,
@@ -247,7 +261,42 @@ class ReferenceBridge:
             ref_grating_raw=ref_grating_raw,
             stimuli_loaded=tuple(stimuli),
             full_matches=list(report.matches),
+            ref_id_shift=0 if ref_is_vision_only else 1,
         )
+        if lisp_summary is not None:
+            bridge.grating_source = lisp_summary
+            bridge.grating_spatial_label = ("period", "px")
+        return bridge
+
+    @staticmethod
+    def _try_load_lisp_grating(ref_dir: Path, ref_dataset: str, ref_is_vision_only: bool = False):
+        """(raw trials, summary) from the reference run's Lisp sequence file, or (None, None).
+
+        Only a file named after the run next to it (``stimuli/s02`` for data002,
+        lisp_stimulus.find_sequence_files); triggers and spikes from its .neurons.
+        """
+        from . import lisp_stimulus as ls
+        try:
+            found = ls.find_sequence_files(ref_dir, ref_dataset)
+            if not found:
+                return None, None
+            import src.analysis.visionloader as vl
+            seq = ls.read_sequence(found[0])
+            with vl.NeuronsReader(str(ref_dir), ref_dataset) as nr:
+                ttl = nr.get_TTL_times()
+                spikes = nr.get_spike_sample_nums_for_all_real_neurons()
+                fs = float(nr.sample_freq)
+            shift = 0 if ref_is_vision_only else 1
+            ends = [int(v[-1]) for v in spikes.values() if len(v)]
+            g = ls.build_grating_trials(seq, ttl, {int(k) - shift: v for k, v in spikes.items()},
+                                        fs, recording_end_samples=max(ends) if ends else None)
+        except Exception as exc:
+            logger.info("No Lisp grating for reference %s: %s", ref_dir, exc)
+            return None, None
+        raw = g.as_raw()
+        raw["source"] = Path(found[0]).name
+        logger.info("Reference grating trials from Lisp %s: %s", found[0], ls.describe(g.summary))
+        return raw, g.summary
 
     @staticmethod
     def _try_load_chirp(
@@ -348,6 +397,25 @@ class ReferenceBridge:
     # ------------------------------------------------------------------
     # Match / mapping API (Vision IDs)
     # ------------------------------------------------------------------
+
+    def pick(self, current_vision_id: int, kind: str = "match") -> Optional["ReferenceBridge"]:
+        """This bridge if it has ``kind`` for the cell, else None (see MultiBridge.pick).
+
+        ``kind``: "match", "sta", "rf", "chirp" or "grating".
+        """
+        vid = int(current_vision_id)
+        if not self.has_match(vid):
+            return None
+        ok = {"match": lambda: True,
+              "sta": lambda: self.has_sta(vid),
+              "rf": lambda: self.has_rf(vid),
+              "chirp": lambda: self.has_chirp(vid),
+              "grating": lambda: self.has_grating(vid)}[kind]()
+        return self if ok else None
+
+    @property
+    def bridges(self) -> List["ReferenceBridge"]:
+        return [self]
 
     def has_match(self, current_vision_id: int) -> bool:
         return int(current_vision_id) in self._mapping
@@ -473,14 +541,19 @@ class ReferenceBridge:
     def has_any_grating(self) -> bool:
         return bool(self._ref_grating_data) or bool(self._ref_grating_raw)
 
-    def _ref_cluster_id(self, current_vision_id: int, ref_is_vision_only: bool = False) -> Optional[int]:
-        """Map current vision id → reference cluster_id used in chirp/grating maps."""
+    def _ref_cluster_id(self, current_vision_id: int, ref_is_vision_only=None) -> Optional[int]:
+        """Map current vision id → reference key used in the chirp/grating maps.
+
+        ``ref_is_vision_only`` None (the default) uses the shift the maps were
+        loaded with; True/False force 0/1.
+        """
         ref_vid = self._mapping.get(int(current_vision_id))
         if ref_vid is None:
             return None
-        return int(ref_vid) if ref_is_vision_only else int(ref_vid) - 1
+        shift = self._ref_id_shift if ref_is_vision_only is None else (0 if ref_is_vision_only else 1)
+        return int(ref_vid) - shift
 
-    def has_chirp(self, current_vision_id: int, ref_is_vision_only: bool = False) -> bool:
+    def has_chirp(self, current_vision_id: int, ref_is_vision_only=None) -> bool:
         if not self.has_any_chirp():
             return False
         ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
@@ -488,7 +561,7 @@ class ReferenceBridge:
             return False
         return ref_cid in self._ref_chirp_id_to_row
 
-    def get_chirp_row(self, current_vision_id: int, ref_is_vision_only: bool = False):
+    def get_chirp_row(self, current_vision_id: int, ref_is_vision_only=None):
         """
         Return (psth_mean 1d array, quality_index float) or None.
         """
@@ -508,7 +581,7 @@ class ReferenceBridge:
             logger.debug("get_chirp_row failed for %s: %s", current_vision_id, e)
             return None
 
-    def has_grating(self, current_vision_id: int, ref_is_vision_only: bool = False) -> bool:
+    def has_grating(self, current_vision_id: int, ref_is_vision_only=None) -> bool:
         if not self.has_any_grating():
             return False
         ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
@@ -519,7 +592,7 @@ class ReferenceBridge:
         raw = self._ref_grating_raw
         return bool(raw) and ref_cid in raw["spike_times_by_trial"]
 
-    def get_grating_entry(self, current_vision_id: int, ref_is_vision_only: bool = False):
+    def get_grating_entry(self, current_vision_id: int, ref_is_vision_only=None):
         """The matched cell's per-condition grating dict (analysed, or computed from trials)."""
         if not self.has_any_grating():
             return None
@@ -541,7 +614,7 @@ class ReferenceBridge:
             self._grating_computed[ref_cid] = entry
         return entry
 
-    def get_grating_entry_if_ready(self, current_vision_id: int, ref_is_vision_only: bool = False):
+    def get_grating_entry_if_ready(self, current_vision_id: int, ref_is_vision_only=None):
         """The matched cell's grating dict if analysed or already scored; never computes.
 
         For drawing many cells on the GUI thread (population arrows, table
@@ -570,7 +643,7 @@ class ReferenceBridge:
                 n += 1
         return n
 
-    def get_grating_trials(self, current_vision_id: int, ref_is_vision_only: bool = False):
+    def get_grating_trials(self, current_vision_id: int, ref_is_vision_only=None):
         """(trials, trial_parameters) of the matched cell, for rasters; None without raw trials."""
         raw = self._ref_grating_raw
         ref_cid = self._ref_cluster_id(current_vision_id, ref_is_vision_only)
@@ -691,3 +764,168 @@ class ReferenceBridge:
             f"<ReferenceBridge {len(self._mapping)} cells "
             f"stimuli={self.stimuli_loaded} → {self.ref_run_path}>"
         )
+
+
+class MultiBridge:
+    """Several matched runs behind the ReferenceBridge interface (PLAN.md Q62).
+
+    File ▸ Match Runs can match this run to more than one other run. Each
+    question is answered by the first run, in the order given, that has the
+    answer for that cell: its chirp from one run, its grating from another.
+    Callers that report where a value came from ask ``pick(vid, kind)`` for
+    that run's bridge and read the run, reference ID and confidence from it.
+    """
+
+    def __init__(self, bridges):
+        self._bridges = [b for b in bridges if b is not None]
+
+    @property
+    def bridges(self) -> List[ReferenceBridge]:
+        return list(self._bridges)
+
+    def pick(self, current_vision_id: int, kind: str = "match") -> Optional[ReferenceBridge]:
+        for b in self._bridges:
+            got = b.pick(current_vision_id, kind)
+            if got is not None:
+                return got
+        return None
+
+    # -- match ---------------------------------------------------------------
+    def has_match(self, vid) -> bool:
+        return any(b.has_match(vid) for b in self._bridges)
+
+    def _first(self, vid, kind="match"):
+        return self.pick(vid, kind)
+
+    def get_reference_id(self, vid):
+        b = self._first(vid)
+        return None if b is None else b.get_reference_id(vid)
+
+    def get_confidence(self, vid) -> float:
+        b = self._first(vid)
+        return 0.0 if b is None else b.get_confidence(vid)
+
+    def get_status(self, vid) -> str:
+        b = self._first(vid)
+        return "" if b is None else b.get_status(vid)
+
+    @property
+    def matched_current_ids(self) -> Set[int]:
+        out: Set[int] = set()
+        for b in self._bridges:
+            out |= b.matched_current_ids
+        return out
+
+    @property
+    def mapping(self) -> Dict[int, int]:
+        """First run's reference ID per cell (for display; per-run IDs via pick)."""
+        out: Dict[int, int] = {}
+        for b in reversed(self._bridges):
+            out.update(b.mapping)
+        return out
+
+    @property
+    def ref_run_path(self) -> str:
+        return " + ".join(str(b.ref_run_path) for b in self._bridges)
+
+    @property
+    def stimuli_loaded(self) -> Tuple[str, ...]:
+        seen: List[str] = []
+        for b in self._bridges:
+            seen += [s for s in b.stimuli_loaded if s not in seen]
+        return tuple(seen)
+
+    # -- per kind ------------------------------------------------------------
+    def _call(self, vid, kind, name, default=None, *args):
+        b = self.pick(vid, kind)
+        return default if b is None else getattr(b, name)(vid, *args)
+
+    def has_sta(self, vid) -> bool:
+        return self.pick(vid, "sta") is not None
+
+    def get_sta(self, vid):
+        return self._call(vid, "sta", "get_sta")
+
+    def has_rf(self, vid) -> bool:
+        return self.pick(vid, "rf") is not None
+
+    def get_stafit(self, vid):
+        b = self.pick(vid, "rf") or self.pick(vid, "sta")
+        return None if b is None else b.get_stafit(vid)
+
+    def get_rf_center(self, vid):
+        return self._call(vid, "rf", "get_rf_center")
+
+    def get_rf_fit(self, vid):
+        return self._call(vid, "rf", "get_rf_fit")
+
+    def get_rf_ellipse_params(self, vid):
+        return self._call(vid, "rf", "get_rf_ellipse_params")
+
+    def get_ei(self, vid):
+        return self._call(vid, "match", "get_ei")
+
+    def has_any_chirp(self) -> bool:
+        return any(b.has_any_chirp() for b in self._bridges)
+
+    def has_any_grating(self) -> bool:
+        return any(b.has_any_grating() for b in self._bridges)
+
+    def has_chirp(self, vid, ref_is_vision_only=False) -> bool:
+        return self.pick(vid, "chirp") is not None
+
+    def get_chirp_row(self, vid, ref_is_vision_only=False):
+        return self._call(vid, "chirp", "get_chirp_row")
+
+    def has_grating(self, vid, ref_is_vision_only=False) -> bool:
+        return self.pick(vid, "grating") is not None
+
+    def get_grating_entry(self, vid, ref_is_vision_only=False):
+        return self._call(vid, "grating", "get_grating_entry")
+
+    def get_grating_entry_if_ready(self, vid, ref_is_vision_only=False):
+        return self._call(vid, "grating", "get_grating_entry_if_ready")
+
+    def get_grating_trials(self, vid, ref_is_vision_only=False):
+        return self._call(vid, "grating", "get_grating_trials")
+
+    def precompute_gratings(self, cancelled=None) -> int:
+        return sum(b.precompute_gratings(cancelled) for b in self._bridges)
+
+    def first_with(self, kind: str) -> Optional[ReferenceBridge]:
+        """The first run that has any ``kind`` ("chirp" or "grating") at all."""
+        test = {"chirp": "has_any_chirp", "grating": "has_any_grating"}[kind]
+        return next((b for b in self._bridges if getattr(b, test)()), None)
+
+    # -- bulk ----------------------------------------------------------------
+    def get_all_rf_ellipses(self) -> Dict[int, dict]:
+        out: Dict[int, dict] = {}
+        for b in reversed(self._bridges):
+            out.update(b.get_all_rf_ellipses())
+        return out
+
+    def get_all_stas_available(self) -> Set[int]:
+        out: Set[int] = set()
+        for b in self._bridges:
+            out |= b.get_all_stas_available()
+        return out
+
+    def build_ui_caveats(self, is_vision_only: bool = False) -> Dict[int, CellMatchCaveat]:
+        """Per cell, the first run's caveat that is a real match, else the first one."""
+        out: Dict[int, CellMatchCaveat] = {}
+        for b in self._bridges:
+            for cid, cav in b.build_ui_caveats(is_vision_only).items():
+                held = out.get(cid)
+                if held is None or (held.status not in ("high", "marginal")
+                                    and cav.status in ("high", "marginal")):
+                    out[cid] = cav
+        return out
+
+    def get_caveat(self, cluster_id: int, is_vision_only: bool = False):
+        return self.build_ui_caveats(is_vision_only).get(int(cluster_id))
+
+    def summary(self) -> str:
+        return " | ".join(b.summary() for b in self._bridges)
+
+    def __repr__(self):
+        return f"<MultiBridge {[Path(str(b.ref_run_path)).name for b in self._bridges]}>"

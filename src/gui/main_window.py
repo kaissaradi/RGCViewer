@@ -1931,6 +1931,12 @@ class MainWindow(QMainWindow):
         self.load_vision_action = file_menu.addAction("&Load Vision Files...")
         self.load_vision_action.setEnabled(True)
 
+        # Older runs keep their grating trials in a Lisp stimulus file (Q61).
+        self.load_lisp_action = file_menu.addAction("Load Stimulus File (Lisp)...")
+        self.load_lisp_action.setToolTip(
+            "Gratings of a run driven by the Lisp stimulus program: pick its sequence "
+            "file (s02 for data002). The trial triggers come from the run's .neurons.")
+
         self.load_classification_action = file_menu.addAction(
             "&Load Classification File..."
         )
@@ -1960,7 +1966,9 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
 
         file_menu.addSeparator()
-        self.map_reference_action = file_menu.addAction("Map &Reference Run...")
+        # Match this run's cells to one or more other runs of the prep by EI
+        # and borrow their responses (Q52, Q62).
+        self.map_reference_action = file_menu.addAction("Match &Runs...")
         self.map_reference_action.setEnabled(False)
 
         file_menu.addSeparator()
@@ -1993,11 +2001,6 @@ class MainWindow(QMainWindow):
         self.optic_disc_action = array_menu.addAction("Find the Optic Disc…")
         self.optic_disc_action.setToolTip("Fit every cell's axon in its EI and see where they converge")
         self.optic_disc_action.triggered.connect(self._find_optic_disc)
-        # Every DS grating run of the prep (or the share) in one frame (PLAN.md Q51).
-        self.ds_compare_action = array_menu.addAction("Compare DS Runs…")
-        self.ds_compare_action.setToolTip(
-            "Preferred directions of every DS grating run, on the screen or from the optic disc")
-        self.ds_compare_action.triggered.connect(self._compare_ds_runs)
 
         # Connect Signals
         load_ks_action.triggered.connect(lambda: self.load_directory())
@@ -2015,6 +2018,7 @@ class MainWindow(QMainWindow):
         )
         self.save_action.triggered.connect(self.on_save_action)
         self.map_reference_action.triggered.connect(self.map_reference_run)
+        self.load_lisp_action.triggered.connect(lambda: self.load_lisp_stimulus())
         self.rebuild_cache_action.triggered.connect(
             lambda: callbacks.rebuild_physics_cache(self)
         )
@@ -2327,9 +2331,6 @@ class MainWindow(QMainWindow):
         from .panels.optic_disc_dialog import find_optic_disc
         find_optic_disc(self)
 
-    def _compare_ds_runs(self):
-        from .panels.ds_compare_dialog import compare_ds_runs
-        compare_ds_runs(self)
 
     def _show_about(self):
         from ..build_info import describe
@@ -3216,6 +3217,9 @@ class MainWindow(QMainWindow):
 
     def map_reference_run(self):
         callbacks.map_reference_run(self)
+
+    def load_lisp_stimulus(self, path=None):
+        callbacks.load_lisp_stimulus(self, path)
 
     def load_raw_data_file(self):
         callbacks.load_raw_data(self)

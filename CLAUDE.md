@@ -58,8 +58,12 @@ slower, not faster. Encore writes its caches (`*.pkl`) into `ksfiles/` and
    frame (Stage `Grating.m`, from the code; PLAN.md open defects, Q51).
 9. **The array → screen turn is per prep.** Most preps: −90° (screen =
    (0, 1, −1, 0) · array); 20240820A: +90°. Trust it only from a pairing
-   with robust R² ≥ 0.4 (`ds_pool.TURN_MIN_R2`, PLAN.md Q51).
-10. **`.params` is shared with Vision.** Vision opens it read-write and saves
+   with robust R² ≥ 0.4 (`vision_sort_check.check_pairing`, PLAN.md Q51).
+10. **Lisp grating runs** (older Chichilnisky-lab analyses) keep the trial
+   sequence in `<prep>/stimuli/sNN` and the trial starts as TTLs in the
+   `.neurons`. The rules are MATLAB `load_stim.m`'s (PLAN.md Q61); the
+   `:DIRECTION` convention is not checked.
+11. **`.params` is shared with Vision.** Vision opens it read-write and saves
    it in place. Encore never edits it in place (`params_classification.py`,
    PLAN.md Q30–Q31). Close a run in Vision before Ctrl+S in Encore.
 

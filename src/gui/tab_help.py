@@ -33,9 +33,10 @@ TAB_HELP = {
          "direction / orientation), with a shuffle test across all conditions.",
          "Rasters around the polar plot: the spikes for each direction.",
          "Angles are the protocol's label θ. The lab's grating protocol moves the bars toward "
-         "θ + 180°, in the same frame as the STA (PLAN.md, open defects).",
-         "Compare DS runs… shows every DS grating run of the prep, or of every prep, in one "
-         "frame: on the screen, or from the direction to the optic disc."]),
+         "θ + 180°, in the same frame as the STA (PLAN.md, open defects). A Lisp "
+         "stimulus file's angles are its :DIRECTION values, convention not checked.",
+         "No gratings in this run? Stimulus file… reads an older run's Lisp sequence file "
+         "(s02 for data002); File ▸ Match Runs borrows them from another run."]),
     "EI": (
         "The electrical image: the cell's mean voltage on every electrode around its spike.",
         ["The biggest signal marks the soma. A small signal that moves away over time is "

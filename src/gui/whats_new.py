@@ -6,8 +6,10 @@ the details live in README.md and docs/PLAN.md.
 
 WHATS_NEW = [
     ("Fixed: timing", "Firing rates were 1.5x too high and ISI / ACG lags 2/3 too short: Kilosort times were read at 30 kHz, not 20 kHz. Caches rebuild once, by themselves."),
-    ("Compare DS runs", "Array ▸ Compare DS Runs: every DS grating run of the prep or the share, "
-     "lined up by where its optic disc lies."),
+    ("Match Runs", "File ▸ Match Runs: tick one or more runs of the prep; each cell takes its "
+     "chirp, gratings and RF from the first run that has them."),
+    ("Lisp gratings", "Older runs: File ▸ Load Stimulus File (Lisp) reads a run's sequence file "
+     "(s02 for data002) and its .neurons triggers, as the lab's MATLAB load_stim does."),
     ("Help on every tab", "The ? button in the header (Shift+F1) says what the current tab's "
      "plots show and what to look for."),
     ("Suggested classes", "Types tab ▸ Suggest classes learns the lab's 5 named types from every "

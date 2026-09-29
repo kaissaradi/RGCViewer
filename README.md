@@ -200,26 +200,29 @@ Put cells in groups (Ctrl+M, Ctrl+G), or load a Vision classification
 - **Compare a cell with its population.** Ctrl+P opens the population pane.
   The selected cell is drawn in red over its group's time courses, ACGs and
   firing rates. Ctrl+K pins up to four more cells for comparison.
-- **Borrow responses from another run.** File → Map Reference Run matches the
-  cells of this run to another run of the same retina by their EIs. A cell
-  with no chirp here then shows its matched cell's chirp, with a note saying
-  where it comes from.
+- **Borrow responses from other runs.** File → Match Runs lists the runs of
+  this retina (both folder layouts: `<prep>/<sorter>/<run>` and the older
+  `<prep>/<run>/<run>-map`) with what each one has, and ticks the ones that
+  fill a gap in the open run. Tick one or more: Encore matches the cells by
+  their EIs, one run after another in the background, and loads each run's
+  STAs, chirp and gratings (a Lisp stimulus file too). A cell with no chirp,
+  grating or RF here then shows its matched cell's, from the first ticked run
+  that has it, with a note saying which run. A saved match is reused unless
+  you tick "Match again".
+- **Gratings from a Lisp stimulus file.** Older runs were driven by the Lisp
+  stimulus program, which wrote the trial sequence to a file named after the
+  run (`s02` for data002, in the prep's `stimuli/` folder). File → Load
+  Stimulus File (Lisp), or the button on the Grating tab, reads it with the
+  trial triggers in the run's `.neurons`, following the lab's MATLAB
+  `load_stim.m`: a trial starts at each trigger after a gap, and a run that
+  ended early keeps whole repeats. The Grating tab, the table's DS/OS columns
+  and the population arrows then work as for any grating run. The spatial
+  value is the period in pixels; directions are the file's `:DIRECTION`
+  values (which way that moves the bars is not checked).
 - **Optic disc direction.** Array → Find the Optic Disc fits each cell's axon in
   its EI and shows where the axons converge: a disc point when the fit is
   clear, else a direction only, else nothing. It works best on the 512 array.
   It does not tell dorsal from ventral.
-- **Compare DS runs.** Array → Compare DS Runs (or the button on the Grating
-  tab) lists every DS grating run of this prep, or of every prep on the
-  share: its DS cells (the Grating tab's test), the direction its axons point
-  (toward the optic disc), and the array → screen turn, measured from a
-  white-noise run of the same prep. The roses pool the ticked runs (one run
-  per prep by default: two runs of one piece record the same cells), either
-  as the bars moved on the screen or as an angle from the direction to the
-  optic disc, which means the same in every prep. The angles are the way the
-  bars moved: the Grating tab's angle + 180° (see `docs/PLAN.md`, open
-  defects). The first look at a run reads it once (10–40 s; every prep
-  took 10 min); later looks read a small summary in its `ksfiles/` (one
-  prep: under a second; every prep: about 20 s).
 
 What the lab's type names mean, with references: `docs/design/rgc_types.md`.
 

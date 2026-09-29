@@ -988,44 +988,6 @@ def scenario_optic_disc(s):
         shown[0].grab().save(os.path.join(s.shot_dir, "optic_disc.png"))
 
 
-def scenario_ds_compare(s):
-    """Q51: Array > Compare DS Runs on the loaded run's prep; screenshots of both frames.
-
-    HARNESS_DS_SCOPE=all compares every prep on the share (slow the first time).
-    """
-    from src.gui.panels import ds_compare_dialog as dc
-    s.load()
-    w = s.w
-    shown = []
-    dc.DSCompareDialog.exec = lambda self: (shown.append(self), self.show())
-    t = time.time()
-    w.ds_compare_action.trigger()
-    if not shown:
-        log("ds compare: no dialog")
-        return
-    dlg = shown[0]
-    if os.environ.get("HARNESS_DS_SCOPE") == "all":
-        dlg.scope_combo.setCurrentIndex(1)
-        dlg._on_scope_picked(1)
-    ok = wait_until(lambda: dlg._state["finished"], 3600)
-    pump(0.6)
-    log(f"ds compare finished={ok} in {time.time() - t:.0f}s: {dlg.status.text()}")
-    for r in dlg.runs:
-        log(f"  {r.run}: ds {r.n_ds}/{r.n_cells} disc {r.bearing_verdict} {r.bearing_deg:.0f} "
-            f"turn {r.turn} from {r.turn_source or '-'} pooled {dlg.pooled.get(r.run)} {r.note}")
-    dlg.resize(1280, 820)
-    for i in range(dlg.frame_combo.count()):
-        dlg.frame_combo.setCurrentIndex(i)
-        dlg._fill_table()
-        dlg.redraw()
-        pump(0.6)
-        dlg.grab().save(os.path.join(s.shot_dir, f"ds_compare_{dlg.frame_combo.currentData()}.png"))
-    t = time.time()
-    dlg.scan()                                   # a second look reads the summaries
-    wait_until(lambda: dlg._state["finished"], 600)
-    log(f"ds compare second scan in {time.time() - t:.1f}s")
-
-
 def scenario_borrowed_chirp(s):
     """Q37: Map Reference Run, then a matched cell's Chirp tab shows the reference cell's chirp.
 
@@ -1140,12 +1102,117 @@ def scenario_vision_native(s):
         f"{w.sta_panel.sort_warning.isVisible()}")
 
 
+def scenario_lisp_grating(s):
+    """Q61: a Vision-native grating run plus its Lisp sequence file → Grating tab, table, arrows.
+
+    HARNESS_VISION: the run's Vision folder; HARNESS_LISP: its sequence file
+    (defaults: 2012-10-15-0 data002 and stimuli/s02).
+    """
+    from qtpy.QtWidgets import QFileDialog
+    from src.gui import callbacks
+    base = "/mnt/lab/Chichilnisky/Analysis/controls/oldercontrols/2012-10-15-0"
+    folder = os.environ.get("HARNESS_VISION", base + "/data002/data002-map")
+    lisp = os.environ.get("HARNESS_LISP", base + "/stimuli/s02")
+    w = s.w
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: folder)
+    offered = []
+    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (offered.append(a[2] if len(a) > 2 else ""), (lisp, ""))[1])
+    t = time.time()
+    callbacks.load_vision_directory(w)
+    ok = wait_until(lambda: w.data_manager is not None and getattr(w.data_manager, "cluster_df", None)
+                    is not None and w.tree_model.invisibleRootItem().rowCount() > 0, 600)
+    pump(3.0)
+    dm = w.data_manager
+    log(json.dumps({"opened": ok, "seconds": round(time.time() - t, 1),
+                    "cells": 0 if dm is None or dm.cluster_df is None else len(dm.cluster_df)}))
+    if not ok:
+        return
+    cid = int(dm.cluster_df["cluster_id"].values[0])
+    s.tab("Grating")
+    s.select(cid, settle=1.5)
+    log(json.dumps({"placeholder_button_visible": w.grating_panel.placeholder_lisp_btn.isVisible()}))
+    s.shot("lisp_grating_before", w.grating_panel)
+    t = time.time()
+    callbacks.load_lisp_stimulus(w)
+    loaded = wait_until(lambda: getattr(dm, "grating_source", None) is not None, 120)
+    log(json.dumps({"dialog_start": offered, "loaded": loaded, "seconds": round(time.time() - t, 1),
+                    "status": w.status_bar.currentMessage()}))
+    done = wait_until(lambda: not dm.grating_ids_needing_compute(
+        dm.cluster_df["cluster_id"].astype(int).tolist()), 600)
+    pump(3.0)
+    calls = dm.cluster_df["dsos"].value_counts().to_dict() if "dsos" in dm.cluster_df.columns else {}
+    log(json.dumps({"all_scored": done, "table_dsos": calls}))
+    ds = [int(c) for c, v in zip(dm.cluster_df["cluster_id"], dm.cluster_df.get("dsos", [])) if v == "DS"]
+    pick = ds[0] if ds else cid
+    s.select(pick, settle=2.5)
+    log(json.dumps({"shown": pick, "stats": w.grating_panel.stats_label.text(),
+                    "source_note": w.grating_panel.source_note.text()}))
+    s.shot("lisp_grating_ds_cell", w.grating_panel)
+    w.toggle_population_split_view(True)
+    pump(4.0)
+    ax = w.pop_mosaic_canvas.fig.axes[0] if w.pop_mosaic_canvas.fig.axes else None
+    arrows = 0 if ax is None else sum(1 for tx in ax.texts if getattr(tx, "arrow_patch", None) is not None)
+    log(json.dumps({"population_ds_arrows": arrows}))
+    s.shot("lisp_population", w)
+
+
+def scenario_match_runs(s):
+    """Q62: File ▸ Match Runs with one or more runs on a Vision-native open.
+
+    HARNESS_VISION: the open run; HARNESS_LISP: optional sequence file to load first;
+    HARNESS_REFS: the runs to match, separated by ':' (defaults: 2012-10-15-0 data002
+    with s02, matched to data002/data000-map, the white-noise run of the same sort).
+    """
+    from qtpy.QtWidgets import QFileDialog, QMessageBox
+    from src.gui import callbacks
+    base = "/mnt/lab/Chichilnisky/Analysis/controls/oldercontrols/2012-10-15-0"
+    folder = os.environ.get("HARNESS_VISION", base + "/data002/data002-map")
+    lisp = os.environ.get("HARNESS_LISP", base + "/stimuli/s02")
+    refs = os.environ.get("HARNESS_REFS", base + "/data002/data000-map").split(":")
+    w = s.w
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: folder)
+    shown = []
+    QMessageBox.exec = lambda self: (shown.append(self.text() + "\n---\n" + self.detailedText()),
+                                     QMessageBox.StandardButton.Ok)[1]
+    callbacks.load_vision_directory(w)
+    ok = wait_until(lambda: w.data_manager is not None and getattr(w.data_manager, "cluster_df", None)
+                    is not None and w.tree_model.invisibleRootItem().rowCount() > 0, 600)
+    pump(2.0)
+    dm = w.data_manager
+    if not ok:
+        log("open failed")
+        return
+    if lisp:
+        callbacks.load_lisp_stimulus(w, lisp)
+        wait_until(lambda: getattr(dm, "grating_source", None) is not None, 120)
+        wait_until(lambda: not dm.grating_ids_needing_compute(
+            dm.cluster_df["cluster_id"].astype(int).tolist()), 600)
+    w.toggle_population_split_view(True)
+    t = time.time()
+    callbacks.map_reference_run(w, ref_dirs=refs)
+    got = wait_until(lambda: getattr(dm, "reference_bridge", None) is not None, 1800)
+    wait_until(lambda: bool(shown), 300)
+    pump(4.0)
+    bridge = dm.reference_bridge
+    log(json.dumps({"installed": got, "seconds": round(time.time() - t, 1),
+                    "bridges": [str(b.ref_run_path) for b in getattr(bridge, "bridges", [])]}))
+    log("summary:\n" + (shown[-1] if shown else "(none)"))
+    ax = w.pop_mosaic_canvas.fig.axes[0] if w.pop_mosaic_canvas.fig.axes else None
+    arrows = 0 if ax is None else sum(1 for tx in ax.texts if getattr(tx, "arrow_patch", None) is not None)
+    log(json.dumps({"population_ds_arrows": arrows, "rf_title": ax.get_title() if ax is not None else None}))
+    s.shot("match_runs_population", w)
+    ids = [int(c) for c in dm.cluster_df["cluster_id"].values]
+    with_rf = [c for c in ids if bridge.get_rf_ellipse_params(dm.get_vision_id_for_cluster(c))]
+    if with_rf:
+        s.tab("Standard")
+        s.select(with_rf[len(with_rf) // 2], settle=2.5)
+        s.shot("match_runs_standard", w)
+
+
 def scenario_borrowed_grating(s):
-    """Q52: Map Reference Run to the prep's grating run; matched cells show its DS tuning.
+    """Q52: Match Runs to the prep's grating run; matched cells show its DS tuning.
 
     HARNESS_REF: the grating run's folder (e.g. 20260220A/kilosort25/data023 for data022).
-    Also checks the matched cells' borrowed preferred direction against ds_pool's own
-    reading of the same file (the reference cell's DS test run directly).
     """
     from qtpy.QtWidgets import QMessageBox
     from src.gui import callbacks

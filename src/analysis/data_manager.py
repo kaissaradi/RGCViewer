@@ -559,6 +559,10 @@ class DataManager(QObject):
         self.grating_computed_cache = (
             {}
         )  # dict[cluster_id -> per-condition dict], on-demand results
+        # A Lisp stimulus file's summary (lisp_stimulus.describe), and the
+        # name/unit of its spatial value: a period in pixels, not a bar width.
+        self.grating_source = None
+        self.grating_spatial_label = None
         self._grating_cache_lock = threading.Lock()
         # Glob results from the instant presence check. The Kilosort worker
         # fills this; StimulusAnalysisLoadWorker loads the files after the
@@ -1105,6 +1109,7 @@ class DataManager(QObject):
         if old_source is not None and old_source != new_source:
             self._forget_vision_derived(old_source, new_source)
         self._vision_source = new_source
+        self._vision_neurons_source = (str(vision_path), dataset_name)
         self.vision_params_path = self._params_path_for(vision_path, dataset_name)
 
         # Use the high-level helper in vision_integration
@@ -2841,9 +2846,12 @@ class DataManager(QObject):
                 and self._optional_attr("reference_bridge")
                 and self.reference_bridge.has_match(vid)
             ):
-                bridge = self.reference_bridge
+                # The run that has an STA or RF for this cell (Match Runs can
+                # hold several, Q62); its reference ID goes with it.
+                bridge = (self.reference_bridge.pick(vid, "sta")
+                          or self.reference_bridge.pick(vid, "rf")
+                          or self.reference_bridge.pick(vid, "match"))
                 ref_id = bridge.get_reference_id(vid)
-                sta_data = bridge.get_sta(vid) if bridge.has_sta(vid) else None
                 stafit = bridge.get_stafit(vid)
 
                 if stafit is not None and not rf_geometry.fit_is_unmoved(
@@ -2863,14 +2871,24 @@ class DataManager(QObject):
                             exc_info=True,
                         )
 
-                if sta_data is not None or stafit is not None:
+                # The reference .params time course first, as for the run's own
+                # cells above: reading the STA cube costs a network read per
+                # cell (2012-10-15-0/data000-map.sta is 5.2 GB, ~7 MB a cell).
+                ref_key = ref_id if ref_id is not None else vid
+                tc_matrix = None
+                try:
+                    if bridge._ref_params is not None:
+                        _t, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                            None, stafit, bridge._ref_params, ref_key)
+                    if (tc_matrix is None or tc_matrix.size == 0) and bridge.has_sta(vid):
+                        sta_data = bridge.get_sta(vid)
+                        if sta_data is not None:
+                            _t, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
+                                sta_data, stafit, bridge._ref_params, ref_key)
+                except Exception:
+                    tc_matrix = None
+                if tc_matrix is not None:
                     try:
-                        time_axis, tc_matrix, _ = analysis_core.get_sta_timecourse_data(
-                            sta_data,
-                            stafit,
-                            bridge._ref_params,
-                            ref_id if ref_id is not None else vid,
-                        )
                         if tc_matrix is not None and tc_matrix.size > 0:
                             energies = np.sum(tc_matrix**2, axis=0)
                             dom_idx = np.argmax(energies)
@@ -3220,8 +3238,9 @@ class DataManager(QObject):
         if local_chirp:
             chirp_n_bins = int(np.asarray(self.chirp_data["psth_mean"]).shape[1])
         elif bridge_chirp:
+            first = bridge.first_with("chirp") if hasattr(bridge, "first_with") else bridge
             chirp_n_bins = int(
-                np.asarray(bridge._ref_chirp_data["psth_mean"]).shape[1]
+                np.asarray(first._ref_chirp_data["psth_mean"]).shape[1]
             )
         else:
             chirp_n_bins = 0
@@ -5745,6 +5764,9 @@ class DataManager(QObject):
         vid = self.get_vision_id_for_cluster(int(cluster_id))
         if not bridge.has_match(vid):
             return None
+        bridge = bridge.pick(vid, "chirp")        # the matched run that has it (Q62)
+        if bridge is None:
+            return None
         pack = bridge.get_chirp_row(vid)
         if pack is None:
             return None
@@ -5824,11 +5846,15 @@ class DataManager(QObject):
         vid = self.get_vision_id_for_cluster(int(cluster_id))
         if vid is None or not bridge.has_match(vid):
             return None
+        bridge = bridge.pick(vid, "grating")      # the matched run that has it (Q62)
+        if bridge is None:
+            return None
         entry = bridge.get_grating_entry(vid)
         if not entry:
             return None
         raw = getattr(bridge, "_ref_grating_raw", None) or {}
         return {"data": entry, "trials": bridge.get_grating_trials(vid),
+                "spatial": getattr(bridge, "grating_spatial_label", None),
                 "borrowed": {"run": str(bridge.ref_run_path),
                              "reference_id": bridge.get_reference_id(vid),
                              "confidence": float(bridge.get_confidence(vid)),
@@ -5949,6 +5975,8 @@ class DataManager(QObject):
         Loads the chosen file once. Combined/analyzed names are tried
         first so a folder with leftovers does not unpickle every .npy.
         """
+        self.grating_source = None
+        self.grating_spatial_label = None
         try:
             if grating_path is None:
                 candidates = self.find_grating_candidates()
@@ -6064,6 +6092,51 @@ class DataManager(QObject):
             self.grating_data = None
             self.grating_raw_data = None
             return False, str(e)
+
+    def vision_neurons_source(self):
+        """``(vision_dir, dataset_name)`` of the loaded ``.neurons``, or None."""
+        return (self._optional_attr("_native_vision_source")
+                or self._optional_attr("_vision_neurons_source"))
+
+    def read_lisp_grating(self, sequence_path):
+        """Grating trials from a Lisp stimulus sequence (PLAN.md Q61). No state change.
+
+        Triggers and spike times both come from this run's ``.neurons``, so
+        they share one clock also when Kilosort spikes are what the table
+        shows. Vision IDs map to cluster IDs as everywhere (Law 1).
+        Raises ``lisp_stimulus.LispStimulusError`` with a sentence for the user.
+        """
+        from . import lisp_stimulus as ls
+        import src.analysis.visionloader as vl
+        src = self.vision_neurons_source()
+        if src is None:
+            raise ls.LispStimulusError(
+                "Open the run's Vision files first: the trial triggers are in its .neurons file.")
+        seq = ls.read_sequence(sequence_path)
+        vdir, name = src
+        with vl.NeuronsReader(str(vdir), name) as nr:
+            ttl = nr.get_TTL_times()
+            spikes = nr.get_spike_sample_nums_for_all_real_neurons()
+            fs = float(nr.sample_freq)
+        offset = 0 if self._optional_attr("is_vision_only", False) else -1
+        ids = set(int(c) for c in self.cluster_df["cluster_id"].values)
+        by_cell = {int(v) + offset: s for v, s in spikes.items() if int(v) + offset in ids}
+        ends = [int(s[-1]) for s in spikes.values() if len(s)]
+        end = max(ends) if ends else None
+        return ls.build_grating_trials(seq, ttl, by_cell, fs, recording_end_samples=end)
+
+    def apply_lisp_grating(self, trials):
+        """Make ``read_lisp_grating``'s result this run's grating data (GUI thread)."""
+        self.grating_raw_data = trials.as_raw()
+        self.grating_data = None
+        self.grating_available = True
+        self.grating_status = "raw_only"
+        # Results of another file must not survive; this file is recomputed.
+        self.grating_computed_cache = {}
+        self.grating_conditions = sorted(
+            set((t["barWidth"], t["temporalFrequency"]) for t in trials.trial_parameters))
+        self.grating_source = dict(trials.summary)
+        self.grating_spatial_label = ("period", "px")
 
     @staticmethod
     def _collect_grating_conditions(grating_data):
