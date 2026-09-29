@@ -11,13 +11,14 @@ class _Stop(Exception):
 
 def test_vision_native_open_leaves_the_welcome_screen(qtbot, monkeypatch, tmp_path):
     """The load ran behind the welcome page, so the window looked empty after "loaded"."""
-    from qtpy.QtCore import QSettings
     from qtpy.QtWidgets import QFileDialog
     from src.gui import callbacks, recent_paths
     from src.gui.main_window import MainWindow
-    # Never the user's own settings file: the load remembers the folder.
-    settings = QSettings(str(tmp_path / "encore.ini"), QSettings.Format.IniFormat)
-    monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
+    # Never the user's settings file: the load remembers the folder. Stub the
+    # two calls rather than hand in a QSettings: one destroyed after the
+    # QApplication segfaulted Python 3.13 at exit (CI, empty HOME).
+    monkeypatch.setattr(recent_paths, "remember_dir", lambda *a, **k: None)
+    monkeypatch.setattr(recent_paths, "last_dir", lambda *a, **k: "")
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path)))
     seen = {}
 
