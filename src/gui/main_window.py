@@ -74,6 +74,7 @@ from .panels.contrast_panel import ContrastPanel
 from .panels.grating_panel import GratingPanel
 from .panels.ei_panel import EIPanel
 from .panels.raw_panel import RawPanel
+from .panels.raster_panel import RasterPanel
 from .panels.sta_panel import STAPanel
 from .workers.workers import FeatureWorker
 from .shortcuts import KeyForwarder
@@ -871,6 +872,7 @@ class MainWindow(QMainWindow):
             self.grating_panel,
             self.ei_panel,
             self.waveforms_panel,
+            self.raster_panel,
             self.raw_panel,
             self.sta_panel,
             self.umap_panel,
@@ -1377,6 +1379,9 @@ class MainWindow(QMainWindow):
         elif current_panel == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
 
+        elif current_panel == self.raster_panel:
+            self.raster_panel.update_all(cluster_id)
+
         elif current_panel == self.raw_panel:
             self.raw_panel.load_data(cluster_id)
 
@@ -1444,6 +1449,9 @@ class MainWindow(QMainWindow):
 
         elif current_tab == self.waveforms_panel:
             self.waveforms_panel.update_all(cluster_id)
+
+        elif current_tab == self.raster_panel:
+            self.raster_panel.update_all(cluster_id)
 
         elif current_tab == self.raw_panel:
             self.raw_panel.load_data(cluster_id)
@@ -1873,6 +1881,7 @@ class MainWindow(QMainWindow):
         self.ei_panel = EIPanel(self)
         self.waveforms_panel = WaveformPanel(self)
         self.raw_panel = RawPanel(self)
+        self.raster_panel = RasterPanel(self)
         self.sta_panel = STAPanel(self)
         self.umap_panel = UMAPPanel(self)
         self.types_panel = TypesPanel(self)
@@ -1888,6 +1897,8 @@ class MainWindow(QMainWindow):
         # The whole run by class: barcode + mosaic atlas (PLAN.md Q40, Q42).
         self.analysis_tabs.addTab(self.types_panel, "Types")
         self.analysis_tabs.addTab(self.waveforms_panel, "Waveforms")
+        # Every spike of the cell and the units around it (PLAN.md Q63).
+        self.analysis_tabs.addTab(self.raster_panel, "Raster")
         self.analysis_tabs.addTab(self.raw_panel, "Raw")
         for i in range(self.analysis_tabs.count()):
             self.app_tab_bar.addTab(self.analysis_tabs.tabText(i))

@@ -73,7 +73,7 @@ _UNIT_PALETTE: list[tuple[int, int, int]] = [
 _ALPHA_SELECTED = 220
 _ALPHA_OTHER = 100
 # Height fraction of the tick strip relative to the total Y range of the plot
-_TICK_STRIP_FRAC = 0.07  # tick strip = 7 % of total Y range, below zero line
+_TICK_STRIP_FRAC = 0.0   # other units are in the lanes plot under the trace (Q63)
 _TICK_HEIGHT_FRAC = 0.05  # individual tick = 5 %
 
 # Number of FR-density bins in the minimap
@@ -235,8 +235,7 @@ class RawPanel(QWidget):
 
         dm = self.main_window.data_manager
         if not self._dm_has_raw(dm):
-            self._pages.setCurrentWidget(self.raster)
-            self.raster.show_cell(cluster_id)
+            self._pages.setCurrentWidget(self._no_raw_page)
             return
         self._pages.setCurrentWidget(self._trace_page)
 
@@ -288,13 +287,11 @@ class RawPanel(QWidget):
 
     def restyle_plots(self, colors: dict) -> None:
         """Called by MainWindow when the theme changes."""
-        if hasattr(self, "raster"):
-            self.raster.restyle_plots(colors)
         bg = colors.get("bg_panel", "#18191C")
         ax_pen = pg.mkPen(colors.get("border_default", "#3D3F48"))
         text_pen = pg.mkPen(colors.get("text_secondary", "#9B9DA6"))
 
-        for pw in (self._minimap_plot, self._main_plot):
+        for pw in (self._minimap_plot, self._main_plot, self._lanes_plot):
             pw.setBackground(bg)
             for axis in ("bottom", "left"):
                 ax = pw.getAxis(axis)
@@ -311,17 +308,36 @@ class RawPanel(QWidget):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        # Page 0: voltage traces; page 1: spike rasters when there is no raw
-        # file (PLAN.md Q38).
-        from .raster_view import SessionRaster
+        # Page 0: voltage traces; page 1: no raw file. The spike rasters that
+        # page 1 held (PLAN.md Q38) are the Raster tab now (Q63).
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._pages = QStackedWidget()
         outer.addWidget(self._pages)
         self._trace_page = QWidget()
         self._pages.addWidget(self._trace_page)
-        self.raster = SessionRaster(self.main_window)
-        self._pages.addWidget(self.raster)
+        self._no_raw_page = QWidget()
+        nr = QVBoxLayout(self._no_raw_page)
+        nr.addStretch()
+        msg = QLabel("No raw voltage file is loaded. Load it to see the voltage around each "
+                     "spike, with the units near this cell in lanes below.\n"
+                     "Every spike of this cell and its neighbours is on the Raster tab.")
+        msg.setWordWrap(True)
+        msg.setAlignment(Qt.AlignCenter)
+        nr.addWidget(msg)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        load_btn = QPushButton("Load raw file…")
+        load_btn.clicked.connect(lambda: self.main_window.load_raw_data_file())
+        raster_btn = QPushButton("Open the Raster tab")
+        raster_btn.clicked.connect(
+            lambda: self.main_window.analysis_tabs.setCurrentWidget(self.main_window.raster_panel))
+        btns.addWidget(load_btn)
+        btns.addWidget(raster_btn)
+        btns.addStretch()
+        nr.addLayout(btns)
+        nr.addStretch()
+        self._pages.addWidget(self._no_raw_page)
         root = QVBoxLayout(self._trace_page)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
@@ -440,6 +456,27 @@ class RawPanel(QWidget):
 
         root.addWidget(self._main_plot, stretch=1)
 
+        # ── Zone 2b: lanes of the units near this cell (the raster, Q63) ──────
+        # One row per unit, the same window as the trace: which unit fired
+        # each spike on the trace. Kilosort and Vision runs alike (by position).
+        self._lanes_plot = pg.PlotWidget()
+        self._lanes_plot.setBackground("#18191C")
+        self._lanes_plot.setMenuEnabled(False)
+        self._lanes_plot.invertY(True)
+        self._lanes_plot.getViewBox().setMouseEnabled(x=True, y=False)
+        self._lanes_plot.setXLink(self._main_plot)
+        self._lanes_plot.setFixedHeight(40)
+        self._lane_items: list[pg.PlotCurveItem] = []
+        for i in range(len(self._other_spike_plots) + 1):
+            item = pg.PlotCurveItem(connect="pairs")
+            item.hide()
+            self._lanes_plot.addItem(item)
+            self._lane_items.append(item)
+        # Same left-axis width as the trace, so a lane tick sits under its spike.
+        for pw in (self._main_plot, self._lanes_plot):
+            pw.getAxis("left").setWidth(64)
+        root.addWidget(self._lanes_plot)
+
         # ── Zone 3: Controls ─────────────────────────────────────────────────
         root.addWidget(self._build_controls())
 
@@ -552,10 +589,10 @@ class RawPanel(QWidget):
         )
         self._chk_neighbours.stateChanged.connect(self._on_toggle_neighbours)
 
-        self._chk_other_units = QCheckBox("Other units")
+        self._chk_other_units = QCheckBox("Nearby units")
         self._chk_other_units.setChecked(True)
         self._chk_other_units.setToolTip(
-            "Show spike tick marks for all other units on this channel"
+            "Lanes under the trace: the spikes of the units within 100 µm of this cell"
         )
         self._chk_other_units.stateChanged.connect(self._on_toggle_other_units)
 
@@ -651,6 +688,23 @@ class RawPanel(QWidget):
         honest: you see only spikes that would realistically be visible on the
         trace you are looking at.
         """
+        # By position first: works for Kilosort and Vision runs alike (Q63).
+        try:
+            from ...analysis import raster_data
+            near = raster_data.nearby_units(dm, selected_id, max_n=len(self._other_spike_plots))
+            near.sort(key=lambda n: n.distance_um if np.isfinite(n.distance_um) else np.inf)
+            near = [n for n in near if np.isfinite(n.distance_um)][:8]
+        except Exception:
+            logger.debug("nearby units failed", exc_info=True)
+            near = []
+        if near:
+            out: dict[int, np.ndarray] = {}
+            for n in near:
+                samps = dm.get_cluster_spikes(n.cluster_id)
+                if samps is not None and len(samps) > 0:
+                    out[n.cluster_id] = np.sort(samps.astype(np.float64) / dm.sampling_rate)
+            return out, list(out.keys())
+
         chan_to_templates = getattr(dm, "channel_to_templates", {})
         if not chan_to_templates:
             return {}, []
@@ -1340,31 +1394,29 @@ class RawPanel(QWidget):
         color = _unit_color(0, _ALPHA_SELECTED)
         self._sel_spike_plot.setPen(pg.mkPen(color, width=1.2))
 
-        # ── Other-unit ticks ──────────────────────────────────────────────────
+        # ── Lanes: this cell, then each nearby unit, one row each ────────────
+        for item in self._other_spike_plots:
+            item.hide()
         show_others = self._chk_other_units.isChecked()
-        for slot_idx, plot_item in enumerate(self._other_spike_plots):
-            if not show_others or slot_idx >= len(self.other_unit_ids):
-                plot_item.hide()
+        lanes = [(self.current_cluster_id, self.spike_times_sec, 0)]
+        if show_others:
+            lanes += [(cid, self.other_unit_spikes.get(cid), i + 1)
+                      for i, cid in enumerate(self.other_unit_ids)]
+        for item in self._lane_items:
+            item.hide()
+        for row, (cid, times, colour_idx) in enumerate(lanes):
+            if row >= len(self._lane_items) or times is None:
                 continue
-
-            other_cid = self.other_unit_ids[slot_idx]
-            other_spikes = self.other_unit_spikes.get(other_cid)
-            if other_spikes is None or len(other_spikes) == 0:
-                plot_item.hide()
-                continue
-
-            in_win = other_spikes[(other_spikes >= start_t) & (other_spikes <= end_t)]
-            if len(in_win) == 0:
-                plot_item.hide()
-                continue
-
-            tick_x, tick_y = self._make_vline_data(
-                in_win, tick_bottom, tick_bottom + self._tick_h
-            )
-            color = _unit_color(slot_idx + 1, _ALPHA_OTHER)
-            plot_item.setData(tick_x, tick_y)
-            plot_item.setPen(pg.mkPen(color, width=1))
-            plot_item.show()
+            in_win = times[(times >= start_t) & (times <= end_t)]
+            xs = np.repeat(in_win, 2)
+            ys = np.tile([row + 0.15, row + 0.85], in_win.size)
+            item = self._lane_items[row]
+            item.setData(xs, ys, pen=pg.mkPen(_unit_color(colour_idx, 255), width=1.2))
+            item.show()
+        n = len(lanes)
+        self._lanes_plot.setFixedHeight(28 + 16 * n)
+        self._lanes_plot.setYRange(0, n, padding=0)
+        self._lanes_plot.getAxis("left").setTicks([[(r + 0.5, f"C{cid}") for r, (cid, _t, _c) in enumerate(lanes)]])
 
         self._rebuild_unit_legend(start_t, end_t)
 

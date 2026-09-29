@@ -66,10 +66,28 @@ TAB_HELP = {
         "Individual spikes from the raw file, to judge how well the unit is isolated.",
         ["The cloud of spikes around the mean trace, split by amplitude, and a PCA view.",
          "Needs the raw data file (File ▸ Load Raw Data File)."]),
+    "Raster": (
+        "Every spike of the cell over the whole recording, and the units around it.",
+        ["Top: the firing rate over the recording, stimulus blocks shaded. Click to bring "
+         "that moment into the raster.",
+         "Middle: the recording folded into rows, every spike a tick. With trial triggers "
+         "(Vision .neurons) each row is a trial; with a Lisp grating loaded, order the rows "
+         "by condition and read each trial's direction from the coloured strip. A cell that "
+         "drifts, dies or drops out shows as rows going empty.",
+         "Bottom: this cell (red) and the units within 100 µm or with a similar template, "
+         "most similar first. Shared: the share of this cell's spikes the unit fires within "
+         "±0.5 ms, with the chance level. A duplicate shares most (and its cross-correlogram "
+         "has a sharp peak at 0). A gap at 0 like a refractory period can mean one cell split "
+         "in two, though sorting also leaves a short gap between units on one electrode; a "
+         "unit that takes over as this one stops is a split too.",
+         "Double-click a spike to open the Raw tab there (with a raw file); double-click a "
+         "neighbour to select it."]),
     "Raw": (
-        "The raw voltage with the cell's spikes marked, or spike rasters without a raw file.",
-        ["With a raw file: step through the recording and check each spike by eye.",
-         "Without one: one row per cell over the whole recording; zoom in to see every spike."]),
+        "The raw voltage with the cell's spikes marked, and the units near it in lanes below.",
+        ["Step through the recording and check each spike by eye; the lanes say which unit "
+         "fired each spike on the trace.",
+         "Needs the raw data file (File ▸ Load Raw Data File). Without it, the Raster tab "
+         "shows every spike."]),
 }
 
 

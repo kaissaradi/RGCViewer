@@ -1,6 +1,7 @@
 from pathlib import Path
 import logging
 import threading
+import numpy as np
 logger = logging.getLogger(__name__)
 
 # Guard import of visionloader so the app can run without it installed
@@ -607,11 +608,16 @@ def load_neurons_data(vision_dir: Path, dataset_name: str):
             spikes_by_id = nr.get_spike_sample_nums_for_all_real_neurons()
             seed_electrodes = nr.get_identifier_electrodes_for_all_real_neurons()
             sampling_rate = nr.sample_freq
+            try:
+                ttl = np.asarray(nr.get_TTL_times(), dtype=np.int64)
+            except Exception:
+                ttl = None
             logger.info(f"Loaded .neurons for {len(spikes_by_id)} cells")
             return {
-                'spikes_by_id': spikes_by_id, 
+                'spikes_by_id': spikes_by_id,
                 'seed_electrodes': seed_electrodes,
-                'sampling_rate': sampling_rate
+                'sampling_rate': sampling_rate,
+                'ttl_samples': ttl,   # the stimulus triggers (Raster tab trials, Q63)
             }
     except FileNotFoundError:
         logger.error(f"Neurons file not found in {vision_dir}")

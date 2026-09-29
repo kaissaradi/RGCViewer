@@ -563,6 +563,7 @@ class DataManager(QObject):
         # name/unit of its spatial value: a period in pixels, not a bar width.
         self.grating_source = None
         self.grating_spatial_label = None
+        self.vision_ttl_samples = None   # .neurons triggers on the spike clock (trigger_times_s)
         self._grating_cache_lock = threading.Lock()
         # Glob results from the instant presence check. The Kilosort worker
         # fills this; StimulusAnalysisLoadWorker loads the files after the
@@ -1150,6 +1151,7 @@ class DataManager(QObject):
 
             self.vision_stas = vision_data.get("sta")
             self.vision_params = vision_data.get("params")
+            self.vision_ttl_samples = self._ttl_on_kilosort_clock(vision_data.get("neurons"))
 
             # Extract and store stimulus dimensions for coordinate alignment
             if self.vision_stas and len(self.vision_stas) > 0:
@@ -1329,6 +1331,7 @@ class DataManager(QObject):
 
         # 2. Extract Spikes and Seed Electrodes
         spikes_dict = neurons_bundle["spikes_by_id"]
+        self.vision_ttl_samples = neurons_bundle.get("ttl_samples")
         seed_electrodes = neurons_bundle["seed_electrodes"]
         self.sampling_rate = float(neurons_bundle["sampling_rate"])
 
@@ -6092,6 +6095,47 @@ class DataManager(QObject):
             self.grating_data = None
             self.grating_raw_data = None
             return False, str(e)
+
+    def _ttl_on_kilosort_clock(self, neurons):
+        """The .neurons triggers if its spikes are Kilosort's (same sort, same clock), else None.
+
+        Vision files made from another sort or a concatenated recording
+        would put the triggers on another clock. Checked on up to 5 cells
+        with ≥ 50 spikes: ≥ 90 % of the .neurons spikes within 2 samples of
+        a Kilosort spike of cluster = Vision ID − 1.
+        """
+        if not neurons or neurons.get("ttl_samples") is None:
+            return None
+        spikes = neurons.get("spikes_by_id") or {}
+        checked = agree = 0
+        for vid, v in spikes.items():
+            if checked >= 5:
+                break
+            v = np.asarray(v)
+            if v.size < 50:
+                continue
+            try:
+                k = np.sort(np.asarray(self.get_cluster_spikes(int(vid) - 1), dtype=np.int64))
+            except Exception:
+                continue
+            if k.size == 0:
+                continue
+            checked += 1
+            i = np.clip(np.searchsorted(k, v), 1, k.size - 1)
+            near = np.minimum(np.abs(k[i] - v), np.abs(k[i - 1] - v)) <= 2
+            agree += bool(np.mean(near) >= 0.9)
+        if checked and agree == checked:
+            return np.asarray(neurons["ttl_samples"], dtype=np.int64)
+        logger.info("Vision triggers not used: .neurons spikes differ from Kilosort's (%d of %d agree)",
+                    agree, checked)
+        return None
+
+    def trigger_times_s(self):
+        """The stimulus triggers in seconds on this run's spike clock, or None."""
+        ttl = self._optional_attr("vision_ttl_samples")
+        if ttl is None or not len(ttl):
+            return None
+        return np.asarray(ttl, dtype=np.float64) / float(self.sampling_rate)
 
     def vision_neurons_source(self):
         """``(vision_dir, dataset_name)`` of the loaded ``.neurons``, or None."""

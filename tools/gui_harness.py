@@ -915,37 +915,82 @@ def scenario_std_fill(s):
 
 
 def scenario_raster(s):
-    """Q38: the Raw tab without a raw file shows spike rasters; zoom from the hour to seconds."""
-    s.load()
+    """Q63: the Raster tab: folded raster, trials, nearby units; the Raw tab's lanes.
+
+    Default: the Kilosort run (s.load()); HARNESS_DAT adds the raw file for the
+    Raw tab's lanes. HARNESS_VISION opens a Vision folder natively instead, and
+    HARNESS_LISP then loads its Lisp gratings (trial rows ordered by condition).
+    """
+    from qtpy.QtWidgets import QFileDialog
+    from src.gui import callbacks
+    vision = os.environ.get("HARNESS_VISION")
     w = s.w
-    ids = [int(c) for c in s.dm().cluster_df["cluster_id"].values]
-    tab = w.analysis_tabs
-    log(f"raw tab enabled: {tab.isTabEnabled(tab.indexOf(w.raw_panel))}")
-    s.tab("Raw")
+    if vision:
+        QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: vision)
+        callbacks.load_vision_directory(w)
+        wait_until(lambda: w.data_manager is not None and getattr(w.data_manager, "cluster_df", None)
+                   is not None and w.tree_model.invisibleRootItem().rowCount() > 0, 600)
+        pump(2.0)
+        lisp = os.environ.get("HARNESS_LISP")
+        if lisp:
+            callbacks.load_lisp_stimulus(w, lisp)
+            wait_until(lambda: getattr(w.data_manager, "grating_source", None) is not None, 120)
+    else:
+        s.load()
+    dm = s.dm()
+    df = dm.cluster_df
+    cid = int(df.sort_values("n_spikes").iloc[int(len(df) * 0.7)]["cluster_id"])
+    p = w.raster_panel
+    s.tab("Raster")
     t = time.time()
-    s.select(ids[5], settle=0.0)
-    ok = wait_until(lambda: w.raw_panel._pages.currentWidget() is w.raw_panel.raster
-                    and bool(w.raw_panel.raster._cells), 30)
-    r = w.raw_panel.raster
-    log(f"raster shown={ok} in {time.time() - t:.2f}s: {len(r._cells)} rows, "
-        f"{sum(x.size for x in r._times)} spikes, duration {r._duration:.0f}s")
-    s.shot("raster_full", w.raw_panel)
-    for x0, x1 in ((600, 900), (700, 704)):
-        t = time.time()
-        r.plot.setXRange(x0, x1, padding=0)
-        r._render()
-        log(f"window {x1 - x0}s rendered in {1000 * (time.time() - t):.0f} ms; "
-            f"ticks={r.tick_curve.isVisible()} image={r.image.isVisible()}")
-    s.shot("raster_zoom", w.raw_panel)
-    r.rows_combo.setCurrentIndex(1)
+    s.select(cid, settle=0.0)
+    wait_until(lambda: p._cid == cid, 30)
+    shown = time.time() - t
+    wait_until(lambda: not p.nb_note.text().startswith("Finding"), 120)
+    nb_s = time.time() - t
+    pump(1.0)
+    log(json.dumps({"cell": cid, "raster_s": round(shown, 2), "neighbours_s": round(nb_s, 2),
+                    "rows_mode": p.rows_combo.currentText(), "rows": int(p._row_order.size),
+                    "trials": None if p._trials is None else int(p._trials[0].size),
+                    "spikes": int(p._times.size), "note": p.nb_note.text()}))
+    log(json.dumps({"neighbours": [
+        {"id": n.cluster_id, "um": round(n.distance_um, 1) if n.distance_um == n.distance_um else None,
+         "sim": round(n.similarity, 3) if n.similarity == n.similarity else None, "src": n.sim_source,
+         "shared": round(p._pair_stats[n.cluster_id]["shared"], 3),
+         "chance": round(p._pair_stats[n.cluster_id]["chance"], 4)} for n in p._neighbours]}))
+    s.shot("raster_tab", w.raster_panel)
+    if p.order_combo.isVisible():
+        p.order_combo.setCurrentIndex(1)
+        p._refold()
+        pump(0.5)
+        s.shot("raster_by_condition", w.raster_panel)
+    i = p.rows_combo.findText("10 s")
+    p.rows_combo.setCurrentIndex(i)
+    p._refold()
     pump(0.5)
-    t = time.time()
-    r.plot.setXRange(0, r._duration, padding=0)
-    r._render()
-    log(f"all cells ({len(r._cells)} rows) full recording: {1000 * (time.time() - t):.0f} ms")
-    s.shot("raster_all", w.raw_panel)
-
-
+    s.shot("raster_rows_10s", w.raster_panel)
+    for x0, x1 in ((0, dm.n_samples / dm.sampling_rate), (600, 604)):
+        t = time.time()
+        p.lanes_plot.setXRange(x0, x1, padding=0)
+        p._render_lanes()
+        log(f"lanes {x1 - x0:.0f} s rendered in {1000 * (time.time() - t):.0f} ms; "
+            f"ticks={any(c.isVisible() for c in p._lane_curves)}")
+    w.toggle_theme()
+    pump(1.0)
+    s.shot("raster_light", w.raster_panel)
+    w.toggle_theme()
+    pump(0.5)
+    p.lanes_combo.setCurrentIndex(1)
+    p._fill_lanes()
+    pump(0.5)
+    log(f"group lanes: {len(p._lane_ids)}")
+    s.shot("raster_group_lanes", w.raster_panel)
+    s.tab("Raw")
+    s.select(cid, settle=3.0)
+    rp = w.raw_panel
+    raw_page = rp._pages.currentWidget() is rp._trace_page
+    log(json.dumps({"raw_trace_page": raw_page, "raw_lanes": 1 + len(rp.other_unit_ids) if raw_page else 0}))
+    s.shot("raw_tab", w.raw_panel)
 def scenario_empty_states(s):
     """Q49: what an empty stimulus tab tells a new user."""
     s.load()

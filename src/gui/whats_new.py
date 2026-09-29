@@ -5,6 +5,8 @@ the details live in README.md and docs/PLAN.md.
 """
 
 WHATS_NEW = [
+    ("Raster tab", "Every spike of the cell over the whole recording (one row per trial when the "
+     "triggers show trials), and the units around it with shared spikes and a cross-correlogram."),
     ("Fixed: timing", "Firing rates were 1.5x too high and ISI / ACG lags 2/3 too short: Kilosort times were read at 30 kHz, not 20 kHz. Caches rebuild once, by themselves."),
     ("Match Runs", "File ▸ Match Runs: tick one or more runs of the prep; each cell takes its "
      "chirp, gratings and RF from the first run that has them."),

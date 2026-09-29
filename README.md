@@ -145,10 +145,26 @@ folder. Chirp is precomputed. Grating may be a raw
 `*DSOS*.npy`). The GUI then computes DSI/OSI for each `(bar width, TF)`
 that was actually run and stores `grating_computed_cache.pkl`.
 
-Without a raw voltage file the Raw tab shows spike rasters instead: one row
-per cell, the selected cell on top, the whole recording, with stimulus
-blocks shaded. Zoom in below a few seconds to see every spike. File → Load
-Raw Data File switches it to voltage traces.
+The Raster tab shows every spike of the selected cell, for Kilosort and
+Vision runs alike:
+
+- the firing rate over the recording, stimulus blocks shaded (click to jump);
+- the recording folded into rows, one tick per spike: one row per trial when
+  the run's triggers (the Vision `.neurons` TTLs) come in trials, else rows
+  of a fixed length. With a Lisp grating loaded, order the rows by condition;
+  a strip gives each trial's direction. A cell that drifts or drops out shows
+  as rows going empty. Double-click opens the Raw tab at that moment;
+- lanes for the units within 100 µm or with a similar template (most similar
+  first, by EI or Kilosort template), with the share of this cell's spikes
+  each one fires within ±0.5 ms and the chance level, and a
+  cross-correlogram: a narrow peak at 0 ms is a duplicate; a refractory-like
+  gap can be one cell split in two (sorting also leaves a short gap between
+  units on one electrode). "Its group" / "All cells" show one lane per
+  cell instead.
+
+The Raw tab needs the raw voltage file (File → Load Raw Data File). It shows
+the trace with the cell's spikes marked and the same nearby units in lanes
+under it, one row each.
 
 ## Save the classification for Vision
 
