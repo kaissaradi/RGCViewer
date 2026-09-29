@@ -59,11 +59,41 @@ def test_class_ids_for_the_params_file(qapp):
     }
 
 
-def test_text_export_keeps_nested_unclassified_and_skips_the_root_one(qapp):
+def test_text_export_writes_every_cell_and_keeps_nested_unclassified(qapp):
     from src.gui import callbacks
     mw = SimpleNamespace(tree_model=_tree(), data_manager=_dm())
     assert callbacks.vision_classification_lines(mw) == [
-        "6  All/on/brisk transient/", "9  All/on/Unclassified/", "10  All/"]
+        "6  All/on/brisk transient/", "9  All/on/Unclassified/", "10  All/",
+        "4  All/", "5  All/"]              # the root "Unclassified" cells: All/ (2026-09-28)
+
+
+def test_kilosort_label_folders_are_not_classes(qapp):
+    """good/ON/brisk sustained → All/ON/brisk sustained, in the .txt and the .params."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtGui import QStandardItem, QStandardItemModel
+    from src.gui import callbacks
+
+    def cell(cid):
+        it = QStandardItem(str(cid))
+        it.setData(cid, Qt.ItemDataRole.UserRole)
+        return it
+
+    def group(name, *children):
+        g = QStandardItem(name)
+        for c in children:
+            g.appendRow(c)
+        return g
+
+    model = QStandardItemModel()
+    root = model.invisibleRootItem()
+    root.appendRow(group("good", group("ON", group("brisk sustained", cell(5))), cell(6)))
+    root.appendRow(group("mua", cell(7)))
+    root.appendRow(group("OFF", group("good", cell(8))))    # a nested "good" is a real class
+    mw = SimpleNamespace(tree_model=model, data_manager=_dm())
+    assert callbacks.vision_classification_lines(mw) == [
+        "6  All/ON/brisk sustained/", "7  All/", "8  All/", "9  All/OFF/good/"]
+    assert callbacks.vision_class_ids(mw) == {
+        6: "All/ON/brisk sustained", 7: "All", 8: "All", 9: "All/OFF/good"}
 
 
 def test_classification_text_keeps_names_with_spaces():

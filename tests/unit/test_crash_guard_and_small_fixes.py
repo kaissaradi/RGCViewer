@@ -150,8 +150,9 @@ def _tree(qapp):
 
 
 @pytest.mark.parametrize("vision_only, expected", [
-    (False, ["6  All/on/brisk/", "7  All/on/brisk/", "10  All/"]),
-    (True, ["5  All/on/brisk/", "6  All/on/brisk/", "9  All/"]),
+    # Every cell is written; the root "Unclassified" cell as All/ (2026-09-28).
+    (False, ["6  All/on/brisk/", "7  All/on/brisk/", "10  All/", "4  All/"]),
+    (True, ["5  All/on/brisk/", "6  All/on/brisk/", "9  All/", "3  All/"]),
 ])
 def test_vision_classification_lines(qapp, vision_only, expected):
     from src.analysis.data_manager import DataManager

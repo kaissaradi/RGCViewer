@@ -488,6 +488,9 @@ class DataManager(QObject):
         self.vision_params_path = None
         # (key, SortCheck) of vision_sort_check(); see vision_sort_check.py.
         self._sort_check_cache = None
+        # Vision-native run whose .neurons seeds are placeholders: channels
+        # come from the EIs once native_channels_from_eis has run.
+        self.native_channels_pending = False
 
         # --- Cross-Run Reference Bridge ---
         self.reference_bridge = None  # Optional[ReferenceBridge]
@@ -1419,6 +1422,19 @@ class DataManager(QObject):
             self.cluster_df["x_um"] = self.cluster_df["cluster_id"].map(x_dict)
             self.cluster_df["y_um"] = self.cluster_df["cluster_id"].map(y_dict)
 
+        # Vision files made from a Kilosort sort carry a placeholder seed
+        # electrode (20260220A/data022: seed 1 for all 578 cells), so every
+        # cell sat on channel 0 and the RF-vs-position check warned the STAs
+        # belonged to other cells. Mark them unknown; native_channels_from_eis
+        # fills them from each EI's largest electrode in the background.
+        self._native_vision_source = (str(vision_path), dataset_name)
+        n_seed = len(set(int(v) for v in seed_electrodes.values())) if seed_electrodes else 0
+        self.native_channels_pending = len(seed_electrodes) > 1 and n_seed <= 1
+        if self.native_channels_pending:
+            self.cluster_df["best_chan"] = -1
+            self.cluster_df["x_um"] = np.nan
+            self.cluster_df["y_um"] = np.nan
+
         # 6. Populate standard Vision attributes
         ei_bundle = vision_data.get("ei")
         self.vision_eis = ei_bundle.get("ei_data") if ei_bundle else None
@@ -1627,6 +1643,39 @@ class DataManager(QObject):
 
         logger.debug("Loaded EI correlations for %d cells from %s", n_rows, path)
         return cached, int_ids
+
+    def native_channels_from_eis(self, progress=None) -> dict:
+        """{vision id: (channel, x µm, y µm)} from each EI's largest electrode (background).
+
+        Reads the run's .ei once in file order (``axon_bearing.read_run_eis``).
+        For Vision-native runs whose .neurons seeds are placeholders.
+        """
+        from . import axon_bearing
+        src = getattr(self, "_native_vision_source", None)
+        if not src:
+            return {}
+        cells, pos = axon_bearing.read_run_eis(src[0], src[1], progress=progress)
+        pos = np.asarray(pos, dtype=float)
+        out = {}
+        for vid, c in cells.items():
+            amin = np.asarray(c["amin"], dtype=float)
+            if amin.size and np.isfinite(amin).any():
+                ch = int(np.nanargmax(amin))
+                out[int(vid)] = (ch, float(pos[ch, 0]), float(pos[ch, 1]))
+        return out
+
+    def apply_native_channels(self, chans: dict) -> int:
+        """Write native_channels_from_eis' result into cluster_df; returns cells updated."""
+        if not chans or self.cluster_df is None:
+            return 0
+        ids = self.cluster_df["cluster_id"].astype(int)
+        hit = ids.map(lambda c: c in chans)
+        self.cluster_df.loc[hit, "best_chan"] = [chans[int(c)][0] for c in ids[hit]]
+        self.cluster_df.loc[hit, "x_um"] = [chans[int(c)][1] for c in ids[hit]]
+        self.cluster_df.loc[hit, "y_um"] = [chans[int(c)][2] for c in ids[hit]]
+        self.native_channels_pending = False
+        self._sort_check_cache = None           # positions changed: check the pairing again
+        return int(hit.sum())
 
     def _compute_ei_correlations_if_needed(self):
         """

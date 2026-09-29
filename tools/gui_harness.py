@@ -1093,6 +1093,53 @@ def scenario_waveforms_pca(s):
         s.shot(f"waveforms_{cid}", wp)
 
 
+def scenario_vision_native(s):
+    """Vision-native open (File ▸ Load Vision Files with no Kilosort run): the run must show.
+
+    HARNESS_VISION: the Vision folder (default: data022's). Checks the page leaves the
+    welcome screen, the tree fills, and each tab draws for a selected cell.
+    """
+    from qtpy.QtWidgets import QFileDialog
+    from src.gui import callbacks
+    folder = os.environ.get("HARNESS_VISION",
+                            "/mnt/lab/Array-data/sorted/20260220A/kilosort25/data022")
+    w = s.w
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: folder)
+    t = time.time()
+    callbacks.load_vision_directory(w)
+    dm_ok = wait_until(lambda: w.data_manager is not None and getattr(w.data_manager, "cluster_df", None)
+                       is not None and w.tree_model.invisibleRootItem().rowCount() > 0, 600)
+    pump(3.0)
+    dm = w.data_manager
+    log(json.dumps({"loaded": dm_ok, "seconds": round(time.time() - t, 1),
+                    "showing_analysis_view": w.central_stack.currentWidget() is w.central_widget,
+                    "central_enabled": w.central_widget.isEnabled(),
+                    "is_vision_only": getattr(dm, "is_vision_only", None),
+                    "cells": 0 if dm is None or dm.cluster_df is None else len(dm.cluster_df),
+                    "tree_roots": [w.tree_model.invisibleRootItem().child(i).text()
+                                   for i in range(w.tree_model.invisibleRootItem().rowCount())],
+                    "status": w.status_bar.currentMessage()}))
+    if not dm_ok:
+        return
+    t = time.time()
+    filled = wait_until(lambda: not getattr(dm, "native_channels_pending", False), 180)
+    pump(1.0)
+    check = dm.vision_sort_check()
+    log(json.dumps({"channels_filled": filled, "fill_s": round(time.time() - t, 1),
+                    "unique_channels": int(dm.cluster_df["best_chan"].nunique()),
+                    "sort_check_r2": round(float(check.r2_robust), 2), "sort_check_warn": check.warn,
+                    "screen_turn": check.screen_turn, "header": w.run_meta_label.text(),
+                    "tree_ch_first_rows": [w.tree_model.invisibleRootItem().child(0).child(r, 2).text()
+                                           for r in range(3)]}))
+    cid = int(dm.cluster_df["cluster_id"].values[len(dm.cluster_df) // 3])
+    for tab in ("Standard", "STA", "EI", "UMAP", "Types", "Raw"):
+        s.tab(tab)
+        s.select(cid, settle=2.5)
+        s.shot(f"native_{tab}", w)
+    log(f"selected cell {cid}; window title {w.windowTitle()!r}; STA warning shown: "
+        f"{w.sta_panel.sort_warning.isVisible()}")
+
+
 def scenario_borrowed_grating(s):
     """Q52: Map Reference Run to the prep's grating run; matched cells show its DS tuning.
 

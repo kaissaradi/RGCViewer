@@ -809,6 +809,68 @@ def _on_stimulus_analyses_loaded(main_window, success, message):
     _end_load_phase(main_window, "stimulus")
 
 
+def update_tree_channels(main_window, chans_by_cluster: dict) -> int:
+    """Set the tree's channel column for these cells in place (groups untouched)."""
+    from .widgets.widgets import TREE_COL_CH, TREE_SORT_ROLE, format_channel
+    n = 0
+
+    def walk(item):
+        nonlocal n
+        for r in range(item.rowCount()):
+            child = item.child(r, 0)
+            if child is None:
+                continue
+            cid = child.data(Qt.ItemDataRole.UserRole)
+            if cid is None:
+                walk(child)
+            elif int(cid) in chans_by_cluster:
+                ch_item = item.child(r, TREE_COL_CH)
+                if ch_item is not None:
+                    ch = chans_by_cluster[int(cid)]
+                    ch_item.setText(format_channel(ch))
+                    ch_item.setData(int(ch), TREE_SORT_ROLE)
+                    n += 1
+
+    model = getattr(main_window, "tree_model", None)
+    if model is not None:
+        walk(model.invisibleRootItem())
+    return n
+
+
+def _fill_native_channels(main_window):
+    """Vision-native run with placeholder seeds: channels and positions from the EIs.
+
+    Reads the .ei once in the background (5–7 s on the share), then updates
+    the table, the tree's channel column and the Vision/sort check, which
+    wrongly said the STAs belonged to other cells while every cell sat on
+    channel 0 (2026-09-28).
+    """
+    dm = main_window.data_manager
+    if dm is None or not getattr(dm, "native_channels_pending", False):
+        return
+    main_window.status_bar.showMessage(
+        "Finding each cell's electrode from its EI… (you can keep working)")
+
+    def done(chans):
+        if main_window.data_manager is not dm:
+            return
+        n = dm.apply_native_channels(chans)
+        update_tree_channels(main_window, {c: v[0] for c, v in chans.items()})
+        if hasattr(main_window, "refresh_table_model"):
+            main_window.refresh_table_model()
+        _warn_if_vision_from_other_sort(main_window)
+        cid = main_window._get_selected_cluster_id() if hasattr(main_window, "_get_selected_cluster_id") else None
+        if cid is not None and hasattr(main_window, "_draw_plots"):
+            main_window._draw_plots(cid, None)
+        main_window.status_bar.showMessage(f"Electrodes from the EIs: {n} cells.", 6000)
+
+    def failed(exc):
+        logger.warning("channels from the EIs failed", exc_info=exc)
+        main_window.status_bar.showMessage(f"Could not read the EIs for channels: {exc}", 8000)
+
+    _run_in_background(main_window, dm.native_channels_from_eis, done, failed)
+
+
 def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     """Cleanup and GUI update after StandaloneVisionWorker finishes."""
 
@@ -841,6 +903,11 @@ def _on_vision_native_loaded(main_window, success, message, vision_dir_name):
     # --- Populate tree and tables ---
     populate_tree_view(main_window)
     main_window._update_tree_view_duplicate_highlight()
+    # The header said "No run loaded" after a native open (2026-09-28).
+    if hasattr(main_window, "refresh_run_meta"):
+        main_window.refresh_run_meta()
+    # Placeholder seed electrodes: find each cell's electrode from its EI.
+    _fill_native_channels(main_window)
 
     # --- Drop the previous dataset's UMAP results ---
     # Path A of load_vision_directory builds a brand-new DataManager, so this is
@@ -1147,6 +1214,11 @@ def load_vision_directory(main_window):
         main_window.data_manager, "is_vision_only", False
     ):
         main_window.status_bar.showMessage("Initializing Vision-native loader...")
+        # Leave the welcome screen, as a Kilosort open does. Without this a
+        # Vision-native run loaded behind the welcome page and the window
+        # looked empty after "loaded" (2026-09-28, regression from Q49).
+        if hasattr(main_window, "show_analysis_view"):
+            main_window.show_analysis_view()
 
         # Retire any load still in flight, stop the workers, and free the
         # dataset this one replaces — see _release_previous_dataset().
@@ -1457,13 +1529,20 @@ def on_save_action(main_window: MainWindow):
 
 
 UNCLASSIFIED_GROUP_NAME = "Unclassified"
+# Kilosort's label folders at the root of the tree (good / mua / noise, or
+# "Unknown" when the run has none). They say where a cell came from, not
+# its class, so they are not written into the classification: a cell in
+# good/ON/brisk sustained is "All/ON/brisk sustained" (user 2026-09-28).
+KS_LABEL_FOLDERS = frozenset({"good", "mua", "noise", "unsorted", "unknown"})
 
 
 def tree_vision_groups(main_window):
     """``[(vision id, [group, subgroup, ...]), ...]`` for every cell in the tree.
 
     Cells in the root "Unclassified" group get ``None``; cells at the root
-    get ``[]``. Ids go through DataManager's translation (AGENTS.md Law 1).
+    get ``[]``. A Kilosort label folder at the root (KS_LABEL_FOLDERS) is
+    not part of the path. Ids go through DataManager's translation
+    (AGENTS.md Law 1).
     """
     dm = main_window.data_manager
     out = []
@@ -1476,10 +1555,13 @@ def tree_vision_groups(main_window):
                 out.append((dm.get_vision_id_for_cluster(int(cluster_id)), groups))
             elif groups == [] and child.text() == UNCLASSIFIED_GROUP_NAME:
                 recurse(child, None)
+            elif item is root and child.text().strip().lower() in KS_LABEL_FOLDERS:
+                recurse(child, [])
             else:
                 recurse(child, None if groups is None else [*groups, child.text()])
 
-    recurse(main_window.tree_model.invisibleRootItem(), [])
+    root = main_window.tree_model.invisibleRootItem()
+    recurse(root, [])
     return out
 
 
@@ -1487,11 +1569,13 @@ def vision_classification_lines(main_window):
     """The tree as Vision classification lines: ``"<vision id>  All/<path>/"``.
 
     Same format as a Vision classification.txt: two spaces, an ``All/`` root,
-    a trailing slash. The root "Unclassified" group is left out. Both File ▸
-    Save and File ▸ Save Classification write this, so the two files agree.
+    a trailing slash. Every cell is written; one with no class (the root
+    "Unclassified" group, or straight in a Kilosort label folder) is
+    ``All/``. Both File ▸ Save and File ▸ Save Classification write this, so
+    the two files agree.
     """
-    return [f"{vid}  All/" + "".join(f"{g}/" for g in groups)
-            for vid, groups in tree_vision_groups(main_window) if groups is not None]
+    return [f"{vid}  All/" + "".join(f"{g}/" for g in (groups or []))
+            for vid, groups in tree_vision_groups(main_window)]
 
 
 def vision_class_ids(main_window):
