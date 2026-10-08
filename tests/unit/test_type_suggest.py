@@ -179,3 +179,16 @@ def test_library_uses_the_session_copy_then_the_cache_before_scanning(monkeypatc
     monkeypatch.setattr(tl, "_load_cache", lambda path: {})
     assert tl.library(root="other", cache_path=tmp_path / "d.npz") == ("scanned",)
     assert calls == ["scan"]                                  # no cache: one full build
+
+
+def test_scan_with_no_share_keeps_the_cache(tmp_path):
+    """The background re-check on a machine without /mnt/lab emptied the cache (2026-10-08)."""
+    from src.analysis import type_library as tl
+    X, pol = tf.run_features([_cell(_tc(on=True)) for _ in range(12)])
+    cache = tmp_path / "lib.npz"
+    tl._save_cache(cache, {"/s/A/k/d1/d1.params": {"stamp": (1, 1), "data": {
+        "X": X, "y": np.array(["ON brisk sustained"] * 12), "polarity": pol}}})
+    before = cache.read_bytes()
+    lib = tl.build_library(root=str(tmp_path / "not-mounted"), cache_path=cache)
+    assert lib.n > 0 and set(lib.y) == {"ON brisk sustained"}
+    assert cache.read_bytes() == before

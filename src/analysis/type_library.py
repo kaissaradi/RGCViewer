@@ -158,6 +158,12 @@ def build_library(root: str = DEFAULT_ROOT, cache_path: Optional[Path] = None,
     cache_path = Path(cache_path) if cache_path is not None else CACHE_PATH
     files = sorted(glob.glob(os.path.join(root, "*", "*", "data*", "*.params")))
     cached = _load_cache(cache_path)
+    if not files:
+        # Share not mounted (or a machine without it, e.g. a laptop): keep
+        # what the cache has. Saving here replaced a 2,438-cell cache with an
+        # empty one from the background re-check (2026-10-08).
+        logger.info("type library: no runs under %s; using the cache as is", root)
+        return assemble(cached, exclude_runs)
     runs: Dict[str, dict] = {}
     t0 = time.time()
     for i, f in enumerate(files):
