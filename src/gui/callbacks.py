@@ -1568,6 +1568,24 @@ def tree_vision_groups(main_window):
     return out
 
 
+def tree_cluster_groups(main_window):
+    """Cluster id → name of the group the cell sits in (its innermost folder)."""
+    out = {}
+
+    def recurse(item):
+        for i in range(item.rowCount()):
+            child = item.child(i)
+            cluster_id = child.data(Qt.ItemDataRole.UserRole)
+            if cluster_id is None:
+                recurse(child)
+            elif item is not root:
+                out[int(cluster_id)] = item.text()
+
+    root = main_window.tree_model.invisibleRootItem()
+    recurse(root)
+    return out
+
+
 def vision_classification_lines(main_window):
     """The tree as Vision classification lines: ``"<vision id>  All/<path>/"``.
 
@@ -1597,6 +1615,11 @@ def save_results(main_window, output_path):
     try:
         # 1. Save your internal TSV and JSON tree as before
         final_df = main_window.data_manager.cluster_df[["cluster_id", "KSLabel"]].copy()
+        # KSLabel follows menu moves only; a drag-and-drop leaves it stale, so
+        # trashed cells were saved as "good". The label is the cell's group.
+        tree_groups = tree_cluster_groups(main_window)
+        final_df["KSLabel"] = [tree_groups.get(int(c), lab) for c, lab
+                               in zip(final_df["cluster_id"], final_df["KSLabel"])]
         final_df.to_csv(output_path, sep="\t", index=False)
         tree_save_path = output_path.replace(".tsv", "_tree.json")
         main_window.data_manager.save_tree_structure(tree_save_path)

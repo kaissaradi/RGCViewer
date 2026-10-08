@@ -4409,7 +4409,10 @@ class DataManager(QObject):
             """Recursively serialize a QStandardItem and its children."""
             item_data = {
                 "text": item.text(),
-                "data": item.data(),  # cluster_id for cells, None for groups
+                # The cluster id lives in UserRole. item.data() reads
+                # UserRole + 1, which only a fresh tree happens to set, so a
+                # tree that had been loaded once saved every cell as null.
+                "data": item.data(Qt.ItemDataRole.UserRole),
                 "child_count": item.rowCount(),
             }
 
@@ -4434,41 +4437,52 @@ class DataManager(QObject):
     def load_tree_structure(self, file_path):
         """
         Load the tree structure from a JSON file.
+
+        Rows are built as populate_tree_view builds them (ID, Spikes, Ch).
+        Files saved before the UserRole fix have ``"data": null`` on every
+        cell; a leaf whose text is a cluster id of this sort is read as that
+        cell, so those classifications come back.
         """
         import json
+        from ..gui.widgets.widgets import (
+            TREE_COL_SPIKES, TREE_HEADERS, make_cell_row, make_group_row,
+            set_count_item,
+        )
 
         with open(file_path, "r") as f:
             tree_data = json.load(f)
 
+        df = self.cluster_df
+        n_spikes = dict(zip(df["cluster_id"], df["n_spikes"])) if "n_spikes" in df else {}
+        best_chan = dict(zip(df["cluster_id"], df["best_chan"])) if "best_chan" in df else {}
+        known = set(int(c) for c in df["cluster_id"])
+
+        def cell_id(item_data):
+            if item_data.get("data") is not None:
+                return int(item_data["data"])
+            text = str(item_data.get("text", "")).strip()
+            if not item_data.get("children") and text.isdigit() and int(text) in known:
+                return int(text)
+            return None
+
         def deserialize_item(item_data):
-            """Recursively deserialize an item and its children."""
-            item = QStandardItem(item_data["text"])
-            item.setEditable(False)
-
-            # Set data (cluster_id for cells)
-            item.setData(item_data["data"], Qt.ItemDataRole.UserRole)
-
-            # For groups, enable drop
-            if item_data["data"] is None:  # This is a group
-                item.setDropEnabled(True)
-            else:  # This is a cell
-                item.setDropEnabled(False)
-
-            # Add children if they exist
-            if "children" in item_data and item_data["children"]:
-                for child_data in item_data["children"]:
-                    child_item = deserialize_item(child_data)
-                    item.appendRow(child_item)
-
-            return item
+            """Recursively deserialize an item and its children; returns a row."""
+            cid = cell_id(item_data)
+            if cid is not None:
+                return make_cell_row(cid, n_spikes.get(cid), best_chan.get(cid))
+            row = make_group_row(item_data["text"], 0)
+            for child_data in item_data.get("children") or []:
+                row[0].appendRow(deserialize_item(child_data))
+            set_count_item(row[TREE_COL_SPIKES], row[0].rowCount())
+            return row
 
         # Clear the current tree
         self.main_window.tree_model.clear()
+        self.main_window.tree_model.setHorizontalHeaderLabels(list(TREE_HEADERS))
 
         # Populate the tree with loaded data
         for item_data in tree_data:
-            item = deserialize_item(item_data)
-            self.main_window.tree_model.appendRow(item)
+            self.main_window.tree_model.appendRow(deserialize_item(item_data))
 
         # Set the model to the tree view
         self.main_window.setup_tree_model(self.main_window.tree_model)
