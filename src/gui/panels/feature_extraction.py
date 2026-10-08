@@ -1636,7 +1636,11 @@ class FeatureExtractionWindow(QDialog):
             return
 
         self.canvas.restore_region(self._blit_bg)
+        self._stamp_layers()
+        self.canvas.blit(self.fig.bbox)
 
+    def _stamp_layers(self):
+        """Draw the animated layers onto the current renderer, without blit."""
         for idx, ax in enumerate(self.axes.flat):
             overlay = self._overlay_artists[idx]
             if overlay is not None:
@@ -1652,8 +1656,6 @@ class FeatureExtractionWindow(QDialog):
                 if artist.get_visible() and artist.axes is not None:
                     artist.axes.draw_artist(artist)
 
-        self.canvas.blit(self.fig.bbox)
-
     def _on_canvas_draw(self, event):
         """Cache the freshly rendered background, then repaint the live layers.
 
@@ -1662,8 +1664,11 @@ class FeatureExtractionWindow(QDialog):
         """
         if self._building:
             return
+        # Stamp, do not blit: this can run inside the canvas's paintEvent and
+        # blit() is a synchronous repaint — a nested paint, which is a
+        # segfault on macOS (same fix as umap_panel, f883d6c).
         self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
-        self._composite()
+        self._stamp_layers()
 
     # ── Selection panel ───────────────────────────────────────────────────────
 

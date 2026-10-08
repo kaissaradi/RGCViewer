@@ -139,6 +139,7 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
         self._overlay = None
         self._base = None
         self._blit_bg = None
+        self._in_draw = False
         self._ax = None
         # cluster_id -> RGBA for the resting outline, set by a clustering run.
         self._group_colors: dict = {}
@@ -395,6 +396,9 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
         # "'box_aspect' and 'fig_aspect' must be positive" (AGENTS.md Law 5).
         # That broke the second dataset load via umap_panel.reset_for_new_dataset.
         # The next show/resize draws, and _on_draw re-blits.
+        if self._in_draw:
+            # Called from inside a draw: _on_draw stamps the layers itself.
+            return
         if not _axes_ready(self._ax):
             return
         if self._blit_bg is None:
@@ -420,10 +424,17 @@ class RFMapWidget(PopulationSelectionMixin, QWidget):
         if self._overlay is None:
             self._blit_bg = None
             return
-        self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
-        self._ax.draw_artist(self._overlay)
-        self._draw_selection_layers()
-        self.canvas.blit(self.fig.bbox)
+        # Stamp onto the renderer; do not blit. A draw can run inside the
+        # canvas's own paintEvent, and blit() is a synchronous repaint, so it
+        # nested a paint in a paint: "Recursive repaint", "QPainter::begin:
+        # Paint device returned engine == 0", a segfault on macOS (f883d6c).
+        self._in_draw = True
+        try:
+            self._blit_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+            self._ax.draw_artist(self._overlay)
+            self._draw_selection_layers()
+        finally:
+            self._in_draw = False
 
     # ── click-through ────────────────────────────────────────────────────────
 
