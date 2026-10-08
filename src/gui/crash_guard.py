@@ -20,6 +20,9 @@ from pathlib import Path
 logger = logging.getLogger("encore.crash_guard")
 
 ERROR_LOG = Path.home() / ".encore" / "logs" / "errors.log"
+CRASH_LOG = Path.home() / ".encore" / "logs" / "crash.log"
+# Qt warnings written to CRASH_LOG per session; a paint loop can log thousands.
+MAX_QT_MESSAGES = 200
 
 
 def _write_log(text, path):
@@ -71,3 +74,49 @@ def make_hook(log_path=None):
 def install(log_path=None):
     """Replace sys.excepthook. Call once, after QApplication exists."""
     sys.excepthook = make_hook(log_path)
+
+
+_crash_file = None  # faulthandler writes here from the signal handler
+
+
+def install_crash_trace(log_path=None):
+    """Leave a trace in CRASH_LOG when the process dies in native code.
+
+    A segfault inside Qt (seen on macOS while dragging a tree folder) skips
+    sys.excepthook, so errors.log stays empty. faulthandler writes the
+    Python stack of every thread at SIGSEGV/SIGABRT/SIGBUS; Qt's own
+    warnings ("QPainter::begin: Paint device returned engine == 0") go to
+    the same file as they happen, so the lines before a crash survive it.
+    """
+    global _crash_file
+    import faulthandler
+    path = Path(log_path) if log_path is not None else CRASH_LOG
+    _write_log("session start\n", path)
+    try:
+        _crash_file = open(path, "a", encoding="utf-8")
+    except OSError:
+        return None
+    faulthandler.enable(file=_crash_file, all_threads=True)
+
+    try:
+        from qtpy.QtCore import QtMsgType, qInstallMessageHandler
+    except Exception:
+        return path
+    count = [0]
+    previous = [None]
+
+    def handler(mode, context, message):
+        if mode != QtMsgType.QtDebugMsg and count[0] < MAX_QT_MESSAGES:
+            count[0] += 1
+            try:
+                _crash_file.write(f"Qt {getattr(mode, 'name', mode)}: {message}\n")
+                _crash_file.flush()
+            except (OSError, ValueError):
+                pass
+        if previous[0] is not None:
+            previous[0](mode, context, message)
+        else:
+            sys.stderr.write(message + "\n")
+
+    previous[0] = qInstallMessageHandler(handler)
+    return path

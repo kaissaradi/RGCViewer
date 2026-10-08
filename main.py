@@ -60,6 +60,8 @@ def main():
     # Without this, any exception in a Qt slot aborts the process (SIGABRT).
     from src.gui import crash_guard
     crash_guard.install()
+    # A segfault in Qt skips the hook above; leave its stack in crash.log.
+    crash_guard.install_crash_trace()
     window = MainWindow(args.kilosort_dir, args.dat_file)
     window.show()
     sys.exit(app.exec())
